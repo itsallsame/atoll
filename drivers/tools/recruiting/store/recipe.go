@@ -1,0 +1,193 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	mysql "github.com/go-sql-driver/mysql"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+)
+
+func (r *Repository) CreateRecipe(ctx context.Context, recipe model.Recipe, businessAt time.Time) error {
+	if recipe.RecipeID == "" || recipe.Version == 0 || recipe.StateVersion == 0 {
+		return fmt.Errorf("recipe identity and versions are required")
+	}
+	state, _ := json.Marshal(recipe)
+	_, err := r.db.ExecContext(ctx, `
+INSERT INTO recruiting_recipes(
+  recipe_id, recipe_version, recipe_kind, scope_key, status, content_hash,
+  contract_hash, state_version, state_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		recipe.RecipeID, recipe.Version, recipe.Kind, recipe.Scope, recipe.Status, recipe.ContentHash,
+		recipe.ContractHash, recipe.StateVersion, state, businessAt.UTC(), businessAt.UTC())
+	if err == nil {
+		return nil
+	}
+	var mysqlError *mysql.MySQLError
+	if errors.As(err, &mysqlError) && mysqlError.Number == 1062 {
+		return fmt.Errorf("%w: recipe ID and version", ErrBusinessKeyExists)
+	}
+	return fmt.Errorf("create recipe: %w", err)
+}
+
+func (r *Repository) GetRecipe(ctx context.Context, recipeID string, version uint64) (model.Recipe, error) {
+	var state []byte
+	err := r.db.QueryRowContext(ctx, `
+SELECT state_json FROM recruiting_recipes
+WHERE recipe_id = ? AND recipe_version = ?`, recipeID, version).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Recipe{}, ErrNotFound
+	}
+	if err != nil {
+		return model.Recipe{}, fmt.Errorf("get recipe: %w", err)
+	}
+	var recipe model.Recipe
+	if err := json.Unmarshal(state, &recipe); err != nil {
+		return model.Recipe{}, fmt.Errorf("decode recipe: %w", err)
+	}
+	return recipe, nil
+}
+
+func (r *Repository) UpdateRecipeCAS(ctx context.Context, expectedStateVersion uint64, recipe model.Recipe, businessAt time.Time) error {
+	if recipe.RecipeID == "" || recipe.StateVersion != expectedStateVersion+1 {
+		return fmt.Errorf("recipe update must advance exactly one state version")
+	}
+	state, _ := json.Marshal(recipe)
+	result, err := r.db.ExecContext(ctx, `
+UPDATE recruiting_recipes
+SET status = ?, content_hash = ?, contract_hash = ?, state_version = ?, state_json = ?, updated_at = ?
+WHERE recipe_id = ? AND recipe_version = ? AND state_version = ?`,
+		recipe.Status, recipe.ContentHash, recipe.ContractHash, recipe.StateVersion, state, businessAt.UTC(),
+		recipe.RecipeID, recipe.Version, expectedStateVersion)
+	if err != nil {
+		return fmt.Errorf("update recipe: %w", err)
+	}
+	changed, _ := result.RowsAffected()
+	if changed == 1 {
+		return nil
+	}
+	actual, readErr := r.GetRecipe(ctx, recipe.RecipeID, recipe.Version)
+	if errors.Is(readErr, ErrNotFound) {
+		return ErrNotFound
+	}
+	if readErr != nil {
+		return readErr
+	}
+	return &model.VersionConflictError{Expected: expectedStateVersion, Actual: actual.StateVersion}
+}
+
+func (r *Repository) GetAssignment(ctx context.Context, sourceID string, kind model.RecipeKind) (model.SourceRecipeAssignment, error) {
+	var state []byte
+	err := r.db.QueryRowContext(ctx, `
+SELECT state_json FROM recruiting_source_assignments
+WHERE source_id = ? AND recipe_kind = ?`, sourceID, kind).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.SourceRecipeAssignment{}, ErrNotFound
+	}
+	if err != nil {
+		return model.SourceRecipeAssignment{}, fmt.Errorf("get source recipe assignment: %w", err)
+	}
+	var assignment model.SourceRecipeAssignment
+	if err := json.Unmarshal(state, &assignment); err != nil {
+		return model.SourceRecipeAssignment{}, fmt.Errorf("decode source recipe assignment: %w", err)
+	}
+	return assignment, nil
+}
+
+// PublishSourceAssignment atomically changes the Source projection and its
+// one current assignment. expectedAssignmentVersion=0 means first publication.
+func (r *Repository) PublishSourceAssignment(ctx context.Context, expectedSourceVersion, expectedAssignmentVersion uint64, source model.RecruitmentSource, assignment model.SourceRecipeAssignment, businessAt time.Time) error {
+	if source.Version != expectedSourceVersion+1 || assignment.SourceID != source.SourceID ||
+		assignment.AssignmentVersion != expectedAssignmentVersion+1 {
+		return fmt.Errorf("source and assignment versions are inconsistent")
+	}
+	selected := source.ListingAssignment
+	switch assignment.Kind {
+	case model.RecipeDetail:
+		selected = source.DetailAssignment
+	case model.RecipeDiscovery:
+		selected = source.DiscoveryAssignment
+	}
+	if selected == nil || *selected != assignment {
+		return fmt.Errorf("source projection does not contain assignment")
+	}
+	recipe, err := r.GetRecipe(ctx, assignment.RecipeID, assignment.RecipeVersion)
+	if err != nil {
+		return err
+	}
+	if recipe.Status != model.RecipeActive || recipe.Kind != assignment.Kind || recipe.ContractHash != assignment.ContractHash {
+		return fmt.Errorf("assignment requires matching active recipe and contract")
+	}
+	endpoint, origin, err := sourceStorageIdentity(source)
+	if err != nil {
+		return err
+	}
+	sourceState, _ := json.Marshal(source)
+	assignmentState, _ := json.Marshal(assignment)
+	effectiveAt, err := time.Parse(time.RFC3339, assignment.EffectiveAt)
+	if err != nil {
+		return fmt.Errorf("assignment effective time: %w", err)
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin assignment publication: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
+UPDATE recruiting_sources
+SET canonical_source_key = ?, origin = ?, readiness_status = ?, control_status = ?,
+    health_status = ?, discovery_generation = ?, version = ?, state_json = ?, updated_at = ?
+WHERE source_id = ? AND version = ?`,
+		endpoint.CanonicalKey, origin, source.ReadinessStatus, source.ControlStatus, source.HealthStatus,
+		source.DiscoveryGeneration, source.Version, sourceState, businessAt.UTC(), source.SourceID, expectedSourceVersion)
+	if err != nil {
+		return fmt.Errorf("publish source projection: %w", err)
+	}
+	changed, _ := result.RowsAffected()
+	if changed != 1 {
+		var actual uint64
+		readErr := tx.QueryRowContext(ctx, "SELECT version FROM recruiting_sources WHERE source_id = ?", source.SourceID).Scan(&actual)
+		if errors.Is(readErr, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if readErr != nil {
+			return fmt.Errorf("read source after failed publication CAS: %w", readErr)
+		}
+		return &model.VersionConflictError{Expected: expectedSourceVersion, Actual: actual}
+	}
+	if expectedAssignmentVersion == 0 {
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO recruiting_source_assignments(
+  source_id, recipe_kind, recipe_id, recipe_version, contract_hash,
+  effective_at, assignment_version, state_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			assignment.SourceID, assignment.Kind, assignment.RecipeID, assignment.RecipeVersion,
+			assignment.ContractHash, effectiveAt.UTC(), assignment.AssignmentVersion, assignmentState)
+	} else {
+		var result sql.Result
+		result, err = tx.ExecContext(ctx, `
+UPDATE recruiting_source_assignments
+SET recipe_id = ?, recipe_version = ?, contract_hash = ?, effective_at = ?,
+    assignment_version = ?, state_json = ?
+WHERE source_id = ? AND recipe_kind = ? AND assignment_version = ?`,
+			assignment.RecipeID, assignment.RecipeVersion, assignment.ContractHash, effectiveAt.UTC(),
+			assignment.AssignmentVersion, assignmentState, assignment.SourceID, assignment.Kind, expectedAssignmentVersion)
+		if err == nil {
+			changed, _ = result.RowsAffected()
+			if changed != 1 {
+				err = ErrAssignmentConflict
+			}
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("publish source assignment: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit source assignment: %w", err)
+	}
+	return nil
+}

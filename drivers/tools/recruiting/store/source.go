@@ -66,3 +66,51 @@ func (r *Repository) GetSource(ctx context.Context, sourceID string) (model.Recr
 	}
 	return source, nil
 }
+
+func (r *Repository) UpdateSourceCAS(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource, businessAt time.Time) error {
+	if source.SourceID == "" || source.Version != expectedVersion+1 {
+		return fmt.Errorf("source update must advance exactly one expected version")
+	}
+	endpoint, origin, err := sourceStorageIdentity(source)
+	if err != nil {
+		return err
+	}
+	state, _ := json.Marshal(source)
+	result, err := r.db.ExecContext(ctx, `
+UPDATE recruiting_sources
+SET canonical_source_key = ?, origin = ?, readiness_status = ?, control_status = ?,
+    health_status = ?, discovery_generation = ?, version = ?, state_json = ?, updated_at = ?
+WHERE source_id = ? AND version = ?`,
+		endpoint.CanonicalKey, origin, source.ReadinessStatus, source.ControlStatus, source.HealthStatus,
+		source.DiscoveryGeneration, source.Version, state, businessAt.UTC(), source.SourceID, expectedVersion)
+	if err != nil {
+		return fmt.Errorf("update source: %w", err)
+	}
+	changed, _ := result.RowsAffected()
+	if changed == 1 {
+		return nil
+	}
+	actual, readErr := r.GetSource(ctx, source.SourceID)
+	if errors.Is(readErr, ErrNotFound) {
+		return ErrNotFound
+	}
+	if readErr != nil {
+		return readErr
+	}
+	return &model.VersionConflictError{Expected: expectedVersion, Actual: actual.Version}
+}
+
+func sourceStorageIdentity(source model.RecruitmentSource) (*model.SourceEndpoint, string, error) {
+	endpoint := source.ActiveEndpoint
+	if endpoint == nil {
+		endpoint = source.CandidateEndpoint
+	}
+	if endpoint == nil || endpoint.CanonicalKey == "" {
+		return nil, "", fmt.Errorf("source endpoint and canonical key are required")
+	}
+	parsed, err := url.Parse(endpoint.URL)
+	if err != nil || parsed.Hostname() == "" {
+		return nil, "", fmt.Errorf("source origin is invalid")
+	}
+	return endpoint, parsed.Hostname(), nil
+}
