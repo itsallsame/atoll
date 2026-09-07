@@ -45,7 +45,7 @@ WHERE id = ? AND version = ?
 
 ### 普通命令
 
-单一事务内完成：锁定/读取 command receipt → CAS 聚合 → 插入 append-only 证据（如有）→ 插入 outbox event intent → 保存稳定 receipt。提交后再通过 Atoll ledger 发送事件；ledger 失败时 outbox 保留并可重放。接收方仍按 event ID 幂等，因此数据库提交与 ledger append 不要求分布式事务。
+单一事务内完成：锁定/读取 command receipt → CAS 聚合 → 插入 append-only 证据（如有）→ 插入 outbox event intent → 保存稳定 receipt。Outbox intent 创建时冻结最大投递次数；失败以 expected attempts 做 CAS，记录错误分类和下次投递时间，达到上限进入 `exhausted`，不能无限重试。提交后再通过 Atoll ledger 发送事件；ledger 失败时 outbox 保留并可重放。接收方仍按 event ID 幂等，因此数据库提交与 ledger append 不要求分布式事务。
 
 ### 每日列表页
 

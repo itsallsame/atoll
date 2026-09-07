@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"strings"
 	"time"
 
 	mysql "github.com/go-sql-driver/mysql"
@@ -16,6 +18,8 @@ type CommandResult struct {
 	Response json.RawMessage
 	Replayed bool
 }
+
+const defaultOutboxMaxDeliveryAttempts uint64 = 8
 
 // ApplyCompanyCommand atomically persists the aggregate CAS, stable command
 // response, and an outbox event intent. Publishing that intent to the Atoll
@@ -88,10 +92,11 @@ WHERE company_id = ? AND version = ?`,
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO recruiting_event_outbox(
   event_id, event_kind, aggregate_type, aggregate_id, aggregate_version,
-  cause_command_id, business_at, payload_json, delivery_status, next_attempt_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+  cause_command_id, business_at, payload_json, delivery_status,
+  delivery_attempts, max_delivery_attempts, next_attempt_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
 		event.EventID, event.Kind, event.AggregateType, event.AggregateID, event.AggregateVersion,
-		event.CauseCommandID, eventAt.UTC(), []byte(event.Payload), businessAt.UTC())
+		event.CauseCommandID, eventAt.UTC(), []byte(event.Payload), defaultOutboxMaxDeliveryAttempts, businessAt.UTC())
 	if err != nil {
 		return CommandResult{}, fmt.Errorf("append company event intent: %w", err)
 	}
@@ -134,17 +139,18 @@ func (r *Repository) replayCommittedCommand(ctx context.Context, commandID, requ
 }
 
 type PendingEvent struct {
-	Intent   model.EventIntent
-	Attempts uint64
+	Intent      model.EventIntent
+	Attempts    uint64
+	MaxAttempts uint64
 }
 
 func (r *Repository) ListPendingEvents(ctx context.Context, dueAt time.Time, limit int) ([]PendingEvent, error) {
-	if limit <= 0 || limit > 500 {
-		return nil, fmt.Errorf("outbox limit must be in [1,500]")
+	if dueAt.IsZero() || limit <= 0 || limit > 500 {
+		return nil, fmt.Errorf("outbox due time and limit in [1,500] are required")
 	}
 	rows, err := r.db.QueryContext(ctx, `
 SELECT event_id, event_kind, aggregate_type, aggregate_id, aggregate_version,
-       cause_command_id, business_at, payload_json, delivery_attempts
+       cause_command_id, business_at, payload_json, delivery_attempts, max_delivery_attempts
 FROM recruiting_event_outbox
 WHERE delivery_status = 'pending' AND next_attempt_at <= ?
 ORDER BY next_attempt_at, event_id
@@ -158,7 +164,7 @@ LIMIT ?`, dueAt.UTC(), limit)
 		var event PendingEvent
 		var businessAt time.Time
 		if err := rows.Scan(&event.Intent.EventID, &event.Intent.Kind, &event.Intent.AggregateType, &event.Intent.AggregateID,
-			&event.Intent.AggregateVersion, &event.Intent.CauseCommandID, &businessAt, &event.Intent.Payload, &event.Attempts); err != nil {
+			&event.Intent.AggregateVersion, &event.Intent.CauseCommandID, &businessAt, &event.Intent.Payload, &event.Attempts, &event.MaxAttempts); err != nil {
 			return nil, fmt.Errorf("scan pending recruiting event: %w", err)
 		}
 		event.Intent.BusinessAt = businessAt.UTC().Format(time.RFC3339Nano)
@@ -171,10 +177,13 @@ LIMIT ?`, dueAt.UTC(), limit)
 }
 
 func (r *Repository) MarkEventDelivered(ctx context.Context, eventID string, deliveredAt time.Time) error {
+	if strings.TrimSpace(eventID) == "" || deliveredAt.IsZero() {
+		return fmt.Errorf("event identity and delivery time are required")
+	}
 	result, err := r.db.ExecContext(ctx, `
 UPDATE recruiting_event_outbox
 SET delivery_status = 'delivered', delivered_at = ?
-WHERE event_id = ? AND delivery_status = 'pending'`, deliveredAt.UTC(), eventID)
+WHERE event_id = ? AND delivery_status <> 'delivered'`, deliveredAt.UTC(), eventID)
 	if err != nil {
 		return fmt.Errorf("mark recruiting event delivered: %w", err)
 	}
@@ -182,8 +191,71 @@ WHERE event_id = ? AND delivery_status = 'pending'`, deliveredAt.UTC(), eventID)
 	if err != nil {
 		return fmt.Errorf("inspect recruiting event delivery: %w", err)
 	}
-	if changed != 1 {
+	if changed == 1 {
+		return nil
+	}
+	var status string
+	err = r.db.QueryRowContext(ctx, "SELECT delivery_status FROM recruiting_event_outbox WHERE event_id = ?", eventID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
-	return nil
+	if err != nil {
+		return fmt.Errorf("read recruiting event delivery: %w", err)
+	}
+	if status == "delivered" {
+		return nil
+	}
+	return ErrOutboxConflict
+}
+
+type EventDeliveryUpdate struct {
+	Status         string
+	Attempts       uint64
+	MaxAttempts    uint64
+	NextAttemptAt  time.Time
+	LastErrorClass string
+}
+
+// RecordEventFailureCAS advances the persisted retry count exactly once. The
+// event's maximum is frozen when its intent is created; the final failure
+// moves it out of the runnable pending set instead of retrying forever.
+func (r *Repository) RecordEventFailureCAS(ctx context.Context, eventID string, expectedAttempts uint64, nextAttemptAt time.Time, errorClass string) (EventDeliveryUpdate, error) {
+	errorClass = strings.TrimSpace(errorClass)
+	if strings.TrimSpace(eventID) == "" || expectedAttempts >= math.MaxUint32 || nextAttemptAt.IsZero() || errorClass == "" || len(errorClass) > 128 {
+		return EventDeliveryUpdate{}, fmt.Errorf("event failure requires identity, bounded attempt, next time, and error class")
+	}
+	result, err := r.db.ExecContext(ctx, `
+UPDATE recruiting_event_outbox
+SET delivery_status = CASE WHEN delivery_attempts + 1 >= max_delivery_attempts THEN 'exhausted' ELSE 'pending' END,
+    delivery_attempts = delivery_attempts + 1,
+    next_attempt_at = ?, last_error_class = ?
+WHERE event_id = ? AND delivery_status = 'pending' AND delivery_attempts = ?`,
+		nextAttemptAt.UTC(), errorClass, eventID, expectedAttempts)
+	if err != nil {
+		return EventDeliveryUpdate{}, fmt.Errorf("record recruiting event failure: %w", err)
+	}
+	changed, _ := result.RowsAffected()
+	update, readErr := r.getEventDeliveryUpdate(ctx, eventID)
+	if readErr != nil {
+		return EventDeliveryUpdate{}, readErr
+	}
+	if changed != 1 {
+		return update, ErrOutboxConflict
+	}
+	return update, nil
+}
+
+func (r *Repository) getEventDeliveryUpdate(ctx context.Context, eventID string) (EventDeliveryUpdate, error) {
+	var update EventDeliveryUpdate
+	err := r.db.QueryRowContext(ctx, `
+SELECT delivery_status, delivery_attempts, max_delivery_attempts, next_attempt_at, COALESCE(last_error_class, '')
+FROM recruiting_event_outbox WHERE event_id = ?`, eventID).
+		Scan(&update.Status, &update.Attempts, &update.MaxAttempts, &update.NextAttemptAt, &update.LastErrorClass)
+	if errors.Is(err, sql.ErrNoRows) {
+		return EventDeliveryUpdate{}, ErrNotFound
+	}
+	if err != nil {
+		return EventDeliveryUpdate{}, fmt.Errorf("read recruiting event retry state: %w", err)
+	}
+	return update, nil
 }

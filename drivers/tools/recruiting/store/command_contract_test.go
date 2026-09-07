@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -60,14 +61,83 @@ func TestCompanyCommandReceiptAndOutboxAreAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	foundEvent := false
+	var pendingEvent PendingEvent
 	for _, candidate := range pending {
-		foundEvent = foundEvent || candidate.Intent.EventID == event.EventID
+		if candidate.Intent.EventID == event.EventID {
+			foundEvent = true
+			pendingEvent = candidate
+		}
+	}
+	if !foundEvent || pendingEvent.Attempts != 0 || pendingEvent.MaxAttempts != defaultOutboxMaxDeliveryAttempts {
+		t.Fatalf("committed event was not recoverable before ledger delivery: %+v", pending)
+	}
+	var explain string
+	if err := db.QueryRowContext(ctx, `EXPLAIN FORMAT=JSON
+SELECT event_id, event_kind, aggregate_type, aggregate_id, aggregate_version,
+       cause_command_id, business_at, payload_json, delivery_attempts, max_delivery_attempts
+FROM recruiting_event_outbox
+WHERE delivery_status = 'pending' AND next_attempt_at <= ?
+ORDER BY next_attempt_at, event_id LIMIT 10`, now).Scan(&explain); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(explain, "ix_recruiting_outbox_pending") {
+		t.Fatalf("pending outbox query did not use intended index: %s", explain)
+	}
+
+	retryAt := now.Add(time.Minute)
+	update, err := repository.RecordEventFailureCAS(ctx, event.EventID, 0, retryAt, "ledger_unavailable")
+	if err != nil || update.Status != "pending" || update.Attempts != 1 || update.MaxAttempts != defaultOutboxMaxDeliveryAttempts {
+		t.Fatalf("first outbox retry = %+v %v", update, err)
+	}
+	pending, err = repository.ListPendingEvents(ctx, now, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range pending {
+		if candidate.Intent.EventID == event.EventID {
+			t.Fatal("backoff event was runnable before next_attempt_at")
+		}
+	}
+	pending, err = repository.ListPendingEvents(ctx, retryAt, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundEvent = false
+	for _, candidate := range pending {
+		foundEvent = foundEvent || candidate.Intent.EventID == event.EventID && candidate.Attempts == 1
 	}
 	if !foundEvent {
-		t.Fatalf("committed event was not recoverable before ledger delivery: %+v", pending)
+		t.Fatalf("due retry was not recoverable: %+v", pending)
+	}
+	if _, err := repository.RecordEventFailureCAS(ctx, event.EventID, 0, retryAt, "stale_dispatcher"); !errors.Is(err, ErrOutboxConflict) {
+		t.Fatalf("stale outbox failure = %v", err)
+	}
+	for expected := uint64(1); expected < defaultOutboxMaxDeliveryAttempts; expected++ {
+		update, err = repository.RecordEventFailureCAS(ctx, event.EventID, expected, retryAt.Add(time.Duration(expected)*time.Minute), "ledger_unavailable")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if update.Status != "exhausted" || update.Attempts != defaultOutboxMaxDeliveryAttempts {
+		t.Fatalf("outbox retry was not bounded: %+v", update)
+	}
+	pending, err = repository.ListPendingEvents(ctx, retryAt.Add(24*time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range pending {
+		if candidate.Intent.EventID == event.EventID {
+			t.Fatal("exhausted event remained runnable")
+		}
 	}
 	if err := repository.MarkEventDelivered(ctx, event.EventID, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
+	}
+	if err := repository.MarkEventDelivered(ctx, event.EventID, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("delivery acknowledgement was not idempotent: %v", err)
+	}
+	if err := repository.MarkEventDelivered(ctx, "missing-event", now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing delivery = %v", err)
 	}
 }
 
@@ -159,8 +229,8 @@ func TestOutboxFailureRollsBackAggregateAndReceipt(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `
 INSERT INTO recruiting_event_outbox(
   event_id, event_kind, aggregate_type, aggregate_id, aggregate_version,
-  cause_command_id, business_at, payload_json, delivery_status, next_attempt_at
-) VALUES ('forced-duplicate-event', 'fixture', 'fixture', 'fixture', 1, 'fixture', ?, '{}', 'delivered', ?)`, now, now); err != nil {
+  cause_command_id, business_at, payload_json, delivery_status, max_delivery_attempts, next_attempt_at
+) VALUES ('forced-duplicate-event', 'fixture', 'fixture', 'fixture', 1, 'fixture', ?, '{}', 'delivered', 8, ?)`, now, now); err != nil {
 		t.Fatal(err)
 	}
 	// Reusing the fixture primary key forces the final outbox insert to fail

@@ -39,6 +39,8 @@ P1 契约基线：`a94d2b8d`
 - DailyRun 只能用数据库内不可变 occurrence 终态事实闭账：总数必须等于 cutoff 时 expected sources，成功、异常、排除统计必须逐项一致，未完成项或伪造 summary 都不能关闭日批次；物化和闭账锁定同一 DailyRun 行，避免关闭后晚插任务的竞态；
 - CuratedOverride 每次人工创建、替换或撤销都先追加不可变 version，再在同一事务用精确旧 head 做 CAS；两个并发替换只有一个成为当前值，失败候选不会残留孤立 version；
 - Override head 不删除历史来源事实；后续 verified detail 即使版本更高仍由有效人工值覆盖，撤销版本发布后才重新显露 verified detail；历史查询有界且 `EXPLAIN FORMAT=JSON` 验证使用 target/field 专用索引；
+- Outbox event 创建时冻结最大投递次数；失败按 expected attempts 做 CAS，持久化错误分类和 `next_attempt_at`，达到上限进入 `exhausted` 并退出 runnable 集合；
+- Outbox 到期查询有界为 500 条且 `EXPLAIN FORMAT=JSON` 验证使用 pending 索引；重复成功确认幂等，迟到的真实成功可把 exhausted event 更正为 delivered，未知 event 不被伪装成成功；
 - `EXPLAIN FORMAT=JSON` 验证 Company seek 查询使用专用索引；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
@@ -54,8 +56,7 @@ make build-go
 
 ## 尚未完成
 
-- outbox 完整 Repository contract；Company、Source、Recipe/Assignment、Checkpoint、Listing/Detail Job、Observation/DetailVersion、Artifact、Work/Attempt、Profile、Budget、Repair、DailyRun/Occurrence、Override 已有纵向合同；
-- 将已验证的命令 receipt/聚合/outbox 原子事务推广到其余修改命令，并实现 outbox 有界重试状态；
+- 将已验证的命令 receipt/聚合/outbox 原子事务推广到其余修改命令；Company、Source、Recipe/Assignment、Checkpoint、Listing/Detail Job、Observation/DetailVersion、Artifact、Work/Attempt、Profile、Budget、Repair、DailyRun/Occurrence、Override 和 outbox retry 已有纵向合同；
 - 每日 Listing Observation/SourceJob/Detail Work 的单项事务与并发收敛已完成；仍需分页进度/进程退出恢复以及 baseline 详情渐进物化；
 - deadlock、timeout、断连、重复提交和进程 kill 故障注入；
 - 10,000 条基线不使用超大事务已经验证；仍需所有关键领取查询的 EXPLAIN；

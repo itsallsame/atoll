@@ -351,6 +351,7 @@ CREATE TABLE recruiting_event_outbox (
   payload_json JSON NOT NULL,
   delivery_status VARCHAR(32) CHARACTER SET ascii NOT NULL DEFAULT 'pending',
   delivery_attempts INT UNSIGNED NOT NULL DEFAULT 0,
+  max_delivery_attempts INT UNSIGNED NOT NULL,
   next_attempt_at DATETIME(6) NOT NULL,
   delivered_at DATETIME(6) NULL,
   last_error_class VARCHAR(128) CHARACTER SET ascii NULL,
