@@ -54,10 +54,28 @@ func (r *Repository) applyListingObservationOnce(ctx context.Context, input List
 		return ListingIngestResult{}, fmt.Errorf("begin listing ingest: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	result, err := applyListingObservationTx(ctx, tx, input)
+	if err != nil {
+		return ListingIngestResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ListingIngestResult{}, fmt.Errorf("commit listing ingest: %w", err)
+	}
+	return result, nil
+}
 
+func applyListingObservationTx(ctx context.Context, tx *sql.Tx, input ListingIngest) (ListingIngestResult, error) {
 	var replayJobID string
-	err = tx.QueryRowContext(ctx, "SELECT job_id FROM recruiting_listing_observations WHERE observation_id = ?", input.Observation.ObservationID).Scan(&replayJobID)
+	var replayState []byte
+	err := tx.QueryRowContext(ctx, "SELECT job_id, observation_json FROM recruiting_listing_observations WHERE observation_id = ?", input.Observation.ObservationID).Scan(&replayJobID, &replayState)
 	if err == nil {
+		var replayObservation model.ListingObservation
+		if err := json.Unmarshal(replayState, &replayObservation); err != nil {
+			return ListingIngestResult{}, fmt.Errorf("decode replayed listing observation: %w", err)
+		}
+		if replayObservation != input.Observation {
+			return ListingIngestResult{}, fmt.Errorf("%w: observation ID reused with different facts", ErrBusinessKeyExists)
+		}
 		job, err := getJobWith(ctx, tx, replayJobID)
 		if err != nil {
 			return ListingIngestResult{}, err
@@ -129,9 +147,6 @@ INSERT INTO recruiting_works(
 			return ListingIngestResult{}, fmt.Errorf("create detail work intent: %w", err)
 		}
 		detailWork = &work
-	}
-	if err := tx.Commit(); err != nil {
-		return ListingIngestResult{}, fmt.Errorf("commit listing ingest: %w", err)
 	}
 	return ListingIngestResult{Job: job, DetailWork: detailWork}, nil
 }

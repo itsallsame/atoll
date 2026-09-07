@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -45,9 +46,15 @@ func TestBaselineTenThousandRowsUsesBoundedReplayableChunks(t *testing.T) {
 	rows := make([]BaselineStageRow, 10000)
 	for index := range rows {
 		key := fmt.Sprintf("job-%05d", index)
+		observation := model.ListingObservation{
+			ObservationID: "observation-" + key, OccurrenceID: "baseline-occurrence", SourceID: source.SourceID,
+			SourceJobKey: key, DetailURL: "https://baseline.example.com/jobs/" + key,
+			ActivityAt: now.Format(time.RFC3339), ListingFingerprint: "fingerprint-" + key,
+			RecipeID: "listing-recipe", RecipeVersion: 1, ArtifactID: fmt.Sprintf("baseline-page-artifact-%02d", index/baselineStageChunkSize),
+		}
+		value, _ := json.Marshal(observation)
 		rows[index] = BaselineStageRow{
-			SourceJobKey: key, ObservationID: "observation-" + key,
-			Value: json.RawMessage(fmt.Sprintf(`{"source_job_key":%q}`, key)),
+			SourceJobKey: key, ObservationID: observation.ObservationID, Value: value,
 		}
 	}
 	chunks, err := repository.StageBaselineRows(ctx, source.SourceID, baseline.Generation, rows, now)
@@ -79,6 +86,83 @@ WHERE source_id = ? AND baseline_generation = ?`, source.SourceID, baseline.Gene
 	}
 	if err := repository.FinalizeBaselineListing(ctx, baseline.Version, finalized, checkpoint, now.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := repository.StageBaselineRows(ctx, source.SourceID, baseline.Generation, rows[:1], now.Add(3*time.Second)); err == nil {
+		t.Fatal("finalized baseline staging was mutated")
+	}
+	var stageExplain string
+	if err := db.QueryRowContext(ctx, `EXPLAIN FORMAT=JSON
+SELECT source_job_key, observation_id, row_json
+FROM recruiting_baseline_staging
+WHERE source_id = ? AND baseline_generation = ? AND source_job_key > ?
+ORDER BY source_job_key LIMIT 501`, source.SourceID, baseline.Generation, "job-00499").Scan(&stageExplain); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stageExplain, "PRIMARY") {
+		t.Fatalf("baseline seek did not use primary key: %s", stageExplain)
+	}
+	listingWork, _ := model.NewWork("baseline-listing-work", "source", source.SourceID, "baseline_detail_materialization", "baseline")
+	if err := repository.CreateWork(ctx, listingWork, WorkPlacement{
+		BusinessKey: "baseline-materialize|baseline-source|1", Capability: "database.materialize",
+		Origin: "baseline.example.com", NotBefore: now,
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	runningWork, _ := listingWork.Start(listingWork.Version)
+	if err := repository.UpdateWorkCAS(ctx, listingWork.Version, runningWork, now); err != nil {
+		t.Fatal(err)
+	}
+	var currentProgress *model.ListingPageProgress
+	afterKey := ""
+	materializedPages := 0
+	for {
+		page, err := repository.ListBaselineStagePage(ctx, source.SourceID, baseline.Generation, afterKey, baselineStageChunkSize)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inputs := make([]ListingIngest, len(page.Rows))
+		for index, row := range page.Rows {
+			var observation model.ListingObservation
+			if err := json.Unmarshal(row.Value, &observation); err != nil {
+				t.Fatal(err)
+			}
+			inputs[index] = ListingIngest{
+				Observation: observation, ObservedAt: now, NewJobID: "baseline-job-" + row.SourceJobKey,
+				DetailWorkID: "baseline-detail-work-" + row.SourceJobKey, Origin: "baseline.example.com",
+				Capability: "http.fetch", Priority: 1, NotBefore: now,
+			}
+		}
+		end := !page.HasMore
+		cursor := page.NextKey
+		if end {
+			cursor = ""
+		}
+		progress, err := model.AdvanceListingPageProgress(currentProgress, runningWork, cursor, inputs[0].Observation.ArtifactID, len(inputs), end)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repository.ApplyListingPage(ctx, ListingPageCommit{Progress: progress, Items: inputs}, now); err != nil {
+			t.Fatal(err)
+		}
+		currentProgress = &progress
+		materializedPages++
+		afterKey = page.NextKey
+		if end {
+			break
+		}
+	}
+	if materializedPages != 20 {
+		t.Fatalf("10,000 detail intents used %d pages", materializedPages)
+	}
+	var baselineJobs, baselineDetailWorks int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_source_jobs WHERE source_id = ?", source.SourceID).Scan(&baselineJobs); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_works WHERE purpose = 'detail_sync' AND origin = 'baseline.example.com'").Scan(&baselineDetailWorks); err != nil {
+		t.Fatal(err)
+	}
+	if baselineJobs != 10000 || baselineDetailWorks != 10000 {
+		t.Fatalf("baseline materialization jobs=%d detail_works=%d", baselineJobs, baselineDetailWorks)
 	}
 	var status string
 	var version uint64

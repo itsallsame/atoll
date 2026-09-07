@@ -79,7 +79,7 @@ func TestMigrationIntegration(t *testing.T) {
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()").Scan(&tableCount); err != nil {
 		t.Fatal(err)
 	}
-	if tableCount < 24 {
+	if tableCount < 25 {
 		t.Fatalf("migration created only %d tables", tableCount)
 	}
 	assertRuntimeIndexes(t, ctx, db)

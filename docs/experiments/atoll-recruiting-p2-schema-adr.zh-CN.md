@@ -49,13 +49,13 @@ WHERE id = ? AND version = ?
 
 ### 每日列表页
 
-每页使用小事务：插入 Observation → 按来源岗位键收敛 SourceJob → 仅为新岗位或真正更新提升 generation → 插入唯一 Detail Work 意图。页面进度作为 Artifact/Work progress 保存。Checkpoint 不在普通分页事务中推进。
+每页最多 500 项，使用小事务：验证当前 Work version/acceptance fence → 插入 Observation → 按来源岗位键收敛 SourceJob → 仅为新岗位或真正更新提升 generation → 插入唯一 Detail Work 意图 → 追加该页 Progress。页内事实、派生意图和 resume cursor 原子提交；同一页响应丢失可精确重放，进程退出则从最后一条 append-only Progress 继续。Checkpoint 不在普通分页事务中推进。
 
 扫描到旧边界、完成重叠、排序契约成立且同时间组完整后，独立最终事务比较旧 Checkpoint version，写入新边界和 occurrence 结论并产生 outbox。失败或崩溃只会留下可重放 Observation/Work，不会产生虚假的新 Checkpoint。
 
 ### 首次基线
 
-`baseline_generations` 保存 generation 状态和 fencing version；`baseline_staging` 按 `(source_id, generation, source_job_key)` 分块幂等写入。游标失效可从头重扫。finalize 事务只改变 generation 可见性、建立首个 Checkpoint 并写 Detail Work outbox，不搬运一万行数据；详情 Work 按页渐进物化，避免单个超大事务。
+`baseline_generations` 保存 generation 状态和 fencing version；`baseline_staging` 按 `(source_id, generation, source_job_key)` 分块幂等写入。游标失效可从头重扫。finalize 锁定 generation、核对数据库实际 staging 数、冻结 staging、改变 generation 可见性并建立首个 Checkpoint，不搬运一万行数据；详情 Job/Work 复用上述页提交协议按主键 seek 渐进物化，避免单个超大事务。
 
 ### Artifact 与执行结果
 

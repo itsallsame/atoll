@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sync"
 	"testing"
@@ -52,6 +53,11 @@ func TestListingObservationCreatesDetailOnlyForNewOrChangedJob(t *testing.T) {
 	replay, err := repository.ApplyListingObservation(ctx, input)
 	if err != nil || !replay.ObservationReplayed || replay.DetailWork != nil {
 		t.Fatalf("observation replay = %+v %v", replay, err)
+	}
+	conflictingReplay := input
+	conflictingReplay.Observation.DetailURL = "https://listing.example.com/jobs/different"
+	if _, err := repository.ApplyListingObservation(ctx, conflictingReplay); !errors.Is(err, ErrBusinessKeyExists) {
+		t.Fatalf("observation ID accepted different facts: %v", err)
 	}
 	overlap := input
 	overlap.Observation.ObservationID = "listing-observation-2"

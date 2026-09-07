@@ -9,7 +9,7 @@ P1 契约基线：`a94d2b8d`
 ## 已完成
 
 - Schema ADR 冻结访问模式、唯一约束、CAS、事务切点、outbox 恢复、基线 staging 和权限边界；
-- 首版 migration 从空库创建 23 张招聘业务表，migration runner 另建版本/checksum ledger；
+- 首版 migration 从空库创建 24 张招聘业务表，migration runner 另建版本/checksum ledger；
 - migration 使用 MySQL advisory lock 串行化，成功重跑幂等，checksum 改变拒绝启动，残留 `applying` 状态要求从升级前备份恢复；
 - DSN 必须显式数据库和非 root 用户，adapter 强制 UTC、关闭 multi-statements，并设置有界连接池；
 - Company Repository 已实现 create/get、规范官网并发唯一约束、`updated_at + company_id` seek pagination 和单版本 CAS；
@@ -41,6 +41,9 @@ P1 契约基线：`a94d2b8d`
 - Override head 不删除历史来源事实；后续 verified detail 即使版本更高仍由有效人工值覆盖，撤销版本发布后才重新显露 verified detail；历史查询有界且 `EXPLAIN FORMAT=JSON` 验证使用 target/field 专用索引；
 - Outbox event 创建时冻结最大投递次数；失败按 expected attempts 做 CAS，持久化错误分类和 `next_attempt_at`，达到上限进入 `exhausted` 并退出 runnable 集合；
 - Outbox 到期查询有界为 500 条且 `EXPLAIN FORMAT=JSON` 验证使用 pending 索引；重复成功确认幂等，迟到的真实成功可把 exhausted event 更正为 delivered，未知 event 不被伪装成成功；
+- Listing 页提交把 Work version/acceptance fence、最多 500 条 Observation/Job/Detail Work 和 append-only Progress 放入同一事务；失败页不留下 Job 或 resume cursor，同页确认丢失可精确重放，暂停后的旧执行者不能推进进度，恢复后的新 fence 可继续；
+- Baseline staging 每块锁定 generation，finalize 后不可修改；finalize 在同一锁内校验数据库实际 staging 数与 `details_expected`，消除并发晚写和伪造计数；
+- 10,000 条 baseline staging 通过主键 seek 形成 20 个页事务，实测恰好产生 10,000 个 SourceJob 和 10,000 个唯一 Detail Work；`EXPLAIN FORMAT=JSON` 验证 seek 使用复合主键；
 - `EXPLAIN FORMAT=JSON` 验证 Company seek 查询使用专用索引；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
@@ -57,7 +60,6 @@ make build-go
 ## 尚未完成
 
 - 将已验证的命令 receipt/聚合/outbox 原子事务推广到其余修改命令；Company、Source、Recipe/Assignment、Checkpoint、Listing/Detail Job、Observation/DetailVersion、Artifact、Work/Attempt、Profile、Budget、Repair、DailyRun/Occurrence、Override 和 outbox retry 已有纵向合同；
-- 每日 Listing Observation/SourceJob/Detail Work 的单项事务与并发收敛已完成；仍需分页进度/进程退出恢复以及 baseline 详情渐进物化；
 - deadlock、timeout、断连、重复提交和进程 kill 故障注入；
 - 10,000 条基线不使用超大事务已经验证；仍需所有关键领取查询的 EXPLAIN；
 - 随机数据库连续 100 次 migration+contract，测试身份的 migration/runtime DDL/DML 权限拆分，以及残留 schema 核对。

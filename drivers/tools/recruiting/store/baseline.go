@@ -64,6 +64,25 @@ func (r *Repository) StageBaselineRows(ctx context.Context, sourceID string, gen
 		if err != nil {
 			return chunks, fmt.Errorf("begin baseline staging chunk: %w", err)
 		}
+		var baselineState []byte
+		if err := tx.QueryRowContext(ctx, `
+SELECT state_json FROM recruiting_baseline_generations
+WHERE source_id = ? AND baseline_generation = ? FOR UPDATE`, sourceID, generation).Scan(&baselineState); err != nil {
+			_ = tx.Rollback()
+			if errors.Is(err, sql.ErrNoRows) {
+				return chunks, ErrNotFound
+			}
+			return chunks, fmt.Errorf("lock baseline staging generation: %w", err)
+		}
+		var baseline model.BaselineGeneration
+		if err := json.Unmarshal(baselineState, &baseline); err != nil {
+			_ = tx.Rollback()
+			return chunks, fmt.Errorf("decode baseline staging generation: %w", err)
+		}
+		if baseline.Status != model.BaselineListing || baseline.ListingFinalized {
+			_ = tx.Rollback()
+			return chunks, fmt.Errorf("finalized baseline staging is immutable")
+		}
 		for _, row := range rows[offset:end] {
 			_, err = tx.ExecContext(ctx, `
 INSERT INTO recruiting_baseline_staging(
@@ -85,6 +104,49 @@ ON DUPLICATE KEY UPDATE
 	return chunks, nil
 }
 
+type BaselineStagePage struct {
+	Rows    []BaselineStageRow
+	NextKey string
+	HasMore bool
+}
+
+func (r *Repository) ListBaselineStagePage(ctx context.Context, sourceID string, generation uint64, afterKey string, limit int) (BaselineStagePage, error) {
+	if sourceID == "" || generation == 0 || limit <= 0 || limit > baselineStageChunkSize {
+		return BaselineStagePage{}, fmt.Errorf("baseline stage page requires source, generation, and limit in [1,500]")
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT source_job_key, observation_id, row_json
+FROM recruiting_baseline_staging
+WHERE source_id = ? AND baseline_generation = ? AND source_job_key > ?
+ORDER BY source_job_key LIMIT ?`, sourceID, generation, afterKey, limit+1)
+	if err != nil {
+		return BaselineStagePage{}, fmt.Errorf("list baseline stage page: %w", err)
+	}
+	defer rows.Close()
+	var values []BaselineStageRow
+	for rows.Next() {
+		var row BaselineStageRow
+		var value []byte
+		if err := rows.Scan(&row.SourceJobKey, &row.ObservationID, &value); err != nil {
+			return BaselineStagePage{}, err
+		}
+		row.Value = append(json.RawMessage(nil), value...)
+		values = append(values, row)
+	}
+	if err := rows.Err(); err != nil {
+		return BaselineStagePage{}, err
+	}
+	page := BaselineStagePage{HasMore: len(values) > limit}
+	if page.HasMore {
+		values = values[:limit]
+	}
+	page.Rows = values
+	if len(values) > 0 {
+		page.NextKey = values[len(values)-1].SourceJobKey
+	}
+	return page, nil
+}
+
 // FinalizeBaselineListing fences the generation and establishes its first
 // checkpoint atomically. Staging rows remain in place; no 10k-row move occurs.
 func (r *Repository) FinalizeBaselineListing(ctx context.Context, expectedVersion uint64, baseline model.BaselineGeneration, checkpoint model.IncrementalCheckpoint, businessAt time.Time) error {
@@ -104,6 +166,27 @@ func (r *Repository) FinalizeBaselineListing(ctx context.Context, expectedVersio
 		return fmt.Errorf("begin baseline finalize: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	var lockedVersion uint64
+	if err := tx.QueryRowContext(ctx, `
+SELECT version FROM recruiting_baseline_generations
+WHERE source_id = ? AND baseline_generation = ? FOR UPDATE`, baseline.SourceID, baseline.Generation).Scan(&lockedVersion); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lock baseline before finalize: %w", err)
+	}
+	if lockedVersion != expectedVersion {
+		return &model.VersionConflictError{Expected: expectedVersion, Actual: lockedVersion}
+	}
+	var staged uint64
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM recruiting_baseline_staging
+WHERE source_id = ? AND baseline_generation = ?`, baseline.SourceID, baseline.Generation).Scan(&staged); err != nil {
+		return fmt.Errorf("count baseline staging before finalize: %w", err)
+	}
+	if staged != baseline.DetailsExpected {
+		return fmt.Errorf("baseline expected details do not match staged rows")
+	}
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_baseline_generations
 SET generation_status = ?, listing_finalized = ?, details_expected = ?,

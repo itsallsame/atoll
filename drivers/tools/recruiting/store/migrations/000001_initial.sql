@@ -195,6 +195,21 @@ CREATE TABLE recruiting_attempts (
   CONSTRAINT fk_recruiting_attempt_work FOREIGN KEY (work_id) REFERENCES recruiting_works(work_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
+CREATE TABLE recruiting_listing_page_progress (
+  work_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  page_sequence BIGINT UNSIGNED NOT NULL,
+  resume_cursor VARCHAR(2048) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  artifact_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  item_count INT UNSIGNED NOT NULL,
+  end_of_input BOOLEAN NOT NULL,
+  work_version BIGINT UNSIGNED NOT NULL,
+  work_acceptance_version BIGINT UNSIGNED NOT NULL,
+  state_json JSON NOT NULL,
+  committed_at DATETIME(6) NOT NULL,
+  PRIMARY KEY (work_id, page_sequence),
+  CONSTRAINT fk_recruiting_listing_progress_work FOREIGN KEY (work_id) REFERENCES recruiting_works(work_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
 CREATE TABLE recruiting_artifacts (
   artifact_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   artifact_kind VARCHAR(64) CHARACTER SET ascii NOT NULL,
