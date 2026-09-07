@@ -2,7 +2,7 @@
 
 状态：产品与架构设计草案
 
-版本：v0.2
+版本：v0.3
 
 日期：2026-09-07
 
@@ -32,7 +32,7 @@ Atoll Actor / Channel / Message 组织全部业务行为
               ↓
 Recruiting Actor 通过 Timer / Resource 推进领域状态
               ↓
-Browser Worker Actor 通过 Driver 执行真实网页采集
+Recruiting Executor Actor 通过 Browser Driver 执行真实网页采集
 ```
 
 ## 3. 背景与前提
@@ -79,6 +79,8 @@ Snowland/Staircase 的实现不得反向要求 Atoll core 引入招聘领域概�
 5. 自动处理无法收敛时，通过 Atoll 请求用户仲裁或审批。
 6. 所有重要操作都能回答：谁发起、谁执行、用了哪个 Recipe、产生了什么结果。
 7. Worker 数量可以水平扩展，单个 Worker 或服务重启不得破坏业务事实。
+8. 用户能够创建、观察、干预、修正、重试和终止其有权限管理的工作。
+9. 公司接入阶段只进行一至两次全量采集，稳定后每天检查全部入口并增量更新职位。
 
 ### 4.2 非目标
 
@@ -121,9 +123,10 @@ Snowland/Staircase 的实现不得反向要求 Atoll core 引入招聘领域概�
 
 ```text
 Atoll durable timer 唤醒 Planner
-  → Planner 分批选择到期 URL
-  → 创建或复用幂等任务
-  → Worker 领取任务并执行
+  → 为当天所有 active URL 创建增量 Work Order
+  → Planner 分批生成 Work Bundle
+  → Worker 领取工作包并扫描招聘入口
+  → 只为新增或发生变化的职位展开详情任务
   → 结果事务提交
   → 更新下一次运行时间
   → Atoll 收到批次摘要
@@ -142,6 +145,46 @@ Atoll durable timer 唤醒 Planner
   → 重跑原任务
   → 多轮失败后请求人工仲裁
 ```
+
+### 5.5 用户旅程：运维与人工接管
+
+用户可以从 Ops Channel 或 Dashboard：
+
+- 新增公司、招聘入口或一次手动工作；
+- 查看定时、手动、修复和人工工作及其因果来源；
+- 暂停、恢复、取消或提高工作优先级；
+- 查看当前 Task、Attempt、Worker、Recipe 和证据；
+- 修正公司映射、URL、招聘类型或 Recipe 参数；
+- 对失败任务执行重试、跳过、标记无职位或终止；
+- 领取系统无法自动完成的工作并提交处理结论；
+- 批准或拒绝 Recipe 发布及其他高风险变更。
+
+```text
+用户提交操作
+  → Atoll 验证身份与 Channel 权限
+  → Recruiting Service Actor 验证工作版本和当前状态
+  → 生成不可变 decision message
+  → 更新 Work Order 的领域投影
+  → 继续规划、执行、等待或终止
+  → 原 Channel 返回结果和后续动作
+```
+
+人工操作不直接修改数据库。即使用户从 Dashboard 点击按钮，最终也必须产生具有 actor、cause、command_id 和 expected_version 的 Atoll Message。
+
+### 5.6 统一工作来源
+
+所有业务工作使用同一个 Work Order 模型，只通过 `source` 区分来源：
+
+```text
+manual       用户主动新增、重跑或修正
+scheduled    每日定时增量
+bootstrap    公司首次全量
+reconcile    第二次全量校准或周期性抽样核对
+repair       失败触发的自动修复
+human        人工处理后产生的后续工作
+```
+
+定时任务不是隐藏的后台特例，用户可以查询、暂停和干预；手动任务也不能绕开正常的租约、限流、质量与审计规则。
 
 ## 6. 核心设计原则
 
@@ -195,6 +238,18 @@ Atoll ledger 记录具有控制、因果或协作价值的消息。页面正文�
 
 Actor 私有内存不是事实来源；REST 路由不是内部业务总线；prompt 不是权限系统；进程身份不是稳定 Actor 身份。
 
+### 6.9 人和自动化遵守同一种规则
+
+Human、Agent 和 Tool 都是 Actor。三者可以拥有不同 capability，但修改业务事实时都必须：
+
+1. 在有权访问的 Channel 中发送公开领域词；
+2. 携带稳定身份、因果引用和幂等命令 ID；
+3. 接受相同的领域状态校验；
+4. 通过消息得到成功、拒绝或冲突结果；
+5. 在 ledger 中留下可观察记录。
+
+人工决定使用 `expected_version` 做乐观并发控制。用户基于旧页面作出的批准、取消或修改不能覆盖已经推进的新状态。批量影响多个公司或发布共享 Recipe 的动作可以要求不同 Actor 二次批准。
+
 ## 7. 总体架构
 
 ```text
@@ -208,7 +263,7 @@ Actor 私有内存不是事实来源；REST 路由不是内部业务总线；pro
 │                 v                                v        │
 │ recruiting-exec.N Channel             recruiting-review  │
 │   Planner / Dispatcher Actors          Human / Repair     │
-│   Browser Worker Actors                Approval messages  │
+│   Recruiting Executor Actors           Approval messages  │
 │                                                          │
 │ Ledger / Membership / Access / Timer / Resource / Device  │
 └────────────────────────────┬─────────────────────────────┘
@@ -279,6 +334,7 @@ Web Console           → 只调用公开领域词
 |---|---|---|
 | Recruiting Agent | agent | 理解意图、选择工具、组织回复 |
 | Recruiting Tool | tool | 暴露受控领域命令和查询 |
+| Recruiting Executor | tool | 按 capability 执行 HTTP、Browser 或 Recipe 验证任务 |
 | Worker Fleet | tool | 查询容量、Worker 健康和扩缩容状态 |
 | Notification Adapter | tool | 对接飞书等外部消息系统 |
 | Human Operator | human | 发起操作、审批和仲裁 |
@@ -295,6 +351,17 @@ recruiting.company.list
 recruiting.run.start
 recruiting.run.status
 recruiting.batch.status
+
+recruiting.work.create
+recruiting.work.get
+recruiting.work.list
+recruiting.work.claim
+recruiting.work.pause
+recruiting.work.resume
+recruiting.work.correct
+recruiting.work.retry
+recruiting.work.cancel
+recruiting.work.resolve
 
 recruiting.failure.list
 recruiting.failure.inspect
@@ -385,12 +452,60 @@ created → running → succeeded / failed / expired / rejected
 
 一个 Task 可以有多个 Attempt，但最多只有一个当前有效租约。
 
-### 9.5 核心数据表
+### 9.5 Work Order 与 Human Review
+
+Work Order 是用户能够看到和运维的逻辑工作单元，可以由用户、timer、失败事件或其他 Actor 创建。一条 Work Order 可以包含多个 Work Bundle 和 Task。
+
+```text
+open → planning → executing → completed
+                    ↓
+              awaiting_human
+                    ↓
+                executing
+
+任意非终态 → canceled / failed
+```
+
+主要字段：
+
+```text
+work_order_id
+kind
+source
+initiator_actor_id
+channel_id
+cause_message_id
+company_id / url_id
+status
+priority
+expected_version
+assigned_actor_id
+deadline_at
+summary
+created_at / updated_at
+```
+
+进入 `awaiting_human` 时创建 Human Review，并明确：
+
+- 为什么自动化不能继续；
+- 需要哪种 capability 的人处理；
+- 可选动作及各自影响；
+- 证据和候选修改所在的 Resource；
+- 处理期限和超时策略；
+- 处理后应恢复到哪一步。
+
+Human Review 属于原 Work Order，通过 cause 链恢复原执行上下文，不形成独立于 Atoll 的工单系统。
+
+### 9.6 核心数据表
 
 ```text
 companies
 company_urls
 schedule_targets
+
+work_orders
+human_reviews
+work_bundles
 
 recipes
 recipe_versions
@@ -423,10 +538,23 @@ domain_outbox
 10,000 家公司
 平均每家公司 2 个招聘入口
 约 20,000 个 listing 调度目标/日
-详情任务根据增量变化产生，不按全部历史职位全量展开
+公司接入时执行一次全量，必要时再执行一次校准全量
+日常每天扫描全部 active URL，但详情任务只根据增量变化产生
+历史职位不在每天无条件全量展开
 ```
 
 系统必须把 listing、detail、HTTP、browser、AI 和 human review 看成成本完全不同的工作类别。
+
+运行模式定义为：
+
+| 模式 | 触发 | 范围 |
+|---|---|---|
+| `bootstrap_full` | 新公司接入 | 完整列表和当前有效详情 |
+| `calibration_full` | 首次结果校准或人工触发 | 第二次全量，用于发现漏抓和稳定 ID |
+| `daily_incremental` | 每日 timer | 全部 active 入口，详情只处理新增或变化 |
+| `reconcile_sample` | 周期 timer 或质量策略 | 对历史结果抽样复检 |
+| `manual_run` | 用户 | 用户指定公司、URL、范围和优先级 |
+| `repair_run` | 失败或质量事件 | 只运行诊断、验证和受影响范围 |
 
 ### 10.2 Planner
 
@@ -443,24 +571,42 @@ timer fire
 
 Planner 只规划近期窗口，不在每天零点创建全天全部任务。
 
+每日运行先冻结当天所有 active URL 的目标快照，保证“每天全部入口都被考虑”。每个目标最终必须落入成功、失败、延期、暂停或等待人工之一，不能静默漏跑。计划可以按稳定哈希平滑分布到全天，不要求零点同时启动。
+
 任务幂等键建议为：
 
 ```text
 task_type + target_id + schedule_window + recipe_version
 ```
 
-### 10.3 队列与分片
+### 10.3 Work Bundle、队列与分片
 
-Worker 通过执行 Channel 向 Dispatcher Actor 发送 `recruiting.task.claim`，不得直接查询任务表。Dispatcher 在处理该消息时，使用 Actor 控制的关系数据库 Resource 保存任务投影，并可在内部通过 `FOR UPDATE SKIP LOCKED` 完成并发选择。队列按以下维度逻辑隔离：
+Planner 把细粒度 Task 写入 Actor 控制的 Resource，再按执行要求和成本生成 Work Bundle。Executor Actor 通过执行 Channel 向 Dispatcher Actor 发送 `recruiting.bundle.claim`，不得直接查询任务表。Dispatcher 验证 Actor capability 后签发有范围和期限的 Resource ticket。
+
+Task kind 与 Executor Actor class 分离：
 
 ```text
-http-production
-browser-production
-validation
-retry
-ai-repair
-human-review
+Task kind:
+  listing_collect | detail_extract | detail_recheck | recipe_validate
+
+Execution requirements:
+  http.fetch | browser.recipe | browser.profile | extension.required
+
+Executor capabilities:
+  由 actor manifest 声明，可由同一个 Executor 同时实现多项能力
 ```
+
+Work Bundle 大小是按预计成本、租约期限和实测吞吐调整的运行参数，不是 Worker 类型。轻量 HTTP 任务可以组成较大的包，浏览器或独占 Profile 任务使用小包；第一版不冻结具体数量。
+
+Dispatcher 使用关系数据库 Resource 保存 Work Order、Bundle、Task 和 Attempt 投影，并可在内部通过 `FOR UPDATE SKIP LOCKED` 完成并发选择。队列按以下维度逻辑隔离：
+
+```text
+machine-ready
+retry-wait
+awaiting-human
+```
+
+`execution_requirements` 可以作为索引和容量维度，但不定义新的领域队列或 Actor 身份。AI Repair 由 Agent Actor 处理，Human Review 由 Human Actor 处理，二者不伪装成机器 Worker。
 
 分片键优先使用规范化 `origin_host`，使站点级限流和熔断容易执行；热点站点允许在共享预算约束下拆成多个物理分片。
 
@@ -495,16 +641,16 @@ effective_priority =
 
 一次领取必须在短事务中：
 
-1. Atoll 先把 Worker 的 claim request 记入执行 Channel ledger；
+1. Atoll 先把 Executor 的 bundle claim request 记入执行 Channel ledger；
 2. Dispatcher 验证发送 Actor 的稳定身份、当前 incarnation 和能力；
-3. 选择一个当前可运行且符合 Worker 能力的 Task；
+3. 选择一个当前可运行且符合 Executor capability 的 Work Bundle；
 4. 检查全局、站点、Profile 和任务类型预算；
 5. 创建唯一 `attempt_id` 和不可猜测的 `lease_token`；
-6. 写入 `lease_expires_at` 并将 Task 标记为 leased；
+6. 写入 `lease_expires_at` 并将 Bundle 标记为 leased；
 7. 提交 Resource 事务；
-8. 通过关联原 request 的 result message 返回任务和 Resource ticket。
+8. 通过关联原 request 的 result message 返回工作包摘要和 Resource ticket。
 
-Worker heartbeat/result 都是发给 Dispatcher/Committer Actor 的消息，只能延长或完成自己当前有效的 Attempt。旧 incarnation 或旧 Attempt 的延迟消息不得改变新 Attempt。
+Executor 的 Bundle heartbeat/result 都是发给 Dispatcher/Committer Actor 的紧凑消息，只能延长或完成自己当前有效的 Attempt。包内细粒度 Task 进度写入 Result Resource。旧 incarnation 或旧 Attempt 的延迟消息不得改变新 Attempt。
 
 ### 10.6 多层预算
 
@@ -538,23 +684,26 @@ circuit_state
 2. 使用可复现的公开 HTTP/API；
 3. 捕获页面实际调用的后端 API；
 4. 只对新增或摘要变化的职位打开详情；
-5. 只有依赖 JavaScript、登录态或真实 DOM 时才使用 Browser Worker；
-6. 只有未知、异常和抽样质检才进入 AI Worker。
+5. 只有依赖 JavaScript、登录态或真实 DOM 时才要求 Executor 具备 browser capability；
+6. 只有未知、异常和抽样质检才请求 AI Agent。
 
-### 10.8 Worker 扩缩容
+### 10.8 Executor 容量与扩缩容
 
-Worker 注册以下能力：
+Executor Actor 通过 manifest 和运行态投影声明：
 
 ```text
-worker_id
-worker_type
+actor_id
+incarnation
+device_id
 region
-browser
+capabilities
 extension_version
 profile_ids
-slot_count
-supported_task_types
+slot_vector
+constraints
 ```
+
+第一版只有一个 `recruiting-executor` Actor class。是否为了成本和资源隔离建立不同 template、placement 或进程池，由压测决定，不改变 Task kind、公开领域词或状态机。
 
 扩缩容信号按优先级为：
 
@@ -640,6 +789,10 @@ Reconciler 只能根据持久事实修复，不依赖进程内存。
 ### 12.1 写入 Channel 的事件
 
 ```text
+recruiting.work.created
+recruiting.work.awaiting_human
+recruiting.work.resumed
+recruiting.work.completed
 recruiting.batch.started
 recruiting.batch.completed
 recruiting.company.blocked
@@ -652,7 +805,7 @@ recruiting.system.recovered
 
 ### 12.2 执行消息与大数据分离
 
-Task claim、租约续期和 result submission 具有控制与因果价值，使用紧凑消息进入分片后的 execution Channel。它们不进入面向人的 Ops Channel，也不能在消息 payload 中嵌入页面正文或大批职位。
+Work Bundle 的 claim、租约续期和 result submission 具有控制与因果价值，使用紧凑消息进入分片后的 execution Channel。包内细粒度 Task 进度进入 Resource。它们不进入面向人的 Ops Channel，也不能在消息 payload 中嵌入页面正文或大批职位。
 
 以下内容只进入 Actor 控制的 Resource 或指标系统：
 
@@ -717,6 +870,8 @@ Task claim、租约续期和 result submission 具有控制与因果价值，使
 ```text
 command_id
 correlation_id
+work_order_id
+work_bundle_id
 batch_id
 task_id
 attempt_id
@@ -750,6 +905,19 @@ Worker 容量是否足够？
 今天新增和更新了多少职位？
 ```
 
+Dashboard 同时提供统一 Work Center。用户可按 `source`、状态、公司、URL、负责人和时间过滤 Work Order，并在权限允许时执行：查看、领取、暂停、恢复、取消、调优先级、修改输入、重试和终止。
+
+每个 Work Order 展示完整因果路径：
+
+```text
+由谁或哪个 timer 创建
+→ Planner 生成了哪些 Work Bundle
+→ 哪些 Worker/Attempt 执行
+→ 使用了哪个 Recipe 版本
+→ 产生了哪些结果或失败证据
+→ 当前为什么等待以及可以做什么
+```
+
 ### 15.3 Review Queue
 
 每个审批项展示：
@@ -759,7 +927,8 @@ Worker 容量是否足够？
 - 原失败步骤和结构化证据；
 - 验证样本及质量结果；
 - 风险范围和回滚版本；
-- 批准、拒绝、要求重新修复操作。
+- 当前处理人、期限和原 Work Order；
+- 领取、修正、批准、拒绝、跳过、重试、终止和要求重新修复操作。
 
 ## 16. 交付阶段
 
@@ -767,7 +936,8 @@ Worker 容量是否足够？
 
 - 冻结第一版实体、状态和命令词汇；
 - 建立 ID、幂等、事务和 Outbox 约束；
-- 建立 Actor、Message、Resource 与 Driver 的所有权边界。
+- 建立 Actor、Message、Resource 与 Driver 的所有权边界；
+- 冻结 Work Order、Human Review、Work Bundle、Task 和 Attempt 的层级关系。
 
 ### M1：端到端纵向切片
 
@@ -776,15 +946,17 @@ Worker 容量是否足够？
 ```text
 Atoll 用户提交结构化添加公司命令
 → 创建公司和 URL
-→ 创建 listing Task
-→ 一个 Browser Worker 领取并执行
+→ 创建 bootstrap Work Order 和 listing Work Bundle
+→ 一个具备 browser capability 的 Recruiting Executor 领取并执行
 → 事务写入职位
 → Atoll Channel 收到摘要
 ```
 
+用户随后可以查看该 Work Order，手动发起第二次校准全量；校准完成后，公司进入每天扫描全部入口、只展开增量详情的稳定运行模式。
+
 ### M2：可靠调度
 
-- Task/Attempt/Lease；
+- Work Order/Bundle/Task/Attempt/Lease；
 - heartbeat、过期和重领；
 - 幂等结果提交；
 - Outbox 和 Reconciler；
@@ -796,12 +968,14 @@ Atoll 用户提交结构化添加公司命令
 - URL Discovery；
 - Recipe 生成、验证和发布；
 - Failure Evidence；
-- 自动修复和人工审批。
+- 自动修复和人工审批；
+- 用户领取、修正并恢复 `awaiting_human` 工作。
 
 ### M4：10K 容量验证
 
 - 10,000 家公司调度模拟；
-- HTTP/Browser/AI Worker 分池；
+- 基于 capability 的 Executor 匹配和容量压测；
+- 只有压测证明必要时才拆分 HTTP、Browser 等 placement/template；
 - Scheduler 多实例；
 - 热点站点、公平性和重试风暴测试；
 - Worker 自动扩缩容。
@@ -819,10 +993,14 @@ Atoll 用户提交结构化添加公司命令
 ### 17.1 功能验收
 
 - 用户可以从 Atoll 创建、暂停、恢复和查询公司；
+- 用户可以创建、查看、领取、暂停、恢复、取消、修正、重试和终止有权限的 Work Order；
+- 用户操作和 timer/repair 产生的工作使用相同状态机与审计路径；
+- 新公司完成一至两次全量后，日常运行扫描全部 active URL 且只展开增量详情；
 - 验证过的 Recipe 可以被 Worker 执行并写入结构化职位；
 - 失败生成结构化证据并进入正确处理路径；
 - 需要人工操作时，指定成员在 Review Channel 收到请求；
 - 用户可以从命令追踪到 Task、Attempt、Recipe Run 和数据结果。
+- 两个人基于不同版本同时处理同一 Review 时，旧 `expected_version` 操作被明确拒绝。
 
 ### 17.2 可靠性验收
 
@@ -944,15 +1122,18 @@ make recruiting-live-weekly
 
 1. Atoll 是唯一架构底座和控制平面，所有控制动作通过 Actor/Channel/Message 发生。
 2. Recruiting Service Actor 是领域行为权威，大规模状态存于其控制的 Resource。
-3. Task claim、lease、result 是执行 Channel 中的领域消息；大对象通过 Resource data plane 传递。
-4. 不建立独立于 Atoll 的 Recruiting REST 控制面、身份系统或权限系统。
-5. 正常批量生产不调用 LLM。
-6. Worker 使用消息驱动的 Pull + Lease，不依赖定向推送。
-7. 分布式语义采用至少一次执行和幂等结果。
-8. 公司、URL 和任务不映射为独立 Channel；Channel 只表达协作、权限和执行分片边界。
-9. Atoll timer 唤醒 Planner Actor，不为每个目标创建独立调度 Actor。
-10. 站点预算和熔断优先于 Worker 扩容。
-11. Snowland 和 Staircase 只作为业务证据、真实样本和叶子实现来源，不拥有目标架构决策权。
+3. Work Order 统一表达用户、timer、修复和人工后续工作；人、Agent、Tool 遵守同一消息和权限规则。
+4. Work Bundle 的 claim、lease、result 是执行 Channel 中的领域消息；包内 Task 和大对象通过 Resource data plane 传递。
+5. 不建立独立于 Atoll 的 Recruiting REST 控制面、身份系统或权限系统。
+6. 公司接入运行一至两次全量；日常每天扫描全部 active URL，只为新增和变化职位展开详情。
+7. 正常批量生产不调用 LLM。
+8. Worker 使用消息驱动的 Pull + Lease，不依赖定向推送。
+9. 分布式语义采用至少一次执行和幂等结果。
+10. 公司、URL 和任务不映射为独立 Channel；Channel 只表达协作、权限和执行分片边界。
+11. Atoll timer 唤醒 Planner Actor，不为每个目标创建独立调度 Actor。
+12. 站点预算和熔断优先于 Worker 扩容。
+13. 第一版只冻结一个 `recruiting-executor` Actor class；Task kind 与执行 capability 分离，物理进程池由压测决定。
+14. Snowland 和 Staircase 只作为业务证据、真实样本和叶子实现来源，不拥有目标架构决策权。
 
 ## 20. 后续待决策项
 
