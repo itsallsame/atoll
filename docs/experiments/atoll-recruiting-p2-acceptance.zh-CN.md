@@ -44,6 +44,8 @@ P1 契约基线：`a94d2b8d`
 - Listing 页提交把 Work version/acceptance fence、最多 500 条 Observation/Job/Detail Work 和 append-only Progress 放入同一事务；失败页不留下 Job 或 resume cursor，同页确认丢失可精确重放，暂停后的旧执行者不能推进进度，恢复后的新 fence 可继续；
 - Baseline staging 每块锁定 generation，finalize 后不可修改；finalize 在同一锁内校验数据库实际 staging 数与 `details_expected`，消除并发晚写和伪造计数；
 - 10,000 条 baseline staging 通过主键 seek 形成 20 个页事务，实测恰好产生 10,000 个 SourceJob 和 10,000 个唯一 Detail Work；`EXPLAIN FORMAT=JSON` 验证 seek 使用复合主键；
+- 真实 MySQL 行锁 timeout 会返回 deadline 且不留下 Company 半更新；真实 InnoDB deadlock 验证一个事务完整获胜、另一个完整回滚，不出现两行混合结果；
+- 子测试进程在未提交事务中被 OS kill，连接断开后 MySQL 回滚；在命令事务已提交但客户端尚未确认时被 kill，重启后稳定 receipt 可重放且 pending outbox 仍可找回；
 - `EXPLAIN FORMAT=JSON` 验证 Company seek 查询使用专用索引；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
@@ -60,7 +62,6 @@ make build-go
 ## 尚未完成
 
 - 将已验证的命令 receipt/聚合/outbox 原子事务推广到其余修改命令；Company、Source、Recipe/Assignment、Checkpoint、Listing/Detail Job、Observation/DetailVersion、Artifact、Work/Attempt、Profile、Budget、Repair、DailyRun/Occurrence、Override 和 outbox retry 已有纵向合同；
-- deadlock、timeout、断连、重复提交和进程 kill 故障注入；
 - 10,000 条基线不使用超大事务已经验证；仍需所有关键领取查询的 EXPLAIN；
 - 随机数据库连续 100 次 migration+contract，测试身份的 migration/runtime DDL/DML 权限拆分，以及残留 schema 核对。
 
