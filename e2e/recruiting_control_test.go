@@ -44,6 +44,20 @@ func TestRecruitingCompanyControlUsesMySQLAcrossServerRestart(t *testing.T) {
 	if got := stringField(t, added, "requested_by"); !strings.HasPrefix(got, "human:recruiting-operator:") {
 		t.Fatalf("mutation ignored authenticated sender: %q", got)
 	}
+	outsider := newAPIClient(t, h.base)
+	outsiderRegistration := outsider.register("recruiting-outsider", "recruiting-outsider@example.test", "outsider-local-password")
+	outsiderHomeID := stringField(t, outsiderRegistration, "home_channel_id")
+	time.Sleep(500 * time.Millisecond)
+	outsiderWS := dialWS(t, h.base, outsider.cookieHeader(), map[string]int64{outsiderHomeID: 0})
+	if _, _, err := outsiderWS.tryRequest(homeID, "recruiting.company.get", controlID, map[string]any{"company_id": "e2e-company-1"}); err == nil {
+		t.Fatal("authenticated channel outsider could read recruiting data")
+	}
+	if _, _, err := outsiderWS.tryRequest(homeID, "recruiting.company.pause", controlID, map[string]any{
+		"command_id": "outsider-pause", "target": map[string]any{"target_type": "company", "target_id": "e2e-company-1"},
+		"expected_version": 1, "reason": "unauthorized mutation", "pause_mode": "drain",
+	}); err == nil {
+		t.Fatal("authenticated channel outsider could mutate recruiting data")
+	}
 	forged := map[string]any{
 		"command_id": "e2e-company-forged", "company_id": "e2e-company-forged",
 		"name": "Forged", "reason": "attempt identity forgery", "requested_by": "human:admin",
