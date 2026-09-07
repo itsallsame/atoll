@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -88,6 +89,55 @@ WHERE source_id = ? AND baseline_generation = ?`, source.SourceID, baseline.Gene
 	}
 	if status != string(model.BaselineDetailsPending) || version != 2 {
 		t.Fatalf("finalized baseline status=%q version=%d", status, version)
+	}
+	currentCheckpoint, err := repository.GetCheckpoint(ctx, source.SourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeNext := func(activityAt, occurrenceID string) model.IncrementalCheckpoint {
+		candidate := currentCheckpoint
+		candidate.FrontierActivityAt = activityAt
+		candidate.LastOccurrenceID = occurrenceID
+		next, commitErr := currentCheckpoint.Commit(currentCheckpoint.Version, model.ListingProgress{
+			PreviousFrontierReached: true, OverlapCompleted: true, OrderingContractHeld: true, SameTimeGroupCompleted: true,
+			Candidate: candidate,
+		})
+		if commitErr != nil {
+			t.Fatal(commitErr)
+		}
+		return next
+	}
+	candidates := []model.IncrementalCheckpoint{
+		makeNext("2026-09-07T14:00:00Z", "daily-occurrence-a"),
+		makeNext("2026-09-07T14:01:00Z", "daily-occurrence-b"),
+	}
+	checkpointErrors := make(chan error, len(candidates))
+	var checkpointGroup sync.WaitGroup
+	for _, candidate := range candidates {
+		candidate := candidate
+		checkpointGroup.Add(1)
+		go func() {
+			defer checkpointGroup.Done()
+			checkpointErrors <- repository.CommitCheckpointCAS(ctx, currentCheckpoint.Version, candidate, now.Add(3*time.Second))
+		}()
+	}
+	checkpointGroup.Wait()
+	close(checkpointErrors)
+	var checkpointSucceeded, checkpointConflicted int
+	for checkpointErr := range checkpointErrors {
+		if checkpointErr == nil {
+			checkpointSucceeded++
+			continue
+		}
+		var conflict *model.VersionConflictError
+		if errors.As(checkpointErr, &conflict) {
+			checkpointConflicted++
+			continue
+		}
+		t.Fatalf("unexpected checkpoint CAS result: %v", checkpointErr)
+	}
+	if checkpointSucceeded != 1 || checkpointConflicted != 1 {
+		t.Fatalf("checkpoint CAS succeeded=%d conflicted=%d", checkpointSucceeded, checkpointConflicted)
 	}
 	if err := repository.FinalizeBaselineListing(ctx, baseline.Version, finalized, checkpoint, now.Add(3*time.Second)); err == nil {
 		t.Fatal("stale baseline finalize was accepted")

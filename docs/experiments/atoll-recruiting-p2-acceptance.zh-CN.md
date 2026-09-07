@@ -18,6 +18,7 @@ P1 契约基线：`a94d2b8d`
 - outbox 插入失败会同时回滚聚合与 receipt；数据库提交后即使尚未写入 Atoll ledger，pending event 仍可查询和补投；
 - Baseline staging 固定每 500 条一个事务；10,000 行实测形成 20 个提交块，完整重扫后仍收敛为 10,000 个来源岗位键；
 - baseline listing finalize 只 CAS generation 并原子建立首个 Checkpoint，不搬移或删除 staging；Checkpoint 冲突会回滚 generation 更新，不留下半完成状态；
+- Checkpoint Repository 使用独立 `checkpoint_version` CAS；两个日常增量候选并发提交时实测只有一个边界生效，另一个得到当前版本冲突；
 - `EXPLAIN FORMAT=JSON` 验证 Company seek 查询使用专用索引；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
@@ -35,7 +36,7 @@ make build-go
 
 - Source、Recipe/Assignment、Checkpoint、Job/Observation/Detail、Work/Attempt、DailyRun/Occurrence、Override、Profile、Budget、Repair、Artifact 和 outbox 的 Repository contract；
 - 将已验证的命令 receipt/聚合/outbox 原子事务推广到其余修改命令，并实现 outbox 有界重试状态；
-- 每日 Listing Observation/SourceJob/Detail Work 与既有 Checkpoint 的增量 CAS 恢复；baseline staging/finalize 已完成，详情渐进物化仍待实现；
+- 每日 Listing Observation/SourceJob/Detail Work 的分页事务与恢复；既有 Checkpoint 增量 CAS 已完成，baseline 详情渐进物化仍待实现；
 - deadlock、timeout、断连、重复提交和进程 kill 故障注入；
 - 10,000 条基线不使用超大事务已经验证；仍需所有关键领取查询的 EXPLAIN；
 - 随机数据库连续 100 次 migration+contract，测试身份的 migration/runtime DDL/DML 权限拆分，以及残留 schema 核对。
