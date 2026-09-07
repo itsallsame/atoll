@@ -26,9 +26,8 @@ func TestBaselineTenThousandRowsUsesBoundedReplayableChunks(t *testing.T) {
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	migrateTestDatabase(t, ctx, db)
+
 	repository, _ := NewRepository(db)
 	now := time.Date(2026, 9, 7, 14, 0, 0, 0, time.UTC)
 	company, _ := model.NewCompany("baseline-company", "Baseline", "https://baseline.example.com")
@@ -253,9 +252,8 @@ func TestBaselineFinalizeRollsBackWhenCheckpointCannotCommit(t *testing.T) {
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	migrateTestDatabase(t, ctx, db)
+
 	repository, _ := NewRepository(db)
 	now := time.Date(2026, 9, 7, 15, 0, 0, 0, time.UTC)
 	company, _ := model.NewCompany("rollback-baseline-company", "Rollback Baseline", "https://rollback-baseline.example.com")

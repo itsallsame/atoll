@@ -23,9 +23,8 @@ func TestListingObservationCreatesDetailOnlyForNewOrChangedJob(t *testing.T) {
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	migrateTestDatabase(t, ctx, db)
+
 	repository, _ := NewRepository(db)
 	now := time.Date(2026, 9, 8, 1, 0, 0, 0, time.UTC)
 	company, _ := model.NewCompany("listing-company", "Listing", "https://listing.example.com")
@@ -119,9 +118,8 @@ func TestConcurrentEquivalentListingUpdatesConvergeToOneDetailWork(t *testing.T)
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	migrateTestDatabase(t, ctx, db)
+
 	repository, _ := NewRepository(db)
 	now := time.Date(2026, 9, 8, 2, 0, 0, 0, time.UTC)
 	company, _ := model.NewCompany("listing-race-company", "Listing Race", "https://listing-race.example.com")

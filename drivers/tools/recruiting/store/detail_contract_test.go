@@ -185,11 +185,7 @@ func detailContractRepository(t *testing.T) (*Repository, *sql.DB, context.Conte
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	if err := Migrate(ctx, db); err != nil {
-		cancel()
-		_ = db.Close()
-		t.Fatal(err)
-	}
+	migrateTestDatabase(t, ctx, db)
 	repository, _ := NewRepository(db)
 	return repository, db, ctx, func() { cancel(); _ = db.Close() }
 }

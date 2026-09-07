@@ -24,9 +24,8 @@ func TestDailyCoverageRepositoryContract(t *testing.T) {
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	migrateTestDatabase(t, ctx, db)
+
 	repository, _ := NewRepository(db)
 	now := time.Date(2026, 9, 7, 0, 0, 0, 123000, time.UTC)
 

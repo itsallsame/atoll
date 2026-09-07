@@ -25,9 +25,8 @@ func TestCompanyCommandReceiptAndOutboxAreAtomic(t *testing.T) {
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	migrateTestDatabase(t, ctx, db)
+
 	repository, _ := NewRepository(db)
 	now := time.Date(2026, 9, 7, 11, 0, 0, 0, time.UTC)
 
@@ -153,9 +152,8 @@ func TestConcurrentCommandReplayMutatesOnce(t *testing.T) {
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	migrateTestDatabase(t, ctx, db)
+
 	repository, _ := NewRepository(db)
 	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
 	company, _ := model.NewCompany("concurrent-command-company", "Concurrent", "https://concurrent-command.example.com")
@@ -215,9 +213,8 @@ func TestOutboxFailureRollsBackAggregateAndReceipt(t *testing.T) {
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	migrateTestDatabase(t, ctx, db)
+
 	repository, _ := NewRepository(db)
 	now := time.Date(2026, 9, 7, 13, 0, 0, 0, time.UTC)
 	company, _ := model.NewCompany("rollback-company", "Rollback", "https://rollback.example.com")

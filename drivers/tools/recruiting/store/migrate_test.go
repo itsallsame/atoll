@@ -40,7 +40,10 @@ func TestOpenRejectsRootAndMissingDatabase(t *testing.T) {
 }
 
 func TestMigrationIntegration(t *testing.T) {
-	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	dsn := os.Getenv("RECRUITING_MYSQL_MIGRATION_TEST_DSN")
+	if dsn == "" {
+		dsn = os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	}
 	if dsn == "" {
 		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
 	}
@@ -93,6 +96,36 @@ func TestMigrationIntegration(t *testing.T) {
 	}
 	if _, err := db.ExecContext(ctx, "UPDATE recruiting_schema_migrations SET checksum = ? WHERE version = ?", migrations[0].Checksum, migrations[0].Version); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRuntimeIdentityHasDMLButNoDDL(t *testing.T) {
+	if os.Getenv("RECRUITING_MYSQL_MIGRATION_TEST_DSN") == "" {
+		t.Skip("split migration/runtime identities are not configured")
+	}
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	var currentUser string
+	if err := db.QueryRowContext(ctx, "SELECT CURRENT_USER()").Scan(&currentUser); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(currentUser, "staircase_runtime@") {
+		t.Fatalf("repository tests are not using runtime identity: %s", currentUser)
+	}
+	if _, err := db.ExecContext(ctx, "CREATE TABLE recruiting_runtime_must_not_create(id INT)"); err == nil {
+		t.Fatal("runtime identity unexpectedly has DDL permission")
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO recruiting_command_receipts(command_id, word_name, request_hash, response_bytes, committed_at)
+VALUES ('runtime-permission-fixture', 'fixture', 'hash', '{}', UTC_TIMESTAMP(6))`); err != nil {
+		t.Fatalf("runtime identity lacks required DML permission: %v", err)
 	}
 }
 

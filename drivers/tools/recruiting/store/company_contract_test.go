@@ -24,9 +24,8 @@ func TestCompanyRepositoryContract(t *testing.T) {
 	defer db.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	migrateTestDatabase(t, ctx, db)
+
 	repository, _ := NewRepository(db)
 	businessAt := time.Date(2090, 9, 7, 10, 0, 0, 123000, time.UTC)
 	for _, identity := range []string{"company-a", "company-b", "company-c"} {

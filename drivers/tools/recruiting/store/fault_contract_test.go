@@ -245,9 +245,8 @@ func faultTestRepository(t *testing.T) (*sql.DB, *Repository, context.Context) {
 	t.Cleanup(func() { db.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	t.Cleanup(cancel)
-	if err := Migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
+	migrateTestDatabase(t, ctx, db)
+
 	repository, _ := NewRepository(db)
 	return db, repository, ctx
 }
