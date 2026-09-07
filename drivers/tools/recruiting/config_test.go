@@ -28,6 +28,7 @@ func TestManifestExposesControlAndExecutorResultWords(t *testing.T) {
 		TypeCompanyAdd, TypeCompanyUpdate, TypeCompanyPause, TypeCompanyResume,
 		TypeCompanyArchive, TypeCompanyRestore, TypeCompanyGet, TypeCompanyList,
 		TypeSourceGet, TypeJobGet, TypeWorkGet, TypeWorkList, TypeDailyRunGet,
+		TypeSystemReconcile,
 	} {
 		if _, ok := words[word]; !ok {
 			t.Fatalf("manifest does not expose %q", word)

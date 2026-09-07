@@ -68,6 +68,7 @@ const (
 	TypeDailyRunSummary = "recruiting.daily_run.summary"
 	TypeJobsSearch      = "recruiting.jobs.search"
 	TypeSystemStatus    = "recruiting.system.status"
+	TypeSystemReconcile = "recruiting.system.reconcile"
 	TypeCapacityStatus  = "recruiting.capacity.status"
 )
 

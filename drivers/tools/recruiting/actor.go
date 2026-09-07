@@ -124,6 +124,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleCompanyMessage(sys, repository, msg)
 		case TypeSourceGet, TypeJobGet, TypeWorkGet, TypeWorkList, TypeDailyRunGet:
 			handleResourceQuery(sys, repository, msg)
+		case TypeSystemReconcile:
+			handleOutboxReconcile(sys, repository, msg)
 		case TypeProbeStart:
 			handleStart(sys, cfg, state, msg)
 		case TypeProbeSchedule:

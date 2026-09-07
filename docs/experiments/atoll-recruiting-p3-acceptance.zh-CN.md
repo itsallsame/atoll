@@ -12,10 +12,11 @@
 - Company add/get/list/update/pause/resume/archive/restore 已进入 manifest；Actor handler 不执行网站请求，只做输入验证、短数据库事务和响应；
 - Source/Job/Work/DailyRun get 已接入对应 Repository；Work runnable 查询按 capability、可选 origin/Profile、到期时刻和最多 500 条的边界调用已有索引查询，不在 Actor 内复制调度算法；
 - Company add 与修改命令将稳定 response receipt、聚合创建/CAS 和 outbox event intent 原子提交；新增冲突不留下 receipt；
+- `recruiting.system.reconcile` 每次只读取最多 500 条到期 outbox，将完整 EventIntent 作为公开业务事件写入 Atoll ledger；事件 ID 与 fingerprint 稳定，覆盖 Emit 成功但 SQL checkpoint 前崩溃的重放窗口；失败采用持久 CAS 次数、有界指数退避和 exhausted 终态；
 - `requested_by` 只取 Atoll envelope sender，客户端附带同名未知字段会被严格解码拒绝；
 - command request hash 绑定 word 与原始 payload，不绑定短生命周期 human session actor ID；首次操作者进入审计 event 和稳定 response，重连后仍能重放；
 - 修改命令在运行领域状态机前先查 receipt，因此 server 重启后不会因聚合版本已经前进而错误拒绝原命令；并发首次执行仍由事务内 receipt 与聚合 CAS 收口；
-- 黑盒测试使用真实 `atoll-server`、Portal/WebSocket、隔离 MySQL 8.4、非 root migrator/runtime 身份，完成 add→replay→update→pause→server restart→get→replay→stale CAS rejection→list；
+- 黑盒测试使用真实 `atoll-server`、Portal/WebSocket、隔离 MySQL 8.4、非 root migrator/runtime 身份，完成 add→replay→update→pause→outbox→Atoll ledger→server restart→get→replay→空 reconcile→stale CAS rejection→list；
 - P0 probe Actor→Executor、持久 timer 和重启路径保留，Company 控制面没有替换 Atoll 的 actor、message、ledger 或 scheduler。
 
 ## 当前验证
@@ -36,7 +37,7 @@ go test -race ./drivers/tools/recruiting/...
 - timer→DailyRun→SourceOccurrence 物化和窗口末对账；
 - Attempt offer/accept/start/result/fail 与完整数据库 fence；
 - 批量导入 preview/confirm 和逐项 outcome；
-- outbox→Atoll ledger dispatcher 与 reconcile handler；
+- 复用 Atoll durable timer 的自动 reconcile 唤醒，以及“服务反复重启不产生重复 timer 链”的恢复证明；
 - 普通非 root 用户的 capability allow/deny 黑盒矩阵；
 - `recruiting_recovery_test.go` 的完整重启、重复 ledger delivery 与日报恢复路径。
 

@@ -67,6 +67,10 @@ func TestRecruitingCompanyControlUsesMySQLAcrossServerRestart(t *testing.T) {
 	if got := nestedStringField(t, paused, "company", "control_status"); got != "paused" {
 		t.Fatalf("paused company status=%q: %v", got, paused)
 	}
+	reconciled := ws.request(c0ChannelID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
+	if got := numberField(t, reconciled, "delivered"); got != 3 {
+		t.Fatalf("outbox delivered=%v, response=%v", got, reconciled)
+	}
 
 	h.restartServer()
 	_, recovered := rootClient(t, h, map[string]int64{c0ChannelID: 0})
@@ -78,6 +82,10 @@ func TestRecruitingCompanyControlUsesMySQLAcrossServerRestart(t *testing.T) {
 	replayedPause := recovered.request(c0ChannelID, "recruiting.company.pause", controlID, pausePayload)
 	if got := nestedNumberField(t, replayedPause, "company", "version"); got != 3 {
 		t.Fatalf("restart command replay changed version=%v: %v", got, replayedPause)
+	}
+	emptyReconcile := recovered.request(c0ChannelID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
+	if got := numberField(t, emptyReconcile, "scanned"); got != 0 {
+		t.Fatalf("delivered outbox replayed after restart: %v", emptyReconcile)
 	}
 	if _, _, err := recovered.tryRequest(c0ChannelID, "recruiting.company.update", controlID, map[string]any{
 		"command_id": "e2e-company-stale", "target": map[string]any{"target_type": "company", "target_id": "e2e-company-1"},
@@ -171,6 +179,15 @@ func nestedNumberField(t *testing.T, value map[string]any, object, field string)
 	number, ok := nested[field].(float64)
 	if !ok {
 		t.Fatalf("%s.%s is not a number: %v", object, field, value)
+	}
+	return number
+}
+
+func numberField(t *testing.T, value map[string]any, field string) float64 {
+	t.Helper()
+	number, ok := value[field].(float64)
+	if !ok {
+		t.Fatalf("%s is not a number: %v", field, value)
 	}
 	return number
 }

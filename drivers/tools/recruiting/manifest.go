@@ -27,6 +27,7 @@ func manifest() introspect.Manifest {
 			TypeWorkGet:         {Description: "get one operational work item"},
 			TypeWorkList:        {Description: "list runnable work by capability and optional resource constraints"},
 			TypeDailyRunGet:     {Description: "get one immutable daily coverage run"},
+			TypeSystemReconcile: {Description: "deliver one bounded batch of recruiting outbox events to the Atoll ledger"},
 			TypeProbeStart:      {Description: "create and dispatch a durable recruiting P0 probe work"},
 			TypeProbeSchedule:   {Description: "schedule a durable recruiting P0 probe occurrence"},
 			TypeProbeStatus:     {Description: "inspect P0 probe work owned by the recruiting actor"},
