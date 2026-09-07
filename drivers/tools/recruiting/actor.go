@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 	"github.com/wanpengxie/atoll/lib/actorbase"
 	"github.com/wanpengxie/atoll/lib/behavior"
 	"github.com/wanpengxie/atoll/protocol/actor"
@@ -87,6 +89,20 @@ func Def(cfg Config) actorbase.Def {
 }
 
 func run(sys actorbase.Sys, cfg Config) error {
+	var repository *store.Repository
+	if cfg.DatabaseDSNEnv != "" {
+		if dsn := strings.TrimSpace(os.Getenv(cfg.DatabaseDSNEnv)); dsn != "" {
+			db, err := store.Open(dsn)
+			if err != nil {
+				return fmt.Errorf("recruiting: open database: %w", err)
+			}
+			defer db.Close()
+			repository, err = store.NewRepository(db)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	state, err := loadState(sys)
 	if err != nil {
 		return err
@@ -103,6 +119,9 @@ func run(sys actorbase.Sys, cfg Config) error {
 			continue
 		}
 		switch msg.Type {
+		case TypeCompanyAdd, TypeCompanyUpdate, TypeCompanyPause, TypeCompanyResume, TypeCompanyArchive, TypeCompanyRestore,
+			TypeCompanyGet, TypeCompanyList:
+			handleCompanyMessage(sys, repository, msg)
 		case TypeProbeStart:
 			handleStart(sys, cfg, state, msg)
 		case TypeProbeSchedule:

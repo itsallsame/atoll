@@ -4,7 +4,7 @@ SHELL := /usr/bin/env bash
 
 # server/daemon ship namespaced (atoll-server / atoll-daemon); the entry
 # command itself is plain `atoll` — its own name IS the namespace.
-GO_BINARIES := server daemon society atoll
+GO_BINARIES := server daemon society atoll recruiting-migrate
 
 # ----------------------------------------------------------------------------
 # deps — 拉全部依赖（此前叫 install；那个名字现在归下面的装机向导，因为

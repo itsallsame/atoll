@@ -58,7 +58,7 @@ func TestMain(m *testing.M) {
 	for _, target := range []struct {
 		name string
 		pkg  string
-	}{{"atoll-server", "./cmd/server"}, {"atoll-daemon", "./cmd/daemon"}, {"atoll", "./cmd/atoll"}} {
+	}{{"atoll-server", "./cmd/server"}, {"atoll-daemon", "./cmd/daemon"}, {"atoll", "./cmd/atoll"}, {"atoll-recruiting-migrate", "./cmd/recruiting-migrate"}} {
 		cmd := exec.Command("go", "build", "-race", "-o", filepath.Join(dir, target.name), target.pkg)
 		cmd.Dir = root
 		cmd.Env = os.Environ()

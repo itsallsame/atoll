@@ -14,6 +14,14 @@ func manifest() introspect.Manifest {
 	return introspect.Manifest{
 		Class: Class, Interfaces: []string{"actor", "recruiting-control"},
 		Words: map[string]introspect.WordSpec{
+			TypeCompanyAdd:      {Description: "add a recruiting company with an idempotent command"},
+			TypeCompanyUpdate:   {Description: "update company identity fields with version fencing"},
+			TypeCompanyPause:    {Description: "pause a company using an explicit drain policy"},
+			TypeCompanyResume:   {Description: "resume a paused company"},
+			TypeCompanyArchive:  {Description: "archive a company without deleting history"},
+			TypeCompanyRestore:  {Description: "restore an archived company into paused validation"},
+			TypeCompanyGet:      {Description: "get one recruiting company"},
+			TypeCompanyList:     {Description: "seek-page recruiting companies"},
 			TypeProbeStart:      {Description: "create and dispatch a durable recruiting P0 probe work"},
 			TypeProbeSchedule:   {Description: "schedule a durable recruiting P0 probe occurrence"},
 			TypeProbeStatus:     {Description: "inspect P0 probe work owned by the recruiting actor"},

@@ -14,10 +14,12 @@ const (
 	ErrorNotFound             = "not_found"
 	ErrorVersionConflict      = "version_conflict"
 	ErrorBusinessKeyConflict  = "business_key_conflict"
+	ErrorCommandConflict      = "command_conflict"
 	ErrorQualityRejected      = "quality_rejected"
 	ErrorBudgetBlocked        = "budget_blocked"
 	ErrorWaitingHuman         = "waiting_human"
 	ErrorUnauthorizedExecutor = "unauthorized_executor"
+	ErrorInternalUnavailable  = "internal_unavailable"
 )
 
 // PageRequest and PageInfo freeze cursor pagination at the product boundary.

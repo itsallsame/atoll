@@ -13,6 +13,49 @@ import (
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
+func TestCreateCompanyCommandIsAtomicAndReplayable(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	now := time.Date(2026, 9, 8, 7, 0, 0, 0, time.UTC)
+	company, _ := model.NewCompany("create-command-company", "Created", "https://create-command.example.com")
+	response := json.RawMessage(`{"company_id":"create-command-company","version":1}`)
+	receipt, _ := model.NewCommandReceipt("create-company-command", "recruiting.company.add", "sha256:create", response)
+	event, _ := model.NewEventIntent("create-company-event", "company.added", "company", company.CompanyID, 1, now.Format(time.RFC3339), receipt.CommandID, json.RawMessage(`{"requested_by":"human:alice"}`))
+	first, err := repository.ApplyCreateCompanyCommand(ctx, company, receipt, event, now)
+	if err != nil || first.Replayed || string(first.Response) != string(response) {
+		t.Fatalf("create company command = %+v %v", first, err)
+	}
+	replay, err := repository.ApplyCreateCompanyCommand(ctx, company, receipt, event, now)
+	if err != nil || !replay.Replayed || string(replay.Response) != string(response) {
+		t.Fatalf("create company replay = %+v %v", replay, err)
+	}
+	changed := receipt
+	changed.RequestHash = "sha256:different"
+	if _, err := repository.ApplyCreateCompanyCommand(ctx, company, changed, event, now); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("create command ID accepted different request: %v", err)
+	}
+	duplicate, _ := model.NewCompany("create-command-duplicate", "Duplicate", company.Website)
+	duplicateReceipt, _ := model.NewCommandReceipt("create-duplicate-command", "recruiting.company.add", "sha256:duplicate", json.RawMessage(`{"duplicate":true}`))
+	duplicateEvent, _ := model.NewEventIntent("create-duplicate-event", "company.added", "company", duplicate.CompanyID, 1, now.Format(time.RFC3339), duplicateReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyCreateCompanyCommand(ctx, duplicate, duplicateReceipt, duplicateEvent, now); !errors.Is(err, ErrBusinessKeyExists) {
+		t.Fatalf("duplicate company create = %v", err)
+	}
+	if _, found, err := readCommandReceipt(ctx, db, duplicateReceipt.CommandID, duplicateReceipt.RequestHash); err != nil || found {
+		t.Fatalf("failed create left receipt: found=%v err=%v", found, err)
+	}
+}
+
 func TestCompanyCommandReceiptAndOutboxAreAtomic(t *testing.T) {
 	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
 	if dsn == "" {

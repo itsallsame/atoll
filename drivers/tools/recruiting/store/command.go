@@ -21,6 +21,58 @@ type CommandResult struct {
 
 const defaultOutboxMaxDeliveryAttempts uint64 = 8
 
+func (r *Repository) ApplyCreateCompanyCommand(ctx context.Context, company model.Company, receipt model.CommandReceipt, event model.EventIntent, businessAt time.Time) (CommandResult, error) {
+	if company.CompanyID == "" || company.Version != 1 || receipt.CommandID == "" ||
+		event.AggregateType != "company" || event.AggregateID != company.CompanyID || event.AggregateVersion != company.Version ||
+		event.CauseCommandID != receipt.CommandID {
+		return CommandResult{}, fmt.Errorf("company create command, receipt, and event are inconsistent")
+	}
+	eventAt, err := time.Parse(time.RFC3339, event.BusinessAt)
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("event business time: %w", err)
+	}
+	state, _ := json.Marshal(company)
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("begin company create command: %w", err)
+	}
+	defer tx.Rollback()
+	if replay, found, err := readCommandReceipt(ctx, tx, receipt.CommandID, receipt.RequestHash); err != nil {
+		return CommandResult{}, err
+	} else if found {
+		return CommandResult{Response: replay, Replayed: true}, nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO recruiting_command_receipts(command_id, word_name, request_hash, response_bytes, committed_at)
+VALUES (?, ?, ?, ?, ?)`, receipt.CommandID, receipt.Word, receipt.RequestHash, []byte(receipt.Response), businessAt.UTC()); err != nil {
+		var mysqlError *mysql.MySQLError
+		if errors.As(err, &mysqlError) && mysqlError.Number == 1062 {
+			_ = tx.Rollback()
+			return r.replayCommittedCommand(ctx, receipt.CommandID, receipt.RequestHash)
+		}
+		return CommandResult{}, fmt.Errorf("reserve company create receipt: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO recruiting_companies(
+  company_id, normalized_website, name, onboarding_status, control_status,
+  version, state_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, company.CompanyID, nullableString(company.Website), company.Name,
+		company.OnboardingStatus, company.ControlStatus, company.Version, state, businessAt.UTC(), businessAt.UTC()); err != nil {
+		var mysqlError *mysql.MySQLError
+		if errors.As(err, &mysqlError) && mysqlError.Number == 1062 {
+			return CommandResult{}, ErrBusinessKeyExists
+		}
+		return CommandResult{}, fmt.Errorf("create company in command: %w", err)
+	}
+	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CommandResult{}, fmt.Errorf("commit company create command: %w", err)
+	}
+	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
+}
+
 // ApplyCompanyCommand atomically persists the aggregate CAS, stable command
 // response, and an outbox event intent. Publishing that intent to the Atoll
 // ledger happens after commit and is independently retryable.
@@ -89,21 +141,28 @@ WHERE company_id = ? AND version = ?`,
 		return CommandResult{}, &model.VersionConflictError{Expected: expectedVersion, Actual: actual}
 	}
 
-	_, err = tx.ExecContext(ctx, `
+	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CommandResult{}, fmt.Errorf("commit company command: %w", err)
+	}
+	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
+}
+
+func appendEventIntent(ctx context.Context, tx *sql.Tx, event model.EventIntent, eventAt, nextAttemptAt time.Time) error {
+	_, err := tx.ExecContext(ctx, `
 INSERT INTO recruiting_event_outbox(
   event_id, event_kind, aggregate_type, aggregate_id, aggregate_version,
   cause_command_id, business_at, payload_json, delivery_status,
   delivery_attempts, max_delivery_attempts, next_attempt_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
 		event.EventID, event.Kind, event.AggregateType, event.AggregateID, event.AggregateVersion,
-		event.CauseCommandID, eventAt.UTC(), []byte(event.Payload), defaultOutboxMaxDeliveryAttempts, businessAt.UTC())
+		event.CauseCommandID, eventAt.UTC(), []byte(event.Payload), defaultOutboxMaxDeliveryAttempts, nextAttemptAt.UTC())
 	if err != nil {
-		return CommandResult{}, fmt.Errorf("append company event intent: %w", err)
+		return fmt.Errorf("append company event intent: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return CommandResult{}, fmt.Errorf("commit company command: %w", err)
-	}
-	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
+	return nil
 }
 
 func readCommandReceipt(ctx context.Context, query interface {
@@ -136,6 +195,14 @@ func (r *Repository) replayCommittedCommand(ctx context.Context, commandID, requ
 		return CommandResult{}, fmt.Errorf("concurrent command receipt disappeared")
 	}
 	return CommandResult{Response: response, Replayed: true}, nil
+}
+
+func (r *Repository) LookupCommand(ctx context.Context, commandID, requestHash string) (CommandResult, bool, error) {
+	response, found, err := readCommandReceipt(ctx, r.db, commandID, requestHash)
+	if err != nil || !found {
+		return CommandResult{}, found, err
+	}
+	return CommandResult{Response: response, Replayed: true}, true, nil
 }
 
 type PendingEvent struct {
