@@ -101,7 +101,9 @@ func (j SourceJob) ObserveListing(expected uint64, observation ListingObservatio
 	return j, true, nil
 }
 
-func (j SourceJob) ObserveUpdate(expected uint64, detailURL string) (SourceJob, error) {
+// ForceRefresh is an explicit repair/operator action. Normal daily ingestion
+// must use ObserveListing so overlap rows do not manufacture updates.
+func (j SourceJob) ForceRefresh(expected uint64, detailURL string) (SourceJob, error) {
 	if err := requireVersion(expected, j.Version); err != nil {
 		return SourceJob{}, err
 	}

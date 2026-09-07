@@ -13,7 +13,11 @@ func validatedSource(t *testing.T) (Company, RecruitmentSource) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err = source.PublishValidated(source.Version, RecipeAssignment{RecipeID: "recipe-1", Version: 3, ContractHash: "contract-a"})
+	assignment, err := NewSourceRecipeAssignment(source.SourceID, RecipeListing, "recipe-1", 3, "contract-a", "2026-09-07T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err = source.PublishValidated(source.Version, assignment)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +61,11 @@ func TestSourcePublishesCandidateAtomicallyAndKeepsOldEndpointDuringRepair(t *te
 	}
 	staged, _ = rejected.StageEndpoint(rejected.Version, "https://jobs.example.com/v2", "Engineering")
 	validating, _ = staged.BeginValidation(staged.Version)
-	published, err := validating.PublishValidated(validating.Version, RecipeAssignment{RecipeID: "recipe-2", Version: 1, ContractHash: "contract-b"})
+	assignment, err := NewSourceRecipeAssignment(validating.SourceID, RecipeListing, "recipe-2", 1, "contract-b", "2026-09-07T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, err := validating.PublishValidated(validating.Version, assignment)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,5 +111,39 @@ func TestSourceArchiveRestoreRequiresValidation(t *testing.T) {
 	}
 	if restored.CandidateEndpoint == nil {
 		t.Fatal("restored source did not stage its last active endpoint for compatibility validation")
+	}
+}
+
+func TestRecipeAssignmentHasIndependentCAS(t *testing.T) {
+	assignment, err := NewSourceRecipeAssignment("source-1", RecipeListing, "recipe-1", 2, "contract-a", "2026-09-07T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := assignment.Replace(assignment.AssignmentVersion-1, "recipe-2", 3, "contract-a", "2026-09-08T00:00:00Z"); err == nil {
+		t.Fatal("stale assignment replacement was accepted")
+	}
+	replaced, err := assignment.Replace(assignment.AssignmentVersion, "recipe-2", 3, "contract-a", "2026-09-08T00:00:00Z")
+	if err != nil || replaced.AssignmentVersion != 2 || replaced.RecipeVersion != 3 {
+		t.Fatalf("assignment replacement = %+v %v", replaced, err)
+	}
+}
+
+func TestListingAssignmentContractChangeRequiresCompatibilityProof(t *testing.T) {
+	_, source := validatedSource(t)
+	next, err := NewSourceRecipeAssignment(source.SourceID, RecipeListing, "recipe-2", 4, "contract-b", "2026-09-08T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.AssignRecipe(source.Version, next, false); err == nil {
+		t.Fatal("incompatible listing assignment reused checkpoint without proof")
+	}
+	updated, err := source.AssignRecipe(source.Version, next, true)
+	if err != nil || updated.ListingAssignment.RecipeVersion != 4 {
+		t.Fatalf("compatible rollout = %+v %v", updated, err)
+	}
+	detail, _ := NewSourceRecipeAssignment(source.SourceID, RecipeDetail, "detail-1", 2, "detail-contract", "2026-09-08T00:00:00Z")
+	updated, err = updated.AssignRecipe(updated.Version, detail, false)
+	if err != nil || updated.DetailAssignment == nil || updated.ListingAssignment == nil {
+		t.Fatalf("orthogonal detail assignment = %+v %v", updated, err)
 	}
 }

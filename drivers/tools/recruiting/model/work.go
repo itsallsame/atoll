@@ -187,14 +187,34 @@ const (
 )
 
 type Attempt struct {
-	AttemptID         string        `json:"attempt_id"`
-	WorkID            string        `json:"work_id"`
-	Status            AttemptStatus `json:"attempt_status"`
-	AcceptanceVersion uint64        `json:"acceptance_version"`
-	RecipeID          string        `json:"recipe_id,omitempty"`
-	RecipeVersion     uint64        `json:"recipe_version,omitempty"`
-	CheckpointVersion uint64        `json:"checkpoint_version,omitempty"`
-	RefreshGeneration uint64        `json:"refresh_generation,omitempty"`
+	AttemptID           string        `json:"attempt_id"`
+	WorkID              string        `json:"work_id"`
+	Status              AttemptStatus `json:"attempt_status"`
+	AcceptanceVersion   uint64        `json:"acceptance_version"`
+	ExecutorActorID     string        `json:"executor_actor_id,omitempty"`
+	ExecutorIncarnation string        `json:"executor_incarnation,omitempty"`
+	Capability          string        `json:"capability,omitempty"`
+	CompanyVersion      uint64        `json:"company_version,omitempty"`
+	SourceVersion       uint64        `json:"source_version,omitempty"`
+	AssignmentVersion   uint64        `json:"assignment_version,omitempty"`
+	RecipeID            string        `json:"recipe_id,omitempty"`
+	RecipeVersion       uint64        `json:"recipe_version,omitempty"`
+	CheckpointVersion   uint64        `json:"checkpoint_version,omitempty"`
+	RefreshGeneration   uint64        `json:"refresh_generation,omitempty"`
+	ProfileID           string        `json:"profile_id,omitempty"`
+	ProfileVersion      uint64        `json:"profile_version,omitempty"`
+}
+
+type AttemptFence struct {
+	CompanyVersion    uint64
+	SourceVersion     uint64
+	AssignmentVersion uint64
+	RecipeID          string
+	RecipeVersion     uint64
+	CheckpointVersion uint64
+	RefreshGeneration uint64
+	ProfileID         string
+	ProfileVersion    uint64
 }
 
 func NewAttempt(id string, work Work) (Attempt, error) {
@@ -204,12 +224,51 @@ func NewAttempt(id string, work Work) (Attempt, error) {
 	return Attempt{AttemptID: id, WorkID: work.WorkID, Status: AttemptOffered, AcceptanceVersion: work.AcceptanceVersion}, nil
 }
 
+func (a Attempt) BindExecutor(actorID, incarnation, capability string) (Attempt, error) {
+	if a.Status != AttemptOffered || strings.TrimSpace(actorID) == "" || strings.TrimSpace(incarnation) == "" || strings.TrimSpace(capability) == "" {
+		return Attempt{}, fmt.Errorf("offered attempt and complete executor identity are required")
+	}
+	a.ExecutorActorID, a.ExecutorIncarnation, a.Capability = actorID, incarnation, capability
+	return a, nil
+}
+
+func (a Attempt) WithFence(f AttemptFence) (Attempt, error) {
+	if a.Status != AttemptOffered || f.CompanyVersion == 0 || f.SourceVersion == 0 || f.AssignmentVersion == 0 ||
+		strings.TrimSpace(f.RecipeID) == "" || f.RecipeVersion == 0 {
+		return Attempt{}, fmt.Errorf("offered attempt and company/source/assignment/recipe fence are required")
+	}
+	if (f.ProfileID == "") != (f.ProfileVersion == 0) {
+		return Attempt{}, fmt.Errorf("profile identity and version must be supplied together")
+	}
+	a.CompanyVersion, a.SourceVersion, a.AssignmentVersion = f.CompanyVersion, f.SourceVersion, f.AssignmentVersion
+	a.RecipeID, a.RecipeVersion = f.RecipeID, f.RecipeVersion
+	a.CheckpointVersion, a.RefreshGeneration = f.CheckpointVersion, f.RefreshGeneration
+	a.ProfileID, a.ProfileVersion = f.ProfileID, f.ProfileVersion
+	return a, nil
+}
+
 func (a Attempt) CanSubmit(work Work) error {
 	if a.WorkID != work.WorkID || a.AcceptanceVersion != work.AcceptanceVersion {
 		return fmt.Errorf("attempt fenced by work acceptance version")
 	}
 	if work.Terminal() {
 		return fmt.Errorf("attempt cannot submit to terminal work")
+	}
+	return nil
+}
+
+func (a Attempt) CanAcceptResult(work Work, current AttemptFence, executorActorID, executorIncarnation string) error {
+	if err := a.CanSubmit(work); err != nil {
+		return err
+	}
+	if a.Status != AttemptRunning || executorActorID != a.ExecutorActorID || executorIncarnation != a.ExecutorIncarnation {
+		return fmt.Errorf("attempt result sender or lifecycle is not accepted")
+	}
+	if current.CompanyVersion != a.CompanyVersion || current.SourceVersion != a.SourceVersion ||
+		current.AssignmentVersion != a.AssignmentVersion || current.RecipeID != a.RecipeID || current.RecipeVersion != a.RecipeVersion ||
+		current.CheckpointVersion != a.CheckpointVersion || current.RefreshGeneration != a.RefreshGeneration ||
+		current.ProfileID != a.ProfileID || current.ProfileVersion != a.ProfileVersion {
+		return fmt.Errorf("attempt result fenced by changed domain version")
 	}
 	return nil
 }

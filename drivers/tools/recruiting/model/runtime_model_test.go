@@ -77,13 +77,44 @@ func TestWorkResolutionAndAttemptFencing(t *testing.T) {
 	}
 }
 
+func TestAttemptResultChecksExecutorAndEveryRelevantDomainFence(t *testing.T) {
+	work, _ := NewWork("work-1", "source", "source-1", "listing_sync", "timer")
+	work, _ = work.Start(work.Version)
+	attempt, _ := NewAttempt("attempt-1", work)
+	attempt, err := attempt.BindExecutor("executor-1", "incarnation-1", "http.fetch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence := AttemptFence{
+		CompanyVersion: 2, SourceVersion: 3, AssignmentVersion: 4, RecipeID: "listing-1", RecipeVersion: 5,
+		CheckpointVersion: 6, ProfileID: "profile-1", ProfileVersion: 7,
+	}
+	attempt, err = attempt.WithFence(fence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, _ = attempt.Accept()
+	attempt, _ = attempt.Start()
+	if err := attempt.CanAcceptResult(work, fence, "executor-1", "incarnation-1"); err != nil {
+		t.Fatalf("matching result rejected: %v", err)
+	}
+	stale := fence
+	stale.SourceVersion++
+	if err := attempt.CanAcceptResult(work, stale, "executor-1", "incarnation-1"); err == nil {
+		t.Fatal("stale source version was accepted")
+	}
+	if err := attempt.CanAcceptResult(work, fence, "executor-1", "old-incarnation"); err == nil {
+		t.Fatal("stale executor incarnation was accepted")
+	}
+}
+
 func TestJobRefreshGenerationRejectsLateDetail(t *testing.T) {
 	job, err := NewSourceJob("job-1", "source-1", "external-1", "https://jobs.example.com/1?utm_source=x")
 	if err != nil {
 		t.Fatal(err)
 	}
 	oldGeneration, oldVersion := job.RefreshGeneration, job.Version
-	job, err = job.ObserveUpdate(job.Version, "https://jobs.example.com/1")
+	job, err = job.ForceRefresh(job.Version, "https://jobs.example.com/1")
 	if err != nil {
 		t.Fatal(err)
 	}

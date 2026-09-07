@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 type SourceReadinessStatus string
@@ -24,23 +25,87 @@ type SourceEndpoint struct {
 }
 
 type RecruitmentSource struct {
-	SourceID            string                `json:"source_id"`
-	CompanyID           string                `json:"company_id"`
-	DiscoveryGeneration uint64                `json:"discovery_generation"`
-	ReadinessStatus     SourceReadinessStatus `json:"readiness_status"`
-	ControlStatus       ControlStatus         `json:"control_status"`
-	HealthStatus        HealthStatus          `json:"health_status"`
-	LastPauseMode       PauseMode             `json:"last_pause_mode,omitempty"`
-	CandidateEndpoint   *SourceEndpoint       `json:"candidate_endpoint,omitempty"`
-	ActiveEndpoint      *SourceEndpoint       `json:"active_endpoint,omitempty"`
-	ListingAssignment   *RecipeAssignment     `json:"listing_assignment,omitempty"`
-	Version             uint64                `json:"version"`
+	SourceID            string                  `json:"source_id"`
+	CompanyID           string                  `json:"company_id"`
+	DiscoveryGeneration uint64                  `json:"discovery_generation"`
+	ReadinessStatus     SourceReadinessStatus   `json:"readiness_status"`
+	ControlStatus       ControlStatus           `json:"control_status"`
+	HealthStatus        HealthStatus            `json:"health_status"`
+	LastPauseMode       PauseMode               `json:"last_pause_mode,omitempty"`
+	CandidateEndpoint   *SourceEndpoint         `json:"candidate_endpoint,omitempty"`
+	ActiveEndpoint      *SourceEndpoint         `json:"active_endpoint,omitempty"`
+	ListingAssignment   *SourceRecipeAssignment `json:"listing_assignment,omitempty"`
+	DetailAssignment    *SourceRecipeAssignment `json:"detail_assignment,omitempty"`
+	DiscoveryAssignment *SourceRecipeAssignment `json:"discovery_assignment,omitempty"`
+	Version             uint64                  `json:"version"`
 }
 
-type RecipeAssignment struct {
-	RecipeID     string `json:"recipe_id"`
-	Version      uint64 `json:"version"`
-	ContractHash string `json:"contract_hash"`
+type SourceRecipeAssignment struct {
+	SourceID          string     `json:"source_id"`
+	Kind              RecipeKind `json:"kind"`
+	RecipeID          string     `json:"recipe_id"`
+	RecipeVersion     uint64     `json:"recipe_version"`
+	ContractHash      string     `json:"contract_hash"`
+	EffectiveAt       string     `json:"effective_at"`
+	AssignmentVersion uint64     `json:"assignment_version"`
+}
+
+func NewSourceRecipeAssignment(sourceID string, kind RecipeKind, recipeID string, recipeVersion uint64, contractHash, effectiveAt string) (SourceRecipeAssignment, error) {
+	if strings.TrimSpace(sourceID) == "" || strings.TrimSpace(recipeID) == "" || recipeVersion == 0 || strings.TrimSpace(contractHash) == "" {
+		return SourceRecipeAssignment{}, fmt.Errorf("source, recipe, recipe version, and contract hash are required")
+	}
+	switch kind {
+	case RecipeListing, RecipeDetail, RecipeDiscovery:
+	default:
+		return SourceRecipeAssignment{}, fmt.Errorf("unknown recipe kind %q", kind)
+	}
+	if _, err := time.Parse(time.RFC3339, effectiveAt); err != nil {
+		return SourceRecipeAssignment{}, fmt.Errorf("effective_at must be RFC3339: %w", err)
+	}
+	return SourceRecipeAssignment{
+		SourceID: sourceID, Kind: kind, RecipeID: recipeID, RecipeVersion: recipeVersion,
+		ContractHash: contractHash, EffectiveAt: effectiveAt, AssignmentVersion: 1,
+	}, nil
+}
+
+func (a SourceRecipeAssignment) Replace(expected uint64, recipeID string, recipeVersion uint64, contractHash, effectiveAt string) (SourceRecipeAssignment, error) {
+	if err := requireVersion(expected, a.AssignmentVersion); err != nil {
+		return SourceRecipeAssignment{}, err
+	}
+	next, err := NewSourceRecipeAssignment(a.SourceID, a.Kind, recipeID, recipeVersion, contractHash, effectiveAt)
+	if err != nil {
+		return SourceRecipeAssignment{}, err
+	}
+	next.AssignmentVersion = a.AssignmentVersion + 1
+	return next, nil
+}
+
+// AssignRecipe publishes one validated assignment per kind. Listing contract
+// changes require an explicit compatibility proof before they can share the
+// existing incremental checkpoint.
+func (s RecruitmentSource) AssignRecipe(expected uint64, assignment SourceRecipeAssignment, checkpointCompatible bool) (RecruitmentSource, error) {
+	if err := requireVersion(expected, s.Version); err != nil {
+		return RecruitmentSource{}, err
+	}
+	if s.ReadinessStatus != SourceReady || assignment.SourceID != s.SourceID || assignment.AssignmentVersion == 0 {
+		return RecruitmentSource{}, fmt.Errorf("ready source and matching complete assignment are required")
+	}
+	copyOf := assignment
+	switch assignment.Kind {
+	case RecipeListing:
+		if s.ListingAssignment != nil && s.ListingAssignment.ContractHash != assignment.ContractHash && !checkpointCompatible {
+			return RecruitmentSource{}, fmt.Errorf("listing contract change requires checkpoint compatibility proof or recalibration")
+		}
+		s.ListingAssignment = &copyOf
+	case RecipeDetail:
+		s.DetailAssignment = &copyOf
+	case RecipeDiscovery:
+		s.DiscoveryAssignment = &copyOf
+	default:
+		return RecruitmentSource{}, fmt.Errorf("unknown recipe kind %q", assignment.Kind)
+	}
+	s.Version++
+	return s, nil
 }
 
 func NewRecruitmentSource(sourceID, companyID, endpoint, category string, discoveryGeneration uint64) (RecruitmentSource, error) {
@@ -81,14 +146,15 @@ func (s RecruitmentSource) BeginValidation(expected uint64) (RecruitmentSource, 
 	}
 }
 
-func (s RecruitmentSource) PublishValidated(expected uint64, assignment RecipeAssignment) (RecruitmentSource, error) {
+func (s RecruitmentSource) PublishValidated(expected uint64, assignment SourceRecipeAssignment) (RecruitmentSource, error) {
 	if err := requireVersion(expected, s.Version); err != nil {
 		return RecruitmentSource{}, err
 	}
 	if s.ReadinessStatus != SourceValidating {
 		return RecruitmentSource{}, &InvalidTransitionError{Entity: "source", From: string(s.ReadinessStatus), Action: "publish validated endpoint"}
 	}
-	if s.CandidateEndpoint == nil || strings.TrimSpace(assignment.RecipeID) == "" || assignment.Version == 0 || strings.TrimSpace(assignment.ContractHash) == "" {
+	if s.CandidateEndpoint == nil || assignment.SourceID != s.SourceID || assignment.Kind != RecipeListing ||
+		strings.TrimSpace(assignment.RecipeID) == "" || assignment.RecipeVersion == 0 || strings.TrimSpace(assignment.ContractHash) == "" || assignment.AssignmentVersion == 0 {
 		return RecruitmentSource{}, fmt.Errorf("candidate endpoint and complete listing assignment are required")
 	}
 	endpoint := *s.CandidateEndpoint

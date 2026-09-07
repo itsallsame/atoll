@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -30,7 +31,16 @@ func CanonicalHTTPURL(raw string) (string, error) {
 	if host == "" || u.User != nil {
 		return "", fmt.Errorf("URL host is required and userinfo is forbidden")
 	}
+	if strings.HasSuffix(u.Host, ":") || strings.HasSuffix(host, ":") {
+		return "", fmt.Errorf("URL port is invalid")
+	}
 	port := u.Port()
+	if port != "" {
+		portNumber, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || portNumber == 0 {
+			return "", fmt.Errorf("URL port is invalid")
+		}
+	}
 	if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
 		port = ""
 	}
