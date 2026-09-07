@@ -179,6 +179,8 @@ P2 和 P4 可在 P1 契约冻结后并行；P3 可先用内存 Repository 开发
 
 ## 6. P1：纯领域模型与契约
 
+执行状态：进行中。已完成第一批 Company/Source、Endpoint/Assignment、Recipe、Checkpoint、SourceJob、Work/Attempt、SourceOccurrence/DailyRun、Profile 纯状态与 fencing；尚需补齐 Artifact、Observation/Override、RepairIncident/BudgetPermit、批量父子 Work 聚合和公开业务命令转换后才能通过 P1。
+
 ### 6.1 类型与状态机
 
 实现 Company、Source、SourceEndpoint、SourceRecipeAssignment、SourceJob、ListingObservation、JobDetailVersion、CuratedOverride、Recipe、Checkpoint、SourceOccurrence、DailyRun、Work、Attempt、Artifact metadata、Profile metadata、BudgetPermit 和 RepairIncident 的领域类型。
