@@ -226,6 +226,8 @@ requested_by（来自 Atoll envelope 上下文，不是客户端可填写字段�
 
 ## 7. P2：MySQL Resource、migration 与恢复
 
+执行状态：进行中。Schema ADR、首版 migration/checksum runner、非 root DSN 防护和 Company create/get/seek pagination/CAS Repository 纵向切片已实现；当前证据记录于 `docs/experiments/atoll-recruiting-p2-acceptance.zh-CN.md`。尚未达到 P2 退出门。
+
 ### 7.1 Schema 设计步骤
 
 先以访问模式和事务边界产出 schema ADR，再写 migration。逻辑事实不强制一类一表，但必须支持：

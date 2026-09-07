@@ -54,6 +54,13 @@ func TestMigrationIntegration(t *testing.T) {
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatal(err)
 	}
+	var currentUser string
+	if err := db.QueryRowContext(ctx, "SELECT CURRENT_USER()").Scan(&currentUser); err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(strings.ToLower(currentUser), "root@") {
+		t.Fatalf("integration test connected as root: %s", currentUser)
+	}
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}

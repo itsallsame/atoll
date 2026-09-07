@@ -171,6 +171,9 @@ recruiting-boundary-check:
 recruiting-model-test:
 	./scripts/recruiting-model-test.sh
 
+recruiting-mysql-test:
+	./scripts/recruiting-mysql-test.sh
+
 # ----------------------------------------------------------------------------
 # dev — 备好一个干净的开发场地：清空 $(DEV_HOME) + 编译，然后把启动命令
 # 打出来，由人自己起。恒不代跑——节点在前台跑着才看得见日志，被 make 塞到
