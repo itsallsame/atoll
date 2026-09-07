@@ -2,7 +2,7 @@
 
 状态：产品与架构设计草案
 
-版本：v0.7
+版本：v0.8
 
 日期：2026-09-07
 
@@ -197,17 +197,18 @@ Target 是“可调度对象”的统一称呼，不替代这些业务实体。C
 | 岗位详情修复 | 详情失败或字段异常 | Job URL、Failure Artifact | repair | 新详情 Recipe/URL 或人工结论 |
 | 登录/Profile 修复 | 认证失效、验证码 | 安全域和失败证据 | repair/waiting human | 恢复、暂停或终止 |
 | 公司更新 | manual/event | 公司新信息 | data maintenance + 必要 rediscovery | 新版本公司和受影响 Work |
-| 重复公司合并/拆分 | manual/质量事件 | 候选公司及关联数据 | data maintenance/reconcile | 可追踪的数据迁移与映射 |
+| 重复公司合并/拆分 | manual/质量事件 | 候选公司及关联数据 | preview + data maintenance/reconcile | 可逆逻辑映射；受控拆分 |
 | 公司暂停/恢复 | manual | Company | 控制命令 | 停止/恢复新调度 |
-| Source 暂停/恢复 | manual/自动熔断 | Source | 控制命令 | 局部停止/恢复 |
+| Source 暂停/恢复 | manual | Source | 控制命令 | 局部停止/恢复；自动熔断另记健康状态 |
 | Source 重定向/归属调整 | redirect/manual | 旧新入口、所属公司 | validation/data maintenance | 保留历史并切换有效入口 |
-| 公司归档/删除 | manual | Company、删除范围 | data maintenance | 归档或合规删除结果 |
-| Source 移除 | manual/失效确认 | Source | data maintenance | 停止调度并处理关联岗位 |
+| 公司归档/恢复 | manual | Company、影响范围 | data maintenance | 停止调度、保留历史或受控恢复 |
+| 合规物理删除 | manual/合规请求 | Company、删除范围 | 独立合规 Work | M5 能力；不属于普通岗位生命周期 |
+| Source 归档/恢复 | manual/失效确认 | Source | data maintenance/validation | 停止调度、保留历史并按兼容性恢复 |
 | 数据纠错与重算 | manual/质量事件 | 字段、映射或新规则 | repair/reconcile | 新数据版本和影响报告 |
-| 历史数据回填 | manual/规则升级 | 时间范围、字段和 Target | reconcile | 新版本数据及覆盖报告 |
+| 历史数据回填 | manual/规则升级 | 时间范围、字段、Target、模式 | reconcile | 新版本数据及覆盖/缺口报告，不推进日常 Checkpoint |
 | Recipe 批量升级 | 新 Recipe 验证通过 | 受影响 Source 集合 | validation + staged rollout | 分阶段发布或回滚 |
-| 临时手动运行 | manual | Company/Source/Job | 对应目的 Work | 与定时任务相同的结果 |
-| 失败重试和人工结案 | event/manual | 原 Work 与证据 | retry/repair | 成功、跳过、接受现状或终止 |
+| 临时手动运行 | manual | Target、运行模式、预算 | diagnostic/join occurrence/production Work | 诊断证据或受控生产结果 |
+| 失败重试和人工结案 | event/manual | 原 Work 与证据 | retry/repair | 带 resolution 的成功、接受缺口或终止 |
 
 ### 5.8 每日大批量运行主流程
 
@@ -259,18 +260,23 @@ detail_completion
   = 已成功或有明确终止结论的当日详情 Work 数 / 当日产生的详情 Work 数
 ```
 
-只有所有应运行 Source 都成功提交新 Checkpoint，且派生的 Detail Work 均成功或具有用户明确接受的终止结论时，Daily Run 才是 `completed`；存在失败、等待重试、等待人工、找不到边界、排序违约或窗口超时时标记 `completed_with_exceptions`，并保留未覆盖清单。因公司/Source 在当日截点前已暂停或归档而不应运行的项目计入 `excluded`，不能计为采集成功。
+只有所有应运行 Source 都成功提交新 Checkpoint，且派生的 Detail Work 均成功时，Daily Run 才是 `completed`；存在失败、等待重试、等待人工、用户接受缺口、找不到边界、排序违约或窗口超时时标记 `completed_with_exceptions`，并保留未覆盖清单。人工终止可以令详情 Work 离开未完成队列，但不能把缺口计为采集成功。因公司/Source 在当日截点前已暂停或归档而不应运行的项目计入 `excluded`，不能计为采集成功。
+
+Daily Run 截点固化 Source 及其当时的 Company/Source 配置版本和 occurrence key。截点后才 ready 的 Source 默认次日纳入；需要当天补跑时显式创建 catch-up occurrence。截点后暂停或归档不改写分母，而记录 `skipped_after_cutoff`、`canceled_by_archive` 等明确结果。日报关闭后不回写历史结论；后续修复以 `recovered` 补偿记录关联原 occurrence。
 
 ### 5.9 公司、Source 与岗位数据规则
 
-- 公司或 Source 更新采用版本化修改；正在运行的 Attempt 继续使用其接受时版本，旧结果不能覆盖新配置。
-- 暂停只阻止新的自动 Work；是否取消运行中 Work 由用户命令明确指定。
+- 公司或 Source 更新采用版本化修改；正在运行的 Attempt 固定其接受时配置。Company 的名称或普通元数据更新不使采集结果失效；官网变更只派生 Source 关系复核，不能自动替换仍然有效的生产入口。
+- Company/Source 分别维护正交的 `control_status`、`readiness_status` 和健康/熔断事实。用户暂停、配置未验证和站点故障不能共用一个状态。
+- 暂停命令必须给出 `pause_mode=drain|finish_causal_chain|cancel`。默认 `drain`：不创建新的自动 Work、冻结未开始 Work、允许已发出的外部请求结束；是否接受结果按命令产生的版本栅栏决定。恢复默认只创建一次 catch-up，不按暂停天数补造每日 Work；超过扫描预算时转校准或人工处理。
 - 产品不判断岗位下架，不因岗位从列表中消失而更新或删除已有岗位。
-- 移除 Source 时停止其后续调度；已采集岗位作为历史数据保留，不能无条件级联删除。
+- 移除 Source 实际执行可恢复归档：停止其后续调度，保留 Endpoint、Recipe Assignment、Checkpoint、岗位和运行历史。再次添加相同规范入口时优先提示恢复；恢复先验证身份、Recipe 和 Checkpoint 兼容性。
 - 公司“删除”默认是可恢复归档：停止公司及 Source 调度，保留审计和历史岗位。
-- 公司及子数据的物理删除属于独立合规操作，必须展示影响范围、执行权限/审批、保留期和删除结果；岗位下架或普通采集失败不得触发它。
+- 公司恢复进入 `paused`，经入口验证后再显式恢复调度。公司及子数据的物理删除属于 M5 独立合规操作，必须展示影响范围、执行权限/审批、保留期和删除结果；岗位下架或普通采集失败不得触发它。
 - 批量更新、删除和 Recipe 发布必须逐项记录结果，允许部分失败重试，不能只返回一个模糊的整体成功。
-- 公司合并、拆分或 Source 改归属必须保存旧新 ID 映射，保证历史 Work、Attempt、Artifact 和岗位仍可追踪。
+- 第一版公司合并只建立带生效区间的 canonical/alias 映射，不批量改写历史事实；拆分和 Source 改归属使用预览、二次确认及显式归属分配。入口身份改变时默认归档旧 Source、创建带 `supersedes/split_from` 谱系的新 Source。
+- 原始 `ListingObservation`、已验证详情版本和 `CuratedOverride` 分层保存。有效字段优先级为 `manual override > verified detail > listing observation`；人工覆盖可撤销或过期，后续抓取仍保存来源事实但不静默覆盖有效人工值。
+- 历史回填必须声明 `artifact_recompute|live_refetch`。后者只是重新访问当前网页，不得声称恢复历史快照；普通回填永不读取或推进日常 Incremental Checkpoint。
 
 ### 5.10 浏览器插件与 Recipe 复用闭环
 
@@ -383,6 +389,29 @@ ListingDelta
 只有 `previous_frontier_reached && overlap_completed && ordering_contract_held` 才能推进 Checkpoint。中途失败、长期找不到边界、发生异常逆序或 Recipe/身份提取规则变更时，旧 Checkpoint 保持不变，并进入扩大扫描、重新校准或人工修复。
 
 首次全量的目的之一是建立第一个 Checkpoint；第二次校准用于验证稳定身份、排序、更新后重新置顶、同时间岗位和重叠窗口，而不是用于日常集合差集。
+
+基线全量采用 `baseline_generation` 和持久 staging 分页续跑；中间游标失效时从头重扫并按来源岗位键收敛，中间结果不能冒充已提交 Checkpoint。完成口径分为 `listing_finalized`、`details_pending` 和 `completed`，列表安全完成后可提交 Checkpoint，详情失败则保留旧可用数据并形成明确缺口。第二次校准把稳定身份、分页、当前排序和“历史更新后重新置顶”分别给出 `verified|unverified|violated` 结论；没有真实更新样本时，不能把“更新置顶”标成 verified。
+
+同一 `activity_at` 跨页时必须读完整个同时间组；网站没有稳定次序时不能人为拼接 `(time,id)` 后提前停止。扩大扫描必须有页数、时长和成本上限，超限转校准、修复或人工处理。Checkpoint 提交使用 `source_id + expected_checkpoint_version` 的 CAS；列表观测、Detail Work 意图和新 Checkpoint 要么原子提交，要么通过可重放意图恢复。
+
+### 5.12 逐场景模拟结论
+
+2026-09-07 使用 25 个相互独立的场景 Agent，分别扮演运营用户，模拟正常路径、重复命令、定时与人工并发、崩溃、陈旧结果及人工介入。该演练验证的是设计完整性，不替代真实网站或容量测试。
+
+| 场景组 | 结论 | 本版收敛的关键规则 |
+|---|---|---|
+| 公司新增、批量导入、Source 发现/维护 | 可行但原契约不足 | 命令 schema、业务去重、候选拒绝、逐项结果、Source 草稿验证后发布 |
+| 首次全量、第二次校准 | 可行但不能把“两次”当证明 | baseline generation、分段 staging、分阶段完成、四项独立校准结论 |
+| 每日列表增量、新/变化岗位详情 | 核心算法成立 | Checkpoint CAS、同时间组、详情 generation、原始观测与有效数据分层 |
+| Listing/Detail/Profile 修复 | 可行但需共享故障收敛 | failure domain、单飞 Repair Work、Recipe quarantine、Profile 安全 Resource、积压有界恢复 |
+| Company/Source 更新、暂停、恢复、归档 | 可行但控制语义不足 | 控制/可用性/健康正交、pause mode、截点口径、一次 catch-up、逻辑归档 |
+| 公司合并/拆分、Source 改归属 | 不支持首版物理迁移 | canonical/alias 和谱系映射；复杂拆分走预览、审批及受控迁移 |
+| 数据纠正、重算、历史回填 | 可行但需血缘与模式 | Observation/Override 分层、plan hash、规则版本、回填不推进 Checkpoint |
+| Recipe 批量升级 | 可行但需逐 Source 发布 | Recipe Assignment、contract hash、灰度、Checkpoint 兼容矩阵与回滚 |
+| 临时运行、重试、人工结案 | 可行但必须消除歧义 | 三种 run mode、重试策略快照、结构化 resolution、日报补偿记录 |
+| 10K 公司/20K Source 日常运行 | 逻辑架构成立，生产能力待压测 | 持久 SourceOccurrence、控制面短事务、Executor 多实例、共享熔断、预算许可、紧凑消息 |
+
+演练没有推出新的角色型 Worker。一个 Recruiting Actor 表示一个公开领域权威，不表示一个单线程进程；一个 Executor class 也不表示一个实例。真正需要增加的是版本化事实、接受条件、故障域和用户操作契约。
 
 ## 6. 核心设计原则
 
@@ -510,13 +539,15 @@ Web / 飞书 Gateway         → 只提交公开消息
 
 ```text
 recruiting.company.add / update / pause / resume / archive / delete
+recruiting.company.import / merge.preview / merge.confirm / restore
 recruiting.company.get / list
-recruiting.source.add / update / validate / pause / resume / remove
+recruiting.source.add / update / validate / pause / resume / archive / restore
 recruiting.source.discover / get / list
 recruiting.job.get / list / correct
 recruiting.work.create / get / list / pause / resume
 recruiting.work.correct / retry / cancel / resolve
-recruiting.recipe.inspect / validate / approve / reject
+recruiting.run.diagnostic / join_occurrence / production
+recruiting.recipe.inspect / validate / approve / reject / rollout / rollback
 recruiting.execution.offer / accept / started / result / failed
 recruiting.daily_run.get / list / summary
 recruiting.jobs.search
@@ -526,9 +557,11 @@ recruiting.capacity.status
 
 `offer/accept` 可映射为推送、拉取或其他机制；公开词不暴露数据库领取语义。
 
+所有修改命令至少携带 `command_id`、Target、`expected_version` 和原因；批量命令再携带输入 Artifact 哈希、schema/policy 版本，并产生逐项结果。`command_id` 只处理传输重放，业务重复还要使用各场景稳定键。高风险批量变更采用 `preview_hash + expected_versions` 确认，审批后选择范围变化则必须重新预览。
+
 ## 9. 最小领域模型
 
-第一版冻结业务数据模型和运行控制模型两个层次。业务对象不能为了架构简洁而被抽象掉；运行模型包含 Recipe、Incremental Checkpoint、Work、Attempt 和 Artifact，不复制历史项目的多层任务结构。
+第一版冻结业务数据模型和运行控制模型两个层次。业务对象不能为了架构简洁而被抽象掉；运行模型包含 Recipe、Recipe Assignment、Incremental Checkpoint、SourceOccurrence、Work、Attempt、Artifact 和受控 Profile Resource，不复制历史项目的多层任务结构。
 
 ### 9.1 Company、Recruitment Source 与 Job Posting
 
@@ -536,11 +569,13 @@ recruiting.capacity.status
 Company 1 ── 0..N Recruitment Source 1 ── 0..N Job Posting
 ```
 
-- Company 保存主体身份、规范名称、官网、别名、控制状态和版本。
-- Recruitment Source 保存所属公司、来源类型、列表入口、招聘类别、刷新策略、列表 Recipe、最近成功 Checkpoint 和控制状态。
-- Job Posting 保存所属公司和 Source、来源岗位 ID、规范化详情 URL、详情 Recipe、结构化内容版本、首次发现时间和最近来源活动时间。
+- Company 保存稳定主体身份、规范名称、官网、别名、控制状态和版本；名称不是唯一键，规范官网域名或受信外部主体 ID 只作为确定重复及人工提示的依据。
+- Recruitment Source 保存所属公司、来源类型、规范入口键、版本化 Endpoint、招聘类别、刷新策略、Recipe Assignment、最近成功 Checkpoint、控制状态和就绪状态。候选配置先验证，再原子发布；验证期间保留最后可用生产配置。
+- Job Posting 先表达 `SourceJob`：保存 Source、来源岗位 ID、规范化详情 URL、列表观测、详情版本、首次发现时间和最近来源活动时间。跨 Source 的同一真实岗位使用有证据的映射/投影关联，不能靠改写来源身份合并。
 
-Company 和 Source 的最小控制状态为 `active | paused | archived`，并分别保存接入/可用性状态。Job Posting 只表达已发现、详情待获取、可用和更新待获取，不表达下架或删除。健康评分、无职位等优先由 Work、Artifact 和质量事实形成投影。
+Source 的 `canonical_source_key` 由规范 Endpoint、逻辑参数/招聘类别和规范化规则版本组成，在 Company 内唯一；同一规范入口跨 Company 冲突必须人工裁决，不能静默共享或改归属。Discovery 候选至少包含规范入口、最终跳转链、逻辑类别、归属证据、置信依据、Artifact 和发现时间。
+
+Company 和 Source 的最小控制状态为 `active | paused | archived`，并分别保存接入/可用性状态和独立健康事实。Job Posting 只表达已发现、详情待获取、可用和更新待获取，不表达下架或删除。详情更新以 `refresh_generation` 隔离跨 Work 的迟到结果，相同规范化内容哈希不产生重复内容版本。
 
 Target 是 Work 对可调度对象的统一引用（`target_type + target_id`），不是用来代替三类业务实体的万能表。
 
@@ -556,7 +591,9 @@ draft → validating → active → superseded
   └─────────┘ validation_failed
 ```
 
-Recipe 至少保存 `recipe_id`、`kind=list|detail|discovery`、适用 scope、代码/Resource 引用、输入输出契约、所需 capability、版本、内容哈希、验证证据和状态。Listing Recipe 还必须保存活动倒序、稳定身份、边界、重叠窗口和异常终止契约。同一 scope/kind 同时只能有一个默认 active 版本。
+Recipe 至少保存 `recipe_id`、`kind=list|detail|discovery`、适用 scope、代码/Resource 引用、输入输出契约、所需 capability、版本、内容哈希、验证证据和状态。Listing Recipe 还必须保存活动倒序、稳定身份、边界、重叠窗口和异常终止契约。同一 scope/kind 可以有一个默认 active 版本，但生产执行由版本化 `SourceRecipeAssignment` 决定，从而支持逐 Source 灰度和回滚。
+
+Assignment 固定 `source_id + kind + recipe_version + contract_hash + effective_at/version`。`contract_hash` 覆盖岗位身份、排序、分页和边界语义；变化时必须证明 Checkpoint 兼容，或者重新校准。Recipe 共享故障时先进入 `quarantined`，停止使用该版本创建新 Attempt，不影响未使用该版本的 Source。
 
 Attempt 固定引用 `recipe_id + recipe_version`，不能静默漂移版本。
 
@@ -586,6 +623,12 @@ summary, created_at, updated_at
 
 多步骤可以使用子 Work 或步骤进度；是否需要独立 Task 由纵向切片决定。
 
+父 Work 是用户可见聚合，不替代子 Work 的状态和幂等边界。批量场景逐项保存 `succeeded|failed|skipped|waiting_human`，父级以结构化 outcome 表达部分成功，取消只阻止未开始项并 fence 仍在运行的结果。`completed` 还必须带 `resolution=succeeded|accepted_gap|skipped|terminated`、决定人、理由和证据；接受缺口不能计为 coverage 成功。
+
+失败按可审计分类决定下一步：瞬态错误有界重试，确定性 Recipe/数据错误转 repair，认证错误阻塞于 Profile，质量证明不足进入人工。终态 Work 不重新打开；后续恢复或用户再次运行创建带 `cause_work_id` 的新 Work。日报保留关闭时结论，后续成功只追加恢复关联。
+
+典型业务幂等键包括：每日列表 `source_id + schedule_date + policy_version`；详情 `source_id + source_job_key + refresh_generation + purpose`；基线 `source_id + baseline_generation`；共享修复 `failure_domain + failure_signature + failing_version`。它们与网络重放用的 `command_id` 是两层不同规则。
+
 ### 9.4 Attempt
 
 Executor 对 Work 的一次具体执行。
@@ -596,9 +639,13 @@ offered → accepted → running → succeeded / failed / expired / rejected
 
 保存 `attempt_id`、`work_id`、Executor identity/incarnation、capability 快照、Recipe 版本、状态、接受版本、时间和结果/失败 Artifact 引用。`acceptance_version` 是逻辑 fencing 条件，但不要求一定使用 lease token。
 
+Attempt 还固定 Company/Source 配置版本、Recipe Assignment、Checkpoint 版本、Job refresh generation 和 Profile 版本中与本次工作相关的接受条件。Work fencing 不能代替这些领域对象自己的 CAS。
+
 ### 9.5 Artifact
 
 Resource 中大对象或批量结果的稳定引用，包括页面、截图、响应、原始职位、失败证据、候选 Recipe、验证报告和 trace。至少保存 ID、内容哈希、类型、创建者、关联 Work/Attempt、访问和保留策略。
+
+持久 Browser Profile 是安全 Resource，不是聊天凭证。至少保存 `profile_id`、站点/安全域、授权设备、版本、认证状态和最近验证时间；Cookie、密码和 OTP 不进入 Message、普通 Artifact 或 AI 上下文。Profile 故障按版本熔断，共享该 Profile 的 Work 只产生一个修复事项。
 
 ### 9.6 领域状态机
 
@@ -607,22 +654,27 @@ Resource 中大对象或批量结果的稳定引用，包括页面、截图、�
 ```text
 Company onboarding_status:
 new → discovering_sources → initializing → ready
+discovering_sources → blocked_no_sources → discovering_sources
+initializing → blocked → initializing
 
 Company control_status:
 active ↔ paused → archived
 active → archived
+archived → paused
 
 Recruitment Source readiness_status:
 candidate → validating → ready
 ready → repairing → validating
 validating → invalid → validating
+candidate / validating → rejected
 
 Recruitment Source control_status:
 active ↔ paused → archived
 active → archived
+archived → paused（恢复后先验证）
 
 Recipe:
-draft → validating → active → superseded / disabled
+draft → validating → active → superseded / quarantined / disabled
 validating → draft（验证失败并保留证据）
 
 Incremental Checkpoint:
@@ -633,6 +685,9 @@ candidate → rejected（旧 committed 版本保持有效）
 Job Posting:
 discovered → detail_pending → available
 available → update_pending → available
+
+Browser Profile auth_status:
+ready → repairing → verifying → ready / disabled
 
 Work:
 open → running → completed
@@ -648,6 +703,10 @@ planned → running → completed / completed_with_exceptions
 ```
 
 Company 只有 `onboarding_status=ready` 且 `control_status=active` 才进入正常运行；Source 只有 `readiness_status=ready` 且 `control_status=active` 才属于每日应运行集合。正交状态避免把“用户暂停”和“页面坏了”混成同一个枚举。
+
+Source Discovery 可产生 0、1 或多个候选，候选逐项验证和拒绝，不做整体事务。其幂等代际为 `company_id + discovery_generation`；强制重新发现显式递增 generation。Source `ready` 至少要求归属已确认、生产 Endpoint 已发布、Listing Recipe Assignment 有效，并以真实样本验证分页、稳定岗位键、活动倒序、边界和异常停止。
+
+Company 有至少一个 active/ready Source，且每个准备投产的 Source 已完成 listing baseline、详情均成功或有用户明确接受的缺口时，才进入 onboarding `ready`。零候选进入 `blocked_no_sources`；部分 Source 成功不阻止其余候选独立失败或等待人工，但用户必须看见未投产项。
 
 状态转换规则写在纯 Recruiting domain model 中，输入为当前状态和领域命令，输出为新状态及领域事件。Recruiting Actor 是唯一有权接受转换结果的行为边界：
 
@@ -665,7 +724,7 @@ Atoll timer 只负责可靠地产生到期命令，不直接修改状态；Execu
 
 ### 9.7 不冻结物理表
 
-系统必须可恢复地保存 Company、Recruitment Source、Job Posting、Recipe、Incremental Checkpoint、Work、Attempt、Artifact、命令幂等记录、每日 occurrence 和站点预算事实。这不等于提前确定 `human_reviews`、`work_bundles`、`worker_slots`、`origin_budgets`、`domain_outbox` 等物理表。表、索引、事务和存储产品根据 Resource API 与访问实测决定。
+系统必须可恢复地保存 Company、Recruitment Source、Job Posting、Observation/Override、Recipe Assignment、Incremental Checkpoint、SourceOccurrence、Work、Attempt、Artifact、命令幂等记录、Profile 和站点预算事实。这不等于每个概念必须对应一张表，也不提前确定 `human_reviews`、`work_bundles`、`worker_slots`、`origin_budgets`、`domain_outbox` 等物理结构。表、索引、事务和存储产品根据 Resource API 与访问实测决定。
 
 ## 10. 大规模调度
 
@@ -699,11 +758,15 @@ Atoll timer 只负责可靠地产生到期命令，不直接修改状态；Execu
 
 20,000 个列表同步是当前规模下每天的确定性基线；详情和异常 Work 是随站点变化的放大量，必须用真实数据测量。这些数字用于容量实验，不是已知吞吐事实。
 
+用于首轮容量实验的示例而非 SLA：20,000 次列表同步摊在 8 小时约为 0.7 次/秒，按 5 倍峰值约 3.5 次/秒。若 80% HTTP 平均 5 秒、20% Browser 平均 45 秒，理论有效并发约 13，初始可用 20–40 个 Executor 实例做阶梯压测。真正的放大风险是无时间字段 Source 的重叠复核：每个 Source 复核 20 个岗位即可产生约 400,000 个详情 Work；因此必须实测重叠详情比例和控制消息放大，不能只按 20,000 个列表任务估容。
+
 ### 10.2 到期工作
 
 保存 Source 的刷新策略、下次到期时间、最近成功 Incremental Checkpoint 和幂等周期键。每日运行不依赖进程内 cron 和记忆。
 
-每个每日 Source occurrence 使用稳定业务键，例如 `source_id + schedule_date + schedule_policy_version`。调度可以分窗口渐进物化 Work，不能要求每天零点同时写入全部 Work；窗口结束时必须逐个核对当日应运行 Source 是否已有 occurrence，补建遗漏或生成明确异常。
+每个每日 `SourceOccurrence` 是持久事实，使用稳定业务键 `source_id + schedule_date + schedule_policy_version`，并保存 Daily Run、截点时配置版本、计划窗口、当前状态、关联 Work 和最终结果。调度可以分窗口渐进物化 Work，不能要求每天零点同时写入全部 Work；窗口结束时必须逐个核对当日应运行 Source 是否已有 occurrence，补建遗漏或生成明确异常。
+
+临时手工运行不得复用一个含糊的“手动执行”语义：`diagnostic` 只保存证据，不写 Job、不派生详情、不推进 Checkpoint；`join_occurrence` 收敛到当日 SourceOccurrence；`production` 是独立运行，可以推进 Checkpoint，但必须通过 Checkpoint CAS 与并发定时运行竞争。
 
 优先级的业务顺序默认是：
 
@@ -735,9 +798,13 @@ M1 选择最简单可工作的方案，M4 用 20,000 个 Recruitment Source 的�
 
 Push、Pull、带过期执行权、无 heartbeat 的短任务均可实验。依据是恢复正确性、延迟、ledger 流量、复杂度和吞吐，不是历史项目实现。
 
+Recruiting Actor 只做短时、确定性的校验与领域事务，不在 Actor handler 内等待网站网络请求。一个逻辑 Actor 可由多个无状态 handler 实例和按 Source 键并发的 Resource 事务实现；若容量实验证明单一接受路径饱和，可增加内部路由或数据分片，但保持一个公开领域权威。`recruiting-executor` 是一个 Actor class，可以部署许多实例并按 HTTP、Browser、Profile 安全域 placement。
+
 ### 10.4 Batch 只是优化
 
 多个 Work 可形成 Execution Batch 以减少往返，但 Batch 不改变单个 Work 的状态、取消、优先级和幂等边界；不要求用户可见、永久表、固定大小或独立 Channel；只有基准测试证明收益后才实现。
+
+用户级命令、决策和终态逐条进入 ledger；高频 offer、进度和结果可以使用引用 Resource 的紧凑 batch envelope，同时保留每个 Work/Attempt 的身份、幂等和可恢复性。
 
 ### 10.5 公平与预算
 
@@ -752,6 +819,8 @@ Push、Pull、带过期执行权、无 heartbeat 的短任务均可实验。依�
 ```
 
 站点至少表达并发上限、速率、冷却期、近期错误率和熔断状态；令牌算法、表和缓存产品属于实现选择。
+
+执行前必须原子获得覆盖 `origin + Profile + Browser capacity + company fairness` 的预算许可，许可不是新 Worker 类型。首次全量、校准和历史回填使用独立可配置容量上限，不能挤占每日列表覆盖。
 
 ### 10.6 分级执行与扩容
 
@@ -779,16 +848,21 @@ Push、Pull、带过期执行权、无 heartbeat 的短任务均可实验。依�
 | 确定性数据错误 | 进入修复，不盲目重试 |
 | 多轮不收敛 | `waiting_human` |
 
+失败按 `origin | recipe_version | profile | single_target` 归入故障域。相同 `failure_signature` 只允许一个活动 Repair Work，受影响 Work 通过 `blocked_by_repair_work_id` 关联；修复成功后分批、有界唤醒，避免重试和人工告警风暴。重试策略版本、Attempt 计数和预算耗尽原因随 Work 保存；人工重试不能绕过站点或 Profile 安全预算。
+
 ## 11. 一致性与恢复
 
 ### 11.1 必须保持
 
 - 命令 ID 在作用域内唯一；
 - 同一周期对同一 Target 创建 Work 幂等；
+- `command_id` 重放返回第一次接受的稳定响应；公司、Source、基线、详情和修复还分别执行自己的业务唯一键或 generation 约束；
 - Incremental Checkpoint 只能在旧边界已到达、重叠已完成且活动倒序契约成立时推进；
+- Incremental Checkpoint 提交必须比较 `expected_checkpoint_version`；手工和定时运行都不能覆盖并发先提交的新版本；
 - 推进 Checkpoint 与持久化本次发现的岗位及其详情 Work 之间不能留下不可恢复的间隙；
 - Recipe 版本或岗位身份提取规则改变时，旧 Checkpoint 必须经过兼容验证或重新建立；
 - Attempt 只在接受条件仍成立时推进 Work；
+- Job 详情结果还必须比较 `refresh_generation`，Source/Recipe/Profile 结果比较对应配置或 Assignment 版本；
 - 职位使用来源 ID 或规范化 URL 作为业务键；
 - 保存结果与推进 Work 不留下不可恢复的半完成状态；
 - ledger 与 Resource 的非原子间隙有明确恢复协议；
@@ -798,6 +872,7 @@ Push、Pull、带过期执行权、无 heartbeat 的短任务均可实验。依�
 
 ```text
 验证 identity / incarnation / attempt_id / acceptance_version
+  → 验证 Target 配置、Recipe Assignment、Checkpoint、Job generation、Profile 等相关版本
   → 验证 Artifact 哈希与权限
   → 幂等写入职位和质量事实
   → 生成必要后继 Work
@@ -810,6 +885,8 @@ Push、Pull、带过期执行权、无 heartbeat 的短任务均可实验。依�
 ### 11.3 对账
 
 Recruiting Actor 的恢复 handler 检查长期无进展 Work/Attempt、已上传但未接受的 Artifact、状态投影差异、失效 incarnation、废弃 Recipe 引用和长期未进入 ledger 的事件意图。只有出现独立权限、生命周期或故障边界后才拆 Reconciler Actor。
+
+首次全量的大批量结果先按 generation 分块写 staging，最终用一次 fencing finalize 使其可见；Detail Work 使用可重放意图逐步补齐。批量导入、纠正和发布采用父 Work 加逐项结果，默认不要求跨所有 Target 的大事务。
 
 ### 11.4 Atoll 暂时不可用
 
@@ -836,13 +913,16 @@ Recruiting Actor 的恢复 handler 检查长期无进展 Work/Attempt、已上�
 - Executor 只能执行符合其 capability、设备和安全域约束的 Work；
 - 凭证和 Cookie 不进入 Channel；
 - Profile 绑定授权设备或安全域；
+- Profile 修复通过有领取权、设备绑定、超时和审计的一次性安全会话完成；无权限用户只能看到“认证阻塞”，不能看到秘密或敏感截图；
 - 发送给 AI 的 Artifact 必须过滤、脱敏和限量；
 - 人工命令使用 `expected_version`，旧操作不能覆盖新状态；
 - 批量影响 Target 或共享 Recipe 的动作可配置二次批准。
 
 ### 12.3 Work Center
 
-用户可按 trigger、purpose、状态、等待原因、Target、发起者和时间筛选 Work，并查看输入、Recipe、Attempt、Artifact 和因果链；执行创建、领取人工项、暂停、恢复、取消、修正、重试、跳过、批准、拒绝或终止。
+用户可按 trigger、purpose、状态、等待原因、Target、发起者和时间筛选 Work，并查看输入、Recipe、Attempt、Artifact 和因果链；执行创建、领取人工项、暂停、恢复、取消、修正、重试、跳过、批准、拒绝或终止。界面必须分别显示列表覆盖、详情待处理、当前仍可用详情、失败原因和下一动作，不能把详情失败显示成列表漏采。
+
+批量导入、基线、纠正和发布还显示总数、成功、失败、跳过、等待人工、取消及可重试项；手工运行显示 `run_mode`、关联 SourceOccurrence、读写前后 Checkpoint、边界证明、数据变化、派生详情和预算消耗；人工结案显示 resolution、决定人、理由和证据。
 
 Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预算的投影，不要求独立 Actor。
 
@@ -856,10 +936,11 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 
 ### M0：最小契约
 
-- 冻结 Company、Recruitment Source、Job Posting 三类业务实体，以及 Recipe、Work、Attempt、Artifact 四类运行实体；
+- 冻结 Company、Recruitment Source、Job Posting 三类业务实体，以及 Recipe/Assignment、Incremental Checkpoint、SourceOccurrence、Work、Attempt、Artifact、Profile 安全 Resource 等运行事实；
 - 冻结公司接入、首次全量、活动边界增量、详情同步、修复、人工接管和数据维护的业务语义；
 - 冻结 Listing Recipe 的活动倒序、边界锚点、重叠窗口和 Checkpoint 提交契约；
 - 冻结幂等、版本校验和陈旧结果拒绝不变量；
+- 冻结暂停/恢复/归档、三种手工运行、批量逐项结果和结构化 resolution 契约；
 - 建立 Actor、Message、Resource、Driver 边界；
 - 不冻结 Batch、Lease、Outbox、物理表或 Channel 分片。
 
@@ -890,6 +971,8 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 
 完成 Source Discovery、列表 Recipe 与详情 Recipe 的生成/验证/发布/回滚、Failure Artifact、自动修复，以及人从 `waiting_human` 恢复或完结 Work。
 
+同时完成按 origin/Recipe/Profile 的共享故障聚合、Recipe Assignment 灰度、Profile 安全修复会话和积压有界恢复，避免一站故障产生大量重复修复项。
+
 ### M4：10K 容量决策
 
 - 对比 20,000 个 Recruitment Source 的 timer 方案；
@@ -907,12 +990,14 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 
 ### 15.1 功能与可靠性
 
-- 用户可新增、更新、暂停、恢复、归档和按权限删除 Company 及其子数据；
-- 用户可发现、添加、验证、更新、暂停、恢复和移除 Recruitment Source；
+- 用户可新增、更新、暂停、恢复和归档 Company；物理删除只按 M5 合规流程验收；
+- 用户可发现、添加、拒绝、验证、更新、暂停、恢复和归档 Recruitment Source；
 - 用户可管理 Work，并分别追踪列表同步、详情同步和修复；
 - manual、timer、event 使用同一状态和审计路径；
 - 全量初始化完整遍历当时所有有效列表页，并获取所有可访问岗位详情，产生可对账的基线；
 - 一至两次全量后，每个日运行窗口内为截点时所有 active Source 产生唯一 occurrence，并成功到达旧活动边界或记录明确等待/失败原因；
+- 基线可以在大分页中断后从持久 generation 恢复，列表完成、详情待处理和最终完成分别可见；
+- 第二次校准不会在缺少真实更新样本时把“更新后重新置顶”错误标成已验证；
 - Listing Recipe 能验证岗位按最新活动时间倒序，新岗位和历史更新岗位都会进入旧边界之前；
 - 日常只对边界前的新增、更新、重叠复核和合法重试岗位同步详情；
 - Checkpoint 只有在找到旧边界、完成重叠且排序契约成立后才推进；失败重跑不会漏过岗位；
@@ -927,6 +1012,8 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 - 重复命令、交付和结果不产生重复业务结果；
 - Executor 退出后 Work 可恢复；
 - 旧 Attempt 不能覆盖新事实；
+- Checkpoint CAS、Job refresh generation、Source/Recipe/Profile 版本分别拒绝跨 Work 的陈旧结果；
+- shared Recipe 或 Profile 故障只产生一个修复事项，恢复时不会形成重试风暴；
 - 在 ledger/Resource 每个故障点注入退出后可对账恢复；
 - Atoll 不可用时不产生新调度，已开始效果安全结束并暂存，恢复后幂等处理；
 - Actor 重启不依赖私有内存。
@@ -993,7 +1080,7 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 3. 第一版默认一个招聘 Channel，不把 Channel 当队列分片。
 4. 第一版不拆 Planner、Dispatcher、Committer、Fleet 或 Reconciler Actor。
 5. 第一版只冻结一个 `recruiting-executor` Actor class，capability 与步骤类型分离。
-6. 业务层冻结 Company、Recruitment Source、Job Posting；运行层冻结 Recipe、Incremental Checkpoint、Work、Attempt、Artifact；Target 只是统一引用。
+6. 业务层冻结 Company、Recruitment Source、Job Posting；运行层冻结 Recipe/Assignment、Incremental Checkpoint、SourceOccurrence、Work、Attempt、Artifact 和 Profile 安全 Resource；Target 只是统一引用。
 7. trigger、purpose、initiator、cause 正交表达工作，不使用混合 source。
 8. 人工审核是 `waiting_human` Work 的状态和视图。
 9. 一至两次全量后，每日对全部 active Source 从列表顶部扫描到旧活动边界，只处理边界前的新增、更新和安全重叠详情。
@@ -1010,6 +1097,12 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 20. Recipe 是版本化的核心执行资产；Browser Extension 是发现、修复和必要浏览器执行的可选 capability，不是每日固定依赖。
 21. Company、Source、Recipe、Job、Work、Attempt 和 Daily Run 都由显式领域状态机约束；Atoll 提供状态转换所需的身份、消息、timer、ledger 和权限边界。
 22. Listing Recipe 的已验证契约是：新增或更新岗位按最新活动时间进入列表顶部；系统使用每 Source 的边界锚点和重叠窗口增量运行，不进行每日岗位全集差分。
+23. Daily Run 截点、SourceOccurrence 和历史日报不可变；截点后的变更用明确例外或补偿 occurrence 表达。
+24. 用户控制、接入/配置可用性和运行健康正交；暂停必须有 mode，恢复默认一次 catch-up，归档默认可恢复且不删除岗位。
+25. 手工运行固定为 diagnostic、join occurrence 和 production 三种；任何可推进 Checkpoint 的路径都执行同一个 CAS。
+26. 一个 Recruiting Actor 和一个 Executor class 都是逻辑身份，不限制 handler 或执行实例数量；不因扩容引入角色型 Worker。
+27. 共享 origin、Recipe 或 Profile 故障采用单飞修复和有界恢复，不为每个受影响岗位创建独立修复流程。
+28. 公司合并第一版采用可逆逻辑映射；完整拆分、历史物理迁移和合规硬删除不属于普通首版操作。
 
 ## 17. 待实验后决策
 
@@ -1029,3 +1122,5 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 - 查询使用领域能力还是搜索分析投影。
 
 待决策项只有记录测试条件、观测结果、替代方案和取舍后，才能转为已确定决策。
+
+当前 Atoll 实现仍处于 pre-release 阶段；Jobs、审批、配额以及数据安全/备份恢复能力必须以代码和故障测试确认。本文确认的是目标产品可以遵循 Atoll 架构实现，不等于当前仓库已经具备生产承诺。
