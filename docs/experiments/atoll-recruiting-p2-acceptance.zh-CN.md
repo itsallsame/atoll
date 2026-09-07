@@ -14,6 +14,8 @@ P1 契约基线：`a94d2b8d`
 - DSN 必须显式数据库和非 root 用户，adapter 强制 UTC、关闭 multi-statements，并设置有界连接池；
 - Company Repository 已实现 create/get、规范官网并发唯一约束、`updated_at + company_id` seek pagination 和单版本 CAS；
 - 两个并发 Company 更新验证只有一个成功、另一个得到明确 VersionConflict；
+- Company 修改命令把聚合 CAS、逐字节稳定 response receipt 和领域 event outbox 放在同一事务；相同 command ID 并发重放只生效一次，不同 request hash 被拒绝；
+- outbox 插入失败会同时回滚聚合与 receipt；数据库提交后即使尚未写入 Atoll ledger，pending event 仍可查询和补投；
 - `EXPLAIN FORMAT=JSON` 验证 Company seek 查询使用专用索引；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
@@ -30,7 +32,7 @@ make build-go
 ## 尚未完成
 
 - Source、Recipe/Assignment、Checkpoint、Job/Observation/Detail、Work/Attempt、DailyRun/Occurrence、Override、Profile、Budget、Repair、Artifact 和 outbox 的 Repository contract；
-- 命令 receipt、领域更新和 outbox 的原子事务与 ledger 失败重放；
+- 将已验证的命令 receipt/聚合/outbox 原子事务推广到其余修改命令，并实现 outbox 有界重试状态；
 - 列表分页事务截点、Checkpoint CAS 恢复以及 baseline staging/finalize；
 - deadlock、timeout、断连、重复提交和进程 kill 故障注入；
 - 10,000 条基线不使用超大事务的证明与所有关键领取查询的 EXPLAIN；

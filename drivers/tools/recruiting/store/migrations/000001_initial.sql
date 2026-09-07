@@ -335,7 +335,7 @@ CREATE TABLE recruiting_command_receipts (
   command_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   word_name VARCHAR(256) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   request_hash VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-  response_json JSON NOT NULL,
+  response_bytes MEDIUMBLOB NOT NULL,
   committed_at DATETIME(6) NOT NULL,
   PRIMARY KEY (command_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

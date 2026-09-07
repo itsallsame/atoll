@@ -28,7 +28,7 @@ func TestCompanyRepositoryContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	repository, _ := NewRepository(db)
-	businessAt := time.Date(2026, 9, 7, 10, 0, 0, 123000, time.UTC)
+	businessAt := time.Date(2090, 9, 7, 10, 0, 0, 123000, time.UTC)
 	for _, identity := range []string{"company-a", "company-b", "company-c"} {
 		company, _ := model.NewCompany(identity, "Name "+identity, "https://"+identity+".example.com")
 		if err := repository.CreateCompany(ctx, company, businessAt); err != nil {
@@ -41,7 +41,8 @@ func TestCompanyRepositoryContract(t *testing.T) {
 		t.Fatalf("duplicate normalized website = %v", err)
 	}
 
-	first, err := repository.ListCompanies(ctx, "", 2)
+	startCursor := encodeCompanyCursor(companyCursor{UpdatedAt: businessAt.Add(-time.Second).Format(time.RFC3339Nano), CompanyID: "cursor-floor"})
+	first, err := repository.ListCompanies(ctx, startCursor, 2)
 	if err != nil || len(first.Items) != 2 || !first.HasMore || first.NextCursor == "" {
 		t.Fatalf("first page = %+v %v", first, err)
 	}
