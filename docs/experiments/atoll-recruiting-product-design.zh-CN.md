@@ -2,7 +2,7 @@
 
 状态：产品与架构设计草案
 
-版本：v0.5
+版本：v0.6
 
 日期：2026-09-07
 
@@ -44,7 +44,7 @@ Snowland 和 Staircase 证明或提示：
 
 - 对象包括公司、招聘入口、职位列表、职位详情和招聘类型；
 - 网站存在 SPA、API、分页、登录态、ATS、多语言和页面变化；
-- Recipe、浏览器插件和持久 Profile 值得继续验证；
+- Recipe、浏览器插件和持久 Profile 已证明是发现、固化和复用网站流程的核心手段，具体协议和实现仍需验证；
 - 正常采集、异常修复和人工处理具有不同成本；
 - Web IM 和飞书可以作为指令、通知与仲裁入口；
 - 新公司通常只需一至两次全量，稳定后每天检查全部入口并增量更新。
@@ -106,17 +106,17 @@ Snowland 和 Staircase 证明或提示：
   → Agent 或 UI 提交公开领域命令
   → Recruiting Actor 创建 Target 和 bootstrap Work
   → 自动发现或人工确认入口
-  → 生成候选 Plan 并用真实页面验证
-  → 必要时请求人批准高风险 Plan
+  → 生成候选 Recipe 并用真实页面验证
+  → 必要时请求人批准高风险 Recipe
   → 执行一至两次基线全量
-  → Target 进入每日增量运行
+  → Company 及其 active Source 进入每日增量运行
 ```
 
 ### 5.3 每日增量
 
 ```text
 Atoll durable timer 产生到期信号
-  → Recruiting Actor 找到到期 Target
+  → Recruiting Actor 找到当日到期的 active Source
   → 幂等创建 incremental Work
   → Executor 扫描招聘入口
   → 对比上次水位、内容哈希或来源游标
@@ -134,7 +134,7 @@ Timer 粒度不冻结：可以每个 Target 一个 durable timer，也可以少�
   → 保存 Failure Artifact
   → 确定性规则分类
   ├─ 可重试：有界退避
-  ├─ 已知修复：验证受控 Plan 版本
+  ├─ 已知修复：验证受控 Recipe 版本
   ├─ 未知异常：Repair Agent 分析并验证候选方案
   └─ 无法收敛：Work 进入 waiting_human
                          ↓
@@ -172,8 +172,9 @@ Company
 - **Recruitment Source**：公司的岗位列表入口。它可能是一个网页 URL，也可能是带固定参数的 API、ATS 租户入口或多个招聘类别的逻辑入口。
 - **Job Posting**：来源中的岗位。保存来源岗位 ID、规范化详情 URL、当前结构化数据、内容版本和在招状态。
 - 一个 Company 可以没有已确认 Source，也可以有多个 Source。
+- 公司（以稳定 company_id 标识，company_name 可版本化修改）与岗位列表 URL 是一对多关系；列表 URL 必须归属于一个 Company。
 - 同一个岗位可能在多个 Source 出现；第一版先保证来源内唯一，再通过可审计规则做跨来源合并。
-- 列表 Plan 和详情 Plan 可以独立版本化、失效和修复，不能用一个笼统“网站 Recipe 状态”覆盖两者。
+- 列表 Recipe 和详情 Recipe 可以独立版本化、失效和修复，不能用一个笼统“网站 Recipe 状态”覆盖两者。
 
 Target 是“可调度对象”的统一称呼，不替代这些业务实体。Company 和 Recruitment Source 都可以成为 Target；Job Posting 只有需要获取详情、核验或修复时才产生 Work。
 
@@ -183,17 +184,17 @@ Target 是“可调度对象”的统一称呼，不替代这些业务实体。C
 |---|---|---|---|---|
 | 单个新增公司 | manual/event | 公司名称、官网等 | company/source discovery | 公司和候选 Source |
 | 批量导入公司 | manual/event | 文件或 Resource | 多个 company discovery | 逐公司成功/失败报告 |
-| 发现岗位列表来源 | 新增、URL 失效、周期复核 | Company、官网、历史证据 | source discovery | 新增、确认或拒绝 Source |
+| 发现岗位列表来源 | 新增公司、URL 失效或人工复核 | Company、官网、历史证据 | source discovery | 新增、确认或拒绝 Source |
 | 人工维护 Source | manual | 列表 URL、类别、参数 | data maintenance/validation | 新版本 Source |
-| 首次全量初始化 | Source 首次可用 | Source、列表/详情 Plan | baseline → listing/detail | 当前全部岗位基线和水位 |
+| 首次全量初始化 | Source 首次可用 | Source、列表/详情 Recipe | baseline → listing/detail | 当前全部岗位基线和水位 |
 | 第二次全量校准 | 首次基线完成或人工触发 | 已有基线 | reconcile | 验证分页、去重和下架判断 |
 | 每日列表增量 | timer | 所有 active Source | listing sync | 当日岗位集合与差异 |
 | 新岗位详情 | listing diff | 新 Job Posting | detail sync | 新岗位完整详情 |
 | 变化岗位详情 | 摘要/hash/版本变化 | 已有 Job Posting | detail sync | 新内容版本 |
 | 定期详情复核 | 风险策略或抽样 timer | 长期未刷新岗位 | detail sync/reconcile | 质量与在招状态确认 |
 | 岗位下架确认 | 列表中缺失 | 历史岗位和连续观测 | closure check | 关闭、继续观察或异常 |
-| 列表来源修复 | 列表失败或异常为空 | Source、Failure Artifact | repair | 新列表 Plan/URL 或人工结论 |
-| 岗位详情修复 | 详情失败或字段异常 | Job URL、Failure Artifact | repair | 新详情 Plan/URL 或人工结论 |
+| 列表来源修复 | 列表失败或异常为空 | Source、Failure Artifact | repair | 新列表 Recipe/URL 或人工结论 |
+| 岗位详情修复 | 详情失败或字段异常 | Job URL、Failure Artifact | repair | 新详情 Recipe/URL 或人工结论 |
 | 登录/Profile 修复 | 认证失效、验证码 | 安全域和失败证据 | repair/waiting human | 恢复、暂停或终止 |
 | 公司更新 | manual/event | 公司新信息 | data maintenance + 必要 rediscovery | 新版本公司和受影响 Work |
 | 重复公司合并/拆分 | manual/质量事件 | 候选公司及关联数据 | data maintenance/reconcile | 可追踪的数据迁移与映射 |
@@ -204,7 +205,7 @@ Target 是“可调度对象”的统一称呼，不替代这些业务实体。C
 | Source 移除 | manual/失效确认 | Source | data maintenance | 停止调度并处理关联岗位 |
 | 数据纠错与重算 | manual/质量事件 | 字段、映射或新规则 | repair/reconcile | 新数据版本和影响报告 |
 | 历史数据回填 | manual/规则升级 | 时间范围、字段和 Target | reconcile | 新版本数据及覆盖报告 |
-| Plan 批量升级 | 新 Plan 验证通过 | 受影响 Source 集合 | validation + staged rollout | 分阶段发布或回滚 |
+| Recipe 批量升级 | 新 Recipe 验证通过 | 受影响 Source 集合 | validation + staged rollout | 分阶段发布或回滚 |
 | 临时手动运行 | manual | Company/Source/Job | 对应目的 Work | 与定时任务相同的结果 |
 | 失败重试和人工结案 | event/manual | 原 Work 与证据 | retry/repair | 成功、跳过、接受现状或终止 |
 
@@ -212,16 +213,14 @@ Target 是“可调度对象”的统一称呼，不替代这些业务实体。C
 
 “每天运行所有抓取任务”的业务含义是：在各自时区和刷新窗口内，为每日截点时所有 **active Recruitment Source** 至少完成一次列表同步或记录一个明确、可解释的未完成结果。它不表示每天重抓全部历史岗位详情。
 
-每天的计划集合包括：
+Daily Run 的固定和派生集合包括：
 
 - 所有 active Source 的 `listing_sync`；
-- 尚无有效 Source 或到达复核周期的 Company 的 `source_discovery`；
 - 列表差异产生的 `detail_sync` 和 `closure_check`；
-- 当日到期的详情抽样、基线校准和历史回填；
 - 到达重试时间的失败 Work，以及修复方案发布后应重跑的 Work；
 - 只计入统计但不自动执行的 `waiting_human` Work。
 
-其中只有第一项是对全部 active Source 的固定每日基线；其他项由当天数据变化、策略到期和异常产生。
+其中只有第一项是固定每日基线，其他项由当天差异和异常派生。Source Discovery、首次全量、第二次校准、低频抽样和历史回填属于独立的事件或策略任务，不因 Daily Run 每天重复执行。
 
 ```text
 Daily Run 打开
@@ -271,8 +270,43 @@ detail_completion
 - 移除 Source 时停止其后续调度；其岗位进入待归属/下架评估，不能无条件级联删除。
 - 公司“删除”默认是可恢复归档：停止公司及 Source 调度，保留审计和历史岗位。
 - 物理删除属于独立的合规操作，必须展示影响范围、执行权限/审批、保留期和删除结果；不得由普通采集失败触发。
-- 批量更新、删除和 Plan 发布必须逐项记录结果，允许部分失败重试，不能只返回一个模糊的整体成功。
+- 批量更新、删除和 Recipe 发布必须逐项记录结果，允许部分失败重试，不能只返回一个模糊的整体成功。
 - 公司合并、拆分或 Source 改归属必须保存旧新 ID 映射，保证历史 Work、Attempt、Artifact 和岗位仍可追踪。
+
+### 5.10 浏览器插件与 Recipe 复用闭环
+
+Recipe 是已经确认的核心产品资产，不只是待选技术。其价值是把一次性分析成本转换成可重复执行的代码：
+
+```text
+没有可用 Recipe
+  → 浏览器插件/Agent/用户在真实网站发现流程
+  → 捕获 DOM、网络请求、分页、字段映射和必要交互
+  → 生成版本化 Recipe 代码
+  → 用真实样本执行和质量验证
+  → 发布 active Recipe
+
+日常运行
+  → 直接查找 active Recipe
+  → 直接执行代码
+  → 不在执行前调用 AI 分析页面
+
+Recipe 失败或质量退化
+  → 保存 Failure Artifact
+  → 确定性兼容规则尝试
+  → 必要时浏览器插件/Agent/用户修复
+  → 验证新版本
+  → 灰度发布并保留回滚版本
+```
+
+Recipe 至少分为：
+
+- **Listing Recipe**：给定已保存的岗位列表 URL，遍历分页并输出来源岗位 ID、岗位 URL 和列表摘要；
+- **Detail Recipe**：给定岗位 URL，输出结构化岗位详情；
+- **Discovery Recipe/Procedure**：辅助从公司官网等入口找到候选岗位列表 URL，只在接入、入口失效或人工要求复核时运行。
+
+每日主链路使用已保存的岗位列表 URL 和 Listing Recipe 获得当日岗位 URL 集合，再只对新增或变化的岗位 URL 执行 Detail Recipe。发现岗位列表 URL 不是每日步骤；没有变化的历史岗位详情也不每日重复获取。
+
+Recipe 可以是 HTTP 请求流程、Browser DOM 操作、Extension 录制脚本或它们的组合。代码执行仍有网络和计算成本，但不再承担重复的 AI 推理与流程发现成本。
 
 ## 6. 核心设计原则
 
@@ -292,10 +326,10 @@ Channel 不作为数据库分片或队列分区。第一版默认一个招聘业
 
 ### 6.4 确定性优先
 
-- 已验证 Plan 的正常执行不调用 LLM；
+- 已验证 Recipe 的正常执行不调用 LLM；
 - 能用 HTTP/API 时不启动浏览器；
 - 能用规则判断时不调用 AI；
-- AI 生成的 Plan 必须真实执行和质量验证；
+- AI 生成的 Recipe 必须真实执行和质量验证；
 - AI 只能调用公开能力，不能直接写数据。
 
 ### 6.5 Work 与 Attempt 分离
@@ -341,7 +375,7 @@ Human、Agent 和 Tool 修改领域事实时都使用公开领域词，携带稳
                              │ Resource data plane / Drivers
                              ▼
 ┌──────────────────────────────────────────────────────────┐
-│ Domain facts / Plan / Artifact / HTTP / Browser / AI      │
+│ Domain facts / Recipe / Artifact / HTTP / Browser / AI      │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -355,7 +389,7 @@ Human、Agent 和 Tool 修改领域事实时都使用公开领域词，携带稳
 | Channel、成员和访问权限 | Atoll |
 | 控制消息、协作过程和摘要 | Atoll ledger |
 | 可靠唤醒 | Atoll timer |
-| Target、Plan、Work、Attempt 接受规则和招聘数据 | Recruiting Actor |
+| Target、Recipe、Work、Attempt 接受规则和招聘数据 | Recruiting Actor |
 | 大规模事实和 Artifact 内容 | Recruiting Actor 控制的 Resource |
 | HTTP、Browser、Extension、AI 外部效果 | 授权 Driver；调用 Actor 承担业务责任 |
 
@@ -394,7 +428,7 @@ Web / 飞书 Gateway         → 只提交公开消息
 | Recruiting Actor | service/tool | 领域行为、调度判断、结果接受和恢复 |
 | Recruiting Executor | tool | 按 capability 调用 Driver 并提交结果 |
 
-第一版只冻结一个 `recruiting-executor` Actor class，可声明 `http.fetch`、`browser.recipe`、`browser.profile`、`extension.required`、`plan.validate` 等 capability。同一执行者可具备多项能力；步骤种类不等于 Executor 类型。
+第一版只冻结一个 `recruiting-executor` Actor class，可声明 `http.fetch`、`browser.recipe`、`browser.profile`、`extension.required`、`recipe.validate` 等 capability。同一执行者可具备多项能力；步骤种类不等于 Executor 类型。
 
 ### 8.3 首批公开领域词
 
@@ -406,7 +440,7 @@ recruiting.source.discover / get / list
 recruiting.job.get / list / correct
 recruiting.work.create / get / list / pause / resume
 recruiting.work.correct / retry / cancel / resolve
-recruiting.plan.inspect / validate / approve / reject
+recruiting.recipe.inspect / validate / approve / reject
 recruiting.execution.offer / accept / started / result / failed
 recruiting.daily_run.get / list / summary
 recruiting.jobs.search
@@ -427,22 +461,28 @@ Company 1 ── 0..N Recruitment Source 1 ── 0..N Job Posting
 ```
 
 - Company 保存主体身份、规范名称、官网、别名、控制状态和版本。
-- Recruitment Source 保存所属公司、来源类型、列表入口、招聘类别、刷新策略、列表 Plan、最近成功水位和控制状态。
-- Job Posting 保存所属公司和 Source、来源岗位 ID、规范化详情 URL、详情 Plan、结构化内容版本、首次/最近发现时间和在招状态。
+- Recruitment Source 保存所属公司、来源类型、列表入口、招聘类别、刷新策略、列表 Recipe、最近成功水位和控制状态。
+- Job Posting 保存所属公司和 Source、来源岗位 ID、规范化详情 URL、详情 Recipe、结构化内容版本、首次/最近发现时间和在招状态。
 
-Company 和 Source 的最小控制状态为 `active | paused | archived`。Job Posting 的业务状态至少区分 `open | missing_pending | closed`。健康、发现中、等待修复、无职位等优先由 Work、Artifact 和质量事实形成投影。
+Company 和 Source 的最小控制状态为 `active | paused | archived`，并分别保存接入/可用性状态。Job Posting 的业务状态至少区分 `open | missing_pending | closed`。健康评分、无职位等优先由 Work、Artifact 和质量事实形成投影。
 
 Target 是 Work 对可调度对象的统一引用（`target_type + target_id`），不是用来代替三类业务实体的万能表。
 
-### 9.2 Plan
+### 9.2 Recipe
 
-描述如何执行发现、列表、详情或验证。Recipe 是 Plan 的一种候选表示，不假设它覆盖所有 HTTP、Browser、登录态和 Extension 场景。
+Recipe 是版本化、可直接执行的确定性代码资产，描述如何完成列表枚举、详情获取、来源发现辅助或验证。它可以调用 HTTP、Browser、持久 Profile 和 Browser Extension capability，也可以组合这些能力。
+
+Recipe 的生产入口是“按 scope 查找 active 版本并执行”，不是“先让 AI 分析网站”。只有无可用 Recipe、Recipe 执行失败或质量检查失败时，才进入发现或修复流程。
 
 ```text
-draft → validating → active → deprecated
+draft → validating → active → superseded
+  ↑         │          └→ disabled
+  └─────────┘ validation_failed
 ```
 
-Attempt 固定引用 `plan_id + version`，不能静默漂移版本。
+Recipe 至少保存 `recipe_id`、`kind=list|detail|discovery`、适用 scope、代码/Resource 引用、输入输出契约、所需 capability、版本、内容哈希、验证证据和状态。同一 scope/kind 同时只能有一个默认 active 版本。
+
+Attempt 固定引用 `recipe_id + recipe_version`，不能静默漂移版本。
 
 ### 9.3 Work
 
@@ -464,7 +504,7 @@ work_id, parent_work_id?, target_type, target_id
 purpose, trigger, initiator_actor_id
 cause_message_id?, cause_work_id?
 status, waiting_reason?, priority, expected_version
-plan_id?, plan_version?, not_before?, deadline_at?
+recipe_id?, recipe_version?, not_before?, deadline_at?
 summary, created_at, updated_at
 ```
 
@@ -478,15 +518,74 @@ Executor 对 Work 的一次具体执行。
 offered → accepted → running → succeeded / failed / expired / rejected
 ```
 
-保存 `attempt_id`、`work_id`、Executor identity/incarnation、capability 快照、Plan 版本、状态、接受版本、时间和结果/失败 Artifact 引用。`acceptance_version` 是逻辑 fencing 条件，但不要求一定使用 lease token。
+保存 `attempt_id`、`work_id`、Executor identity/incarnation、capability 快照、Recipe 版本、状态、接受版本、时间和结果/失败 Artifact 引用。`acceptance_version` 是逻辑 fencing 条件，但不要求一定使用 lease token。
 
 ### 9.5 Artifact
 
-Resource 中大对象或批量结果的稳定引用，包括页面、截图、响应、原始职位、失败证据、候选 Plan、验证报告和 trace。至少保存 ID、内容哈希、类型、创建者、关联 Work/Attempt、访问和保留策略。
+Resource 中大对象或批量结果的稳定引用，包括页面、截图、响应、原始职位、失败证据、候选 Recipe、验证报告和 trace。至少保存 ID、内容哈希、类型、创建者、关联 Work/Attempt、访问和保留策略。
 
-### 9.6 不冻结物理表
+### 9.6 领域状态机
 
-系统必须可恢复地保存 Company、Recruitment Source、Job Posting、Plan、Work、Attempt、Artifact、命令幂等记录、每日 occurrence 和站点预算事实。这不等于提前确定 `human_reviews`、`work_bundles`、`worker_slots`、`origin_budgets`、`domain_outbox` 等物理表。表、索引、事务和存储产品根据 Resource API 与访问实测决定。
+状态机是确定的设计组成，不依赖 Staircase，也不会因为采用 Atoll 而消失。第一版至少定义：
+
+```text
+Company onboarding_status:
+new → discovering_sources → initializing → ready
+
+Company control_status:
+active ↔ paused → archived
+active → archived
+
+Recruitment Source readiness_status:
+candidate → validating → ready
+ready → repairing → validating
+validating → invalid → validating
+
+Recruitment Source control_status:
+active ↔ paused → archived
+active → archived
+
+Recipe:
+draft → validating → active → superseded / disabled
+validating → draft（验证失败并保留证据）
+
+Job Posting:
+discovered → open → missing_pending → closed
+closed → open（来源确认重新开放）
+missing_pending → open（后续列表重新出现）
+
+Work:
+open → running → completed
+running → waiting_retry / waiting_human / failed
+waiting_retry / waiting_human → running
+任意非终态 → paused / canceled
+
+Attempt:
+offered → accepted → running → succeeded / failed / expired / rejected
+
+Daily Run:
+planned → running → completed / completed_with_exceptions
+```
+
+Company 只有 `onboarding_status=ready` 且 `control_status=active` 才进入正常运行；Source 只有 `readiness_status=ready` 且 `control_status=active` 才属于每日应运行集合。正交状态避免把“用户暂停”和“页面坏了”混成同一个枚举。
+
+状态转换规则写在纯 Recruiting domain model 中，输入为当前状态和领域命令，输出为新状态及领域事件。Recruiting Actor 是唯一有权接受转换结果的行为边界：
+
+```text
+Atoll Message（身份、cause、command_id、expected_version）
+  → Recruiting Actor
+  → 纯状态转换函数
+  → Actor 控制的 Resource 保存新事实
+  → Atoll ledger 记录协作结果与因果
+```
+
+Atoll timer 只负责可靠地产生到期命令，不直接修改状态；Executor 只提交 Attempt 结果，不直接把 Work 或 Job 改成成功；Human 和 Agent 也使用相同命令和版本校验。
+
+如果不基于 Atoll，仍然应该采用相同领域状态机，但还需要另行建设身份认证、授权、命令总线、定时器、持久事件记录、Actor 生命周期和人工协作入口。Atoll 替代的是这些通用运行与协作基础设施，不替代招聘业务状态机。
+
+### 9.7 不冻结物理表
+
+系统必须可恢复地保存 Company、Recruitment Source、Job Posting、Recipe、Work、Attempt、Artifact、命令幂等记录、每日 occurrence 和站点预算事实。这不等于提前确定 `human_reviews`、`work_bundles`、`worker_slots`、`origin_budgets`、`domain_outbox` 等物理表。表、索引、事务和存储产品根据 Resource API 与访问实测决定。
 
 ## 10. 大规模调度
 
@@ -551,7 +650,7 @@ M1 选择最简单可工作的方案，M4 用 20,000 个 Target 的测试决定�
 到期 Work
   → Recruiting Actor 校验状态、预算和 capability
   → 创建 Attempt 并关联 Executor
-  → Executor 获取 Plan 与输入 Resource
+  → Executor 获取 Recipe 与输入 Resource
   → 执行并上传 Artifact
   → Recruiting Actor 按 attempt_id + acceptance_version 接受或拒绝
 ```
@@ -597,7 +696,7 @@ Push、Pull、带过期执行权、无 heartbeat 的短任务均可实验。依�
 | 超时、偶发 5xx | 有界退避 |
 | 429 | 降速并延迟 |
 | 403、验证码、登录失效 | 停止对应站点/Profile 并请求处理 |
-| 页面结构变化 | Plan 修复和真实样本验证 |
+| 页面结构变化 | Recipe 修复和真实样本验证 |
 | 空结果、字段异常 | 质量检查，不能直接当成功 |
 | 确定性数据错误 | 进入修复，不盲目重试 |
 | 多轮不收敛 | `waiting_human` |
@@ -629,7 +728,7 @@ Push、Pull、带过期执行权、无 heartbeat 的短任务均可实验。依�
 
 ### 11.3 对账
 
-Recruiting Actor 的恢复 handler 检查长期无进展 Work/Attempt、已上传但未接受的 Artifact、状态投影差异、失效 incarnation、废弃 Plan 引用和长期未进入 ledger 的事件意图。只有出现独立权限、生命周期或故障边界后才拆 Reconciler Actor。
+Recruiting Actor 的恢复 handler 检查长期无进展 Work/Attempt、已上传但未接受的 Artifact、状态投影差异、失效 incarnation、废弃 Recipe 引用和长期未进入 ledger 的事件意图。只有出现独立权限、生命周期或故障边界后才拆 Reconciler Actor。
 
 ### 11.4 Atoll 暂时不可用
 
@@ -643,7 +742,7 @@ Recruiting Actor 的恢复 handler 检查长期无进展 Work/Attempt、已上�
 
 ### 12.1 消息与数据
 
-`work.created/waiting_human/resumed/completed`、`target.blocked`、`origin.circuit_opened`、`plan.review_requested/published`、`capacity.degraded` 等协作事件进入 Channel。
+`work.created/waiting_human/resumed/completed`、`company.blocked`、`source.blocked`、`origin.circuit_opened`、`recipe.review_requested/published`、`capacity.degraded` 等协作事件进入 Channel。
 
 执行消息是否逐条进入 Channel，要根据控制价值和 ledger 容量实测决定，但不能绕过 Atoll 身份、授权和可恢复因果。允许 Message 引用 Resource 中的紧凑批量 envelope。
 
@@ -658,25 +757,25 @@ Recruiting Actor 的恢复 handler 检查长期无进展 Work/Attempt、已上�
 - Profile 绑定授权设备或安全域；
 - 发送给 AI 的 Artifact 必须过滤、脱敏和限量；
 - 人工命令使用 `expected_version`，旧操作不能覆盖新状态；
-- 批量影响 Target 或共享 Plan 的动作可配置二次批准。
+- 批量影响 Target 或共享 Recipe 的动作可配置二次批准。
 
 ### 12.3 Work Center
 
-用户可按 trigger、purpose、状态、等待原因、Target、发起者和时间筛选 Work，并查看输入、Plan、Attempt、Artifact 和因果链；执行创建、领取人工项、暂停、恢复、取消、修正、重试、跳过、批准、拒绝或终止。
+用户可按 trigger、purpose、状态、等待原因、Target、发起者和时间筛选 Work，并查看输入、Recipe、Attempt、Artifact 和因果链；执行创建、领取人工项、暂停、恢复、取消、修正、重试、跳过、批准、拒绝或终止。
 
 Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预算的投影，不要求独立 Actor。
 
 ## 13. 可观测性
 
-业务指标包括 Target 健康、职位变化、Plan 覆盖与修复率；调度指标包括可运行量、等待原因、最老年龄、deadline、Attempt 结果、站点预算和能力利用率；可靠性指标包括跨 ledger/Resource 未完成意图、状态差异、陈旧结果拒绝和恢复时间。
+业务指标包括 Target 健康、职位变化、Recipe 覆盖与修复率；调度指标包括可运行量、等待原因、最老年龄、deadline、Attempt 结果、站点预算和能力利用率；可靠性指标包括跨 ledger/Resource 未完成意图、状态差异、陈旧结果拒绝和恢复时间。
 
-必须贯穿 `command_id`、`correlation_id`、`target_id`、`work_id`、`attempt_id`、Plan 版本和 `artifact_id`。只有真正引入 Batch 等实体后才增加对应 ID。
+必须贯穿 `command_id`、`correlation_id`、`target_id`、`work_id`、`attempt_id`、Recipe 版本和 `artifact_id`。只有真正引入 Batch 等实体后才增加对应 ID。
 
 ## 14. 实施阶段
 
 ### M0：最小契约
 
-- 冻结 Company、Recruitment Source、Job Posting 三类业务实体，以及 Plan、Work、Attempt、Artifact 四类运行实体；
+- 冻结 Company、Recruitment Source、Job Posting 三类业务实体，以及 Recipe、Work、Attempt、Artifact 四类运行实体；
 - 冻结公司接入、每日列表同步、增量详情、下架确认、修复、人工接管和数据维护的业务语义；
 - 冻结幂等、版本校验和陈旧结果拒绝不变量；
 - 建立 Actor、Message、Resource、Driver 边界；
@@ -707,7 +806,7 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 
 ### M3：修复闭环
 
-完成 Source Discovery、列表 Plan 与详情 Plan 的生成/验证/发布/回滚、Failure Artifact、自动修复，以及人从 `waiting_human` 恢复或完结 Work。
+完成 Source Discovery、列表 Recipe 与详情 Recipe 的生成/验证/发布/回滚、Failure Artifact、自动修复，以及人从 `waiting_human` 恢复或完结 Work。
 
 ### M4：10K 容量决策
 
@@ -734,10 +833,12 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 - 一至两次全量后，每个日运行窗口内为截点时所有 active Source 产生唯一 occurrence，并完成列表同步或记录明确等待/失败原因；
 - 日常只对新增、变化、到期抽样和合法重试岗位同步详情；
 - 岗位一次缺失不被误删，满足下架确认策略后才从 `open` 转为 `closed`；
-- 列表 Source 和岗位详情 URL/Plan 可以分别自动修复或进入人工处理；
-- Plan 能执行并产生结构化职位；
+- 列表 Source 和岗位详情 URL/Recipe 可以分别自动修复或进入人工处理；
+- 浏览器插件能够在真实页面捕获/辅助生成 Listing Recipe 和 Detail Recipe，并保存版本与验证证据；
+- 已存在 active Recipe 时，日常执行直接运行其代码，不先调用 Agent/LLM 分析；
+- Recipe 能执行并产生结构化职位；
 - 失败生成 Artifact，人工能在原上下文处理；
-- 可从命令追踪 Work、Attempt、Plan、Artifact 和数据；
+- 可从命令追踪 Work、Attempt、Recipe、Artifact 和数据；
 - 旧 `expected_version` 明确拒绝；
 - 重复命令、交付和结果不产生重复业务结果；
 - Executor 退出后 Work 可恢复；
@@ -756,13 +857,13 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 - 测量单 Channel、Resource data plane 和 ledger 增长；
 - 逐步增加 Work 和并发，记录瓶颈，不预设每秒提交数或 Slot 数；
 - 验证公平、站点预算、无事实丢失、无陈旧覆盖和无重复结果；
-- 根据真实 Plan 耗时分布计算每日窗口所需容量。
+- 根据真实 Recipe 耗时分布计算每日窗口所需容量。
 
-报告必须记录硬件、数据库、Atoll 版本、数据分布、Plan 类型、预算、并发、P50/P95/P99、错误率和恢复时间，才能作为拆架构的依据。
+报告必须记录硬件、数据库、Atoll 版本、数据分布、Recipe 类型、预算、并发、P50/P95/P99、错误率和恢复时间，才能作为拆架构的依据。
 
 ### 15.3 真实网站验收
 
-发现、Plan、HTTP/API 和 Browser 以真实公开招聘网站验收。本地只注入不能安全施加给第三方的并发、重复、崩溃和数据库故障。
+发现、Recipe、HTTP/API 和 Browser 以真实公开招聘网站验收。本地只注入不能安全施加给第三方的并发、重复、崩溃和数据库故障。
 
 候选站型：
 
@@ -770,13 +871,13 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 |---|---|---|
 | 国内大型 SPA | 腾讯招聘、百度招聘 | 动态列表、筛选、分页、API 映射 |
 | 独立招聘站 | 爱奇艺、网易相关招聘站 | 招聘类型、空职位、入口失效 |
-| 通用 ATS | Moka、飞书招聘、北森公开入口 | Plan 复用、租户差异、分页 |
+| 通用 ATS | Moka、飞书招聘、北森公开入口 | Recipe 复用、租户差异、分页 |
 | 国际站/ATS | ASML、Greenhouse 公开职位页 | 多语言、地区、时区、归一化 |
 | 无职位页 | 当前公开的官方入口 | 正确识别 `no_open_jobs` |
 
 样本需版本化保存官方 URL、origin、站型、预期结果、允许访问方式、人工确认时间。验收职位唯一性、字段质量、分页、列表详情映射、幂等和页面变化证据，不依赖固定职位总数。
 
-测试分为 Live Smoke（1–3 站）、Nightly Canary（5–10 站）和 Weekly Coverage（20–50 站）。每次保存 URL、HTTP 状态、Plan 版本、trace、字段/去重统计、必要截图、失败分类、预算决定和抽样结论。
+测试分为 Live Smoke（1–3 站）、Nightly Canary（5–10 站）和 Weekly Coverage（20–50 站）。每次保存 URL、HTTP 状态、Recipe 版本、trace、字段/去重统计、必要截图、失败分类、预算决定和抽样结论。
 
 边界：
 
@@ -797,7 +898,7 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 3. 第一版默认一个招聘 Channel，不把 Channel 当队列分片。
 4. 第一版不拆 Planner、Dispatcher、Committer、Fleet 或 Reconciler Actor。
 5. 第一版只冻结一个 `recruiting-executor` Actor class，capability 与步骤类型分离。
-6. 业务层冻结 Company、Recruitment Source、Job Posting；运行层冻结 Plan、Work、Attempt、Artifact；Target 只是统一引用。
+6. 业务层冻结 Company、Recruitment Source、Job Posting；运行层冻结 Recipe、Work、Attempt、Artifact；Target 只是统一引用。
 7. trigger、purpose、initiator、cause 正交表达工作，不使用混合 source。
 8. 人工审核是 `waiting_human` Work 的状态和视图。
 9. 一至两次全量后，每日扫描全部 active 入口并只处理增量详情。
@@ -810,6 +911,9 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 16. 每日运行的完成口径以 active Source occurrence 为准；不把“每日全量运行”误解为每天抓取全部历史岗位详情。
 17. 列表发现/同步、岗位详情同步、下架确认、列表修复和详情修复是不同业务 Work，但不等于不同 Executor 类型。
 18. 删除默认采用可恢复归档；岗位下架保留历史；物理删除是受控合规操作。
+19. 公司和岗位列表 URL 是一对多关系；Source Discovery 只在接入、入口失效或人工复核时运行，不是每日任务。
+20. Browser Extension 与 Recipe 是核心执行闭环；固定流程一旦验证就保存为版本化代码，日常直接复用。
+21. Company、Source、Recipe、Job、Work、Attempt 和 Daily Run 都由显式领域状态机约束；Atoll 提供状态转换所需的身份、消息、timer、ledger 和权限边界。
 
 ## 17. 待实验后决策
 
@@ -823,7 +927,7 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 - Executor template、placement 或进程池；
 - Browser/Extension Driver 协议；
 - Profile 加密、授权、分配和迁移；
-- Plan 自动发布风险阈值；
+- Recipe 自动发布风险阈值；
 - 数据保留、删除和合规；
 - 单地域或多地域；
 - 查询使用领域能力还是搜索分析投影。
