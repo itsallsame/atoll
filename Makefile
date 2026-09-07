@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope dev clean e2e-loop
+.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope recruiting-boundary-check dev clean e2e-loop
 
 # server/daemon ship namespaced (atoll-server / atoll-daemon); the entry
 # command itself is plain `atoll` — its own name IS the namespace.
@@ -164,6 +164,9 @@ lint:
 
 check-data-plane-scope:
 	./scripts/check-data-plane-scope.sh
+
+recruiting-boundary-check:
+	./scripts/recruiting-boundary-check.sh $${BASE_REF:-HEAD}
 
 # ----------------------------------------------------------------------------
 # dev — 备好一个干净的开发场地：清空 $(DEV_HOME) + 编译，然后把启动命令

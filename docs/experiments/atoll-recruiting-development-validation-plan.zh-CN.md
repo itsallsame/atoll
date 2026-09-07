@@ -158,6 +158,8 @@ P2 和 P4 可在 P1 契约冻结后并行；P3 可先用内存 Repository 开发
 
 ## 5. P0：契约与可行性探针
 
+执行状态：已通过，证据见 `docs/experiments/atoll-recruiting-p0-acceptance.zh-CN.md`。
+
 ### 开发项
 
 - 建立上述目录、`recruiting` 和 `recruiting-executor` 两个 actor class，并在 `drivers/tools/all/all.go` 注册；
