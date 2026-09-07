@@ -7,7 +7,7 @@ import (
 
 func TestParseConfigDefaultsAndRejectsUnknownFields(t *testing.T) {
 	cfg, err := parseConfig(nil)
-	if err != nil || cfg.ExecutorID != "recruiting-executor" || cfg.DatabaseDSNEnv != "ATOLL_RECRUITING_MYSQL_DSN" {
+	if err != nil || cfg.ExecutorID != "recruiting-executor" || cfg.DatabaseDSNEnv != "ATOLL_RECRUITING_MYSQL_DSN" || cfg.ReconcileIntervalMS != 30_000 {
 		t.Fatalf("default config = %+v, %v", cfg, err)
 	}
 	if _, err := parseConfig(json.RawMessage(`{"unknown":true}`)); err == nil {
@@ -18,6 +18,9 @@ func TestParseConfigDefaultsAndRejectsUnknownFields(t *testing.T) {
 	}
 	if _, err := parseConfig(json.RawMessage(`{"database_dsn_env":" "}`)); err == nil {
 		t.Fatal("blank database DSN environment name was accepted")
+	}
+	if _, err := parseConfig(json.RawMessage(`{"reconcile_interval_ms":99}`)); err == nil {
+		t.Fatal("too-small reconcile interval was accepted")
 	}
 }
 

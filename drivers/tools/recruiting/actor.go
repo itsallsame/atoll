@@ -25,9 +25,10 @@ import (
 const stateKey resource.ResourceID = "recruiting.p0.state"
 
 type storedState struct {
-	Works        map[string]model.ProbeWork `json:"works"`
-	CommandWorks map[string]string          `json:"command_works"`
-	Receipts     map[string]json.RawMessage `json:"receipts"`
+	Works            map[string]model.ProbeWork `json:"works"`
+	CommandWorks     map[string]string          `json:"command_works"`
+	Receipts         map[string]json.RawMessage `json:"receipts"`
+	ReconcileTimerID string                     `json:"reconcile_timer_id,omitempty"`
 }
 
 type probeStartPayload struct {
@@ -107,14 +108,24 @@ func run(sys actorbase.Sys, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	if repository != nil && state.ReconcileTimerID == "" {
+		if err := armReconcileTimer(sys, cfg, state); err != nil {
+			return err
+		}
+	}
 	for {
 		msg, err := sys.Recv()
 		if err != nil {
 			return err
 		}
 		if msg.Kind == message.KindEvent {
-			if msg.Type == typeProbeDue {
+			switch msg.Type {
+			case typeProbeDue:
 				handleDue(sys, cfg, state, msg)
+			case typeOutboxReconcileDue:
+				if err := handleOutboxReconcileDue(sys, cfg, state, repository, msg); err != nil {
+					return err
+				}
 			}
 			continue
 		}

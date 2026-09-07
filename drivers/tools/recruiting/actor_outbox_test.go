@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/wanpengxie/atoll/protocol/message"
 )
 
 func TestOutboxEventFingerprintBindsIdentityKindAndPayload(t *testing.T) {
@@ -38,5 +40,19 @@ func TestOutboxRetryDelayIsBoundedExponential(t *testing.T) {
 func TestOutboxErrorClassificationDoesNotPersistErrorText(t *testing.T) {
 	if got := classifyOutboxDeliveryError(errors.New("secret endpoint and credentials")); got != "atoll_ledger_unavailable" {
 		t.Fatalf("error class=%q", got)
+	}
+}
+
+func TestOnlyPersistedReconcileTimerCanGrowTheChain(t *testing.T) {
+	if !isCurrentReconcileTimer(message.ID("timer:current"), "current") {
+		t.Fatal("persisted timer fire was rejected")
+	}
+	for _, id := range []message.ID{"current", "timer:orphan", "timer:"} {
+		if isCurrentReconcileTimer(id, "current") {
+			t.Fatalf("stale or malformed timer %q could grow a second chain", id)
+		}
+	}
+	if isCurrentReconcileTimer(message.ID("timer:orphan"), "") {
+		t.Fatal("untracked startup orphan was accepted")
 	}
 }

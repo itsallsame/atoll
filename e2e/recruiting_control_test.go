@@ -22,7 +22,7 @@ func TestRecruitingCompanyControlUsesMySQLAcrossServerRestart(t *testing.T) {
 	registrarRequest(t, ws, c0ChannelID, registrar, "system.actor.template.create", map[string]any{
 		"id": controlDecl, "name": controlDecl, "class": "recruiting",
 		"description": "Recruiting MySQL company control.",
-		"config":      map[string]any{"executor_id": "unused-e2e-executor"},
+		"config":      map[string]any{"executor_id": "unused-e2e-executor", "reconcile_interval_ms": 500},
 		"visibility":  "private",
 	})
 	controlIntro := ws.request(c0ChannelID, "system.member.create", systemActor, map[string]any{"decl_id": controlDecl})
@@ -67,9 +67,10 @@ func TestRecruitingCompanyControlUsesMySQLAcrossServerRestart(t *testing.T) {
 	if got := nestedStringField(t, paused, "company", "control_status"); got != "paused" {
 		t.Fatalf("paused company status=%q: %v", got, paused)
 	}
+	time.Sleep(1500 * time.Millisecond)
 	reconciled := ws.request(c0ChannelID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
-	if got := numberField(t, reconciled, "delivered"); got != 3 {
-		t.Fatalf("outbox delivered=%v, response=%v", got, reconciled)
+	if got := numberField(t, reconciled, "scanned"); got != 0 {
+		t.Fatalf("automatic outbox timer left pending events: %v", reconciled)
 	}
 
 	h.restartServer()
@@ -83,6 +84,14 @@ func TestRecruitingCompanyControlUsesMySQLAcrossServerRestart(t *testing.T) {
 	if got := nestedNumberField(t, replayedPause, "company", "version"); got != 3 {
 		t.Fatalf("restart command replay changed version=%v: %v", got, replayedPause)
 	}
+	resumed := recovered.request(c0ChannelID, "recruiting.company.resume", controlID, map[string]any{
+		"command_id": "e2e-company-resume", "target": map[string]any{"target_type": "company", "target_id": "e2e-company-1"},
+		"expected_version": 3, "reason": "verify recurring timer after restart",
+	})
+	if got := nestedNumberField(t, resumed, "company", "version"); got != 4 {
+		t.Fatalf("resume after restart version=%v: %v", got, resumed)
+	}
+	time.Sleep(1500 * time.Millisecond)
 	emptyReconcile := recovered.request(c0ChannelID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
 	if got := numberField(t, emptyReconcile, "scanned"); got != 0 {
 		t.Fatalf("delivered outbox replayed after restart: %v", emptyReconcile)

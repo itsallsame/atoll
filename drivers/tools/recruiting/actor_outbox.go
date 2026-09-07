@@ -1,6 +1,7 @@
 package recruiting
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,11 +13,13 @@ import (
 	"github.com/wanpengxie/atoll/lib/actorbase"
 	"github.com/wanpengxie/atoll/lib/behavior"
 	"github.com/wanpengxie/atoll/protocol/message"
+	"github.com/wanpengxie/atoll/runtime/schedule"
 )
 
 const (
-	defaultReconcileLimit = 100
-	maxReconcileLimit     = 500
+	defaultReconcileLimit  = 100
+	maxReconcileLimit      = 500
+	typeOutboxReconcileDue = "recruiting.outbox.reconcile.due"
 )
 
 type outboxReconcilePayload struct {
@@ -31,6 +34,10 @@ type outboxReconcileResponse struct {
 	Exhausted       int    `json:"exhausted"`
 	Conflicts       int    `json:"conflicts"`
 	CheckpointError int    `json:"checkpoint_error"`
+}
+
+type outboxReconcileDuePayload struct {
+	Reason string `json:"reason"`
 }
 
 // handleOutboxReconcile is deliberately a bounded control-plane operation.
@@ -54,11 +61,18 @@ func handleOutboxReconcile(sys actorbase.Sys, repository *store.Repository, msg 
 		return
 	}
 
-	now := time.Now().UTC()
-	events, err := repository.ListPendingEvents(msg.Ctx(), now, payload.Limit)
+	response, err := reconcileOutbox(msg.Ctx(), sys, repository, payload.Limit, time.Now().UTC())
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
+	}
+	_, _ = sys.Reply(msg, response)
+}
+
+func reconcileOutbox(ctx context.Context, sys actorbase.Sys, repository *store.Repository, limit int, now time.Time) (outboxReconcileResponse, error) {
+	events, err := repository.ListPendingEvents(ctx, now, limit)
+	if err != nil {
+		return outboxReconcileResponse{}, err
 	}
 	response := outboxReconcileResponse{ContractVersion: ContractVersion, Scanned: len(events)}
 	for _, pending := range events {
@@ -76,14 +90,14 @@ func handleOutboxReconcile(sys actorbase.Sys, repository *store.Repository, msg 
 			ClientFingerprint: outboxEventFingerprint(intent.EventID, intent.Kind, ledgerPayload),
 		})
 		if emitErr == nil {
-			if err := repository.MarkEventDelivered(msg.Ctx(), intent.EventID, time.Now().UTC()); err != nil {
+			if err := repository.MarkEventDelivered(ctx, intent.EventID, time.Now().UTC()); err != nil {
 				response.CheckpointError++
 			} else {
 				response.Delivered++
 			}
 			continue
 		}
-		update, retryErr := repository.RecordEventFailureCAS(msg.Ctx(), intent.EventID, pending.Attempts,
+		update, retryErr := repository.RecordEventFailureCAS(ctx, intent.EventID, pending.Attempts,
 			now.Add(outboxRetryDelay(pending.Attempts)), classifyOutboxDeliveryError(emitErr))
 		if errors.Is(retryErr, store.ErrOutboxConflict) {
 			response.Conflicts++
@@ -99,7 +113,47 @@ func handleOutboxReconcile(sys actorbase.Sys, repository *store.Repository, msg 
 			response.RetryScheduled++
 		}
 	}
-	_, _ = sys.Reply(msg, response)
+	return response, nil
+}
+
+// armReconcileTimer persists the freshly minted ID before Recv can observe a
+// fire. If persistence fails, the new timer is cancelled and actor startup is
+// failed instead of running with an untracked recurring chain.
+func armReconcileTimer(sys actorbase.Sys, cfg Config, state *storedState) error {
+	timerID, err := sys.After(time.Duration(cfg.ReconcileIntervalMS)*time.Millisecond, typeOutboxReconcileDue,
+		outboxReconcileDuePayload{Reason: "outbox_delivery"}, schedule.TimerHomeDurable)
+	if err != nil {
+		return err
+	}
+	previous := state.ReconcileTimerID
+	state.ReconcileTimerID = string(timerID)
+	if err := persist(sys, state); err != nil {
+		state.ReconcileTimerID = previous
+		_ = sys.CancelTimer(timerID)
+		return err
+	}
+	return nil
+}
+
+func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState, repository *store.Repository, msg actorbase.Msg) error {
+	if !isCurrentReconcileTimer(msg.ID, state.ReconcileTimerID) {
+		// A crash after scheduling but before persisting can leave one orphan
+		// one-shot timer. It is acknowledged as stale and never grows a chain.
+		return nil
+	}
+	if repository != nil {
+		_, _ = reconcileOutbox(msg.Ctx(), sys, repository, defaultReconcileLimit, time.Now().UTC())
+	}
+	// Rearm and persist before the raw Proc calls Recv again and acknowledges
+	// the current fire. A crash on either side therefore leaves one of the two
+	// durable timer IDs as the authoritative chain head.
+	return armReconcileTimer(sys, cfg, state)
+}
+
+func isCurrentReconcileTimer(messageID message.ID, currentTimerID string) bool {
+	const timerPrefix = "timer:"
+	firedTimerID := strings.TrimPrefix(string(messageID), timerPrefix)
+	return firedTimerID != string(messageID) && firedTimerID == currentTimerID && currentTimerID != ""
 }
 
 func outboxEventFingerprint(eventID, eventKind string, payload []byte) string {
