@@ -59,6 +59,12 @@ type Config struct {
 	// addresses the node over relative paths. Nil serves no UI; the entrance
 	// then answers unknown paths the way it always has.
 	Web fs.FS
+	// WebMounts adds optional, self-contained working surfaces below explicit
+	// path prefixes without coupling the portal to any one domain package.
+	WebMounts map[string]fs.FS
+	// PublicSociety is the anonymous, shared observation and voting surface.
+	// Nil leaves the optional experiment API disabled.
+	PublicSociety http.Handler
 }
 
 type ObsPlane interface {
@@ -92,6 +98,19 @@ func New(cfg Config) *Portal {
 	p.mux.HandleFunc("GET /api/update", p.updateStatus)
 	p.mux.HandleFunc("POST /api/update", p.updateStart)
 	p.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
+	if cfg.PublicSociety != nil {
+		p.mux.Handle("POST /api/society", cfg.PublicSociety)
+	}
+	for prefix, assets := range cfg.WebMounts {
+		if assets == nil || !strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") || prefix == "/" {
+			continue
+		}
+		mount := strings.TrimSuffix(prefix, "/")
+		p.mux.Handle("GET "+prefix, http.StripPrefix(mount, http.FileServerFS(assets)))
+		p.mux.HandleFunc("GET "+mount, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, prefix, http.StatusTemporaryRedirect)
+		})
+	}
 	p.mux.HandleFunc("/", p.fallback)
 	return p
 }
@@ -247,7 +266,7 @@ func (p *Portal) observe(w http.ResponseWriter, r *http.Request) {
 
 func (p *Portal) fallback(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
-	case "/api/identity/register", "/api/identity/login", "/api/identity/logout", "/api/identity/session", "/api/update", "/ws", "/compute", "/healthz", ptyPath:
+	case "/api/identity/register", "/api/identity/login", "/api/identity/logout", "/api/identity/session", "/api/update", "/api/society", "/ws", "/compute", "/healthz", ptyPath:
 		writeError(w, http.StatusMethodNotAllowed, string(codeNotFound), "method not allowed")
 		return
 	}
@@ -509,7 +528,7 @@ func (p *Portal) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.setSession(w, login.PrincipalID)
-	writeJSON(w, 200, map[string]string{"id": login.PrincipalID})
+	writeJSON(w, 200, p.identityReply(r.Context(), login.PrincipalID))
 }
 func (p *Portal) logout(w http.ResponseWriter, r *http.Request) {
 	if token := requestToken(r); token != "" {
@@ -524,7 +543,32 @@ func (p *Portal) identitySession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, string(codeNotAuthenticated), "invalid session")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id": principal})
+	writeJSON(w, http.StatusOK, p.identityReply(r.Context(), principal))
+}
+
+// identityReply includes the principal's home channel so browser clients can
+// resume a session after a node restart. Home channel IDs are intentionally
+// opaque and are not generally the same value as the principal ID.
+func (p *Portal) identityReply(ctx context.Context, principal string) map[string]string {
+	reply := map[string]string{"id": principal}
+	if principal == channelspec.RootPrincipalID {
+		reply["home_channel_id"] = string(channelspec.C0ChannelID)
+		return reply
+	}
+	if p.cfg.Registry == nil {
+		return reply
+	}
+	rows, err := p.cfg.Registry.ListPresentChannels(ctx)
+	if err != nil {
+		return reply
+	}
+	for _, row := range rows {
+		if row.ParentID == channelspec.C0ChannelID && row.OwnerPrincipal == principal && row.Name == principal {
+			reply["home_channel_id"] = string(row.ID)
+			break
+		}
+	}
+	return reply
 }
 func (p *Portal) serveWS(w http.ResponseWriter, r *http.Request) {
 	principal, ok := p.authenticate(r)

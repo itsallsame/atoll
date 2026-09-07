@@ -1,0 +1,148 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import vm from 'node:vm';
+import {fileURLToPath} from 'node:url';
+import {applicationStartObserved, normalizeEndpoint, normalizeOrigin, normalizeProgress, validateBridgeCommand, validateCurrentCommand, validateOpenCommand, validateToken} from '../extension/protocol.js';
+
+const root=path.dirname(fileURLToPath(import.meta.url));
+
+test('extension package connects pages without a separate site-authorization flow',()=>{
+ const dir=path.join(root,'../extension'),manifest=JSON.parse(fs.readFileSync(path.join(dir,'manifest.json')));
+ assert.equal(manifest.manifest_version,3);assert.equal(manifest.name,'CvMax');
+ assert.equal(manifest.version,'0.1.35');
+ assert.deepEqual(manifest.host_permissions,['http://*/*','https://*/*']);
+ assert.equal(manifest.optional_host_permissions,undefined);
+ const background=fs.readFileSync(path.join(dir,manifest.background.service_worker),'utf8');
+ assert.match(background,/setInterval\([^]*20_000\)/);
+ assert.match(background,/import \{[^}]*normalizeOrigin[^}]*\} from '\.\/protocol\.js'/);
+ const content=fs.readFileSync(path.join(dir,'content.js'),'utf8');
+ const logic=fs.readFileSync(path.join(dir,'content-logic.js'),'utf8'),context={globalThis:{}};vm.runInNewContext(logic,context);
+ assert.match(content,/个人证件/);
+ assert.match(background,/files:\s*\['content-logic\.js',\s*'content\.js'\]/);
+ assert.equal(context.globalThis.CvMaxContentLogic.desiredChecked('false'),false);
+ assert.equal(context.globalThis.CvMaxContentLogic.desiredChecked('是'),true);
+ assert.equal(context.globalThis.CvMaxContentLogic.nativeParseSignal('上传简历后自动解析并填写'),true);
+ assert.equal(context.globalThis.CvMaxContentLogic.nativeParseSignal('上传附件'),false);
+ assert.equal(context.globalThis.CvMaxContentLogic.nativeParseConfirmSignal('确认解析简历'),true);
+ assert.equal(context.globalThis.CvMaxContentLogic.nativeParseConfirmSignal('解析并覆盖'),true);
+ assert.equal(context.globalThis.CvMaxContentLogic.nativeParseBusySignal('正在解析简历'),true);
+ assert.equal(context.globalThis.CvMaxContentLogic.applicationStartSignal('立即申请'),true);
+ assert.equal(context.globalThis.CvMaxContentLogic.applicationStartSignal('立即投递'),true);
+ assert.equal(context.globalThis.CvMaxContentLogic.applicationStartSignal('提交申请'),false);
+ assert.equal(context.globalThis.CvMaxContentLogic.resumePrerequisiteSignal('创建完整简历'),true);
+ assert.equal(context.globalThis.CvMaxContentLogic.resumePrerequisiteSignal('完善在线简历'),true);
+ assert.equal(context.globalThis.CvMaxContentLogic.resumePrerequisiteSignal('上传简历'),false);
+ assert.equal(context.globalThis.CvMaxContentLogic.resumeEditSignal('编辑'),true);
+ assert.equal(context.globalThis.CvMaxContentLogic.resumeEditSignal('确认提交'),false);
+ assert.equal(context.globalThis.CvMaxContentLogic.dialogStateFromText('当前职位投递要求：中文简历完整度达到100%。 创建完整简历'),'resume_prerequisite');
+ assert.equal(context.globalThis.CvMaxContentLogic.dialogStateFromText('请登录',{hasPassword:true}),'login');
+ assert.equal(context.globalThis.CvMaxContentLogic.boundedDialogText('  申请\n  职位  '),'申请 职位');
+ assert.equal(context.globalThis.CvMaxContentLogic.finalSubmitSignal('提交申请'),true);
+ assert.equal(context.globalThis.CvMaxContentLogic.finalSubmitSignal('立即申请'),false);
+ const startA={textContent:'立即投递'},startB={textContent:' 立即投递 '},other={textContent:'查看已投'};
+ assert.equal(context.globalThis.CvMaxContentLogic.equivalentStartControl([startA,startB],item=>item.textContent),startA);
+ assert.equal(context.globalThis.CvMaxContentLogic.equivalentStartControl([startA,other],item=>item.textContent),null);
+ assert.equal(context.globalThis.CvMaxContentLogic.sectionFromText('请填写项目经历'),'项目经历');
+ assert.equal(context.globalThis.CvMaxContentLogic.sectionFromText('基本信息'),'基本信息');
+ assert.equal(context.globalThis.CvMaxContentLogic.sectionFromGroup('formily-item-project_list'),'项目经历');
+ const leaf={contains:()=>false},parent={contains:item=>item===leaf};
+ assert.deepEqual(context.globalThis.CvMaxContentLogic.leafOptions([parent,leaf]),[leaf]);
+ const box=(left,top)=>({contains:()=>false,getBoundingClientRect:()=>({left,top,width:10,height:10})}),anchor=box(0,0),near=box(5,5),far=box(100,100);
+ assert.equal(context.globalThis.CvMaxContentLogic.nearestOption(anchor,[far,near]),near);
+ assert.equal(context.globalThis.CvMaxContentLogic.nearestOption(anchor,[box(5,5),box(5,5)]),null);
+ const visual={...box(5,5),getAttribute:()=>null},semantic={...box(5,5),getAttribute:name=>name==='role'?'option':null},hit={};semantic.contains=value=>value===hit;
+ assert.equal(context.globalThis.CvMaxContentLogic.topmostOption({elementsFromPoint:()=>[hit]},[visual,semantic]),semantic);
+ const overlay={contains:item=>item===semantic};
+ assert.equal(context.globalThis.CvMaxContentLogic.topmostOption({elementsFromPoint:()=>[overlay]},[visual,semantic]),semantic);
+ assert.equal(context.globalThis.CvMaxContentLogic.equivalentOption([visual,semantic]),semantic);
+ const option=text=>({textContent:text});
+ assert.equal(context.globalThis.CvMaxContentLogic.matchingOptions([option('全日制'),option('非全日制')],'统招全日制',String).matchedValue,'全日制');
+ assert.equal(context.globalThis.CvMaxContentLogic.matchingOptions([option('本科'),option('本科生')],'本科',String).normalized,false);
+ assert.match(content,/input,select,textarea,\[role="combobox"\]/);
+ assert.match(content,/aria-controls/);
+ assert.match(content,/ud__select__selector/);
+ assert.match(content,/ud__select__option/);
+ assert.match(content,/structuredMatch/);
+ assert.match(content,/related\(clean\(item\.textContent\)\)&&actionable/);
+ assert.match(content,/site_selection_not_retained/);
+ assert.match(content,/dropdown__item/);
+ assert.match(content,/!root\.contains\(item\)/);
+ assert.match(content,/elementFromPoint/);
+ assert.match(content,/tokens\.includes\('ud__select__list__item'\)/);
+ assert.match(content,/ud__select__selector__selectItem/);
+ assert.match(content,/scrollIntoView/);
+ assert.match(content,/visibleChoices/);
+ assert.match(content,/rawChoices/);
+ assert.match(content,/rawMatch/);
+ assert.match(content,/nativeResumeParse/);
+ assert.match(content,/native_parser_triggered_requires_new_observation/);
+ assert.match(content,/reuseUploaded/);
+ assert.match(content,/root\.querySelectorAll\('\*'\)/);
+ assert.match(content,/__cvmaxContentVersion/);
+ assert.match(content,/removeListener/);
+ assert.match(content,/attachShadow/);
+ assert.match(content,/实时执行进度/);
+ assert.match(content,/target-frame/);
+ assert.match(content,/class="connector"/);
+ assert.match(content,/正在处理：/);
+ assert.match(background,/CvMax 已打开申请页/);
+ assert.match(background,/applicationStartObserved/);
+ assert.match(background,/knownTabIds/);
+ assert.match(background,/openedNewTab/);
+ assert.match(content,/role="progressbar"/);
+ assert.match(content,/pageEmergencyStop/);
+ assert.match(content,/application_start_not_safe/);
+ assert.match(content,/prerequisites\.length===1\?prerequisites\[0\]/);
+ assert.match(content,/function activeDialog\(\)/);
+ assert.match(content,/textStarts=resumePrerequisite/);
+ assert.match(content,/meaningful=all\.filter/);
+ assert.match(content,/elementsFromPoint/);
+ assert.match(content,/activeDialog:dialog\?/);
+ assert.match(content,/只填写和核验，不会提交/);
+ assert.match(background,/sender\.tab\.id === state\.active\?\.tabId/);
+ assert.match(background,/sender\.url === state\.active\?\.targetURL/);
+ assert.match(content,/element\.checked===desiredChecked\(action\.value\)/);
+ for(const file of [manifest.background.service_worker,manifest.action.default_popup,'content.js','content-logic.js','protocol.js'])assert.equal(fs.existsSync(path.join(dir,file)),true,file);
+});
+
+test('application start waits for a same-URL form, prerequisite modal, or login transition',()=>{
+ const before={url:'https://jobs.example/detail/1',documentEpoch:'doc-1',fieldCount:0,pageState:'normal'};
+ assert.equal(applicationStartObserved(before,{url:before.url,documentEpoch:'doc-1',fields:[],formStage:'detail',loginRequired:false}),false);
+ assert.equal(applicationStartObserved(before,{url:before.url,documentEpoch:'doc-1',fields:[],formStage:'detail',pageState:'resume_prerequisite',loginRequired:false}),true);
+ assert.equal(applicationStartObserved(before,{url:before.url,documentEpoch:'doc-1',fields:[{}],formStage:'apply',loginRequired:false}),true);
+ assert.equal(applicationStartObserved(before,{url:before.url,documentEpoch:'doc-1',fields:[],formStage:'apply',loginRequired:true}),true);
+ assert.equal(applicationStartObserved(before,{url:'https://jobs.example/apply/1',documentEpoch:'doc-1',fields:[],formStage:'unknown',loginRequired:false}),true);
+});
+
+test('bridge endpoint is loopback-only and token is bounded',()=>{
+ assert.equal(normalizeEndpoint('ws://localhost:18833'),'ws://localhost:18833/');assert.equal(validateToken('CV-4821'),'CV-4821');
+ for(const value of ['wss://example.com','ws://example.com:18833','ws://user@127.0.0.1:18833','ws://127.0.0.1:18833/other'])assert.throws(()=>normalizeEndpoint(value));
+ for(const value of ['', 'short', 'has space'])assert.throws(()=>validateToken(value));
+ assert.equal(normalizeOrigin('https://jobs.example/apply'),'https://jobs.example');assert.throws(()=>normalizeOrigin('chrome://extensions'));
+});
+
+test('commands require an authorized exact tab, URL, lease and live run',()=>{
+ const now=1000,tab={id:7,url:'https://jobs.example/apply'},base={kind:'command',id:'one',tabId:7,targetURL:tab.url,expiresAt:2000,action:'act',runId:'run-1'};
+ assert.equal(validateBridgeCommand(base,{tab,allowedOrigins:['https://jobs.example'],blockedRuns:new Set(),now}).origin,'https://jobs.example');
+ for(const changed of [{tabId:8},{targetURL:'https://jobs.example/other'},{expiresAt:999},{expiresAt:12000},{action:'submit'},{runId:''}])assert.throws(()=>validateBridgeCommand({...base,...changed},{tab,allowedOrigins:['https://jobs.example'],blockedRuns:new Set(),now}));
+ assert.throws(()=>validateBridgeCommand(base,{tab,allowedOrigins:[],blockedRuns:new Set(),now}));
+ assert.throws(()=>validateBridgeCommand(base,{tab,allowedOrigins:['https://jobs.example'],blockedRuns:new Set(['run-1']),now}));
+ assert.equal(validateBridgeCommand({...base,expiresAt:12000,actionSpec:{kind:'start'}},{tab,allowedOrigins:['https://jobs.example'],blockedRuns:new Set(),now}).origin,'https://jobs.example');
+});
+
+test('progress projection is bounded, value-free and accepted as a bridge action',()=>{
+ const progress=normalizeProgress({taskId:'task-1',revision:4,phase:'filling',title:'正在填写资料',detail:'只写入有来源的字段',fieldLabel:'姓名',sectionLabel:'基本信息',targetRef:'f3',current:2,total:5,verified:1,nextOwner:'CvMax',lastConfirmed:'手机号码',terminal:false,finalSubmitAllowed:true});
+ assert.deepEqual(progress,{taskId:'task-1',revision:4,phase:'filling',title:'正在填写资料',detail:'只写入有来源的字段',fieldLabel:'姓名',sectionLabel:'基本信息',targetRef:'f3',current:2,total:5,verified:1,nextOwner:'CvMax',lastConfirmed:'手机号码',terminal:false,finalSubmitAllowed:false});
+ const now=1000,tab={id:7,url:'https://jobs.example/apply'},command={kind:'command',id:'progress-one',action:'progress',tabId:7,targetURL:tab.url,runId:'run-1',expiresAt:2000,progress};
+ assert.equal(validateBridgeCommand(command,{tab,allowedOrigins:['https://jobs.example'],blockedRuns:new Set(),now}).origin,'https://jobs.example');
+ for(const changed of [{progress:{...progress,phase:'invented'}},{progress:{...progress,current:6}},{progress:{...progress,nextOwner:'third-party'}},{progress:{...progress,fieldLabel:'x'.repeat(101)}},{progress:{...progress,sectionLabel:'x'.repeat(81)}},{progress:{...progress,targetRef:'x'.repeat(101)}}])assert.throws(()=>validateBridgeCommand({...command,...changed},{tab,allowedOrigins:['https://jobs.example'],blockedRuns:new Set(),now}));
+});
+
+test('open command accepts one fresh http target without a pre-existing tab',()=>{
+ const now=1000,command={kind:'command',id:'open-one',action:'open',targetURL:'https://jobs.example/apply',expiresAt:20000};
+ assert.equal(validateOpenCommand(command,now).origin,'https://jobs.example');
+ for(const changed of [{targetURL:'chrome://extensions'},{expiresAt:999},{expiresAt:40000},{action:'act'}])assert.throws(()=>validateOpenCommand({...command,...changed},now));
+});
+test('current command resolves the active tab without page-side interaction',()=>{assert.equal(validateCurrentCommand({kind:'command',id:'current-one',action:'current',expiresAt:2000},1000),true);assert.throws(()=>validateCurrentCommand({kind:'command',id:'bad',action:'current',expiresAt:12000},1000))});

@@ -4,7 +4,7 @@ SHELL := /usr/bin/env bash
 
 # server/daemon ship namespaced (atoll-server / atoll-daemon); the entry
 # command itself is plain `atoll` — its own name IS the namespace.
-GO_BINARIES := server daemon atoll
+GO_BINARIES := server daemon society atoll
 
 # ----------------------------------------------------------------------------
 # deps — 拉全部依赖（此前叫 install；那个名字现在归下面的装机向导，因为
@@ -38,8 +38,10 @@ WEB_VERSION ?= $(shell cat WEB_VERSION 2>/dev/null || echo none)
 COMMIT      ?= $(shell git rev-parse --short HEAD 2>/dev/null)
 DATE        ?= $(shell date -u +%F)
 BUILDINFO   := github.com/wanpengxie/atoll/cmd/internal/buildinfo
+SOCIETY_MODEL := github.com/wanpengxie/atoll/drivers/tools/society/model
 LDFLAGS_VERSION := -X $(BUILDINFO).Version=$(VERSION) -X $(BUILDINFO).WebVersion=$(WEB_VERSION) \
-                   -X $(BUILDINFO).Commit=$(COMMIT) -X $(BUILDINFO).Date=$(DATE)
+                   -X $(BUILDINFO).Commit=$(COMMIT) -X $(BUILDINFO).Date=$(DATE) \
+                   -X $(SOCIETY_MODEL).BuildVersion=$(VERSION)-$(COMMIT)
 
 LDFLAGS_RELEASE := -s -w $(LDFLAGS_VERSION)
 

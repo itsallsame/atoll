@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -28,6 +29,7 @@ import (
 	"github.com/wanpengxie/atoll/protocol/channel"
 	"github.com/wanpengxie/atoll/registry"
 	"github.com/wanpengxie/atoll/web"
+	"github.com/wanpengxie/atoll/web/societyconsole"
 )
 
 const shutdownTimeout = 30 * time.Second
@@ -215,7 +217,11 @@ func Boot(cfg Config, logger *slog.Logger) (*Engine, error) {
 		Now:      func() int64 { return time.Now().UnixMilli() },
 	})
 	e.terminals = terminal.NewManager(ptyOpener{host: e.daemonHost}, portal.NewRecorder(e.acquireChannel))
-	p := portal.New(portal.Config{Terminals: e.terminals, Registry: e.registry, Lobby: e.acquireLobby, Sessions: e.sessions, Gateway: e.gateway, DaemonHost: e.daemonHost, DataPlane: e.dataRedeemer, Obs: observationPlane, Updater: cfg.Updater, ContractVersion: contractVersion, Boot: fmt.Sprintf("%s@%d", installed.C0Genesis.ChannelID, installed.C0Genesis.CreatedAt), Web: web.Assets()})
+	publicSociety, err := societyconsole.NewPublicService(filepath.Join(cfg.ChannelDBDir, "public-society.json"))
+	if err != nil {
+		return nil, e.fail(err)
+	}
+	p := portal.New(portal.Config{Terminals: e.terminals, Registry: e.registry, Lobby: e.acquireLobby, Sessions: e.sessions, Gateway: e.gateway, DaemonHost: e.daemonHost, DataPlane: e.dataRedeemer, Obs: observationPlane, Updater: cfg.Updater, ContractVersion: contractVersion, Boot: fmt.Sprintf("%s@%d", installed.C0Genesis.ChannelID, installed.C0Genesis.CreatedAt), Web: web.Assets(), WebMounts: map[string]fs.FS{"/society/": societyconsole.Assets()}, PublicSociety: publicSociety})
 	e.handler = p
 	e.gateway.Start()
 	if err := e.host.StartConvergence(); err != nil {

@@ -1,8 +1,9 @@
 .codex
 .claude
 .agents
-docs/dev
-docs/
+docs/*
+!docs/experiments/
+!docs/experiments/*.md
 atoll-site/
 dist/
 # go build output binaries

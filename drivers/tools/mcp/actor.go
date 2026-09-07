@@ -17,7 +17,6 @@ import (
 	"github.com/wanpengxie/atoll/lib/actorbase"
 	"github.com/wanpengxie/atoll/lib/introspect"
 	"github.com/wanpengxie/atoll/protocol/message"
-	"github.com/wanpengxie/atoll/runtime/schedule"
 )
 
 const actorDoc = "External MCP server dynamically adapted as an Atoll tool actor."
@@ -32,12 +31,13 @@ type snapshot struct {
 }
 
 type mcpActor struct {
-	cfg       Config
-	client    *client
-	mu        sync.RWMutex
-	snapshot  snapshot
-	lastError error
-	inflight  sync.WaitGroup
+	cfg          Config
+	client       *client
+	mu           sync.RWMutex
+	snapshot     snapshot
+	lastError    error
+	inflight     sync.WaitGroup
+	refreshToken string // Proc-confined; coalesces at-least-once timer registration.
 }
 
 func Def(cfg Config) actorbase.Def {
@@ -58,8 +58,9 @@ func (a *mcpActor) run(sys actorbase.Sys) error {
 			_ = client.Close()
 			a.inflight.Wait()
 		}()
-		a.refresh(sys, sys.Life())
-		_, _ = sys.After(refreshInterval, typeRefresh, struct{}{}, schedule.TimerHomeMemory)
+		if err := a.refreshCycle(sys); err != nil {
+			return err
+		}
 	}
 	for {
 		msg, err := sys.Recv()
@@ -67,8 +68,12 @@ func (a *mcpActor) run(sys actorbase.Sys) error {
 			return err
 		}
 		if msg.Kind == message.KindEvent && msg.Type == typeRefresh {
-			a.refresh(sys, sys.Life())
-			_, _ = sys.After(refreshInterval, typeRefresh, struct{}{}, schedule.TimerHomeMemory)
+			if !a.consumeRefresh(sys, msg) {
+				continue
+			}
+			if err := a.refreshCycle(sys); err != nil {
+				return err
+			}
 			continue
 		}
 		if msg.Kind != message.KindRequest {
@@ -90,31 +95,46 @@ func (a *mcpActor) handle(sys actorbase.Sys, msg actorbase.Msg) {
 	a.call(sys, msg)
 }
 
-func (a *mcpActor) refresh(sys actorbase.Sys, ctx context.Context) {
+func (a *mcpActor) refresh(sys actorbase.Sys, ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, a.callTimeout())
+	defer cancel()
 	discover, err := a.client.discover(ctx)
 	if err != nil {
 		a.setLastError(err)
-		return
+		return err
 	}
 	tools, err := a.client.listTools(ctx)
 	if err != nil {
 		a.setLastError(err)
-		return
+		return err
 	}
 	next := buildSnapshot(a.cfg.Name, discover, tools)
 	raw, err := json.Marshal(next.types)
 	if err != nil {
 		a.setLastError(err)
-		return
+		return err
 	}
-	if _, err := sys.State().Put(actorbase.ManifestStateKey, raw); err != nil {
+	if err := retryControl(ctx, func() error {
+		out, err := sys.State().Put(actorbase.ManifestStateKey, raw)
+		if err != nil {
+			return err
+		}
+		if !out.Accepted() {
+			return fmt.Errorf("manifest write rejected: %s", out.RejectReason)
+		}
+		return nil
+	}); err != nil {
+		err = &manifestPublicationError{err: err}
 		a.setLastError(err)
-		return
+		publishControlObs(sys, "mcp.manifest", err)
+		return err
 	}
 	a.mu.Lock()
 	a.snapshot = next
 	a.lastError = nil
 	a.mu.Unlock()
+	publishControlObs(sys, "mcp.manifest", nil)
+	return nil
 }
 
 func (a *mcpActor) call(sys actorbase.Sys, msg actorbase.Msg) {
