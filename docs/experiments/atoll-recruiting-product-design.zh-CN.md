@@ -18,6 +18,8 @@
 - **第一版选择**：为了形成最小闭环而作出的可逆选择；
 - **待验证假设**：必须通过真实网站、故障注入或容量测试决定。
 
+配套工程执行、测试分层、25 场景验收和生产准入见 `docs/experiments/atoll-recruiting-development-validation-plan.zh-CN.md`。
+
 ## 2. 产品定位
 
 Atoll Recruiting 是一个由 Atoll 组织人和自动化协作、以可重复执行的采集计划为正常生产路径、持续发现并修复招聘数据异常的平台。
