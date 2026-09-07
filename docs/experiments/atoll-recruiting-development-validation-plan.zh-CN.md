@@ -179,7 +179,7 @@ P2 和 P4 可在 P1 契约冻结后并行；P3 可先用内存 Repository 开发
 
 ## 6. P1：纯领域模型与契约
 
-执行状态：进行中，当前证据见 `docs/experiments/atoll-recruiting-p1-acceptance.zh-CN.md`。领域事实、公开命令外形、命令重放与业务幂等键、批量父子 Work、完整 Attempt fencing 和增量重叠判定已经落地；尚需完成关键状态机分支覆盖与合法事件序列性质测试，达到退出门后才能进入 P2。
+执行状态：已通过，证据见 `docs/experiments/atoll-recruiting-p1-acceptance.zh-CN.md`。领域契约自 P1 验收提交起作为 P2 schema 设计输入；后续若改变不变量或字段语义，必须先更新 P1 测试和验收记录，不能只迁就数据库实现。
 
 ### 6.1 类型与状态机
 

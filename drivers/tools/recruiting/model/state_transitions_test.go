@@ -140,6 +140,117 @@ func TestCompanyControlTransitionMatrix(t *testing.T) {
 	}
 }
 
+func TestCompanyOnboardingTransitionMatrix(t *testing.T) {
+	statuses := []CompanyOnboardingStatus{CompanyNew, CompanyDiscoveringSources, CompanyBlockedNoSources, CompanyInitializing, CompanyBlocked, CompanyReady}
+	for _, status := range statuses {
+		company := Company{CompanyID: "company-1", OnboardingStatus: status, ControlStatus: ControlActive, Version: 1}
+		_, discoveryErr := company.StartDiscovery(company.Version)
+		discoveryAllowed := status == CompanyNew || status == CompanyBlockedNoSources || status == CompanyBlocked
+		if discoveryAllowed != (discoveryErr == nil) {
+			t.Fatalf("start discovery from %q: %v", status, discoveryErr)
+		}
+		for name, result := range map[string]error{
+			"no_sources": func() error { _, err := company.MarkNoSources(company.Version); return err }(),
+			"initialize": func() error { _, err := company.StartInitialization(company.Version); return err }(),
+			"blocked":    func() error { _, err := company.MarkInitializationBlocked(company.Version); return err }(),
+			"ready":      func() error { _, err := company.MarkReady(company.Version); return err }(),
+		} {
+			allowed := (status == CompanyDiscoveringSources && (name == "no_sources" || name == "initialize")) ||
+				(status == CompanyInitializing && (name == "blocked" || name == "ready"))
+			if allowed != (result == nil) {
+				t.Fatalf("%s from %q: %v", name, status, result)
+			}
+		}
+	}
+}
+
+func TestSourceReadinessTransitionMatrix(t *testing.T) {
+	statuses := []SourceReadinessStatus{SourceCandidate, SourceValidating, SourceReady, SourceRepairing, SourceInvalid, SourceRejected}
+	for _, status := range statuses {
+		source := RecruitmentSource{
+			SourceID: "source-1", CompanyID: "company-1", ReadinessStatus: status, ControlStatus: ControlActive, HealthStatus: HealthHealthy,
+			CandidateEndpoint: &SourceEndpoint{URL: "https://jobs.example.com", CanonicalKey: "key", Revision: 1}, Version: 1,
+		}
+		_, beginErr := source.BeginValidation(source.Version)
+		beginAllowed := status == SourceCandidate || status == SourceRepairing || status == SourceInvalid
+		if beginAllowed != (beginErr == nil) {
+			t.Fatalf("begin validation from %q: %v", status, beginErr)
+		}
+		_, invalidErr := source.MarkInvalid(source.Version)
+		invalidAllowed := status == SourceValidating || status == SourceRepairing
+		if invalidAllowed != (invalidErr == nil) {
+			t.Fatalf("mark invalid from %q: %v", status, invalidErr)
+		}
+		_, rejectErr := source.RejectCandidate(source.Version)
+		rejectAllowed := status == SourceCandidate || status == SourceValidating
+		if rejectAllowed != (rejectErr == nil) {
+			t.Fatalf("reject from %q: %v", status, rejectErr)
+		}
+	}
+}
+
+func TestProfileTransitionMatrix(t *testing.T) {
+	statuses := []ProfileAuthStatus{ProfileReady, ProfileRepairing, ProfileVerifying, ProfileDisabled}
+	for _, status := range statuses {
+		profile := BrowserProfile{ProfileID: "profile-1", AuthStatus: status, Version: 1}
+		_, repairErr := profile.BeginRepair(profile.Version)
+		if (status == ProfileReady || status == ProfileVerifying) != (repairErr == nil) {
+			t.Fatalf("repair from %q: %v", status, repairErr)
+		}
+		_, verificationErr := profile.BeginVerification(profile.Version, "secret://next")
+		if (status == ProfileRepairing) != (verificationErr == nil) {
+			t.Fatalf("verification from %q: %v", status, verificationErr)
+		}
+		_, verifyErr := profile.Verify(profile.Version)
+		if (status == ProfileVerifying) != (verifyErr == nil) {
+			t.Fatalf("verify from %q: %v", status, verifyErr)
+		}
+		_, disableErr := profile.Disable(profile.Version)
+		if (status != ProfileDisabled) != (disableErr == nil) {
+			t.Fatalf("disable from %q: %v", status, disableErr)
+		}
+	}
+}
+
+func TestRepairTransitionMatrix(t *testing.T) {
+	for _, status := range []RepairStatus{RepairOpen, RepairValidating, RepairResolved} {
+		incident := RepairIncident{IncidentID: "repair-1", Status: status, Version: 1}
+		_, beginErr := incident.BeginValidation(incident.Version)
+		if (status == RepairOpen) != (beginErr == nil) {
+			t.Fatalf("begin repair validation from %q: %v", status, beginErr)
+		}
+		_, resolveErr := incident.Resolve(incident.Version, "fixed")
+		if (status == RepairValidating) != (resolveErr == nil) {
+			t.Fatalf("resolve repair from %q: %v", status, resolveErr)
+		}
+	}
+}
+
+func TestDailyRunAndOccurrenceTransitionMatrix(t *testing.T) {
+	for _, status := range []DailyRunStatus{DailyRunPlanned, DailyRunRunning, DailyRunCompleted, DailyRunCompletedWithExceptions} {
+		run := DailyRun{DailyRunID: "daily-1", ExpectedSources: 0, Status: status, Version: 1}
+		_, startErr := run.Start(run.Version)
+		if (status == DailyRunPlanned) != (startErr == nil) {
+			t.Fatalf("daily start from %q: %v", status, startErr)
+		}
+		_, closeErr := run.Close(run.Version, CoverageSummary{})
+		if (status == DailyRunRunning) != (closeErr == nil) {
+			t.Fatalf("daily close from %q: %v", status, closeErr)
+		}
+	}
+	for _, status := range []OccurrenceStatus{OccurrencePlanned, OccurrenceRunning, OccurrenceCompleted, OccurrenceException, OccurrenceExcluded} {
+		occurrence := SourceOccurrence{OccurrenceID: "occurrence-1", Status: status, Version: 1}
+		_, startErr := occurrence.Start(occurrence.Version)
+		if (status == OccurrencePlanned) != (startErr == nil) {
+			t.Fatalf("occurrence start from %q: %v", status, startErr)
+		}
+		_, finishErr := occurrence.Finish(occurrence.Version, true, "complete")
+		if (status == OccurrenceRunning) != (finishErr == nil) {
+			t.Fatalf("occurrence finish from %q: %v", status, finishErr)
+		}
+	}
+}
+
 func TestWorkAndAttemptTerminalStatesNeverReopen(t *testing.T) {
 	for _, status := range []WorkStatus{WorkCompleted, WorkFailed, WorkCanceled} {
 		work := Work{WorkID: "work-1", Status: status, Version: 1, AcceptanceVersion: 1}

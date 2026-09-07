@@ -1,6 +1,6 @@
 # Atoll Recruiting P1 验收记录
 
-状态：候选，尚未通过退出门
+状态：已通过
 
 日期：2026-09-07
 
@@ -41,14 +41,15 @@ make build-go
 drivers/tools/recruiting/model/testdata/fuzz/FuzzCanonicalHTTPURLIdempotent/8a331a9ab9cd6bd5
 ```
 
-当前 `go test -cover ./drivers/tools/recruiting/model` 的语句覆盖率为 76.8%。`make recruiting-model-test` 固化 race、四组 fuzz 和 75% 语句覆盖回退门。该数字只作趋势证据，不冒充计划要求的关键状态转换分支全覆盖。
+当前 `go test -cover ./drivers/tools/recruiting/model` 的语句覆盖率为 78.9%。`make recruiting-model-test` 固化 race、四组 fuzz 和 75% 语句覆盖回退门。关键状态转换采用显式状态矩阵覆盖；语句覆盖率用于阻止整体测试质量回退，不代替矩阵断言。
 
-## 未通过项
+## 退出门结论
 
-P1 暂不标记完成，原因是：
+- Company onboarding/control、Source readiness/control、Recipe、Profile、Work/Attempt、Checkpoint、DailyRun/Occurrence 和 RepairIncident 的合法/非法主状态组合均有矩阵测试；
+- fuzz 合法事件序列证明终态 Work 单调、Source 不会在缺少生产 Endpoint/Assignment 或归档状态下进入每日运行；
+- Attempt 对 Executor incarnation 以及 Company、Source、Assignment、Recipe、Checkpoint、refresh generation、Profile 的每一项变化均逐项拒绝；
+- Source 结构最多持有一个当前 Listing/Detail/Discovery Assignment 和一个 active Endpoint，发布与替换受 CAS 及契约兼容证明约束；
+- 模型无网络、数据库和墙钟读取，业务时间均由调用方显式注入；
+- 全部相关回归、构建和核心冻结检查通过。
 
-1. 需要补齐所有关键状态机的合法/非法转换矩阵，尤其是 Company、Source、Recipe、Profile、Work/Attempt、Checkpoint、DailyRun 和 RepairIncident；
-2. 已建立随机事件序列性质测试；还需扩展到 Company/Recipe/Profile/Checkpoint/DailyRun/Repair 全状态组合，并证明旧 Attempt 在任意版本变化下均被拒绝；
-3. 完成后再次运行全仓相关回归和核心冻结检查。
-
-因此 P2 MySQL schema/migration 尚未开始，避免在领域契约仍可能变化时固化数据库结构。
+P1 退出门通过，可以开始 P2 schema ADR、migration 和 Repository contract；P2 不得反向放宽上述不变量。

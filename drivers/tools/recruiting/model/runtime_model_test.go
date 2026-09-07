@@ -35,6 +35,31 @@ func TestCheckpointRequiresCompleteBoundaryProofAndCAS(t *testing.T) {
 	}
 }
 
+func TestCheckpointRejectsEveryIncompleteBoundaryProof(t *testing.T) {
+	checkpoint, _ := EstablishCheckpoint(IncrementalCheckpoint{
+		SourceID: "source-1", RecipeID: "listing-1", RecipeVersion: 1, ContractHash: "contract-a",
+		Strategy: CheckpointActivityTime, FrontierActivityAt: "2026-09-01T00:00:00Z", OverlapPages: 1, LastOccurrenceID: "baseline-1",
+	})
+	candidate := checkpoint
+	candidate.FrontierActivityAt = "2026-09-02T00:00:00Z"
+	candidate.LastOccurrenceID = "daily-1"
+	complete := ListingProgress{PreviousFrontierReached: true, OverlapCompleted: true, OrderingContractHeld: true, SameTimeGroupCompleted: true, Candidate: candidate}
+	for name, mutate := range map[string]func(*ListingProgress){
+		"frontier":  func(p *ListingProgress) { p.PreviousFrontierReached = false },
+		"overlap":   func(p *ListingProgress) { p.OverlapCompleted = false },
+		"ordering":  func(p *ListingProgress) { p.OrderingContractHeld = false },
+		"same_time": func(p *ListingProgress) { p.SameTimeGroupCompleted = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			proof := complete
+			mutate(&proof)
+			if _, err := checkpoint.Commit(checkpoint.Version, proof); err == nil {
+				t.Fatal("incomplete proof advanced checkpoint")
+			}
+		})
+	}
+}
+
 func TestWorkResolutionAndAttemptFencing(t *testing.T) {
 	w, err := NewWork("work-1", "source", "source-1", "listing_sync", "timer")
 	if err != nil {
@@ -105,6 +130,26 @@ func TestAttemptResultChecksExecutorAndEveryRelevantDomainFence(t *testing.T) {
 	}
 	if err := attempt.CanAcceptResult(work, fence, "executor-1", "old-incarnation"); err == nil {
 		t.Fatal("stale executor incarnation was accepted")
+	}
+	mutations := map[string]func(*AttemptFence){
+		"company":         func(f *AttemptFence) { f.CompanyVersion++ },
+		"source":          func(f *AttemptFence) { f.SourceVersion++ },
+		"assignment":      func(f *AttemptFence) { f.AssignmentVersion++ },
+		"recipe_id":       func(f *AttemptFence) { f.RecipeID = "listing-2" },
+		"recipe_version":  func(f *AttemptFence) { f.RecipeVersion++ },
+		"checkpoint":      func(f *AttemptFence) { f.CheckpointVersion++ },
+		"refresh":         func(f *AttemptFence) { f.RefreshGeneration++ },
+		"profile_id":      func(f *AttemptFence) { f.ProfileID = "profile-2" },
+		"profile_version": func(f *AttemptFence) { f.ProfileVersion++ },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			changed := fence
+			mutate(&changed)
+			if err := attempt.CanAcceptResult(work, changed, "executor-1", "incarnation-1"); err == nil {
+				t.Fatal("changed domain fence was accepted")
+			}
+		})
 	}
 }
 
