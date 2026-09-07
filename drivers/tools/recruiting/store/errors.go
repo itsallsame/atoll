@@ -9,4 +9,5 @@ var (
 	ErrAttemptConflict    = errors.New("attempt state changed")
 	ErrAssignmentConflict = errors.New("source recipe assignment changed")
 	ErrResultFenced       = errors.New("execution result rejected by current domain fence")
+	ErrOverrideConflict   = errors.New("recruiting override head conflict")
 )
