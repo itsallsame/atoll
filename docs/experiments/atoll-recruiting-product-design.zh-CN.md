@@ -2,9 +2,10 @@
 
 状态：产品与架构设计草案
 
-版本：v0.4
+版本：v0.5
 
 日期：2026-09-07
+
 目标规模：维护约 10,000 家公司的招聘数据；吞吐目标由真实网站基准测试确定
 
 ## 1. 文档目的
@@ -148,12 +149,130 @@ Timer 粒度不冻结：可以每个 Target 一个 durable timer，也可以少�
 
 ```text
 trigger:    manual | timer | event
-purpose:    bootstrap | incremental | reconcile | repair
+purpose:    company_discovery | source_discovery | baseline
+            listing_sync | detail_sync | closure_check
+            reconcile | repair | data_maintenance
 initiator:  initiator_actor_id
 cause:      cause_message_id / cause_work_id
 ```
 
 不再用一个 `source` 同时表达触发方式、业务目的和发起者。人工修复可以是 `trigger=manual`、`purpose=repair`。所有工作遵守同一状态、限流、质量和审计规则。
+
+### 5.6 确定的业务对象关系
+
+以下关系来自业务本身，第一版必须明确表达：
+
+```text
+Company
+  └─ Recruitment Source（一个可枚举职位的招聘列表来源）
+       └─ Job Posting（一个来源岗位及其详情 URL）
+```
+
+- **Company**：需要持续维护的公司主体。
+- **Recruitment Source**：公司的岗位列表入口。它可能是一个网页 URL，也可能是带固定参数的 API、ATS 租户入口或多个招聘类别的逻辑入口。
+- **Job Posting**：来源中的岗位。保存来源岗位 ID、规范化详情 URL、当前结构化数据、内容版本和在招状态。
+- 一个 Company 可以没有已确认 Source，也可以有多个 Source。
+- 同一个岗位可能在多个 Source 出现；第一版先保证来源内唯一，再通过可审计规则做跨来源合并。
+- 列表 Plan 和详情 Plan 可以独立版本化、失效和修复，不能用一个笼统“网站 Recipe 状态”覆盖两者。
+
+Target 是“可调度对象”的统一称呼，不替代这些业务实体。Company 和 Recruitment Source 都可以成为 Target；Job Posting 只有需要获取详情、核验或修复时才产生 Work。
+
+### 5.7 完整业务场景目录
+
+| 场景 | 触发 | 主要输入 | 产生的 Work | 完成结果 |
+|---|---|---|---|---|
+| 单个新增公司 | manual/event | 公司名称、官网等 | company/source discovery | 公司和候选 Source |
+| 批量导入公司 | manual/event | 文件或 Resource | 多个 company discovery | 逐公司成功/失败报告 |
+| 发现岗位列表来源 | 新增、URL 失效、周期复核 | Company、官网、历史证据 | source discovery | 新增、确认或拒绝 Source |
+| 人工维护 Source | manual | 列表 URL、类别、参数 | data maintenance/validation | 新版本 Source |
+| 首次全量初始化 | Source 首次可用 | Source、列表/详情 Plan | baseline → listing/detail | 当前全部岗位基线和水位 |
+| 第二次全量校准 | 首次基线完成或人工触发 | 已有基线 | reconcile | 验证分页、去重和下架判断 |
+| 每日列表增量 | timer | 所有 active Source | listing sync | 当日岗位集合与差异 |
+| 新岗位详情 | listing diff | 新 Job Posting | detail sync | 新岗位完整详情 |
+| 变化岗位详情 | 摘要/hash/版本变化 | 已有 Job Posting | detail sync | 新内容版本 |
+| 定期详情复核 | 风险策略或抽样 timer | 长期未刷新岗位 | detail sync/reconcile | 质量与在招状态确认 |
+| 岗位下架确认 | 列表中缺失 | 历史岗位和连续观测 | closure check | 关闭、继续观察或异常 |
+| 列表来源修复 | 列表失败或异常为空 | Source、Failure Artifact | repair | 新列表 Plan/URL 或人工结论 |
+| 岗位详情修复 | 详情失败或字段异常 | Job URL、Failure Artifact | repair | 新详情 Plan/URL 或人工结论 |
+| 登录/Profile 修复 | 认证失效、验证码 | 安全域和失败证据 | repair/waiting human | 恢复、暂停或终止 |
+| 公司更新 | manual/event | 公司新信息 | data maintenance + 必要 rediscovery | 新版本公司和受影响 Work |
+| 重复公司合并/拆分 | manual/质量事件 | 候选公司及关联数据 | data maintenance/reconcile | 可追踪的数据迁移与映射 |
+| 公司暂停/恢复 | manual | Company | 控制命令 | 停止/恢复新调度 |
+| Source 暂停/恢复 | manual/自动熔断 | Source | 控制命令 | 局部停止/恢复 |
+| Source 重定向/归属调整 | redirect/manual | 旧新入口、所属公司 | validation/data maintenance | 保留历史并切换有效入口 |
+| 公司归档/删除 | manual | Company、删除范围 | data maintenance | 归档或合规删除结果 |
+| Source 移除 | manual/失效确认 | Source | data maintenance | 停止调度并处理关联岗位 |
+| 数据纠错与重算 | manual/质量事件 | 字段、映射或新规则 | repair/reconcile | 新数据版本和影响报告 |
+| 历史数据回填 | manual/规则升级 | 时间范围、字段和 Target | reconcile | 新版本数据及覆盖报告 |
+| Plan 批量升级 | 新 Plan 验证通过 | 受影响 Source 集合 | validation + staged rollout | 分阶段发布或回滚 |
+| 临时手动运行 | manual | Company/Source/Job | 对应目的 Work | 与定时任务相同的结果 |
+| 失败重试和人工结案 | event/manual | 原 Work 与证据 | retry/repair | 成功、跳过、接受现状或终止 |
+
+### 5.8 每日大批量运行主流程
+
+“每天运行所有抓取任务”的业务含义是：在各自时区和刷新窗口内，为每日截点时所有 **active Recruitment Source** 至少完成一次列表同步或记录一个明确、可解释的未完成结果。它不表示每天重抓全部历史岗位详情。
+
+每天的计划集合包括：
+
+- 所有 active Source 的 `listing_sync`；
+- 尚无有效 Source 或到达复核周期的 Company 的 `source_discovery`；
+- 列表差异产生的 `detail_sync` 和 `closure_check`；
+- 当日到期的详情抽样、基线校准和历史回填；
+- 到达重试时间的失败 Work，以及修复方案发布后应重跑的 Work；
+- 只计入统计但不自动执行的 `waiting_human` Work。
+
+其中只有第一项是对全部 active Source 的固定每日基线；其他项由当天数据变化、策略到期和异常产生。
+
+```text
+Daily Run 打开
+  → 固化当日应运行的 active Source 范围和 schedule occurrence key
+  → 按窗口持续创建/激活 listing_sync Work
+  → 每个 Source 完整遍历列表或读取增量游标
+  → 规范化并与上次成功快照比较
+       ├─ 新岗位       → detail_sync
+       ├─ 摘要变化岗位 → detail_sync
+       ├─ 未变化岗位   → 只更新观测事实
+       ├─ 本次缺失岗位 → closure_check，不立即删除
+       └─ 列表异常     → retry / repair / waiting_human
+  → 详情结果幂等写入岗位新版本
+  → 更新 Source 水位和下次到期时间
+  → 汇总 Company 健康状态
+  → Daily Run 在所有应运行 Source 均有终态或明确等待原因后关闭
+```
+
+Daily Run 是面向用户和运营的统计/因果投影，不要求成为调度器中的 Work Bundle。它至少显示：
+
+- 当日应运行、已创建、运行中、成功、失败、等待重试、等待人工和被策略跳过的 Source 数；
+- 新增、变化、疑似下架、确认下架和详情失败的岗位数；
+- 未在运行窗口内完成的 Source 及原因；
+- 各站点限流、熔断和容量影响；
+- 从 Company → Source → Work → Attempt → Artifact 的追踪路径。
+
+为了避免零点洪峰，系统可以把工作均匀铺在全天或业务窗口中，但必须保证每个 Source 的 occurrence 可追踪、不可因服务重启遗漏，并在窗口结束时完成对账。
+
+Daily Run 的口径不能用“有终态”掩盖采集缺口：
+
+```text
+listing_coverage
+  = 完整成功遍历的 active Source 数 / 当日应运行 active Source 数
+
+detail_completion
+  = 已成功或有明确终止结论的当日详情 Work 数 / 当日产生的详情 Work 数
+```
+
+只有所有应运行 Source 都完成列表同步时才是 `completed`；存在失败、等待重试、等待人工或窗口超时时标记 `completed_with_exceptions`，并保留未覆盖清单。因公司/Source 在当日截点前已暂停或归档而不应运行的项目计入 `excluded`，不能计为采集成功。
+
+### 5.9 变更、下架与删除规则
+
+- 公司或 Source 更新采用版本化修改；正在运行的 Attempt 继续使用其接受时版本，旧结果不能覆盖新配置。
+- 暂停只阻止新的自动 Work；是否取消运行中 Work 由用户命令明确指定。
+- 从一次列表中消失不能直接删除岗位。需结合完整翻页成功、来源质量、连续缺失次数或详情页状态确认下架。
+- 岗位下架默认改变在招状态并保留历史版本，不物理删除。
+- 移除 Source 时停止其后续调度；其岗位进入待归属/下架评估，不能无条件级联删除。
+- 公司“删除”默认是可恢复归档：停止公司及 Source 调度，保留审计和历史岗位。
+- 物理删除属于独立的合规操作，必须展示影响范围、执行权限/审批、保留期和删除结果；不得由普通采集失败触发。
+- 批量更新、删除和 Plan 发布必须逐项记录结果，允许部分失败重试，不能只返回一个模糊的整体成功。
+- 公司合并、拆分或 Source 改归属必须保存旧新 ID 映射，保证历史 Work、Attempt、Artifact 和岗位仍可追踪。
 
 ## 6. 核心设计原则
 
@@ -280,11 +399,16 @@ Web / 飞书 Gateway         → 只提交公开消息
 ### 8.3 首批公开领域词
 
 ```text
-recruiting.target.add / pause / resume / get / list
+recruiting.company.add / update / pause / resume / archive / delete
+recruiting.company.get / list
+recruiting.source.add / update / validate / pause / resume / remove
+recruiting.source.discover / get / list
+recruiting.job.get / list / correct
 recruiting.work.create / get / list / pause / resume
 recruiting.work.correct / retry / cancel / resolve
 recruiting.plan.inspect / validate / approve / reject
 recruiting.execution.offer / accept / started / result / failed
+recruiting.daily_run.get / list / summary
 recruiting.jobs.search
 recruiting.system.status
 recruiting.capacity.status
@@ -294,17 +418,21 @@ recruiting.capacity.status
 
 ## 9. 最小领域模型
 
-第一版只冻结五个核心概念。
+第一版冻结业务数据模型和运行控制模型两个层次。业务对象不能为了架构简洁而被抽象掉；运行模型也不复制历史项目的多层任务结构。
 
-### 9.1 Target
-
-持续维护的业务目标，可包含公司和一个或多个招聘入口。
+### 9.1 Company、Recruitment Source 与 Job Posting
 
 ```text
-active | paused | archived
+Company 1 ── 0..N Recruitment Source 1 ── 0..N Job Posting
 ```
 
-健康、发现中、等待修复和无职位等优先由最近 Work、Artifact 和质量事实形成投影，不重复存储成互相漂移的控制状态。
+- Company 保存主体身份、规范名称、官网、别名、控制状态和版本。
+- Recruitment Source 保存所属公司、来源类型、列表入口、招聘类别、刷新策略、列表 Plan、最近成功水位和控制状态。
+- Job Posting 保存所属公司和 Source、来源岗位 ID、规范化详情 URL、详情 Plan、结构化内容版本、首次/最近发现时间和在招状态。
+
+Company 和 Source 的最小控制状态为 `active | paused | archived`。Job Posting 的业务状态至少区分 `open | missing_pending | closed`。健康、发现中、等待修复、无职位等优先由 Work、Artifact 和质量事实形成投影。
+
+Target 是 Work 对可调度对象的统一引用（`target_type + target_id`），不是用来代替三类业务实体的万能表。
 
 ### 9.2 Plan
 
@@ -332,7 +460,7 @@ paused → open
 最小字段：
 
 ```text
-work_id, parent_work_id?, target_id
+work_id, parent_work_id?, target_type, target_id
 purpose, trigger, initiator_actor_id
 cause_message_id?, cause_work_id?
 status, waiting_reason?, priority, expected_version
@@ -358,7 +486,7 @@ Resource 中大对象或批量结果的稳定引用，包括页面、截图、�
 
 ### 9.6 不冻结物理表
 
-系统必须可恢复地保存五类核心事实、职位唯一键和内容版本、命令幂等记录以及站点预算状态。这不等于提前确定 `human_reviews`、`work_bundles`、`worker_slots`、`origin_budgets`、`domain_outbox` 等表。表、索引、事务和存储产品根据 Resource API 与访问实测决定。
+系统必须可恢复地保存 Company、Recruitment Source、Job Posting、Plan、Work、Attempt、Artifact、命令幂等记录、每日 occurrence 和站点预算事实。这不等于提前确定 `human_reviews`、`work_bundles`、`worker_slots`、`origin_budgets`、`domain_outbox` 等物理表。表、索引、事务和存储产品根据 Resource API 与访问实测决定。
 
 ## 10. 大规模调度
 
@@ -372,11 +500,43 @@ Resource 中大对象或批量结果的稳定引用，包括页面、截图、�
 日常详情量取决于当天增量，不等于历史职位总量
 ```
 
-这些数字用于容量实验，不是已知吞吐事实。
+每日逻辑工作量可表达为：
+
+```text
+每日必须覆盖的列表同步数
+  = 当日截点 active Recruitment Source 数
+
+每日详情同步数
+  = 新岗位数
+  + 列表摘要发生变化的岗位数
+  + 到期抽样复核数
+  + 合法重试与修复重跑数
+
+每日总 Work
+  = Source 发现/复核
+  + 列表同步
+  + 详情同步
+  + 下架确认
+  + 修复、重试、人工和数据维护
+```
+
+20,000 个列表同步是当前规模下每天的确定性基线；详情和异常 Work 是随站点变化的放大量，必须用真实数据测量。这些数字用于容量实验，不是已知吞吐事实。
 
 ### 10.2 到期工作
 
 保存 Target 的刷新策略、下次到期时间、最近成功水位和幂等周期键。每日运行不依赖进程内 cron 和记忆。
+
+每个每日 Source occurrence 使用稳定业务键，例如 `source_id + schedule_date + schedule_policy_version`。调度可以分窗口渐进物化 Work，不能要求每天零点同时写入全部 Work；窗口结束时必须对“应运行集合”和实际 Work 做差集对账，补建遗漏或生成明确异常。
+
+优先级的业务顺序默认是：
+
+1. 接近运行窗口截止时间的每日 listing sync；
+2. 已发现的新岗位和变化岗位 detail sync；
+3. 阻塞正常增量链路的列表/详情修复；
+4. 有明确 deadline 的人工工作；
+5. 初始化全量、校准、抽样复核和普通重试。
+
+站点预算和人工紧急提升可以改变实际顺序，但不能令普通 active Source 长期饥饿。
 
 | 候选方案 | 优点 | 风险 |
 |---|---|---|
@@ -516,7 +676,8 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 
 ### M0：最小契约
 
-- 冻结五个核心概念和公开命令；
+- 冻结 Company、Recruitment Source、Job Posting 三类业务实体，以及 Plan、Work、Attempt、Artifact 四类运行实体；
+- 冻结公司接入、每日列表同步、增量详情、下架确认、修复、人工接管和数据维护的业务语义；
 - 冻结幂等、版本校验和陈旧结果拒绝不变量；
 - 建立 Actor、Message、Resource、Driver 边界；
 - 不冻结 Batch、Lease、Outbox、物理表或 Channel 分片。
@@ -525,9 +686,11 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 
 ```text
 用户添加公司
-→ 创建 Target 和 bootstrap Work
-→ 一个 Executor 获取并执行 Plan
-→ 上传真实 Artifact 和结构化职位
+→ 创建 Company 和 source_discovery Work
+→ 找到并验证 Recruitment Source
+→ 创建 baseline Work，完整遍历列表
+→ 为发现的 Job Posting 获取详情
+→ Executor 上传真实 Artifact 和结构化数据
 → Recruiting Actor 幂等接受
 → recruiting Channel 收到摘要
 ```
@@ -544,11 +707,11 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 
 ### M3：修复闭环
 
-完成 URL Discovery、Plan 生成/验证/发布/回滚、Failure Artifact、自动修复，以及人从 `waiting_human` 恢复或完结 Work。
+完成 Source Discovery、列表 Plan 与详情 Plan 的生成/验证/发布/回滚、Failure Artifact、自动修复，以及人从 `waiting_human` 恢复或完结 Work。
 
 ### M4：10K 容量决策
 
-- 对比 20,000 个 Target 的 timer 方案；
+- 对比 20,000 个 Recruitment Source 的 timer 方案；
 - 用真实增量比例建模；
 - 压测单 Channel 和 Resource data plane；
 - 测试 capability 匹配、公平性、热点和重试风暴；
@@ -563,9 +726,15 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 
 ### 15.1 功能与可靠性
 
-- 用户可管理 Target 和 Work；
+- 用户可新增、更新、暂停、恢复、归档和按权限删除 Company 及其子数据；
+- 用户可发现、添加、验证、更新、暂停、恢复和移除 Recruitment Source；
+- 用户可管理 Work，并分别追踪列表同步、详情同步、下架确认和修复；
 - manual、timer、event 使用同一状态和审计路径；
-- 一至两次全量后每日扫描全部 active 入口且只展开增量详情；
+- 全量初始化完整遍历当时所有有效列表页，并获取所有可访问岗位详情，产生可对账的基线；
+- 一至两次全量后，每个日运行窗口内为截点时所有 active Source 产生唯一 occurrence，并完成列表同步或记录明确等待/失败原因；
+- 日常只对新增、变化、到期抽样和合法重试岗位同步详情；
+- 岗位一次缺失不被误删，满足下架确认策略后才从 `open` 转为 `closed`；
+- 列表 Source 和岗位详情 URL/Plan 可以分别自动修复或进入人工处理；
 - Plan 能执行并产生结构化职位；
 - 失败生成 Artifact，人工能在原上下文处理；
 - 可从命令追踪 Work、Attempt、Plan、Artifact 和数据；
@@ -628,7 +797,7 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 3. 第一版默认一个招聘 Channel，不把 Channel 当队列分片。
 4. 第一版不拆 Planner、Dispatcher、Committer、Fleet 或 Reconciler Actor。
 5. 第一版只冻结一个 `recruiting-executor` Actor class，capability 与步骤类型分离。
-6. 只冻结 Target、Plan、Work、Attempt、Artifact 五个核心概念。
+6. 业务层冻结 Company、Recruitment Source、Job Posting；运行层冻结 Plan、Work、Attempt、Artifact；Target 只是统一引用。
 7. trigger、purpose、initiator、cause 正交表达工作，不使用混合 source。
 8. 人工审核是 `waiting_human` Work 的状态和视图。
 9. 一至两次全量后，每日扫描全部 active 入口并只处理增量详情。
@@ -638,6 +807,9 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 13. 大对象使用 Resource，Message 保存控制、因果和稳定引用。
 14. Gateway/Driver 不能绕过 Atoll 权限、消息和领域校验。
 15. Snowland/Staircase 只提供业务证据、样本和可选叶子实现。
+16. 每日运行的完成口径以 active Source occurrence 为准；不把“每日全量运行”误解为每天抓取全部历史岗位详情。
+17. 列表发现/同步、岗位详情同步、下架确认、列表修复和详情修复是不同业务 Work，但不等于不同 Executor 类型。
+18. 删除默认采用可恢复归档；岗位下架保留历史；物理删除是受控合规操作。
 
 ## 17. 待实验后决策
 
