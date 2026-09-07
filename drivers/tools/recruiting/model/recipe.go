@@ -96,21 +96,23 @@ func (r Recipe) Quarantine(expected uint64) (Recipe, error) {
 }
 
 func (r Recipe) Supersede(expected uint64) (Recipe, error) {
-	return r.finish(expected, RecipeSuperseded, "supersede")
+	return r.finish(expected, RecipeSuperseded, "supersede", RecipeActive)
 }
 
 func (r Recipe) Disable(expected uint64) (Recipe, error) {
-	return r.finish(expected, RecipeDisabled, "disable")
+	return r.finish(expected, RecipeDisabled, "disable", RecipeActive, RecipeQuarantined)
 }
 
-func (r Recipe) finish(expected uint64, status RecipeStatus, action string) (Recipe, error) {
+func (r Recipe) finish(expected uint64, status RecipeStatus, action string, allowed ...RecipeStatus) (Recipe, error) {
 	if err := requireVersion(expected, r.StateVersion); err != nil {
 		return Recipe{}, err
 	}
-	if r.Status == RecipeSuperseded || r.Status == RecipeDisabled {
-		return Recipe{}, &InvalidTransitionError{Entity: "recipe", From: string(r.Status), Action: action}
+	for _, from := range allowed {
+		if r.Status == from {
+			r.Status = status
+			r.StateVersion++
+			return r, nil
+		}
 	}
-	r.Status = status
-	r.StateVersion++
-	return r, nil
+	return Recipe{}, &InvalidTransitionError{Entity: "recipe", From: string(r.Status), Action: action}
 }

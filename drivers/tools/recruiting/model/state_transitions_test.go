@@ -76,6 +76,8 @@ func TestRepairRecipeProfileAndCompanyTerminalPaths(t *testing.T) {
 		t.Fatalf("supersede = %+v %v", recipe, err)
 	}
 	disabled, _ := NewRecipe("recipe-2", RecipeDetail, "jobs.example.com", 2, "content-2", "contract")
+	disabled, _ = disabled.BeginValidation(disabled.StateVersion)
+	disabled, _ = disabled.Publish(disabled.StateVersion)
 	disabled, err = disabled.Disable(disabled.StateVersion)
 	if err != nil || disabled.Status != RecipeDisabled {
 		t.Fatalf("disable = %+v %v", disabled, err)
@@ -98,6 +100,67 @@ func TestRepairRecipeProfileAndCompanyTerminalPaths(t *testing.T) {
 	company, err = company.MarkInitializationBlocked(company.Version)
 	if err != nil || company.OnboardingStatus != CompanyBlocked {
 		t.Fatalf("company blocked = %+v %v", company, err)
+	}
+}
+
+func TestRecipeTransitionMatrixRejectsIllegalTerminalShortcuts(t *testing.T) {
+	for _, status := range []RecipeStatus{RecipeDraft, RecipeValidating, RecipeQuarantined, RecipeSuperseded, RecipeDisabled} {
+		recipe := Recipe{RecipeID: "recipe-1", Status: status, StateVersion: 1}
+		if _, err := recipe.Supersede(recipe.StateVersion); err == nil {
+			t.Fatalf("supersede accepted from %q", status)
+		}
+	}
+	for _, status := range []RecipeStatus{RecipeDraft, RecipeValidating, RecipeSuperseded, RecipeDisabled} {
+		recipe := Recipe{RecipeID: "recipe-1", Status: status, StateVersion: 1}
+		if _, err := recipe.Disable(recipe.StateVersion); err == nil {
+			t.Fatalf("disable accepted from %q", status)
+		}
+	}
+}
+
+func TestCompanyControlTransitionMatrix(t *testing.T) {
+	for _, status := range []ControlStatus{ControlActive, ControlPaused, ControlArchived} {
+		company := Company{CompanyID: "company-1", ControlStatus: status, Version: 1}
+		paused, pauseErr := company.Pause(company.Version, PauseDrain)
+		if (status == ControlActive) != (pauseErr == nil) {
+			t.Fatalf("pause from %q = %+v %v", status, paused, pauseErr)
+		}
+		resumed, resumeErr := company.Resume(company.Version)
+		if (status == ControlPaused) != (resumeErr == nil) {
+			t.Fatalf("resume from %q = %+v %v", status, resumed, resumeErr)
+		}
+		archived, archiveErr := company.Archive(company.Version)
+		if (status != ControlArchived) != (archiveErr == nil) {
+			t.Fatalf("archive from %q = %+v %v", status, archived, archiveErr)
+		}
+		restored, restoreErr := company.Restore(company.Version)
+		if (status == ControlArchived) != (restoreErr == nil) {
+			t.Fatalf("restore from %q = %+v %v", status, restored, restoreErr)
+		}
+	}
+}
+
+func TestWorkAndAttemptTerminalStatesNeverReopen(t *testing.T) {
+	for _, status := range []WorkStatus{WorkCompleted, WorkFailed, WorkCanceled} {
+		work := Work{WorkID: "work-1", Status: status, Version: 1, AcceptanceVersion: 1}
+		if _, err := work.Start(work.Version); err == nil {
+			t.Fatalf("terminal work %q restarted", status)
+		}
+		if _, err := work.Resume(work.Version); err == nil {
+			t.Fatalf("terminal work %q resumed", status)
+		}
+		if _, err := work.Cancel(work.Version); err == nil {
+			t.Fatalf("terminal work %q canceled again", status)
+		}
+	}
+	for _, status := range []AttemptStatus{AttemptSucceeded, AttemptFailed, AttemptExpired, AttemptRejected} {
+		attempt := Attempt{AttemptID: "attempt-1", Status: status}
+		if _, err := attempt.Reject(); err == nil {
+			t.Fatalf("terminal attempt %q rejected again", status)
+		}
+		if _, err := attempt.Expire(); err == nil {
+			t.Fatalf("terminal attempt %q expired again", status)
+		}
 	}
 }
 

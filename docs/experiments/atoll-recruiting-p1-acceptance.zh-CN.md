@@ -41,15 +41,14 @@ make build-go
 drivers/tools/recruiting/model/testdata/fuzz/FuzzCanonicalHTTPURLIdempotent/8a331a9ab9cd6bd5
 ```
 
-当前 `go test -cover ./drivers/tools/recruiting/model` 的语句覆盖率为 75.5%。该数字只作趋势证据，不冒充计划要求的关键状态转换分支全覆盖。
+当前 `go test -cover ./drivers/tools/recruiting/model` 的语句覆盖率为 76.8%。`make recruiting-model-test` 固化 race、四组 fuzz 和 75% 语句覆盖回退门。该数字只作趋势证据，不冒充计划要求的关键状态转换分支全覆盖。
 
 ## 未通过项
 
 P1 暂不标记完成，原因是：
 
 1. 需要补齐所有关键状态机的合法/非法转换矩阵，尤其是 Company、Source、Recipe、Profile、Work/Attempt、Checkpoint、DailyRun 和 RepairIncident；
-2. 需要增加随机合法事件序列性质测试，证明不会产生两个当前生产 Endpoint、冲突 Assignment、终态 Work 重开或旧 Attempt 被接受；
-3. 需要形成可重复执行的 P1 验收入口和最低覆盖门槛；
-4. 完成后再次运行全仓相关回归和核心冻结检查。
+2. 已建立随机事件序列性质测试；还需扩展到 Company/Recipe/Profile/Checkpoint/DailyRun/Repair 全状态组合，并证明旧 Attempt 在任意版本变化下均被拒绝；
+3. 完成后再次运行全仓相关回归和核心冻结检查。
 
 因此 P2 MySQL schema/migration 尚未开始，避免在领域契约仍可能变化时固化数据库结构。
