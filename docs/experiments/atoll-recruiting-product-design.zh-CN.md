@@ -1,13 +1,16 @@
 # Atoll Recruiting：招聘数据持续采集产品设计
 
-状态：产品与架构设计草案  
-版本：v0.1  
-日期：2026-09-07  
+状态：产品与架构设计草案
+
+版本：v0.2
+
+日期：2026-09-07
+
 目标规模：10,000 家公司，支持向百万级任务/日演进
 
 ## 1. 文档目的
 
-本文定义一个基于 Atoll 的招聘数据持续采集产品。产品吸收 Snowland 验证过的招聘数据模型，以及 Staircase 验证过的 Recipe、Browser Worker、状态机和自动修复思路，但不把二者作为需要兼容的正式系统。
+本文定义一个遵循 Atoll 设计思想和架构原理的招聘数据持续采集产品。Atoll 是系统结构、运行语义和安全边界的唯一权威；Snowland 与 Staircase 只提供业务场景、真实数据样本、站点经验和失败案例，不构成新系统的架构依赖。
 
 本文用于统一以下问题：
 
@@ -25,24 +28,26 @@ Atoll Recruiting 是一个通过自然语言协作、以确定性 Recipe 执行�
 ```text
 用户通过 Web / 飞书提出目标或处理异常
               ↓
-Atoll 管理身份、Agent、协作、权限和审计
+Atoll Actor / Channel / Message 组织全部业务行为
               ↓
-Recruiting Domain 管理公司、URL、Recipe、任务和职位数据
+Recruiting Actor 通过 Timer / Resource 推进领域状态
               ↓
-Browser Worker 执行真实网页采集
+Browser Worker Actor 通过 Driver 执行真实网页采集
 ```
 
 ## 3. 背景与前提
 
-### 3.1 已验证的方向
+### 3.1 已获得的业务证据
 
-Snowland 和 Staircase 是同一业务场景的试验项目，已经分别验证：
+Snowland 和 Staircase 是同一业务场景的探索项目，为新产品提供以下经验性输入：
 
-- Snowland：公司、招聘入口、职位详情等业务对象有实际价值；
-- Staircase：Browser Worker + Extension + Recipe 适合作为生产执行路径；
-- 确定性 Recipe 应承担正常批量生产，LLM 只处理未知、修复和抽样质检；
-- 公司状态、URL 状态和单次任务状态必须分开；
-- IM 适合作为指令、通知和人工仲裁入口。
+- 真实业务对象包括公司、招聘入口、职位列表、职位详情和招聘类型；
+- 真实网站存在 SPA、API、分页、登录态、ATS、多语言和页面变化等差异；
+- Recipe、浏览器插件和持久 Profile 是值得继续验证的执行手段；
+- 正常采集、异常修复和人工处理是三个不同成本的业务路径；
+- Web IM 和飞书可以作为用户指令、通知与仲裁入口。
+
+这些结论是需求假设和测试语料，不自动成为目标领域模型。Company、URL、Recipe、Task 等概念仍须根据 Atoll 原语、真实网站测试和新系统不变量重新定义。
 
 ### 3.2 实施前提
 
@@ -51,6 +56,17 @@ Snowland 和 Staircase 是同一业务场景的试验项目，已经分别验证
 - 可以复用经过验证的代码，但不得继承未经确认的状态语义和一致性缺陷；
 - 第一阶段运行在一个 Atoll trust domain 内；
 - Atoll 当前是 pre-release，正式生产前必须完成数据安全和恢复验收。
+
+### 3.3 设计权威顺序
+
+发生冲突时按以下顺序裁决：
+
+1. Atoll 的身份、消息、生命周期、权限、恢复和分层不变量；
+2. 本文冻结的招聘领域不变量和验收标准；
+3. 真实招聘网站产生的可复现实证；
+4. Snowland/Staircase 的历史设计和代码。
+
+Snowland/Staircase 的实现不得反向要求 Atoll core 引入招聘领域概念。历史代码只有在成为受 Atoll Actor 约束的叶子模型或 Driver 后才可复用。
 
 ## 4. 产品目标
 
@@ -68,7 +84,8 @@ Snowland 和 Staircase 是同一业务场景的试验项目，已经分别验证
 
 第一阶段不包括：
 
-- 把 Atoll Channel 当作高吞吐任务队列；
+- 绕开 Atoll 另建第二套身份、权限、控制入口和编排中心；
+- 把页面正文、截图、网络包和每次内部轮询直接写入 Channel ledger；
 - 为每家公司、每个 URL 或每个任务创建 Channel；
 - 让 LLM 直接访问或修改领域数据库；
 - 承诺对所有招聘网站绕过登录、验证码或反自动化机制；
@@ -128,11 +145,11 @@ Atoll durable timer 唤醒 Planner
 
 ## 6. 核心设计原则
 
-### 6.1 Atoll 是协作控制面，不是业务数据面
+### 6.1 Atoll 是系统底座，领域状态由 Actor 拥有
 
-Atoll 保存用户、Agent 和工具之间有协作价值的消息，以及身份、权限、成员关系、定时唤醒和审计事实。
+所有外部业务命令、Actor 间控制交互和可观察领域事件都通过 Atoll Message 发生，并受 Channel membership 和 capability 约束。消息先进入持久 ledger，再交付给 Actor。
 
-Recruiting Domain 保存公司、URL、Recipe、任务、Attempt、失败证据和职位数据。
+Recruiting Actor 是公司、URL、Recipe、任务、Attempt 和职位状态的唯一行为权威。大量结构化数据可以保存在 Actor 控制的领域数据库 Resource 中；这是一种数据面委托，不是独立于 Atoll 的第二套控制面。
 
 ### 6.2 确定性优先，AI 处理例外
 
@@ -164,40 +181,47 @@ Worker 主动领取符合自身能力的任务。调度器不依赖向特定 Wor
 
 ### 6.7 聚合通知
 
-Atoll 只记录批次、异常、审批、容量和用户查询等高价值事件。heartbeat、页面打开和单条职位写入不进入 Channel ledger。
+Atoll ledger 记录具有控制、因果或协作价值的消息。页面正文、截图、网络响应和大批量职位作为 Resource 保存，消息只携带稳定引用、摘要和内容哈希。Worker 内部的页面事件与轮询不提升为领域消息。
+
+### 6.8 用 Atoll 原语表达系统
+
+| Atoll 原语 | 招聘产品中的含义 |
+|---|---|
+| Actor | 人、Recruiting Agent、领域服务、Planner、Worker、Repair Agent |
+| Channel | 运维、执行分片、人工审核等权限与协作边界 |
+| Message | 命令、任务领取、结果提交、状态事件、审批和回复 |
+| Resource | 领域数据库、Recipe、截图、原始响应、导出文件 |
+| Timer | 到期扫描、租约回收、重试、熔断恢复和摘要生成 |
+
+Actor 私有内存不是事实来源；REST 路由不是内部业务总线；prompt 不是权限系统；进程身份不是稳定 Actor 身份。
 
 ## 7. 总体架构
 
 ```text
-┌────────────────────────────────────────────────────┐
-│ Atoll Control Plane                                │
-│                                                    │
-│ Web / Feishu Gateway                               │
-│   → Recruiting Ops Channel                         │
-│       ├─ Human members                             │
-│       ├─ Recruiting Agent                          │
-│       ├─ Recruiting Tool Actor                     │
-│       └─ Worker Fleet Tool Actor                   │
-│                                                    │
-│ Identity / Membership / Access / Ledger / Timer    │
-└────────────────────────┬───────────────────────────┘
-                         │ commands / summaries / review
-                         v
-┌────────────────────────────────────────────────────┐
-│ Recruiting Domain Service                          │
-│                                                    │
-│ Control API / Planner / Dispatcher / Committer     │
-│ Company & URL State / Recipe / Quality / Repair    │
-└──────────────┬───────────────────────┬─────────────┘
-               │                       │
-               v                       v
-┌────────────────────────┐   ┌────────────────────────┐
-│ Domain Database         │   │ Worker Data Plane      │
-│ tasks / attempts        │   │ HTTP Worker            │
-│ recipes / evidence      │   │ Browser Worker         │
-│ jobs / outbox           │   │ AI Repair Worker       │
-└────────────────────────┘   └────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ Atoll Node                                               │
+│                                                          │
+│ recruiting-ops Channel                                   │
+│   Human ⇄ Recruiting Agent ⇄ Recruiting Service Actor    │
+│                                  │ peer messages          │
+│                 ┌────────────────┴───────────────┐        │
+│                 v                                v        │
+│ recruiting-exec.N Channel             recruiting-review  │
+│   Planner / Dispatcher Actors          Human / Repair     │
+│   Browser Worker Actors                Approval messages  │
+│                                                          │
+│ Ledger / Membership / Access / Timer / Resource / Device  │
+└────────────────────────────┬─────────────────────────────┘
+                             │ resource data plane / drivers
+                             v
+┌──────────────────────────────────────────────────────────┐
+│ Actor-owned Resources and External Effects               │
+│ Domain DB / Recipe / Evidence / Object Store              │
+│ HTTP / Chromium / Extension / authorised AI provider     │
+└──────────────────────────────────────────────────────────┘
 ```
+
+不存在独立于 Atoll 的 `Recruiting Control API`。Web、飞书、Agent、Planner 和 Worker 发起的控制动作都进入 Channel，由目标 Actor 的公开词处理。大对象上传下载走 Resource data plane，完成后以携带引用和哈希的 Message 提交结果。
 
 ### 7.1 所有权边界
 
@@ -207,13 +231,35 @@ Atoll 只记录批次、异常、审批、容量和用户查询等高价值事�
 | Channel、成员、访问权限 | Atoll |
 | 对话、审批过程、运行摘要 | Atoll ledger |
 | 可靠唤醒 | Atoll timer |
-| 公司、URL 和刷新策略 | Recruiting Domain |
-| Recipe 和版本 | Recruiting Domain |
-| Task、Attempt 和租约 | Recruiting Domain |
-| Worker 业务能力与任务匹配 | Recruiting Domain |
-| Worker 所在设备和在线状态 | Atoll + Worker Registry 投影 |
-| 职位 URL、详情和质量事实 | Recruiting Domain |
-| 截图和大型原始证据 | 对象存储，领域数据库保存引用 |
+| 公司、URL 和刷新策略 | Recruiting Service Actor，状态存于其 Resource |
+| Recipe 和版本 | Recruiting Service Actor，内容存于 Resource |
+| Task、Attempt 和租约 | Dispatcher Actor/领域模型，状态存于 Resource |
+| Worker 业务能力与任务匹配 | Dispatcher Actor |
+| Worker 身份、所在设备和 incarnation | Atoll |
+| 职位 URL、详情和质量事实 | Recruiting Service Actor，数据存于 Resource |
+| 截图和大型原始证据 | Resource data plane，消息保存引用与哈希 |
+
+### 7.2 模块与依赖方向
+
+目标实现遵循 Atoll 现有领域实验的分层方式：
+
+```text
+纯 Recruiting model
+        ↑
+Recruiting Actor adapter
+        ↑
+Atoll registry / channel composition
+
+Browser/HTTP/AI Driver → 只实现外部效果
+Web Console           → 只调用公开领域词
+```
+
+- 纯领域模型不依赖 Atoll runtime、网络、墙钟或具体数据库；
+- Actor adapter 把 Message 翻译成领域命令，把领域事件写回 Channel；
+- Resource adapter 持久化大规模领域状态；
+- Driver 不拥有业务决策，不直接接受绕开 Actor 的用户命令；
+- Atoll `protocol/`、`runtime/`、`platform/` 不 import Recruiting 领域包；
+- Web 界面不能通过私有数据库接口绕开公开消息协议。
 
 ## 8. Atoll 产品映射
 
@@ -270,7 +316,7 @@ recruiting.capacity.status
 
 Atoll 的通用 Jobs、Approvals 和 Quotas 尚未交付时：
 
-- Task 由 Recruiting Domain 自己实现；
+- Task 语义由 Recruiting 领域模型定义，并由 Atoll 中的 Dispatcher Actor 执行；
 - Recipe Approval 由领域命令和 Atoll 消息共同实现；
 - Quota 由 Dispatcher 的预算系统实现；
 - 后续通过适配器迁移到通用组织层，不改变领域事实。
@@ -405,7 +451,7 @@ task_type + target_id + schedule_window + recipe_version
 
 ### 10.3 队列与分片
 
-第一阶段使用关系数据库作为任务真相源，并通过 `FOR UPDATE SKIP LOCKED` 领取。队列按以下维度逻辑隔离：
+Worker 通过执行 Channel 向 Dispatcher Actor 发送 `recruiting.task.claim`，不得直接查询任务表。Dispatcher 在处理该消息时，使用 Actor 控制的关系数据库 Resource 保存任务投影，并可在内部通过 `FOR UPDATE SKIP LOCKED` 完成并发选择。队列按以下维度逻辑隔离：
 
 ```text
 http-production
@@ -418,7 +464,7 @@ human-review
 
 分片键优先使用规范化 `origin_host`，使站点级限流和熔断容易执行；热点站点允许在共享预算约束下拆成多个物理分片。
 
-只有当数据库领取成为经测量确认的瓶颈时，才引入 Redis Streams、NATS 或 Kafka 作为分发加速层。数据库始终是任务和结果的事实来源。
+只有当 Resource adapter 的数据库领取成为经测量确认的瓶颈时，才在 Actor 背后引入 Redis Streams、NATS 或 Kafka 作为分发加速层。任何加速层不得成为新的用户入口、权限边界或业务权威。
 
 ### 10.4 优先级与公平性
 
@@ -449,14 +495,16 @@ effective_priority =
 
 一次领取必须在短事务中：
 
-1. 选择一个当前可运行且符合 Worker 能力的 Task；
-2. 检查全局、站点、Profile 和任务类型预算；
-3. 创建唯一 `attempt_id` 和不可猜测的 `lease_token`；
-4. 写入 `lease_expires_at`；
-5. 将 Task 标记为 leased；
-6. 提交事务后把执行材料返回给 Worker。
+1. Atoll 先把 Worker 的 claim request 记入执行 Channel ledger；
+2. Dispatcher 验证发送 Actor 的稳定身份、当前 incarnation 和能力；
+3. 选择一个当前可运行且符合 Worker 能力的 Task；
+4. 检查全局、站点、Profile 和任务类型预算；
+5. 创建唯一 `attempt_id` 和不可猜测的 `lease_token`；
+6. 写入 `lease_expires_at` 并将 Task 标记为 leased；
+7. 提交 Resource 事务；
+8. 通过关联原 request 的 result message 返回任务和 Resource ticket。
 
-Worker heartbeat 只能延长自己当前有效的 Attempt。旧 Attempt 的延迟 heartbeat 或 result 不得改变新 Attempt。
+Worker heartbeat/result 都是发给 Dispatcher/Committer Actor 的消息，只能延长或完成自己当前有效的 Attempt。旧 incarnation 或旧 Attempt 的延迟消息不得改变新 Attempt。
 
 ### 10.6 多层预算
 
@@ -602,14 +650,17 @@ recruiting.capacity.degraded
 recruiting.system.recovered
 ```
 
-### 12.2 不写入 Channel 的高频事实
+### 12.2 执行消息与大数据分离
 
-- Worker heartbeat；
-- 单次 task claim；
-- 页面打开和关闭；
-- 单条职位 upsert；
-- 普通轮询；
-- 可在指标系统查询的内部进度。
+Task claim、租约续期和 result submission 具有控制与因果价值，使用紧凑消息进入分片后的 execution Channel。它们不进入面向人的 Ops Channel，也不能在消息 payload 中嵌入页面正文或大批职位。
+
+以下内容只进入 Actor 控制的 Resource 或指标系统：
+
+- 页面打开、DOM 变化和网络响应明细；
+- 页面正文、截图和原始 API 样本；
+- 单条职位的完整正文；
+- Worker 进程内部轮询；
+- 不影响 Task/Attempt 状态的细粒度进度。
 
 用户查询明细时，由 Recruiting Tool 从领域数据库读取并返回摘要，而不是提前把全部明细复制进 Channel。
 
@@ -716,7 +767,7 @@ Worker 容量是否足够？
 
 - 冻结第一版实体、状态和命令词汇；
 - 建立 ID、幂等、事务和 Outbox 约束；
-- 建立 Atoll/领域数据库所有权边界。
+- 建立 Actor、Message、Resource 与 Driver 的所有权边界。
 
 ### M1：端到端纵向切片
 
@@ -885,27 +936,28 @@ make recruiting-live-weekly
 | 浏览器任务成本失控 | HTTP/API 优先、增量详情、分级 Worker 和预算控制 |
 | 目标站点反自动化 | 站点限流、Profile 隔离、熔断和人工仲裁 |
 | 重试风暴 | 分类重试、指数退避、随机抖动和站点级熔断 |
-| 双重状态源 | Atoll 只保存协作事实，领域数据库保存业务事实 |
-| 高频事件压垮 Atoll ledger | 仅发送批次、异常、审批和聚合摘要 |
+| 双重状态源 | Actor 是行为权威；ledger 保存因果输入输出，Actor Resource 保存可恢复领域投影，并通过幂等键对账 |
+| 高频事件压垮 Atoll ledger | 执行 Channel 分片；消息只含控制 envelope、摘要和 Resource 引用，大对象不进 ledger |
 | AI 发布错误 Recipe | 版本冻结、小样本验证、风险分级审批和快速回滚 |
 
 ## 19. 已确定的架构决策
 
-1. Atoll 不作为 Browser Task 队列。
-2. Recruiting Domain 使用独立业务数据库。
-3. 正常批量生产不调用 LLM。
-4. Worker 使用 Pull + Lease，不依赖定向推送。
-5. 分布式语义采用至少一次执行和幂等结果。
-6. 公司、URL 和任务不映射为独立 Channel。
-7. Atoll timer 只唤醒 Planner，不为每个目标保存一个调度 Actor。
-8. 站点预算和熔断优先于 Worker 扩容。
-9. 任务高频事实留在领域数据面，Atoll 只记录高价值协作事件。
-10. Snowland 和 Staircase 作为设计与代码来源，不作为长期并存系统。
+1. Atoll 是唯一架构底座和控制平面，所有控制动作通过 Actor/Channel/Message 发生。
+2. Recruiting Service Actor 是领域行为权威，大规模状态存于其控制的 Resource。
+3. Task claim、lease、result 是执行 Channel 中的领域消息；大对象通过 Resource data plane 传递。
+4. 不建立独立于 Atoll 的 Recruiting REST 控制面、身份系统或权限系统。
+5. 正常批量生产不调用 LLM。
+6. Worker 使用消息驱动的 Pull + Lease，不依赖定向推送。
+7. 分布式语义采用至少一次执行和幂等结果。
+8. 公司、URL 和任务不映射为独立 Channel；Channel 只表达协作、权限和执行分片边界。
+9. Atoll timer 唤醒 Planner Actor，不为每个目标创建独立调度 Actor。
+10. 站点预算和熔断优先于 Worker 扩容。
+11. Snowland 和 Staircase 只作为业务证据、真实样本和叶子实现来源，不拥有目标架构决策权。
 
 ## 20. 后续待决策项
 
-- 第一版领域数据库选择 MySQL 还是 PostgreSQL；
-- Recruiting Tool 采用原生 Atoll Tool Actor 还是 MCP 适配；
+- 第一版 Actor Resource adapter 选择 SQLite、MySQL 还是 PostgreSQL；
+- Browser/Extension Driver 采用 Atoll 原生 Driver 协议还是 MCP 适配；
 - Browser Worker 的 Profile 加密、分配和迁移策略；
 - Recipe 自动发布的风险等级和审批阈值；
 - 招聘数据的保留、删除和合规规则；
