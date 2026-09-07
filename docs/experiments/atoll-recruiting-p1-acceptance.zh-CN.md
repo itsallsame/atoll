@@ -41,7 +41,7 @@ make build-go
 drivers/tools/recruiting/model/testdata/fuzz/FuzzCanonicalHTTPURLIdempotent/8a331a9ab9cd6bd5
 ```
 
-当前 `go test -cover ./drivers/tools/recruiting/model` 的语句覆盖率为 78.9%。`make recruiting-model-test` 固化 race、四组 fuzz 和 75% 语句覆盖回退门。关键状态转换采用显式状态矩阵覆盖；语句覆盖率用于阻止整体测试质量回退，不代替矩阵断言。
+当前 `go test -cover ./drivers/tools/recruiting/model` 的语句覆盖率为 78.8%。`make recruiting-model-test` 固化 race、四组 fuzz 和 75% 语句覆盖回退门。关键状态转换采用显式状态矩阵覆盖；语句覆盖率用于阻止整体测试质量回退，不代替矩阵断言。
 
 ## 退出门结论
 
@@ -49,6 +49,7 @@ drivers/tools/recruiting/model/testdata/fuzz/FuzzCanonicalHTTPURLIdempotent/8a33
 - fuzz 合法事件序列证明终态 Work 单调、Source 不会在缺少生产 Endpoint/Assignment 或归档状态下进入每日运行；
 - Attempt 对 Executor incarnation 以及 Company、Source、Assignment、Recipe、Checkpoint、refresh generation、Profile 的每一项变化均逐项拒绝；
 - Source 结构最多持有一个当前 Listing/Detail/Discovery Assignment 和一个 active Endpoint，发布与替换受 CAS 及契约兼容证明约束；
+- BaselineGeneration 明确区分 listing、details_pending、completed 和 completed_with_exceptions，列表 finalize 与详情逐步核算使用独立版本转换；
 - 模型无网络、数据库和墙钟读取，业务时间均由调用方显式注入；
 - 全部相关回归、构建和核心冻结检查通过。
 

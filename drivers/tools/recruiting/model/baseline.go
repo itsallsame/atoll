@@ -1,0 +1,75 @@
+package model
+
+import (
+	"fmt"
+	"strings"
+)
+
+type BaselineStatus string
+
+const (
+	BaselineListing        BaselineStatus = "listing"
+	BaselineDetailsPending BaselineStatus = "details_pending"
+	BaselineCompleted      BaselineStatus = "completed"
+	BaselineWithExceptions BaselineStatus = "completed_with_exceptions"
+)
+
+type BaselineGeneration struct {
+	SourceID         string         `json:"source_id"`
+	Generation       uint64         `json:"baseline_generation"`
+	Status           BaselineStatus `json:"status"`
+	ListingFinalized bool           `json:"listing_finalized"`
+	DetailsExpected  uint64         `json:"details_expected"`
+	DetailsAccounted uint64         `json:"details_accounted"`
+	DetailExceptions uint64         `json:"detail_exceptions"`
+	Version          uint64         `json:"version"`
+}
+
+func NewBaselineGeneration(sourceID string, generation uint64) (BaselineGeneration, error) {
+	if strings.TrimSpace(sourceID) == "" || generation == 0 {
+		return BaselineGeneration{}, fmt.Errorf("source and baseline generation are required")
+	}
+	return BaselineGeneration{SourceID: sourceID, Generation: generation, Status: BaselineListing, Version: 1}, nil
+}
+
+func (b BaselineGeneration) FinalizeListing(expectedVersion, detailsExpected uint64) (BaselineGeneration, error) {
+	if err := requireVersion(expectedVersion, b.Version); err != nil {
+		return BaselineGeneration{}, err
+	}
+	if b.Status != BaselineListing || b.ListingFinalized {
+		return BaselineGeneration{}, &InvalidTransitionError{Entity: "baseline", From: string(b.Status), Action: "finalize listing"}
+	}
+	b.ListingFinalized = true
+	b.DetailsExpected = detailsExpected
+	if detailsExpected == 0 {
+		b.Status = BaselineCompleted
+	} else {
+		b.Status = BaselineDetailsPending
+	}
+	b.Version++
+	return b, nil
+}
+
+func (b BaselineGeneration) AccountDetails(expectedVersion, succeeded, acceptedGaps, failed uint64) (BaselineGeneration, error) {
+	if err := requireVersion(expectedVersion, b.Version); err != nil {
+		return BaselineGeneration{}, err
+	}
+	if b.Status != BaselineDetailsPending {
+		return BaselineGeneration{}, &InvalidTransitionError{Entity: "baseline", From: string(b.Status), Action: "account details"}
+	}
+	accounted := succeeded + acceptedGaps + failed
+	if b.DetailsAccounted+accounted > b.DetailsExpected {
+		return BaselineGeneration{}, fmt.Errorf("detail accounting exceeds baseline expectation")
+	}
+	b.DetailsAccounted += accounted
+	b.DetailExceptions += acceptedGaps + failed
+	if b.DetailsAccounted == b.DetailsExpected {
+		if b.DetailExceptions == 0 {
+			b.Status = BaselineCompleted
+		} else {
+			b.Status = BaselineWithExceptions
+		}
+	}
+	b.Version++
+	return b, nil
+}
