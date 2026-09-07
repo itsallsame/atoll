@@ -17,7 +17,7 @@
 - `requested_by` 只取 Atoll envelope sender，客户端附带同名未知字段会被严格解码拒绝；
 - command request hash 绑定 word 与原始 payload，不绑定短生命周期 human session actor ID；首次操作者进入审计 event 和稳定 response，重连后仍能重放；
 - 修改命令在运行领域状态机前先查 receipt，因此 server 重启后不会因聚合版本已经前进而错误拒绝原命令；并发首次执行仍由事务内 receipt 与聚合 CAS 收口；
-- 黑盒测试使用真实 `atoll-server`、Portal/WebSocket、隔离 MySQL 8.4、非 root migrator/runtime 身份，完成 add→replay→update→pause→durable timer 自动投递 outbox→Atoll ledger→server restart→get→replay→resume→重启后自动投递→空 reconcile→stale CAS rejection→list；
+- 黑盒测试使用真实 `atoll-server`、Portal/WebSocket、隔离 MySQL 8.4；应用侧由新注册的普通 `recruiting-operator` 在自己的 Home Channel 创建并运维 Recruiting Actor，不借用 root 会话；数据库侧使用非 root migrator/runtime 身份，完成 add→replay→update→pause→durable timer 自动投递 outbox→Atoll ledger→server restart→普通用户重新登录→get→replay→resume→重启后自动投递→空 reconcile→stale CAS rejection→list；
 - P0 probe Actor→Executor、持久 timer 和重启路径保留，Company 控制面没有替换 Atoll 的 actor、message、ledger 或 scheduler。
 
 ## 当前验证
