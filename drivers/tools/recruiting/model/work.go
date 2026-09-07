@@ -43,6 +43,21 @@ type Work struct {
 	Version           uint64         `json:"version"`
 }
 
+// NewChildWork creates an independently versioned unit of work while retaining
+// the user-visible causal link to its parent. Parent and child lifecycles are
+// deliberately not coupled: repositories persist and CAS each Work separately.
+func NewChildWork(parent Work, workID, targetType, targetID, purpose, trigger string) (Work, error) {
+	if parent.WorkID == "" || parent.Terminal() {
+		return Work{}, fmt.Errorf("child work requires a non-terminal parent")
+	}
+	child, err := NewWork(workID, targetType, targetID, purpose, trigger)
+	if err != nil {
+		return Work{}, err
+	}
+	child.ParentWorkID = parent.WorkID
+	return child, nil
+}
+
 func NewWork(workID, targetType, targetID, purpose, trigger string) (Work, error) {
 	if strings.TrimSpace(workID) == "" || strings.TrimSpace(targetType) == "" || strings.TrimSpace(targetID) == "" || strings.TrimSpace(purpose) == "" || strings.TrimSpace(trigger) == "" {
 		return Work{}, fmt.Errorf("work identity, target, purpose, and trigger are required")

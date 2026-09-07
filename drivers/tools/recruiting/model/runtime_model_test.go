@@ -103,6 +103,40 @@ func TestJobRefreshGenerationRejectsLateDetail(t *testing.T) {
 	}
 }
 
+func TestOverlapObservationDoesNotBecomeDailyFullDetailRefresh(t *testing.T) {
+	observation, err := NewListingObservation(ListingObservation{
+		ObservationID: "observation-1", OccurrenceID: "baseline-1", SourceID: "source-1", SourceJobKey: "external-1",
+		DetailURL: "https://jobs.example.com/1", ActivityAt: "2026-09-01T00:00:00Z", ListingFingerprint: "listing-a",
+		RecipeID: "listing-1", RecipeVersion: 1, ArtifactID: "artifact-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := NewSourceJobFromObservation("job-1", observation, "2026-09-01T00:01:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate := observation
+	duplicate.ObservationID = "observation-2"
+	duplicate.OccurrenceID = "daily-1"
+	unchanged, refresh, err := job.ObserveListing(job.Version, duplicate)
+	if err != nil || refresh || unchanged.RefreshGeneration != job.RefreshGeneration || unchanged.Version != job.Version {
+		t.Fatalf("overlap observation caused detail refresh: %+v refresh=%v err=%v", unchanged, refresh, err)
+	}
+	updated := duplicate
+	updated.ObservationID = "observation-3"
+	updated.ActivityAt = "2026-09-02T00:00:00Z"
+	updated.ListingFingerprint = "listing-b"
+	changed, refresh, err := job.ObserveListing(job.Version, updated)
+	if err != nil || !refresh || changed.RefreshGeneration != job.RefreshGeneration+1 || changed.Status != JobUpdatePending {
+		t.Fatalf("real source update did not trigger detail refresh: %+v refresh=%v err=%v", changed, refresh, err)
+	}
+	accepted, err := changed.AcceptDetailVersion(changed.Version, changed.RefreshGeneration, "detail-1", "sha256:detail", "artifact-detail", "detail-recipe", 4, "2026-09-02T00:02:00Z")
+	if err != nil || accepted.DetailVersion == nil || accepted.DetailVersion.Version != 1 {
+		t.Fatalf("detail version was not created: %+v err=%v", accepted, err)
+	}
+}
+
 func TestOccurrenceSnapshotAndCoverageOutcome(t *testing.T) {
 	key1, err := OccurrenceKey("source-1", "2026-09-07", 3)
 	if err != nil {
