@@ -248,6 +248,10 @@ func TestDailyRunAndOccurrenceTransitionMatrix(t *testing.T) {
 		if (status == OccurrenceRunning) != (finishErr == nil) {
 			t.Fatalf("occurrence finish from %q: %v", status, finishErr)
 		}
+		_, excludeErr := occurrence.Exclude(occurrence.Version, "operator exclusion")
+		if (status == OccurrencePlanned) != (excludeErr == nil) {
+			t.Fatalf("occurrence exclusion from %q: %v", status, excludeErr)
+		}
 	}
 }
 

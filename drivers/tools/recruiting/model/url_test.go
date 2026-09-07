@@ -18,7 +18,7 @@ func TestCanonicalHTTPURLNormalizesIdentityWithoutNetwork(t *testing.T) {
 }
 
 func TestCanonicalHTTPURLRejectsUnsafeIdentityForms(t *testing.T) {
-	for _, raw := range []string{"ftp://example.com/jobs", "https://user:secret@example.com/jobs", "/relative"} {
+	for _, raw := range []string{"ftp://example.com/jobs", "https://user:secret@example.com/jobs", "/relative", "http://:0:1"} {
 		if _, err := CanonicalHTTPURL(raw); err == nil {
 			t.Fatalf("unsafe URL accepted: %q", raw)
 		}

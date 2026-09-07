@@ -153,3 +153,14 @@ func (o SourceOccurrence) Finish(expected uint64, checkpointCommitted bool, outc
 	o.Outcome, o.Version = strings.TrimSpace(outcome), o.Version+1
 	return o, nil
 }
+
+func (o SourceOccurrence) Exclude(expected uint64, reason string) (SourceOccurrence, error) {
+	if err := requireVersion(expected, o.Version); err != nil {
+		return SourceOccurrence{}, err
+	}
+	if o.Status != OccurrencePlanned || strings.TrimSpace(reason) == "" {
+		return SourceOccurrence{}, &InvalidTransitionError{Entity: "source occurrence", From: string(o.Status), Action: "exclude"}
+	}
+	o.Status, o.Outcome, o.Version = OccurrenceExcluded, strings.TrimSpace(reason), o.Version+1
+	return o, nil
+}

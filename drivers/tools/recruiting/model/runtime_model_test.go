@@ -236,6 +236,20 @@ func TestOccurrenceSnapshotAndCoverageOutcome(t *testing.T) {
 	}
 }
 
+func TestPlannedOccurrenceCanBeExplicitlyExcluded(t *testing.T) {
+	o, err := NewSourceOccurrence("occ-excluded", "daily-1", "source-1", "2026-09-07", 3, 8, 13)
+	if err != nil {
+		t.Fatal(err)
+	}
+	excluded, err := o.Exclude(o.Version, "paused before cutoff")
+	if err != nil || excluded.Status != OccurrenceExcluded || excluded.Outcome != "paused before cutoff" || excluded.Version != 2 {
+		t.Fatalf("excluded occurrence = %+v, %v", excluded, err)
+	}
+	if _, err := excluded.Start(excluded.Version); err == nil {
+		t.Fatal("excluded occurrence was restarted")
+	}
+}
+
 func TestDailyRunDoesNotHideAcceptedGaps(t *testing.T) {
 	run, err := NewDailyRun("daily-1", "2026-09-07", 2)
 	if err != nil {

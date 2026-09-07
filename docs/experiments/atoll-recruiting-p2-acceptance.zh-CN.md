@@ -32,6 +32,11 @@ P1 契约基线：`a94d2b8d`
 - Profile Repository 只持久化 opaque secret reference，并以 profile version CAS 驱动 repairing/verifying；测试确认没有 Cookie、密码或 OTP 字段；
 - BudgetPermit 以 Attempt 唯一并使用版本 CAS，只能从 granted 进入一个终态；两个并发 release 只有一个成功；
 - RepairIncident 以 failure domain/signature/failing version 形成的 repair key 单飞；相同 origin 故障的多个 Work 只形成一个 incident 和多条幂等 affected-work 关联；
+- DailyRun 按 schedule date 唯一，启动使用版本 CAS；两个并发启动实测只有一个成功，计划日期和期望 Source 数在创建后不可修改；
+- SourceOccurrence 在 DailyRun 进入 running 后分块物化，并以 `(source_id, schedule_date, schedule_policy_version)` 唯一；相同输入重放保留原 ID，冲突 ID 或变化的快照被拒绝，物化总数不能超过 cutoff 时的 expected sources；
+- 每个 SourceOccurrence 冻结 Company/Source/调度策略版本与 due time，后续 Source 更新不会改写当日执行口径；planned occurrence 可由操作员显式排除并记录原因；
+- 到期 occurrence 查询有界为 500 条，`EXPLAIN FORMAT=JSON` 验证使用 `(status, due_at, occurrence_id)` 索引；
+- DailyRun 只能用数据库内不可变 occurrence 终态事实闭账：总数必须等于 cutoff 时 expected sources，成功、异常、排除统计必须逐项一致，未完成项或伪造 summary 都不能关闭日批次；物化和闭账锁定同一 DailyRun 行，避免关闭后晚插任务的竞态；
 - `EXPLAIN FORMAT=JSON` 验证 Company seek 查询使用专用索引；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
@@ -47,7 +52,7 @@ make build-go
 
 ## 尚未完成
 
-- DailyRun/Occurrence、Override 和 outbox 完整 Repository contract；Company、Source、Recipe/Assignment、Checkpoint、Listing/Detail Job、Observation/DetailVersion、Artifact、Work/Attempt、Profile、Budget、Repair 已有纵向合同；
+- Override 和 outbox 完整 Repository contract；Company、Source、Recipe/Assignment、Checkpoint、Listing/Detail Job、Observation/DetailVersion、Artifact、Work/Attempt、Profile、Budget、Repair、DailyRun/Occurrence 已有纵向合同；
 - 将已验证的命令 receipt/聚合/outbox 原子事务推广到其余修改命令，并实现 outbox 有界重试状态；
 - 每日 Listing Observation/SourceJob/Detail Work 的单项事务与并发收敛已完成；仍需分页进度/进程退出恢复以及 baseline 详情渐进物化；
 - deadlock、timeout、断连、重复提交和进程 kill 故障注入；

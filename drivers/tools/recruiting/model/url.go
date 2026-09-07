@@ -31,6 +31,13 @@ func CanonicalHTTPURL(raw string) (string, error) {
 	if host == "" || u.User != nil {
 		return "", fmt.Errorf("URL host is required and userinfo is forbidden")
 	}
+	// A colon in Hostname is only valid for an IPv6 literal. net/url accepts
+	// ambiguous inputs such as http://:0:1 and reports ":0" as the hostname;
+	// feeding that value to JoinHostPort would create a canonical URL that the
+	// parser itself cannot read on the next pass.
+	if strings.Contains(host, ":") && net.ParseIP(host) == nil {
+		return "", fmt.Errorf("URL host is invalid")
+	}
 	if strings.HasSuffix(u.Host, ":") || strings.HasSuffix(host, ":") {
 		return "", fmt.Errorf("URL port is invalid")
 	}
