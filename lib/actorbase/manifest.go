@@ -58,11 +58,14 @@ func (e *engine) dynamicWords(ctx context.Context, manifest introspect.Manifest)
 	if err != nil {
 		return nil, err
 	}
-	if out.RejectReason == access.ResourceNotFound || !out.Found || len(out.Value) == 0 {
+	if out.RejectReason == access.ResourceNotFound {
 		return nil, nil
 	}
 	if !out.Accepted() {
 		return nil, fmt.Errorf("actorbase: dynamic manifest read rejected: %s", out.RejectReason)
+	}
+	if !out.Found || len(out.Value) == 0 {
+		return nil, nil
 	}
 	var words map[string]introspect.WordSpec
 	if err := json.Unmarshal(out.Value, &words); err != nil {

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>CvMax</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <header><span>CV</span><div><strong>CvMax</strong><small>招聘页连接</small></div></header>
+    <main>
+      <section class="status"><i></i><div><strong id="state">正在检查</strong><small id="detail">读取本机服务状态</small></div></section>
+      <section id="pairing">
+        <label for="token">配对码</label>
+        <input id="token" type="password" autocomplete="off" placeholder="输入 CvMax 提供的配对码">
+        <button id="pair">连接本机服务</button>
+      </section>
+      <section id="running" hidden>
+        <small>页面动作由 CvMax 服务控制</small>
+        <strong id="task">当前没有执行中的动作</strong>
+        <span id="field"></span>
+        <div class="counts"><span id="operation">—</span><span id="verified">已核验 0 项</span></div>
+        <small id="owner"></small>
+        <button id="stop" class="danger">立即停止页面动作</button>
+      </section>
+      <p id="message" role="status"></p>
+    </main>
+    <footer>只填写并核验，最终提交由你完成。<span id="version"></span></footer>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

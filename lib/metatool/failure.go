@@ -79,6 +79,7 @@ var actorErrorClasses = map[string]failureClass{
 	"empty_input":          {PayloadInvalid, hintFixPayload, false},
 	"invalid_input":        {PayloadInvalid, hintFixPayload, false},
 	"output_limit":         {PayloadInvalid, hintFixPayload, false},
+	"config_error":         {PayloadInvalid, hintFixPayload, false},
 
 	// The subject named does not exist.
 	"not_found":      {NotFound, hintNotFound, false},
@@ -109,6 +110,7 @@ var actorErrorClasses = map[string]failureClass{
 	"unknown_class":      {Unsupported, hintUnsupported, false},
 	"reserved":           {Unsupported, hintUnsupported, false},
 	"no_service_agent":   {Unsupported, hintNoSvcAgent, false},
+	"experiment_stopped": {Unsupported, hintUnsupported, false},
 
 	// Identity collisions.
 	"conflict_exists": {Conflict, hintConflict, false},
@@ -124,6 +126,7 @@ var actorErrorClasses = map[string]failureClass{
 	"channel_unavailable":   {Unavailable, hintUnavailable, true},
 	"authority_unavailable": {Unavailable, hintUnavailable, true},
 	"provider_failed":       {Unavailable, hintUnavailable, true},
+	"timer_error":           {Unavailable, hintUnavailable, true},
 
 	"mcp_timeout": {Timeout, hintTimeout, false},
 	"timeout":     {Timeout, hintTimeout, false},
@@ -143,6 +146,9 @@ var actorErrorClasses = map[string]failureClass{
 	"resource_error":     {InternalError, hintInternal, false},
 	"schedule_failed":    {InternalError, hintInternal, false},
 	"runtime_failed":     {InternalError, hintInternal, false},
+	"state_error":        {InternalError, hintInternal, false},
+	"experiment_error":   {InternalError, hintInternal, false},
+	"export_error":       {InternalError, hintInternal, false},
 }
 
 // newClassifiedError reports a classified failure with `retryable` stated as a

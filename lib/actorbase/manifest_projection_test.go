@@ -6,7 +6,10 @@ import (
 	"testing"
 
 	"github.com/wanpengxie/atoll/lib/introspect"
+	"github.com/wanpengxie/atoll/protocol/access"
 	"github.com/wanpengxie/atoll/protocol/message"
+	"github.com/wanpengxie/atoll/protocol/resource"
+	"github.com/wanpengxie/atoll/runtime/accessdoor"
 )
 
 func TestDescribeIsProjectedBeforeProcDelivery(t *testing.T) {
@@ -60,6 +63,54 @@ func TestDescribeIsProjectedBeforeProcDelivery(t *testing.T) {
 	}
 	if err := json.Unmarshal(pen.last().Payload, &failure); err != nil || failure.Status != message.StatusFailed || failure.ErrorCode != "invalid_args" {
 		t.Fatalf("unknown describe field=%s", pen.last().Payload)
+	}
+}
+
+type manifestReadState struct{ outcome accessdoor.Outcome }
+
+func (s manifestReadState) Invoke(context.Context, access.Operation, resource.ResourceID, []byte) (accessdoor.Outcome, error) {
+	return s.outcome, nil
+}
+
+func TestManifestReadDistinguishesRejectionFromAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		out       accessdoor.Outcome
+		wantError bool
+	}{
+		{"unknown", accessdoor.Outcome{RejectReason: access.OutcomeUnknown}, true},
+		{"inactive", accessdoor.Outcome{RejectReason: access.OwnerInactive}, true},
+		{"driver-error", accessdoor.Outcome{RejectReason: access.DriverError}, true},
+		{"missing", accessdoor.Outcome{RejectReason: access.ResourceNotFound}, false},
+		{"null", accessdoor.Outcome{}, false},
+		{"empty", accessdoor.Outcome{Found: true, Value: []byte{}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pen := &fakePen{self: "tool:mcp:1"}
+			e := newTestEngine(t, pen, Hooks{}, 8, 8)
+			e.lifeCtx = context.Background()
+			e.actorCtx = &fakeActorContext{self: "tool:mcp:1"}
+			e.occupant.Store(int32(occupantRunning))
+			e.def.Manifest = introspect.Manifest{Class: "mcp"}
+			e.state = manifestReadState{tc.out}
+			if err := e.Receive(context.Background(), &message.Envelope{ID: "describe", Kind: message.KindRequest, Type: introspect.QueryDescribe, Payload: json.RawMessage(`{"body":{}}`)}); err != nil {
+				t.Fatal(err)
+			}
+			var result struct {
+				Status    string `json:"status"`
+				ErrorCode string `json:"error_code"`
+			}
+			if err := json.Unmarshal(pen.last().Payload, &result); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantError {
+				if result.Status != message.StatusFailed || result.ErrorCode != "internal_error" {
+					t.Fatalf("rejection hidden: %s", pen.last().Payload)
+				}
+			} else if result.Status != message.StatusCompleted {
+				t.Fatalf("absence failed: %s", pen.last().Payload)
+			}
+		})
 	}
 }
 
