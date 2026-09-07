@@ -10,6 +10,7 @@
 - MySQL DSN 不写入 Actor config 或消息，只配置环境变量名，运行时从环境读取非 root runtime DSN；
 - 新增独立 `atoll-recruiting-migrate` 可执行程序，migration 与运行身份不混用，错误不打印 DSN；
 - Company add/get/list/update/pause/resume/archive/restore 已进入 manifest；Actor handler 不执行网站请求，只做输入验证、短数据库事务和响应；
+- Source/Job/Work/DailyRun get 已接入对应 Repository；Work runnable 查询按 capability、可选 origin/Profile、到期时刻和最多 500 条的边界调用已有索引查询，不在 Actor 内复制调度算法；
 - Company add 与修改命令将稳定 response receipt、聚合创建/CAS 和 outbox event intent 原子提交；新增冲突不留下 receipt；
 - `requested_by` 只取 Atoll envelope sender，客户端附带同名未知字段会被严格解码拒绝；
 - command request hash 绑定 word 与原始 payload，不绑定短生命周期 human session actor ID；首次操作者进入审计 event 和稳定 response，重连后仍能重放；
@@ -31,7 +32,7 @@ go test -race ./drivers/tools/recruiting/...
 
 ## 尚未完成
 
-- Source、Job、Work、DailyRun、System/Capacity 查询与修改控制词；
+- Source/Job/DailyRun 的 list、System/Capacity 查询，以及 Source/Work/DailyRun 修改控制词；
 - timer→DailyRun→SourceOccurrence 物化和窗口末对账；
 - Attempt offer/accept/start/result/fail 与完整数据库 fence；
 - 批量导入 preview/confirm 和逐项 outcome；

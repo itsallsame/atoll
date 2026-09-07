@@ -90,6 +90,16 @@ func TestRecruitingCompanyControlUsesMySQLAcrossServerRestart(t *testing.T) {
 	if len(companies) != 1 {
 		t.Fatalf("company list=%v", listed)
 	}
+	runnable := recovered.request(c0ChannelID, "recruiting.work.list", controlID, map[string]any{
+		"due_at": "2099-01-01T00:00:00Z", "capability": "http.fetch", "limit": 10,
+	})
+	works, _ := runnable["works"].([]any)
+	if len(works) != 0 {
+		t.Fatalf("unexpected runnable works: %v", runnable)
+	}
+	if _, _, err := recovered.tryRequest(c0ChannelID, "recruiting.source.get", controlID, map[string]any{"id": "missing-source"}); err == nil {
+		t.Fatal("missing Source query unexpectedly succeeded")
+	}
 }
 
 func startRecruitingMySQL(t *testing.T) string {
