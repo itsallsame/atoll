@@ -29,6 +29,9 @@ P1 契约基线：`a94d2b8d`
 - Detail result 接受会从数据库重读 Company、Source、Detail Assignment/Recipe、Checkpoint、Job refresh generation、Profile（如有）、Work acceptance version 和 Attempt Executor incarnation；不信任结果消息声明的“当前版本”；
 - 合法详情结果在一个事务内提交 Artifact、SourceJob、append-only JobDetailVersion、Attempt succeeded 和 Work completed；同 Artifact/Attempt 重放返回既有 Job，不增加详情版本；
 - 错误 Executor incarnation 或已变化 Source version 的详情结果只新增 `rejected=true` Artifact，Job、Work 和 Attempt 均保持原状态；
+- Profile Repository 只持久化 opaque secret reference，并以 profile version CAS 驱动 repairing/verifying；测试确认没有 Cookie、密码或 OTP 字段；
+- BudgetPermit 以 Attempt 唯一并使用版本 CAS，只能从 granted 进入一个终态；两个并发 release 只有一个成功；
+- RepairIncident 以 failure domain/signature/failing version 形成的 repair key 单飞；相同 origin 故障的多个 Work 只形成一个 incident 和多条幂等 affected-work 关联；
 - `EXPLAIN FORMAT=JSON` 验证 Company seek 查询使用专用索引；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
@@ -44,7 +47,7 @@ make build-go
 
 ## 尚未完成
 
-- DailyRun/Occurrence、Override、Profile、Budget、Repair 和 outbox 完整 Repository contract；Company、Source、Recipe/Assignment、Checkpoint、Listing/Detail Job、Observation/DetailVersion、Artifact、Work/Attempt 已有纵向合同；
+- DailyRun/Occurrence、Override 和 outbox 完整 Repository contract；Company、Source、Recipe/Assignment、Checkpoint、Listing/Detail Job、Observation/DetailVersion、Artifact、Work/Attempt、Profile、Budget、Repair 已有纵向合同；
 - 将已验证的命令 receipt/聚合/outbox 原子事务推广到其余修改命令，并实现 outbox 有界重试状态；
 - 每日 Listing Observation/SourceJob/Detail Work 的单项事务与并发收敛已完成；仍需分页进度/进程退出恢复以及 baseline 详情渐进物化；
 - deadlock、timeout、断连、重复提交和进程 kill 故障注入；
