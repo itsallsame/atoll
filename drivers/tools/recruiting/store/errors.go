@@ -8,4 +8,5 @@ var (
 	ErrCommandConflict    = errors.New("command ID reused with different request")
 	ErrAttemptConflict    = errors.New("attempt state changed")
 	ErrAssignmentConflict = errors.New("source recipe assignment changed")
+	ErrResultFenced       = errors.New("execution result rejected by current domain fence")
 )
