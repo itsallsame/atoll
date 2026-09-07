@@ -22,6 +22,8 @@ P1 契约基线：`a94d2b8d`
 - 每条 ListingObservation、SourceJob 收敛和唯一 Detail Work 意图在同一短事务提交；完全重放只返回既有 Job，不重复写事实；
 - 安全重叠会追加 Observation 证据但不提升 Job generation、不创建 Detail Work；活动时间/指纹变化才各提升一次；两个等价更新并发时只产生一个新 generation 和一个 Detail Work；
 - Detail Work 写入故障会回滚同事务中的 Observation 与 Job 更新，重试不会看到半完成分页结果；
+- Work Repository 支持业务键唯一、版本 CAS，以及按 capability/origin/Profile、`not_before`、deadline 和 priority 过滤排序的 runnable 查询；EXPLAIN 验证使用招聘专用索引；
+- Attempt 保存 Executor identity/incarnation 与全部领域 fence；状态通过预期前态 CAS，两个并发 accept 只有一个成功，状态机无循环因此不产生 ABA；
 - `EXPLAIN FORMAT=JSON` 验证 Company seek 查询使用专用索引；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
@@ -37,7 +39,7 @@ make build-go
 
 ## 尚未完成
 
-- Source、Recipe/Assignment、Checkpoint、Job/Observation/Detail、Work/Attempt、DailyRun/Occurrence、Override、Profile、Budget、Repair、Artifact 和 outbox 的 Repository contract；
+- Source、Recipe/Assignment、Job Detail、DailyRun/Occurrence、Override、Profile、Budget、Repair、Artifact 和 outbox 完整 Repository contract；Company、Checkpoint、Listing Job/Observation、Work/Attempt 已有纵向合同；
 - 将已验证的命令 receipt/聚合/outbox 原子事务推广到其余修改命令，并实现 outbox 有界重试状态；
 - 每日 Listing Observation/SourceJob/Detail Work 的单项事务与并发收敛已完成；仍需分页进度/进程退出恢复以及 baseline 详情渐进物化；
 - deadlock、timeout、断连、重复提交和进程 kill 故障注入；
