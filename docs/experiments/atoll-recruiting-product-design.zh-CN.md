@@ -417,6 +417,12 @@ ListingDelta
 
 ## 6. 核心设计原则
 
+### 6.0 招聘产品只能扩展 Atoll，不能修改 Atoll
+
+这是开发与架构的最高优先级约束：招聘产品必须使用 Atoll 已公开的 Actor、Message、Channel、ledger、timer、Resource 与 Driver 能力实现，不修改 `protocol/`、`runtime/`、`lib/`、`platform/`、`registry/` 的代码或架构语义。吞吐、调度、状态机、Recipe、浏览器和人工运维能力均属于招聘扩展自身；不得为了业务便利向 Atoll core 塞入招聘消息、字段、队列、Worker 或特例。
+
+如果实现过程中发现公开能力不足，该功能停止在扩展边界内，输出可复现的能力缺口与替代方案，由独立的 Atoll 架构决策处理；招聘功能分支不得自行修改核心。
+
 ### 6.1 Atoll 是控制权威
 
 业务命令、Actor 间控制交互和有协作价值的领域事件通过 Atoll Message 发生，受 Channel membership 和 capability 约束。Recruiting Actor 是领域行为权威；大规模事实可委托给其控制的 Resource，但 Resource 不是第二控制面。
