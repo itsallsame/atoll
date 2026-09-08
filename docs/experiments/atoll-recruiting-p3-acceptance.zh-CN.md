@@ -43,6 +43,7 @@
 - command request hash 绑定 word 与原始 payload，不绑定短生命周期 human session actor ID；首次操作者进入审计 event 和稳定 response，重连后仍能重放；
 - 修改命令在运行领域状态机前先查 receipt，因此 server 重启后不会因聚合版本已经前进而错误拒绝原命令；并发首次执行仍由事务内 receipt 与聚合 CAS 收口；
 - 黑盒测试使用真实 `atoll-server`、Portal/WebSocket、隔离 MySQL 8.4；应用侧由新注册的普通 `recruiting-operator` 在自己的 Home Channel 创建并运维 Recruiting Actor，不借用 root 会话；数据库侧使用非 root migrator/runtime 身份。Company 完成 add→replay→update→pause→server restart→get/replay/resume；随后在同一真实会话完成一个 Company 下两个 Source 的 add→replay→一对多分页→endpoint/category 修正→validate→pause→archive→restore→resume→stale CAS rejection，并验证 Company 归档后旧 add 仍可重放而新 Source 被拒绝；outbox 均由 durable timer 投递到 Atoll ledger；
+- opt-in 真实网站进程验收 `scripts/recruiting-live-e2e.sh` 使用普通 `recruiting-live-operator` 的 Home Channel、真实 server/daemon、Recipe KV、Artifact File 和非 root MySQL，完成 daily timer→occurrence/Work/dispatch→HTTP Executor→Greenhouse 公共 Job Board API→分类结果→authenticated completion。2026-09-08 实测 Work=`waiting_human`、Attempt=`failed`、failure=`quality_rejected`、delivered dispatch=1；真实列表未满足活动倒序契约，因此证据落盘但 Checkpoint 未推进；
 - 同一黑盒旅程继续完成 repair Work 的 create→replay→get placement→pause/fence→resume→cancel→retry，并验证 retry Work 是唯一 runnable 项、保留 authenticated initiator 和 cause Work，非终态 Work 不能再次 retry；
 - 黑盒旅程还通过真实 Portal 验证新 Source 的空 Job list、调度尚未启动时的空 DailyRun list、不存在日报 summary 和畸形 Source cursor 的失败响应；有数据的分页与摘要事实由真实 MySQL Repository contract 验证；
 - 同一黑盒旅程由普通用户再创建启用日程的 Recruiting Actor，以未来 15 秒 UTC 截点验证真实 durable timer→Actor→非 root MySQL 路径；测试准备的唯一 verified Source 进入策略版本 11 的 DailyRun，archived/candidate/validating Source 均未错误进入分母；其确定性 due time 到达后，第二条 durable timer 自动创建 `http.fetch`、正确 origin 和 Source Target 的唯一 listing Work；
@@ -66,7 +67,7 @@ go test -race ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/
 
 - System/Capacity 查询、Work correct 和 DailyRun 修改控制词；Work resolve 的真实 `waiting_human` 旅程依赖后续 Attempt/repair 切片；Source validate 当前只进入 `validating`，验证 Attempt 的接受、契约证明和原子发布仍属于后续纵向切片；
 - 日报关闭后的 recovered 补偿记录仍待实现；
-- 分类失败已有版本化、有界退避并能转 `waiting_human`；按 origin/Recipe/Profile 故障域创建单飞 RepairIncident、站点级覆盖参数和修复后分批唤醒仍待实现。主动 incarnation 失效信号当前仅按无进展超时恢复；execution offer 和高频 page 是否写 ledger/outbox 的审计分层仍待按容量测试确定（accept/start/fail/result 的数据库 receipt 已完成）；
+- 分类失败已有版本化、有界退避并能转 `waiting_human`；按 origin/Recipe/Profile 故障域创建单飞 RepairIncident、站点级覆盖参数和修复后分批唤醒仍待实现。主动 incarnation 失效信号当前仅按无进展超时恢复；正常 dispatch→Executor→result→ack 已通过真实进程与真实网站，仍需针对投递/确认丢失和双方进程退出的故障切点验收；execution offer 和高频 page 是否写 ledger/outbox 的审计分层仍待按容量测试确定（accept/start/fail/result 的数据库 receipt 已完成）；
 - 批量导入 preview/confirm 和逐项 outcome；
 - `recruiting_recovery_test.go` 的完整重启、重复 ledger delivery 与日报恢复路径。
 

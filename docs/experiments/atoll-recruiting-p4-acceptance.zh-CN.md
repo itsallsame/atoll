@@ -9,7 +9,7 @@
 - ABI 位于 `drivers/tools/recruitingexecutor/recipeabi`，是招聘扩展内部协议，不向 Atoll core 增加字段或消息；
 - 控制面的 Recipe 领域对象强制保存与 Executor 一致的 ABI version、opaque content ref、transport 和 required capability；跨包测试阻止 ABI 字符串漂移，Recipe Repository 阻止同一 version 静默改变执行方式；
 - 固定执行输入：Target、版本化 Endpoint、Recipe Assignment/contract hash、可选 Checkpoint、不可解析的 `profile://` 引用、预算许可，以及 Work/Attempt/Company/Source/Profile 接受 fence；
-- listing 和 detail 控制面现已把上述轻量执行输入作为带 kind discriminator 的 immutable offer 随 Attempt 持久化；相同 offer 命令在配置后续变化或进程重启后仍返回原始快照，避免 Executor 在执行中读取漂移配置。详情以 Job refresh generation 而非 Listing Checkpoint 作为数据代际，列表完成推进水位不会误杀已经领取的详情。offer 已携带与 Attempt 原子取得的版本化 BudgetPermit 及到期时间；进程级 Executor 自动运行仍未接通，因此当前仍不能宣称完整生产执行链；
+- listing 和 detail 控制面现已把上述轻量执行输入作为带 kind discriminator 的 immutable offer 随 Attempt 持久化；相同 offer 命令在配置后续变化或进程重启后仍返回原始快照，避免 Executor 在执行中读取漂移配置。详情以 Job refresh generation 而非 Listing Checkpoint 作为数据代际，列表完成推进水位不会误杀已经领取的详情。offer 已携带与 Attempt 原子取得的版本化 BudgetPermit 及到期时间；进程级 Executor 自动运行正常路径已接通，崩溃恢复矩阵尚未闭合，因此当前仍不能宣称完整生产执行链；
 - Executor 已增加只依赖 Atoll 公开 `Actor Resource` face 的 Recipe/Artifact 适配边界，没有修改 core。Recipe 正文从与 opaque content ref 同名的 KV Resource 读取，限制 256 KiB，严格拒绝未知字段和尾随 JSON，并同时复核规范内容 SHA-256、ABI、kind、transport 与 capability；外部 HTTP URL 不能充当 Recipe Resource；
 - Artifact 通过 Atoll File Resource 的 `CreateFile`/`FileAccess` 流式写入，写入期间计算 SHA-256，超出调用方预算会 Abort，成功 Commit 后才形成只含 ResourceID/hash/access scope/retention 的领域元数据。元数据在创建文件前验证，Resource 拒绝或写入失败不会提交业务结果；Actor Message、Actor State 和 MySQL 不承载原始网站正文；
 - HTTP Driver 已有正式的 Atoll ArtifactSink adapter：使用公开 `FormatFileAddress` 和 Resource directory/file capability，把确定性 Artifact ID 映射为配置设备与 Channel 下的文件；sink 绑定一个 Work/Attempt，拒绝跨 Attempt 写入、声明 hash 与字节不符、未知 artifact kind 和超过 20 MiB 的配置。针对“文件已 Commit、结果尚未提交即崩溃”的窗口，同 ResourceID 且逐字节 hash/长度一致视为幂等重放，不同内容明确冲突且绝不覆盖原文件；
@@ -20,7 +20,7 @@
 - Driver 失败输出可转换为共享 FailureReport；控制面校验闭集 failure class、修复分类和绑定 Attempt/Work 的 Failure Artifact，并在 `execution.failed` 的同一招聘事务中保存 Artifact metadata、关闭 Attempt、释放 Permit、把 Work 置为可重试。这样 Resource 中的失败证据不会因随后状态提交而成为无元数据孤儿；
 - 控制面不再把所有 Driver 失败立即放回可运行队列：带版本的可配置策略将瞬态错误写入未来 `not_before`，throttled 使用独立最短延迟，确定性修复/不可重试/次数耗尽进入 `waiting_human`；相关审计字段和协作事件与失败事务一起提交。该策略先关闭单 Executor 自旋和多 Executor 重试风暴入口，后续仍需按 origin/error 覆盖及 RepairIncident 单飞；
 - Executor 内部已有不含调度策略的单次 Offer 编排：在 accept 前校验 immutable offer、Permit/expiry 与 HTTP transport，随后按 accept→started→Recipe Resource resolve→HTTP listing/detail→page/completion/detail 或 classified failed 顺序调用控制面。单元合同覆盖详情成功、列表页先于 completion、Recipe 解析失败转 Failure Artifact；结果提交出现歧义时不会擅自把 Attempt 判失败，而留给幂等重放/恢复。该编排已挂到同一 Executor class 的显式 `recruiting.execution.wake` 入口，每次最多领取一份 Work，不启动轮询或隐式 drain；
-- 生产 wake 默认关闭，启用时配置必须显式提供唯一允许唤醒的 Recruiting Actor、`http.fetch` capability、调用超时、Artifact 的设备/Channel/目录/访问/保留/是否脱敏/字节上限、条款版本与复核时间，以及 HTTP/robots 限流参数。每次 Actor incarnation 使用新身份，wake 内的 offer command 在本 incarnation 稳定、跨重启变化；非配置控制 Actor、缺失安全配置和 Browser capability 均在网络 I/O 前拒绝。控制面的 capability-aware fleet 持久派发已接通；跨真实进程的自动执行与崩溃切点 e2e 尚未接通；
+- 生产 wake 默认关闭，启用时配置必须显式提供唯一允许唤醒的 Recruiting Actor、`http.fetch` capability、调用超时、Artifact 的设备/Channel/目录/访问/保留/是否脱敏/字节上限、条款版本与复核时间，以及 HTTP/robots 限流参数。每次 Actor incarnation 使用新身份，wake 内的 offer command 在本 incarnation 稳定、跨重启变化；非配置控制 Actor、缺失安全配置和 Browser capability 均在网络 I/O 前拒绝。控制面的 capability-aware fleet 持久派发及跨真实进程正常执行已接通；崩溃切点 e2e 尚未接通；
 - HTTP Detail runner 已实现“先证据、后解析”：成功响应先保存 response Artifact，再由同一声明式 JSON/HTML Recipe 离线提取且必须恰好得到一条记录，规范 JSON 和 normalized SHA-256 随稳定 detail-version ID 提交；HTTP 失败保留 failure Artifact，解析失败同时保留原始 response 与独立分类 failure Artifact。JSON 字符串字段现在与 DOM 一样去除首尾空白，确保规范详情重放稳定；
 - Executor 的 result 客户端已通过共享 `recruiting.execution.result` 类型提交，并严格要求控制面 acknowledgement 的 `page|completion|detail` 分支与所提交 result_kind 唯一匹配；
 - result command 的请求哈希包含 word、原始 payload 与 authenticated Executor sender；Listing Page、Listing Completion、Detail 的稳定 response receipt 和各自业务事实处于同一 MySQL 事务。MySQL 8.4 合同已验证相同页面命令并发只接受一次、另一次稳定重放，以及相同 command ID 改请求明确冲突；这关闭了“Artifact 可重放但 command ID 可被另一结果复用”的缺口；
@@ -64,6 +64,8 @@
 
 可机读的紧凑证据位于 `docs/experiments/evidence/recruiting-live-smoke-greenhouse-20260908.json`。第三方原始岗位 payload 不提交到 Git；本次运行对象保存在报告记录的本地 Artifact 路径，Git 只保存内容哈希和审计结论。
 
+同日又以 `scripts/recruiting-live-e2e.sh` 完成一次真实进程纵向验收，而非命令行 Driver 探针：普通运营员在自己的 Home Channel 创建 server 侧 Recruiting Actor 与 daemon 侧 Executor；每日 durable timer 自动物化 occurrence、Work 和 capability dispatch；Executor 从真实 Recipe KV 解析相同只读 Recipe，经生产 HTTP/robots/条款边界访问 Greenhouse，再把页面及 failure Artifact 写入 daemon File Resource，通过 Atoll Message 提交分类失败并确认 dispatch。实测终态为 Work `waiting_human`、Attempt `failed`、failure class `quality_rejected`、delivered dispatch 1；质量拒绝没有被测试代码改写成成功，也没有推进 Checkpoint。测试默认跳过第三方网络，只有显式 `ATOLL_RECRUITING_LIVE_E2E=1` 才运行。
+
 ## 当前验证
 
 ```text
@@ -72,6 +74,7 @@ go test -race ./cmd/recruiting-live-smoke
 go vet ./drivers/tools/recruitingexecutor/...
 ./scripts/recruiting-boundary-check.sh a94d2b8d
 make recruiting-live-smoke
+./scripts/recruiting-live-e2e.sh
 ```
 
 ## 尚未完成
@@ -79,9 +82,9 @@ make recruiting-live-smoke
 - Browser Broker 的 Chromium/CDP 实现、OS/container 级隔离，以及 Extension 候选 Proposal 接入 Recruiting Actor 的持久 Draft/人工审批链；
 - 本地确定性站点的全部异常矩阵；
 - 更多站型的 Nightly/Weekly Live 验证，以及由正式 Artifact 存储提供保留期，而不是验收机本地文件；
-- Resource 适配器已经过内存 capability 合同测试，但仍缺真实 Atoll daemon 上 Recipe KV 与 Artifact File 的跨进程读写、权限拒绝和重启保持 e2e；
+- Recipe KV 与 Artifact File 已在真实 Atoll server/daemon 的允许路径通过；权限拒绝和重启保持 e2e 仍待补齐；
 - 已有 Repository 合同证明旧 listing Attempt 只保存 rejected Artifact、不能提交业务结果；仍缺真实 Executor Actor 经 Atoll Message 提交该迟到结果的进程级端到端证明。
-- 页面进度已改为 Attempt 作用域，并通过 MySQL 8.4 的 crash/retry 合同：Attempt A 接受第一页后失败，Attempt B 可从第一页重新运行；A/B 页面证据同时保留，B 的 completion 只统计 B 的页面。Failure Artifact 的原子控制面合同也已闭合；进程级自动执行仍须补齐消息唤醒与真实进程崩溃切点后才能启用。
+- 页面进度已改为 Attempt 作用域，并通过 MySQL 8.4 的 crash/retry 合同：Attempt A 接受第一页后失败，Attempt B 可从第一页重新运行；A/B 页面证据同时保留，B 的 completion 只统计 B 的页面。Failure Artifact 的原子控制面合同及真实进程自动执行正常路径已闭合；启用前仍须补齐真实进程崩溃切点。
 - accept/start/failed 以及 page/completion/detail 的 command receipt 已闭合，控制面也已有 capability-aware fleet 的持久单次 wake 和 authenticated completion acknowledgement；尚缺跨真实 Atoll 进程在“控制面已提交 dispatch、Executor 未收到”“Executor 已处理、控制面未收到 acknowledgement”等切点的恢复证明，而不是仅有 Repository/Actor 单元层语义。
 
 P4 仍为进行中；ABI 冻结不等于 Driver 与真实站点验收完成。

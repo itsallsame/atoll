@@ -1,0 +1,253 @@
+package e2e
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
+)
+
+const recruitingLiveExecutionURL = "https://boards-api.greenhouse.io/v1/boards/mongodb/jobs"
+
+// TestRecruitingLiveExecutionThroughAtoll is deliberately opt-in because it
+// reads a third-party public website. It proves the complete production path:
+// durable daily timer -> occurrence/work/dispatch -> daemon executor -> Recipe
+// KV -> read-only website request -> Artifact File -> classified domain result
+// -> authenticated dispatch acknowledgement. It never uses a database root
+// identity and never modifies the target website.
+func TestRecruitingLiveExecutionThroughAtoll(t *testing.T) {
+	if os.Getenv("ATOLL_RECRUITING_LIVE_E2E") != "1" {
+		t.Skip("set ATOLL_RECRUITING_LIVE_E2E=1 to run the real-website process test")
+	}
+	h := newHarnessShell(t)
+	runtimeDSN := startRecruitingMySQL(t)
+	h.env = append(h.env, "ATOLL_RECRUITING_MYSQL_DSN="+runtimeDSN)
+	h.startServer()
+
+	operator := newAPIClient(t, h.base)
+	registered := operator.register("recruiting-live-operator", "recruiting-live-operator@example.test", "operator-local-password")
+	homeID := stringField(t, registered, "home_channel_id")
+	time.Sleep(500 * time.Millisecond)
+	ws := dialWS(t, h.base, operator.cookieHeader(), map[string]int64{homeID: 0})
+	channel := registrarRequest(t, ws, homeID, systemActor, "system.channel.get", map[string]any{"channel_id": homeID})
+	qualifiedChannel := stringField(t, channel, "qualified_name")
+
+	const deviceName = "recruiting-live-host"
+	device := registrarRequest(t, ws, homeID, systemActor, "system.device.create", map[string]any{"name": deviceName})
+	deviceID := stringField(t, device, "id")
+	attachDevice(t, ws, homeID, deviceID)
+	daemonLog := filepath.Join(h.root, "logs", "recruiting-live-daemon.log")
+	daemon := startProc(t, "recruiting-live-daemon", filepath.Join(e2eBinDir, "atoll-daemon"), []string{
+		"--server", fmt.Sprintf("ws://127.0.0.1:%d/compute", h.port),
+		"--key", stringField(t, device, "key"), "--name", deviceName,
+		"--home", filepath.Join(h.root, "recruiting-live-daemon"),
+	}, h.env, filepath.Join(h.root, "work"), daemonLog)
+
+	spec := recruitingLiveRecipe()
+	specBytes, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const contentRef = "recipe://e2e-live-greenhouse-listing"
+	ws.resource(map[string]any{"channel_id": homeID, "op": "create", "resource_id": contentRef, "args": json.RawMessage(specBytes)})
+
+	cutoff := time.Now().UTC().Add(8 * time.Second).Truncate(time.Second)
+	const policyVersion uint64 = 17
+	sourceID := sourceIDWithEarlyDailyDue(cutoff.Format("2006-01-02"), policyVersion, time.Minute)
+	seedLiveRecruitingSource(t, runtimeDSN, sourceID, contentRef, spec, cutoff.Add(-time.Minute))
+
+	const controlName = "recruiting-live-control"
+	const executorName = "recruiting-live-executor"
+	registrarRequest(t, ws, homeID, systemActor, "system.actor.template.create", map[string]any{
+		"id": controlName, "name": controlName, "class": "recruiting",
+		"description": "Recruiting live execution control.",
+		"config": map[string]any{
+			"executor_id": "tool:" + executorName, "executors": []map[string]any{{"actor_id": "tool:" + executorName, "capability": "http.fetch"}},
+			"reconcile_interval_ms": 200, "daily_schedule_enabled": true, "daily_schedule_timezone": "UTC",
+			"daily_cutoff_local": cutoff.Format("15:04:05"), "daily_window_duration_minutes": 1,
+			"daily_schedule_policy_version": policyVersion,
+		},
+		"visibility": "private",
+	})
+	controlIntro := ws.request(homeID, "system.member.create", systemActor, map[string]any{"decl_id": controlName})
+	controlID := stringField(t, controlIntro, "member")
+	waitRecruitingReady(t, ws, homeID, controlID, h.server)
+
+	registrarRequest(t, ws, homeID, systemActor, "system.actor.template.create", map[string]any{
+		"id": executorName, "name": executorName, "class": "recruiting-executor",
+		"description": "Recruiting live HTTP executor.",
+		"config": map[string]any{
+			"capability": "http.fetch", "execution_enabled": true, "control_actor_id": "tool:" + controlName,
+			"control_wait_ms": 30000, "artifact_device_name": deviceName, "artifact_channel_name": qualifiedChannel,
+			"artifact_directory": "recruiting-live-artifacts", "artifact_access_scope": "operators",
+			"artifact_retention": "7d", "artifact_redaction": "raw", "artifact_max_bytes": 2 << 20,
+			"terms_policy_version": 1, "terms_reviewed_at": "2026-09-08T00:00:00Z",
+			"http_max_concurrency": 1, "http_min_origin_interval_ms": 1000,
+			"http_circuit_threshold": 3, "http_circuit_cooldown_ms": 60000,
+			"robots_timeout_ms": 10000, "robots_max_bytes": 65536, "robots_cache_ttl_ms": 60000,
+		},
+		"visibility": "private",
+	})
+	executorIntro := ws.request(homeID, "system.member.create", systemActor, map[string]any{
+		"decl_id": executorName, "desired_host": deviceID,
+	})
+	executorID := stringField(t, executorIntro, "member")
+	waitActorPresenceInChannel(t, ws, homeID, executorID, daemon, daemonLog)
+
+	work, attemptStatus, dispatches := waitLiveRecruitingExecution(t, runtimeDSN, sourceID, 90*time.Second)
+	t.Logf("live result: work_status=%s failure_class=%s attempt_status=%s delivered_dispatches=%d",
+		work.Status, work.LastFailureClass, attemptStatus, dispatches)
+	if work.Status != model.WorkWaitingHuman && work.Status != model.WorkCompleted {
+		t.Fatalf("live Work status=%q want waiting_human or completed", work.Status)
+	}
+	if attemptStatus != string(model.AttemptFailed) && attemptStatus != string(model.AttemptSucceeded) {
+		t.Fatalf("live Attempt status=%q", attemptStatus)
+	}
+	if dispatches < 1 {
+		t.Fatal("live execution produced no authenticated delivered dispatch")
+	}
+	if work.Status == model.WorkWaitingHuman && work.LastFailureClass != "quality_rejected" && work.LastFailureClass != "contract_violated" {
+		t.Fatalf("deterministic live quality failure class=%q", work.LastFailureClass)
+	}
+}
+
+func waitActorPresenceInChannel(t *testing.T, ws *wsClient, channelID, actorID string, daemon *proc, logPath string) {
+	t.Helper()
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
+		if daemon != nil && daemon.exited() {
+			t.Fatalf("daemon exited while waiting for actor presence\n%s", tailLog(logPath, 100))
+		}
+		catalog := ws.request(channelID, "system.member.list", systemActor, map[string]any{})
+		rows, _ := catalog["actors"].([]any)
+		for _, raw := range rows {
+			row, _ := raw.(map[string]any)
+			if row["id"] == actorID && row["present"] == true {
+				return
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("actor %s did not become present\n%s", actorID, tailLog(logPath, 100))
+}
+
+func recruitingLiveRecipe() recipeabi.Spec {
+	return recipeabi.Spec{
+		ABIVersion: recipeabi.Version, Kind: recipeabi.KindListing, RequiredCapability: "http.fetch", Transport: recipeabi.TransportHTTPJSON,
+		Request: recipeabi.ReadRequest{Method: "GET", Headers: map[string]string{"Accept": "application/json"}, TimeoutMS: 20_000,
+			MaxResponseBytes: 2 << 20, MaxRedirects: 0, UserAgent: "Atoll-Recruiting-Live-E2E/1 (+read-only acceptance test)"},
+		Extraction: recipeabi.Extraction{Collection: "/jobs", Fields: map[string]string{
+			"job_key": "/id", "title": "/title", "activity_at": "/updated_at", "detail_url": "/absolute_url",
+		}},
+		Listing: &recipeabi.ListingContract{IdentityField: "job_key", DetailURLField: "detail_url", ActivityField: "activity_at",
+			BoundaryMode: "activity_time", Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 1,
+			MaxPages: 1, MaxItemsPerPage: 500, MaxTotalBytes: 2 << 20, FrontierWidth: 20},
+	}
+}
+
+func seedLiveRecruitingSource(t *testing.T, dsn, sourceID, contentRef string, spec recipeabi.Spec, now time.Time) {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repository, _ := store.NewRepository(db)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	company, _ := model.NewCompany("e2e-live-company", "E2E Live Company", "https://boards-api.greenhouse.io")
+	if err := repository.CreateCompany(ctx, company, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, transition := range []func(model.Company) (model.Company, error){
+		func(value model.Company) (model.Company, error) { return value.StartDiscovery(value.Version) },
+		func(value model.Company) (model.Company, error) { return value.StartInitialization(value.Version) },
+		func(value model.Company) (model.Company, error) { return value.MarkReady(value.Version) },
+	} {
+		next, err := transition(company)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.UpdateCompanyCAS(ctx, company.Version, next, now); err != nil {
+			t.Fatal(err)
+		}
+		company = next
+	}
+
+	source, _ := model.NewRecruitmentSource(sourceID, company.CompanyID, recruitingLiveExecutionURL, "all", 1)
+	if err := repository.CreateSource(ctx, source, now); err != nil {
+		t.Fatal(err)
+	}
+	validating, _ := source.BeginValidation(source.Version)
+	if err := repository.UpdateSourceCAS(ctx, source.Version, validating, now); err != nil {
+		t.Fatal(err)
+	}
+	contentHash, err := spec.ContentHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contractBytes, _ := json.Marshal(spec.Listing)
+	contractSum := sha256.Sum256(contractBytes)
+	contractHash := "sha256:" + hex.EncodeToString(contractSum[:])
+	execution := model.RecipeExecution{ABIVersion: model.RecipeABIVersion, ContentRef: contentRef,
+		RequiredCapability: "http.fetch", Transport: model.RecipeTransportHTTPJSON}
+	recipe, _ := model.NewRecipe("e2e-live-listing", model.RecipeListing, "boards-api.greenhouse.io", 1,
+		contentHash, contractHash, execution)
+	recipe, _ = recipe.BeginValidation(recipe.StateVersion)
+	recipe, _ = recipe.Publish(recipe.StateVersion)
+	if err := repository.CreateRecipe(ctx, recipe, now); err != nil {
+		t.Fatal(err)
+	}
+	assignment, _ := model.NewSourceRecipeAssignment(sourceID, model.RecipeListing, recipe.RecipeID, recipe.Version,
+		recipe.ContractHash, now.Format(time.RFC3339))
+	assessment := model.SourceContractAssessment{SourceID: sourceID, EndpointRevision: validating.CandidateEndpoint.Revision,
+		RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, ContractHash: recipe.ContractHash,
+		Identity: model.ContractVerified, Pagination: model.ContractVerified, Ordering: model.ContractVerified, UpdateRetop: model.ContractVerified,
+		EvidenceArtifactIDs: []string{"e2e-live-calibration-a", "e2e-live-calibration-b"}, AssessedAt: now.Format(time.RFC3339), Version: 1}
+	ready, err := validating.PublishValidated(validating.Version, assignment, assessment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.PublishSourceAssignment(ctx, validating.Version, 0, ready, assignment, now); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitLiveRecruitingExecution(t *testing.T, dsn, sourceID string, timeout time.Duration) (model.Work, string, int) {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	var lastWork model.Work
+	var lastAttempt string
+	var delivered int
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		var state []byte
+		err = db.QueryRowContext(ctx, `SELECT state_json FROM recruiting_works WHERE target_id = ? AND purpose = 'listing_sync' ORDER BY created_at DESC LIMIT 1`, sourceID).Scan(&state)
+		if err == nil {
+			_ = json.Unmarshal(state, &lastWork)
+			_ = db.QueryRowContext(ctx, `SELECT attempt_status FROM recruiting_attempts WHERE work_id = ? ORDER BY created_at DESC LIMIT 1`, lastWork.WorkID).Scan(&lastAttempt)
+			_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE delivery_status = 'delivered'`).Scan(&delivered)
+			var artifacts int
+			_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_artifacts WHERE work_id = ? AND rejected = 0`, lastWork.WorkID).Scan(&artifacts)
+			if (lastWork.Status == model.WorkWaitingHuman || lastWork.Status == model.WorkCompleted) && artifacts > 0 && delivered > 0 {
+				return lastWork, lastAttempt, delivered
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("live execution timed out: work=%+v attempt=%q delivered=%d err=%v", lastWork, lastAttempt, delivered, err)
+	return model.Work{}, "", 0
+}
