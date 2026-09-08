@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 	"github.com/wanpengxie/atoll/lib/actorbase"
@@ -136,7 +137,7 @@ func handleDetailResult(sys actorbase.Sys, repository *store.Repository, msg act
 		failStoreError(sys, msg, err)
 		return
 	}
-	response := executionControlResponse{ContractVersion: "recruiting.execution.v1", CorrelationID: string(msg.CorrelationID),
+	response := executionControlResponse{ContractVersion: executioncontract.Version, CorrelationID: string(msg.CorrelationID),
 		RequestedBy: string(msg.Sender.ID), Detail: &outcome}
 	_, _ = sys.Reply(msg, response)
 }
@@ -159,7 +160,7 @@ func handleListingPageResult(sys actorbase.Sys, repository *store.Repository, ms
 		failStoreError(sys, msg, err)
 		return
 	}
-	response := executionControlResponse{ContractVersion: "recruiting.execution.v1", CorrelationID: string(msg.CorrelationID),
+	response := executionControlResponse{ContractVersion: executioncontract.Version, CorrelationID: string(msg.CorrelationID),
 		RequestedBy: string(msg.Sender.ID), Page: &outcome}
 	_, _ = sys.Reply(msg, response)
 }
@@ -189,7 +190,7 @@ func handleListingCompletionResult(sys actorbase.Sys, repository *store.Reposito
 		failStoreError(sys, msg, err)
 		return
 	}
-	response := executionControlResponse{ContractVersion: "recruiting.execution.v1", CorrelationID: string(msg.CorrelationID),
+	response := executionControlResponse{ContractVersion: executioncontract.Version, CorrelationID: string(msg.CorrelationID),
 		RequestedBy: string(msg.Sender.ID), Completion: &outcome}
 	_, _ = sys.Reply(msg, response)
 }
@@ -233,7 +234,7 @@ func handleListingOffer(sys actorbase.Sys, cfg Config, repository *store.Reposit
 		BudgetPolicy:        cfg.executionBudgetPolicy(),
 	})
 	response := executionControlResponse{
-		ContractVersion: "recruiting.execution.v1", CorrelationID: string(msg.CorrelationID),
+		ContractVersion: executioncontract.Version, CorrelationID: string(msg.CorrelationID),
 		RequestedBy: string(msg.Sender.ID),
 	}
 	if errors.Is(err, store.ErrNotFound) {
@@ -282,7 +283,7 @@ func handleExecutionTransition(sys actorbase.Sys, repository *store.Repository, 
 		return
 	}
 	response := executionControlResponse{
-		ContractVersion: "recruiting.execution.v1", CorrelationID: string(msg.CorrelationID),
+		ContractVersion: executioncontract.Version, CorrelationID: string(msg.CorrelationID),
 		RequestedBy: string(msg.Sender.ID), Attempt: &attempt,
 	}
 	_, _ = sys.Reply(msg, response)

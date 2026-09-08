@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
@@ -17,29 +18,13 @@ import (
 // listing and detail steps do not become separate worker types.
 // Large recipe bodies remain behind RecipeExecution.ContentRef; this value is
 // safe to carry in an Atoll control message.
-type ExecutionOffer struct {
-	Kind                string                       `json:"kind"`
-	Attempt             model.Attempt                `json:"attempt"`
-	Work                model.Work                   `json:"work"`
-	Occurrence          *model.SourceOccurrence      `json:"occurrence,omitempty"`
-	Checkpoint          *model.IncrementalCheckpoint `json:"checkpoint,omitempty"`
-	Detail              *DetailExecutionInput        `json:"detail,omitempty"`
-	Budget              model.BudgetPermit           `json:"budget"`
-	BudgetExpiresAt     string                       `json:"budget_expires_at"`
-	RequestedCapability string                       `json:"requested_capability"`
-	RequestedOrigin     string                       `json:"requested_origin,omitempty"`
-	RequestedProfileID  string                       `json:"requested_profile_id,omitempty"`
-}
+type ExecutionOffer = executioncontract.Offer
 
 // ListingExecutionOffer remains an alias for source compatibility with the
 // first vertical slice. New callers should use ExecutionOffer.
 type ListingExecutionOffer = ExecutionOffer
 
-type DetailExecutionInput struct {
-	Job        model.SourceJob              `json:"job"`
-	Assignment model.SourceRecipeAssignment `json:"assignment"`
-	Recipe     model.Recipe                 `json:"recipe"`
-}
+type DetailExecutionInput = executioncontract.DetailInput
 
 type ListingOfferRequest struct {
 	AttemptID           string

@@ -295,6 +295,8 @@ Actor handler 不等待网站请求。每个响应包含 correlation、Target、
 
 先冻结 ABI，再实现站点 Recipe。每次执行输入固定：Target/Endpoint、Recipe Assignment、Checkpoint、Profile 引用、预算许可、Attempt 和接受版本；输出为 Artifact 引用、结构化结果、质量证明和分类失败。
 
+控制面与 Executor 共享的 offer 类型必须位于招聘扩展内部的纯 execution contract 包中，只依赖领域值对象；不得把 MySQL Repository/DAO 类型直接作为 Executor 的编译依赖。Executor 在发出任何网络请求前，将 immutable offer 转换成 Recipe ABI 输入并校验 Work/Attempt acceptance、Company/Source/Assignment/Recipe/Profile fence、BudgetPermit/到期时间、origin、listing/detail discriminator 与载荷互斥关系。任何串线都按不可执行处理，不能依赖结果提交阶段兜底。
+
 Recipe 分 `listing|detail|discovery`。v1 优先使用可验证的声明式 HTTP/JSON/DOM 步骤；需要 JavaScript 或交互时进入受控 Browser/Extension driver。不得默认执行来源不明的任意宿主代码。候选 Recipe 必须经过 schema 校验、静态安全检查、真实样本验证和发布审批。
 
 ### 9.2 Driver
