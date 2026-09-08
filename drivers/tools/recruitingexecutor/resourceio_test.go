@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"testing"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
@@ -83,11 +84,23 @@ type artifactCreatorStub struct {
 	outcome  accessdoor.Outcome
 	created  resource.ResourceID
 	withBody bool
+	existing []byte
 }
 
 func (s *artifactCreatorStub) CreateFile(id resource.ResourceID, withContent bool) (accessdoor.FileAccess, accessdoor.Outcome, error) {
 	s.created, s.withBody = id, withContent
 	return accessdoor.FileAccess{Local: &accessdoor.LocalFile{Write: s.writer}}, s.outcome, nil
+}
+
+func (s *artifactCreatorStub) CreateDirectory(resource.ResourceID) (accessdoor.Outcome, error) {
+	return accessdoor.Outcome{}, nil
+}
+
+func (s *artifactCreatorStub) Open(id resource.ResourceID, mode access.Operation) (accessdoor.FileAccess, accessdoor.Outcome, error) {
+	if id != s.created || mode != access.OpRead {
+		return accessdoor.FileAccess{}, accessdoor.Outcome{RejectReason: access.ResourceNotFound}, nil
+	}
+	return accessdoor.FileAccess{Remote: &accessdoor.RemoteFile{Read: io.NopCloser(bytes.NewReader(s.existing))}}, accessdoor.Outcome{}, nil
 }
 
 type writeHandleStub struct {
@@ -148,6 +161,22 @@ func TestStoreArtifactValidatesMetadataBeforeCreatingResource(t *testing.T) {
 		Content: bytes.NewReader(nil), MaxBytes: 1})
 	if err == nil || creator.created != "" {
 		t.Fatalf("expected pre-create validation, err=%v created=%q", err, creator.created)
+	}
+}
+
+func TestStoreArtifactReusesOnlyByteIdenticalCommittedResource(t *testing.T) {
+	content := []byte("already committed before crash")
+	creator := &artifactCreatorStub{outcome: accessdoor.Outcome{RejectReason: access.AlreadyExists}, existing: content}
+	creator.created = "daemon://worker/recruiting/artifacts/a3"
+	input := artifactWrite{Address: creator.created, ArtifactID: "a3", Kind: model.ArtifactResponse, WorkID: "work-3", AttemptID: "attempt-3",
+		AccessScope: "operators", Retention: "30d", Content: bytes.NewReader(content), MaxBytes: 1024}
+	metadata, err := storeArtifact(creator, input)
+	if err != nil || metadata.ContentHash == "" {
+		t.Fatalf("idempotent artifact replay: metadata=%+v err=%v", metadata, err)
+	}
+	input.Content = bytes.NewBufferString("different")
+	if _, err := storeArtifact(creator, input); err == nil {
+		t.Fatal("expected same identity/different content rejection")
 	}
 }
 

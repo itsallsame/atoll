@@ -13,6 +13,7 @@ import (
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
+	"github.com/wanpengxie/atoll/protocol/access"
 	"github.com/wanpengxie/atoll/protocol/resource"
 	"github.com/wanpengxie/atoll/runtime/accessdoor"
 )
@@ -29,8 +30,10 @@ type resourceRecipeReader interface {
 // resourceArtifactCreator is the public Atoll file Resource face narrowed to
 // creation. Large website evidence is streamed through FileAccess and never
 // placed in an actor message or actor state.
-type resourceArtifactCreator interface {
+type resourceArtifactStore interface {
 	CreateFile(resource.ResourceID, bool) (accessdoor.FileAccess, accessdoor.Outcome, error)
+	CreateDirectory(resource.ResourceID) (accessdoor.Outcome, error)
+	Open(resource.ResourceID, access.Operation) (accessdoor.FileAccess, accessdoor.Outcome, error)
 }
 
 type recipeExpectation struct {
@@ -115,7 +118,7 @@ type artifactWrite struct {
 	MaxBytes    int64
 }
 
-func storeArtifact(resources resourceArtifactCreator, input artifactWrite) (model.ArtifactMetadata, error) {
+func storeArtifact(resources resourceArtifactStore, input artifactWrite) (model.ArtifactMetadata, error) {
 	if resources == nil || input.Address == "" || strings.TrimSpace(input.ArtifactID) == "" || input.Content == nil || input.MaxBytes < 1 {
 		return model.ArtifactMetadata{}, errors.New("artifact resource, address, identity, content, and positive byte limit are required")
 	}
@@ -129,6 +132,9 @@ func storeArtifact(resources resourceArtifactCreator, input artifactWrite) (mode
 		return model.ArtifactMetadata{}, fmt.Errorf("create artifact resource: %w", err)
 	}
 	if !outcome.Accepted() {
+		if outcome.RejectReason == access.AlreadyExists {
+			return reuseArtifact(resources, input, metadata)
+		}
 		return model.ArtifactMetadata{}, fmt.Errorf("create artifact resource rejected: %s", outcome.RejectReason)
 	}
 	writer, ok := file.Writer()
@@ -151,6 +157,46 @@ func storeArtifact(resources resourceArtifactCreator, input artifactWrite) (mode
 	}
 	metadata.ContentHash = "sha256:" + hex.EncodeToString(hash.Sum(nil))
 	return metadata, nil
+}
+
+func reuseArtifact(resources resourceArtifactStore, input artifactWrite, metadata model.ArtifactMetadata) (model.ArtifactMetadata, error) {
+	file, outcome, err := resources.Open(input.Address, access.OpRead)
+	if err != nil {
+		return model.ArtifactMetadata{}, fmt.Errorf("open existing artifact resource: %w", err)
+	}
+	if !outcome.Accepted() {
+		return model.ArtifactMetadata{}, fmt.Errorf("open existing artifact resource rejected: %s", outcome.RejectReason)
+	}
+	reader, ok := file.Reader()
+	if !ok {
+		return model.ArtifactMetadata{}, errors.New("existing artifact resource has no read capability")
+	}
+	defer reader.Close()
+	existingHash, existingBytes, err := boundedDigest(reader, input.MaxBytes)
+	if err != nil {
+		return model.ArtifactMetadata{}, fmt.Errorf("read existing artifact resource: %w", err)
+	}
+	incomingHash, incomingBytes, err := boundedDigest(input.Content, input.MaxBytes)
+	if err != nil {
+		return model.ArtifactMetadata{}, fmt.Errorf("read replayed artifact content: %w", err)
+	}
+	if existingBytes != incomingBytes || existingHash != incomingHash {
+		return model.ArtifactMetadata{}, errors.New("artifact resource identity already exists with different content")
+	}
+	metadata.ContentHash = incomingHash
+	return metadata, nil
+}
+
+func boundedDigest(reader io.Reader, maxBytes int64) (string, int64, error) {
+	hash := sha256.New()
+	written, err := io.Copy(hash, io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return "", 0, err
+	}
+	if written > maxBytes {
+		return "", written, fmt.Errorf("artifact exceeds %d byte limit", maxBytes)
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), written, nil
 }
 
 func validSHA256(value string) bool {
