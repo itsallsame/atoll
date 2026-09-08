@@ -139,7 +139,7 @@ func newProductionRuntime(cfg Config) (*productionRuntime, error) {
 
 func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, incarnation string, msg actorbase.Msg) {
 	if !cfg.ExecutionEnabled || production == nil {
-		_, _ = sys.Fail(msg, "execution_disabled", "production recruiting execution is not enabled")
+		_, _ = sys.Fail(msg, "config_error", "production recruiting execution is not enabled")
 		return
 	}
 	if msg.Sender.Kind != actor.KindTool || !executioncontract.TargetMatchesAuthenticatedActor(string(cfg.ControlActorID), string(msg.Sender.ID)) {
@@ -160,12 +160,12 @@ func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, in
 		Capability: cfg.Capability, Origin: payload.Origin, ProfileID: payload.ProfileID,
 	}, time.Duration(cfg.ControlWaitMS)*time.Millisecond)
 	if err != nil {
-		_, _ = sys.Fail(msg, "control_unavailable", err.Error())
+		_, _ = sys.Fail(msg, "channel_unavailable", err.Error())
 		return
 	}
 	if offer == nil {
 		if err := completeWake(sys, cfg.ControlActorID, msg, payload.CommandID, "idle", "", ""); err != nil {
-			_, _ = sys.Fail(msg, "completion_unavailable", err.Error())
+			_, _ = sys.Fail(msg, "result_unknown", err.Error())
 			return
 		}
 		_, _ = sys.Reply(msg, map[string]any{"status": "idle", "executor_incarnation": incarnation})
@@ -174,11 +174,11 @@ func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, in
 	control := messageExecutionControl{caller: sys, cause: msg.Cause(), controlActor: cfg.ControlActorID,
 		executorActorID: string(sys.Self()), wait: time.Duration(cfg.ControlWaitMS) * time.Millisecond}
 	if err := executeOffer(msg.Ctx(), control, sys.Resource(), production.driver, *offer, production.options); err != nil {
-		_, _ = sys.Fail(msg, "execution_incomplete", err.Error(), map[string]any{"attempt_id": offer.Attempt.AttemptID, "work_id": offer.Work.WorkID})
+		_, _ = sys.Fail(msg, "runtime_failed", err.Error(), map[string]any{"attempt_id": offer.Attempt.AttemptID, "work_id": offer.Work.WorkID})
 		return
 	}
 	if err := completeWake(sys, cfg.ControlActorID, msg, payload.CommandID, "handled", offer.Attempt.AttemptID, offer.Work.WorkID); err != nil {
-		_, _ = sys.Fail(msg, "completion_unavailable", err.Error(), map[string]any{"attempt_id": offer.Attempt.AttemptID, "work_id": offer.Work.WorkID})
+		_, _ = sys.Fail(msg, "result_unknown", err.Error(), map[string]any{"attempt_id": offer.Attempt.AttemptID, "work_id": offer.Work.WorkID})
 		return
 	}
 	_, _ = sys.Reply(msg, map[string]any{"status": "handled", "attempt_id": offer.Attempt.AttemptID,
