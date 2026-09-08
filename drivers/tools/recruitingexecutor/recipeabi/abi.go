@@ -26,10 +26,9 @@ const (
 type Transport string
 
 const (
-	TransportHTTPJSON  Transport = "http_json"
-	TransportHTTPHTML  Transport = "http_html"
-	TransportBrowser   Transport = "browser"
-	TransportExtension Transport = "extension"
+	TransportHTTPJSON Transport = "http_json"
+	TransportHTTPHTML Transport = "http_html"
+	TransportBrowser  Transport = "browser"
 )
 
 type RunInput struct {
@@ -177,7 +176,7 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("unsupported recipe kind %q", s.Kind)
 	}
 	switch s.Transport {
-	case TransportHTTPJSON, TransportHTTPHTML, TransportBrowser, TransportExtension:
+	case TransportHTTPJSON, TransportHTTPHTML, TransportBrowser:
 	default:
 		return fmt.Errorf("unsupported recipe transport %q", s.Transport)
 	}
@@ -226,7 +225,7 @@ func (s Spec) Validate() error {
 			}
 		}
 	}
-	if s.Transport == TransportHTTPHTML || s.Transport == TransportBrowser || s.Transport == TransportExtension {
+	if s.Transport == TransportHTTPHTML || s.Transport == TransportBrowser {
 		for field, attribute := range s.Extraction.Attributes {
 			if _, ok := s.Extraction.Fields[field]; !ok || !safeAttributeName(attribute) {
 				return fmt.Errorf("HTML attributes must reference extracted fields and use safe names")

@@ -541,7 +541,7 @@ Web / 飞书 Gateway         → 只提交公开消息
 | Recruiting Actor | service/tool | 领域行为、调度判断、结果接受和恢复 |
 | Recruiting Executor | tool | 按 capability 调用 Driver 并提交结果 |
 
-第一版只冻结一个 `recruiting-executor` Actor class，可声明 `http.fetch`、`browser.recipe`、`browser.profile`、`extension.required`、`recipe.validate` 等 capability。同一执行者可具备多项能力；步骤种类不等于 Executor 类型。
+第一版只冻结一个 `recruiting-executor` Actor class，可声明 `http.fetch`、`browser.recipe`、`browser.profile`、`extension.capture`、`recipe.validate` 等 capability。同一执行者可具备多项能力；步骤种类不等于 Executor 类型。浏览器插件只捕获用户确认的 Candidate Recipe、selector trace 和 Artifact，不成为每日执行所依赖的 Worker；固定流程发布后由 HTTP 或受控 Browser Driver 重放，插件不能直接激活 Recipe、修改 Source 或推进 Checkpoint。
 
 ### 8.3 首批公开领域词
 
