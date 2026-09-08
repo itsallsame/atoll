@@ -47,7 +47,8 @@ P1 契约基线：`a94d2b8d`
 - 真实 MySQL 行锁 timeout 会返回 deadline 且不留下 Company 半更新；压力分片曾暴露 autocommit UPDATE 的取消竞态：客户端先收到 deadline，释放测试锁后服务端仍可能在连接关闭前提交。Company CAS 已改为显式事务，超时连接只能回滚；同一 fault test 在 4 个独立 MySQL 容器中累计 100/100 次通过，随后完整 contract 单轮通过；
 - 子测试进程在未提交事务中被 OS kill，连接断开后 MySQL 回滚；在命令事务已提交但客户端尚未确认时被 kill，重启后稳定 receipt 可重放且 pending outbox 仍可找回；
 - MySQL 测试身份拆为非 root `staircase_migrator` 与 `staircase_runtime`；migration binary 只用前者，全部 Repository contract 使用后者，实测 runtime 具备所需 DML 且执行 DDL 被数据库拒绝；
-- harness 使用进程号与随机数命名一次性 schema，支持 `RECRUITING_MYSQL_ITERATIONS=N` 和无 eval 的 `RECRUITING_MYSQL_TEST_RUN` 定向回归；stress 入口把总轮数精确分配给多个独立容器/schema/非 root 账号，并逐 shard 校验终态成功标记；已连续完成 2 轮完整预检和 100 轮 timeout fault 定向回归，容器退出后整体删除；
+- harness 使用进程号与随机数命名一次性 schema，支持 `RECRUITING_MYSQL_ITERATIONS=N` 和无 eval 的 `RECRUITING_MYSQL_TEST_RUN` 定向回归；stress 入口把总轮数精确分配给多个独立容器/schema/非 root 账号，并逐 shard 校验终态成功标记；commit `0af563b3f7d2` 已完成 4×25＝100 轮完整 migration+25-test contract，另完成 100 轮 timeout fault 定向回归；所有容器及其随机 schema 随后整体删除；
+- 完整 100 轮的四份 runtime log 各含 25 个成功结果和最终 schema/identity 标记；紧凑证据及日志 SHA-256 保存在 `docs/experiments/evidence/recruiting-mysql-stress-0af563b3.json`，原始日志留在 ignored `.cache`，不把一次性数据库输出提交到 Git；
 - `EXPLAIN FORMAT=JSON` 验证 Company seek 查询使用专用索引；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
@@ -66,6 +67,6 @@ make build-go
 
 - 其余修改命令的 receipt/聚合/outbox 原子编排随 P3 Actor command handler 实现；P2 已用 Company 命令纵向证明事务模板，并完成全部 Resource 纵向合同；
 - 10,000 条基线不使用超大事务已经验证；仍需所有关键领取查询的 EXPLAIN；
-- 随机数据库完整 contract 连续 100 次（4×25 stress 入口已就绪；首次正式运行在第 12 个累计成功结果前暴露并修复 timeout/autocommit 竞态，修复后的 100 轮定向 fault 已通过），以及最终残留 schema 核对。
+- 首次 100 轮压力运行暴露的 timeout/autocommit 竞态已修复；修复提交上的完整 100 轮与容器残留核对均已通过，不再列为未完成项。
 
 P2 仍为进行中，不能以首个 Repository 切片替代完整退出门。

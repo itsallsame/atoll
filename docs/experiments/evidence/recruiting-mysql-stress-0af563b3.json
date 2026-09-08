@@ -1,0 +1,22 @@
+{
+  "schema_version": "recruiting.mysql-stress-evidence.v1",
+  "commit": "0af563b3f7d2cf454d1a6299bb8a751bf91a033f",
+  "completed_at": "2026-09-08",
+  "mysql_version": "8.4",
+  "total_iterations": 100,
+  "shards": 4,
+  "iterations_per_shard": 25,
+  "full_contract_tests_per_iteration": 25,
+  "race_enabled": true,
+  "migration_identity": "staircase_migrator",
+  "runtime_identity": "staircase_runtime",
+  "all_containers_removed": true,
+  "logs": [
+    {"shard": 1, "sha256": "a772493a5a80d0c9317464764d9124e9cbc3a689333c18b35495602a626db443", "success_results": 25},
+    {"shard": 2, "sha256": "93eb765c268db3edb8c159d2168c9396fa9f5525aca4aa158cc3e0b9d88b20bc", "success_results": 25},
+    {"shard": 3, "sha256": "51898140c3ed95b59a4b291ae0cef56a963bd24d36f729acde679fbf3e6f2381", "success_results": 25},
+    {"shard": 4, "sha256": "4afd594d526cb0313f1e53766a46787ddd6231745295a3a75ac10f3bd4a6b71a", "success_results": 25}
+  ],
+  "runtime_log_directory": ".cache/recruiting-mysql-full-100-0af563b3",
+  "result": "passed"
+}
