@@ -151,6 +151,10 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 }
 
 func isCurrentReconcileTimer(messageID message.ID, currentTimerID string) bool {
+	return isCurrentDurableTimer(messageID, currentTimerID)
+}
+
+func isCurrentDurableTimer(messageID message.ID, currentTimerID string) bool {
 	const timerPrefix = "timer:"
 	firedTimerID := strings.TrimPrefix(string(messageID), timerPrefix)
 	return firedTimerID != string(messageID) && firedTimerID == currentTimerID && currentTimerID != ""

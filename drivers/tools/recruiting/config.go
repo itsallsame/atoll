@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/wanpengxie/atoll/protocol/actor"
 )
@@ -14,9 +15,15 @@ const Class = "recruiting"
 const DefaultActorID actor.ActorID = "recruiting"
 
 type Config struct {
-	ExecutorID          actor.ActorID `json:"executor_id"`
-	DatabaseDSNEnv      string        `json:"database_dsn_env"`
-	ReconcileIntervalMS int           `json:"reconcile_interval_ms"`
+	ExecutorID                   actor.ActorID `json:"executor_id"`
+	DatabaseDSNEnv               string        `json:"database_dsn_env"`
+	ReconcileIntervalMS          int           `json:"reconcile_interval_ms"`
+	DailyScheduleEnabled         bool          `json:"daily_schedule_enabled"`
+	DailyScheduleTimezone        string        `json:"daily_schedule_timezone"`
+	DailyCutoffLocal             string        `json:"daily_cutoff_local"`
+	DailyWindowStartDelayMinutes int           `json:"daily_window_start_delay_minutes"`
+	DailyWindowDurationMinutes   int           `json:"daily_window_duration_minutes"`
+	DailySchedulePolicyVersion   uint64        `json:"daily_schedule_policy_version"`
 }
 
 func DefaultConfig() json.RawMessage {
@@ -35,14 +42,32 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 	}
 	cfg.ExecutorID = actor.ActorID(strings.TrimSpace(string(cfg.ExecutorID)))
 	cfg.DatabaseDSNEnv = strings.TrimSpace(cfg.DatabaseDSNEnv)
+	cfg.DailyScheduleTimezone = strings.TrimSpace(cfg.DailyScheduleTimezone)
+	cfg.DailyCutoffLocal = strings.TrimSpace(cfg.DailyCutoffLocal)
 	if cfg.ExecutorID == "" || cfg.DatabaseDSNEnv == "" || cfg.ReconcileIntervalMS < 100 || cfg.ReconcileIntervalMS > 3_600_000 {
 		return Config{}, fmt.Errorf("recruiting config: executor_id, database_dsn_env, and reconcile_interval_ms in [100,3600000] are required")
+	}
+	if cfg.DailyScheduleEnabled {
+		if _, err := time.LoadLocation(cfg.DailyScheduleTimezone); err != nil {
+			return Config{}, fmt.Errorf("recruiting config: invalid daily_schedule_timezone: %w", err)
+		}
+		if _, err := time.Parse("15:04:05", cfg.DailyCutoffLocal); err != nil {
+			return Config{}, fmt.Errorf("recruiting config: daily_cutoff_local must be HH:MM:SS")
+		}
+		if cfg.DailyWindowStartDelayMinutes < 0 || cfg.DailyWindowStartDelayMinutes > 1_440 ||
+			cfg.DailyWindowDurationMinutes < 1 || cfg.DailyWindowDurationMinutes > 2_880 || cfg.DailySchedulePolicyVersion == 0 {
+			return Config{}, fmt.Errorf("recruiting config: invalid daily window or policy version")
+		}
 	}
 	return cfg, nil
 }
 
 func defaultConfig() Config {
-	return Config{ExecutorID: "recruiting-executor", DatabaseDSNEnv: "ATOLL_RECRUITING_MYSQL_DSN", ReconcileIntervalMS: 30_000}
+	return Config{
+		ExecutorID: "recruiting-executor", DatabaseDSNEnv: "ATOLL_RECRUITING_MYSQL_DSN", ReconcileIntervalMS: 30_000,
+		DailyScheduleEnabled: true, DailyScheduleTimezone: "UTC", DailyCutoffLocal: "00:00:00",
+		DailyWindowStartDelayMinutes: 0, DailyWindowDurationMinutes: 480, DailySchedulePolicyVersion: 1,
+	}
 }
 
 const ConfigSchema = `{
@@ -51,6 +76,12 @@ const ConfigSchema = `{
   "properties":{
     "executor_id":{"type":"string","minLength":1},
     "database_dsn_env":{"type":"string","minLength":1},
-    "reconcile_interval_ms":{"type":"integer","minimum":100,"maximum":3600000}
+    "reconcile_interval_ms":{"type":"integer","minimum":100,"maximum":3600000},
+    "daily_schedule_enabled":{"type":"boolean"},
+    "daily_schedule_timezone":{"type":"string","minLength":1},
+    "daily_cutoff_local":{"type":"string","pattern":"^[0-9]{2}:[0-9]{2}:[0-9]{2}$"},
+    "daily_window_start_delay_minutes":{"type":"integer","minimum":0,"maximum":1440},
+    "daily_window_duration_minutes":{"type":"integer","minimum":1,"maximum":2880},
+    "daily_schedule_policy_version":{"type":"integer","minimum":1}
   }
 }`

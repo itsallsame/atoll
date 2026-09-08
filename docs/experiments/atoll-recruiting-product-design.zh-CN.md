@@ -771,7 +771,7 @@ Atoll timer 只负责可靠地产生到期命令，不直接修改状态；Execu
 
 ### 10.2 到期工作
 
-保存 Source 的刷新策略、下次到期时间、最近成功 Incremental Checkpoint 和幂等周期键。每日运行不依赖进程内 cron 和记忆。
+保存 Source 的刷新策略、下次到期时间、最近成功 Incremental Checkpoint 和幂等周期键。每日运行不依赖进程内 cron 和记忆。第一阶段由 Recruiting Actor 使用 Atoll durable one-shot timer 保存下一截点；招聘 extension 只保存权威 timer ID 和已冻结的本次日程 payload。重启或重复 fire 由 timer ID 栅栏、schedule date 唯一键和日切事务共同收敛，不复制 Atoll scheduler。
 
 每个每日 `SourceOccurrence` 是持久事实，使用稳定业务键 `source_id + schedule_date + schedule_policy_version`，并保存 Daily Run、截点时 Company/Source 版本、调度策略版本、确定性 `due_at`、当前状态、关联 Work 和最终结果。Daily Run 与截点时全部 occurrence 必须在一个 Repeatable Read 事务内原子生成；事务失败时两者都不存在，成功时 `expected_sources` 必须精确等于 occurrence 数，不能接受调用方提供的部分集合来冒充每日名单。昂贵 Work 按 `due_at` 在窗口内渐进物化；窗口末只需核对已冻结 occurrence 的执行结果，不在历史截点后补猜名单。
 

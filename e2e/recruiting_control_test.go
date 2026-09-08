@@ -25,8 +25,11 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	registrarRequest(t, ws, homeID, systemActor, "system.actor.template.create", map[string]any{
 		"id": controlDecl, "name": controlDecl, "class": "recruiting",
 		"description": "Recruiting MySQL company control.",
-		"config":      map[string]any{"executor_id": "unused-e2e-executor", "reconcile_interval_ms": 500},
-		"visibility":  "private",
+		"config": map[string]any{
+			"executor_id": "unused-e2e-executor", "reconcile_interval_ms": 500,
+			"daily_schedule_enabled": false,
+		},
+		"visibility": "private",
 	})
 	controlIntro := ws.request(homeID, "system.member.create", systemActor, map[string]any{"decl_id": controlDecl})
 	controlID := stringField(t, controlIntro, "member")
@@ -305,6 +308,42 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	}
 	if _, _, err := recovered.tryRequest(homeID, "recruiting.source.get", controlID, map[string]any{"id": "missing-source"}); err == nil {
 		t.Fatal("missing Source query unexpectedly succeeded")
+	}
+
+	cutoff := time.Now().UTC().Add(15 * time.Second).Truncate(time.Second)
+	const dailyDecl = "e2e-recruiting-daily-schedule"
+	registrarRequest(t, recovered, homeID, systemActor, "system.actor.template.create", map[string]any{
+		"id": dailyDecl, "name": dailyDecl, "class": "recruiting",
+		"description": "Recruiting durable daily cutoff schedule.",
+		"config": map[string]any{
+			"executor_id": "unused-e2e-executor", "reconcile_interval_ms": 200,
+			"daily_schedule_enabled": true, "daily_schedule_timezone": "UTC",
+			"daily_cutoff_local": cutoff.Format("15:04:05"), "daily_window_duration_minutes": 480,
+			"daily_schedule_policy_version": 11,
+		},
+		"visibility": "private",
+	})
+	dailyIntro := recovered.request(homeID, "system.member.create", systemActor, map[string]any{"decl_id": dailyDecl})
+	dailyActorID := stringField(t, dailyIntro, "member")
+	waitRecruitingReady(t, recovered, homeID, dailyActorID, h.server)
+	dailyRunID := "daily-run-" + cutoff.Format("2006-01-02")
+	var dailyRun map[string]any
+	var dailyErr error
+	for deadline := time.Now().Add(25 * time.Second); time.Now().Before(deadline); {
+		_, dailyRun, dailyErr = recovered.tryRequest(homeID, "recruiting.daily_run.get", dailyActorID, map[string]any{"id": dailyRunID})
+		if dailyErr == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if dailyErr != nil {
+		t.Fatalf("durable daily cutoff did not create %s: %v\n%s", dailyRunID, dailyErr, tailLog(h.server.logPath, 100))
+	}
+	if got := nestedNumberField(t, dailyRun, "entity", "schedule_policy_version"); got != 11 {
+		t.Fatalf("daily timer lost schedule policy: %v", dailyRun)
+	}
+	if got := nestedNumberField(t, dailyRun, "entity", "expected_sources"); got != 0 {
+		t.Fatalf("ineligible archived/candidate sources entered daily cutoff: %v", dailyRun)
 	}
 }
 

@@ -29,6 +29,7 @@ type storedState struct {
 	CommandWorks     map[string]string          `json:"command_works"`
 	Receipts         map[string]json.RawMessage `json:"receipts"`
 	ReconcileTimerID string                     `json:"reconcile_timer_id,omitempty"`
+	DailyTimerID     string                     `json:"daily_timer_id,omitempty"`
 }
 
 type probeStartPayload struct {
@@ -113,6 +114,11 @@ func run(sys actorbase.Sys, cfg Config) error {
 			return err
 		}
 	}
+	if repository != nil && cfg.DailyScheduleEnabled && state.DailyTimerID == "" {
+		if err := armDailyTimer(sys, cfg, state, time.Now().UTC()); err != nil {
+			return err
+		}
+	}
 	for {
 		msg, err := sys.Recv()
 		if err != nil {
@@ -124,6 +130,10 @@ func run(sys actorbase.Sys, cfg Config) error {
 				handleDue(sys, cfg, state, msg)
 			case typeOutboxReconcileDue:
 				if err := handleOutboxReconcileDue(sys, cfg, state, repository, msg); err != nil {
+					return err
+				}
+			case typeDailyCutoffDue:
+				if err := handleDailyCutoffDue(sys, cfg, state, repository, msg); err != nil {
 					return err
 				}
 			}
