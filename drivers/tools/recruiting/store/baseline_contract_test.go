@@ -182,7 +182,8 @@ WHERE source_id = ? AND baseline_generation = ?`, source.SourceID, baseline.Gene
 		candidate.FrontierActivityAt = activityAt
 		candidate.LastOccurrenceID = occurrenceID
 		next, commitErr := currentCheckpoint.Commit(currentCheckpoint.Version, model.ListingProgress{
-			PreviousFrontierReached: true, OverlapCompleted: true, OrderingContractHeld: true, SameTimeGroupCompleted: true,
+			IdentityComplete: true, PaginationStable: true, PreviousFrontierReached: true,
+			OverlapCompleted: true, OrderingContractHeld: true, SameTimeGroupCompleted: true,
 			Candidate: candidate,
 		})
 		if commitErr != nil {

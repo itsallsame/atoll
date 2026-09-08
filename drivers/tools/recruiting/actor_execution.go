@@ -3,6 +3,7 @@ package recruiting
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -30,12 +31,129 @@ type executionTransitionPayload struct {
 }
 
 type executionControlResponse struct {
-	ContractVersion string                       `json:"contract_version"`
-	CorrelationID   string                       `json:"correlation_id"`
-	RequestedBy     string                       `json:"requested_by"`
-	Available       bool                         `json:"available,omitempty"`
-	Offer           *store.ListingExecutionOffer `json:"offer,omitempty"`
-	Attempt         *model.Attempt               `json:"attempt,omitempty"`
+	ContractVersion string                          `json:"contract_version"`
+	CorrelationID   string                          `json:"correlation_id"`
+	RequestedBy     string                          `json:"requested_by"`
+	Available       bool                            `json:"available,omitempty"`
+	Offer           *store.ListingExecutionOffer    `json:"offer,omitempty"`
+	Attempt         *model.Attempt                  `json:"attempt,omitempty"`
+	Page            *store.ListingPageOutcome       `json:"page,omitempty"`
+	Completion      *store.ListingCompletionOutcome `json:"completion,omitempty"`
+}
+
+type listingPageResultPayload struct {
+	CommandID           string                     `json:"command_id"`
+	ResultKind          string                     `json:"result_kind"`
+	AttemptID           string                     `json:"attempt_id"`
+	ExecutorIncarnation string                     `json:"executor_incarnation"`
+	PageSequence        uint64                     `json:"page_sequence"`
+	ResumeCursor        string                     `json:"resume_cursor,omitempty"`
+	Terminal            bool                       `json:"terminal"`
+	Artifact            model.ArtifactMetadata     `json:"artifact"`
+	Observations        []model.ListingObservation `json:"observations"`
+}
+
+type listingCompletionResultPayload struct {
+	CommandID           string                   `json:"command_id"`
+	ResultKind          string                   `json:"result_kind"`
+	AttemptID           string                   `json:"attempt_id"`
+	ExecutorIncarnation string                   `json:"executor_incarnation"`
+	Artifact            model.ArtifactMetadata   `json:"artifact"`
+	Quality             listingQualityPayload    `json:"quality"`
+	Checkpoint          listingCheckpointPayload `json:"checkpoint_candidate"`
+}
+
+type listingQualityPayload struct {
+	IdentityComplete        bool `json:"identity_complete"`
+	OrderingContractHeld    bool `json:"ordering_contract_held"`
+	PaginationStable        bool `json:"pagination_stable"`
+	PreviousFrontierReached bool `json:"previous_frontier_reached"`
+	OverlapCompleted        bool `json:"overlap_completed"`
+	ItemCount               int  `json:"item_count"`
+}
+
+type listingCheckpointPayload struct {
+	FrontierActivityAt string   `json:"frontier_activity_at,omitempty"`
+	FrontierJobKeys    []string `json:"frontier_job_keys,omitempty"`
+}
+
+func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, state *storedState, msg actorbase.Msg) {
+	var discriminator struct {
+		ResultKind string `json:"result_kind"`
+	}
+	if err := json.Unmarshal(msg.Payload, &discriminator); err != nil || discriminator.ResultKind == "" {
+		handleProbeExecutionResult(sys, state, msg)
+		return
+	}
+	if repository == nil {
+		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
+		return
+	}
+	if msg.Sender.Kind != actor.KindTool || msg.Sender.ID == "" {
+		_, _ = sys.Fail(msg, ErrorUnauthorizedExecutor, "listing result requires an authenticated tool actor")
+		return
+	}
+	switch discriminator.ResultKind {
+	case "listing_page":
+		handleListingPageResult(sys, repository, msg)
+	case "listing_completion":
+		handleListingCompletionResult(sys, repository, msg)
+	default:
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "unknown execution result_kind")
+	}
+}
+
+func handleListingPageResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload listingPageResultPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if strings.TrimSpace(payload.CommandID) == "" || payload.ResultKind != "listing_page" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "listing page command_id and result_kind are required")
+		return
+	}
+	outcome, err := repository.AcceptListingPage(msg.Ctx(), store.ListingPageResult{
+		AttemptID: payload.AttemptID, ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
+		PageSequence: payload.PageSequence, ResumeCursor: payload.ResumeCursor, Terminal: payload.Terminal,
+		Artifact: payload.Artifact, Observations: payload.Observations, ObservedAt: time.UnixMilli(msg.TS).UTC(),
+	})
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := executionControlResponse{ContractVersion: "recruiting.execution.v1", CorrelationID: string(msg.CorrelationID),
+		RequestedBy: string(msg.Sender.ID), Page: &outcome}
+	_, _ = sys.Reply(msg, response)
+}
+
+func handleListingCompletionResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload listingCompletionResultPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if strings.TrimSpace(payload.CommandID) == "" || payload.ResultKind != "listing_completion" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "listing completion command_id and result_kind are required")
+		return
+	}
+	progress := model.ListingProgress{
+		IdentityComplete: payload.Quality.IdentityComplete, PaginationStable: payload.Quality.PaginationStable,
+		OrderingContractHeld: payload.Quality.OrderingContractHeld, PreviousFrontierReached: payload.Quality.PreviousFrontierReached,
+		OverlapCompleted: payload.Quality.OverlapCompleted, SameTimeGroupCompleted: payload.Quality.PreviousFrontierReached,
+		Candidate: model.IncrementalCheckpoint{FrontierActivityAt: payload.Checkpoint.FrontierActivityAt,
+			FrontierJobKeys: append([]string(nil), payload.Checkpoint.FrontierJobKeys...)},
+	}
+	outcome, err := repository.AcceptListingCompletion(msg.Ctx(), store.ListingCompletion{
+		AttemptID: payload.AttemptID, ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
+		Artifact: payload.Artifact, Progress: progress, CompletedAt: time.UnixMilli(msg.TS).UTC(), CauseCommandID: payload.CommandID,
+		ItemCount: payload.Quality.ItemCount,
+	})
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := executionControlResponse{ContractVersion: "recruiting.execution.v1", CorrelationID: string(msg.CorrelationID),
+		RequestedBy: string(msg.Sender.ID), Completion: &outcome}
+	_, _ = sys.Reply(msg, response)
 }
 
 func handleExecutionControlMessage(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

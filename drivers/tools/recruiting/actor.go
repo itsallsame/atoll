@@ -171,7 +171,7 @@ func run(sys actorbase.Sys, cfg Config) error {
 		case TypeProbeStatus:
 			handleStatus(sys, state, msg)
 		case TypeExecutionResult:
-			handleExecutionResult(sys, state, msg)
+			handleAnyExecutionResult(sys, repository, state, msg)
 		default:
 			_, _ = sys.Fail(msg, "type_unsupported", fmt.Sprintf("recruiting actor does not answer %q", msg.Type))
 		}
@@ -347,7 +347,7 @@ func handleStatus(sys actorbase.Sys, state *storedState, msg actorbase.Msg) {
 	_, _ = sys.Reply(msg, map[string]any{"works": works})
 }
 
-func handleExecutionResult(sys actorbase.Sys, state *storedState, msg actorbase.Msg) {
+func handleProbeExecutionResult(sys actorbase.Sys, state *storedState, msg actorbase.Msg) {
 	var p executionResultPayload
 	if !decode(sys, msg, &p) {
 		return

@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -168,8 +170,9 @@ func TestConcurrentListingOffersClaimDistinctWorks(t *testing.T) {
 
 func prepareListingExecutionWork(t *testing.T, ctx context.Context, repository *Repository, prefix string, sourceCount int) (time.Time, string) {
 	t.Helper()
-	day := 10 + sourceCount
-	now := time.Date(2088, 2, day, 0, 0, 0, 0, time.UTC)
+	scheduleKey := sha256.Sum256([]byte(prefix))
+	year, month, day := 2050+int(scheduleKey[0])%30, time.Month(1+int(scheduleKey[1])%12), 1+int(scheduleKey[2])%28
+	now := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 	company := persistExecutionReadyCompany(t, ctx, repository, prefix, now)
 	for index := range sourceCount {
 		persistExecutionReadySource(t, ctx, repository, company, prefix, fmt.Sprintf("%s-source-%d", prefix, index), now)
@@ -268,5 +271,38 @@ func persistExecutionReadySource(t *testing.T, ctx context.Context, repository *
 	if err := repository.PublishSourceAssignment(ctx, validating.Version, 0, ready, assignment, now); err != nil {
 		t.Fatal(err)
 	}
-	return ready
+	detailRecipe := activeRecipe(t, "detail-recipe-"+sourceID, model.RecipeDetail, host, 1, "detail-contract-"+sourceID)
+	if err := repository.CreateRecipe(ctx, detailRecipe, now); err != nil {
+		t.Fatal(err)
+	}
+	detailAssignment, err := model.NewSourceRecipeAssignment(sourceID, model.RecipeDetail, detailRecipe.RecipeID,
+		detailRecipe.Version, detailRecipe.ContractHash, now.Format(time.RFC3339Nano))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withDetail, err := ready.AssignRecipe(ready.Version, detailAssignment, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.PublishSourceAssignment(ctx, ready.Version, 0, withDetail, detailAssignment, now); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := model.EstablishCheckpoint(model.IncrementalCheckpoint{
+		SourceID: sourceID, RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, ContractHash: recipe.ContractHash,
+		Strategy: model.CheckpointActivityTime, FrontierActivityAt: now.Add(-time.Hour).Format(time.RFC3339),
+		OverlapPages: 1, LastOccurrenceID: "baseline-" + sourceID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointState, _ := json.Marshal(checkpoint)
+	if _, err := repository.db.ExecContext(ctx, `
+INSERT INTO recruiting_checkpoints(
+  source_id, checkpoint_version, recipe_id, recipe_version, contract_hash,
+  frontier_activity_at, frontier_keys_json, last_occurrence_id, state_json, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`, checkpoint.SourceID, checkpoint.Version, checkpoint.RecipeID,
+		checkpoint.RecipeVersion, checkpoint.ContractHash, now.Add(-time.Hour), checkpoint.LastOccurrenceID, checkpointState, now); err != nil {
+		t.Fatal(err)
+	}
+	return withDetail
 }

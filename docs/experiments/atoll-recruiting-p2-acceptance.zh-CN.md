@@ -31,6 +31,9 @@ P1 契约基线：`a94d2b8d`
 - Recipe 使用 `(recipe_id, recipe_version)` 身份和独立 state version CAS；ABI、opaque content ref、transport、required capability、内容与 contract 在同一 Recipe version 内不可变，Repository 只接受领域状态机产生的状态转换；Source candidate→validating 单独持久化，ready Endpoint 与首个 Listing Assignment 同事务发布；
 - Recipe rollout 要求匹配 active kind/contract，并在同一事务比较 Source version 与 Assignment version；两个并发 rollout 只有一个成功，任一 CAS 冲突都会回滚另一侧，数据库不会出现 Source JSON 与 Assignment 行不一致；
 - Detail result 接受会从数据库重读 Company、Source、Detail Assignment/Recipe、Checkpoint、Job refresh generation、Profile（如有）、Work acceptance version 和 Attempt Executor incarnation；不信任结果消息声明的“当前版本”；
+- Listing page 接受同样重读 Attempt/Work/Occurrence 和全部当前 fence，每页最多 500 项；Artifact、Observation、由当前 detail Recipe 与详情 URL 派生的 detail Work、顺序恢复点在一个事务内提交。Executor 不能指定 detail capability/origin，也不能指定 Job/Work identity；这些值由控制面 Recipe、规范 URL 和稳定业务键生成；
+- Listing completion 只接受已提交 terminal page 和完整 identity/pagination/order/frontier/same-time/overlap 证明；Executor 只能提出新 frontier 时间/键，Source、Recipe、contract、策略、overlap、occurrence 和版本均由当前 Checkpoint 与冻结 occurrence 重建；Checkpoint、Attempt succeeded、Work completed、Occurrence completed 和 outbox 在一个事务内提交；
+- accepted completion outcome 随 Attempt 保存，后续 Checkpoint 再次推进后重放旧结果仍返回第一次接受的稳定快照；错误 incarnation、变更后的 Source 或不完整质量证明只保存 rejected Artifact，不产生 Observation、恢复点或 Checkpoint 变化；
 - 合法详情结果在一个事务内提交 Artifact、SourceJob、append-only JobDetailVersion、Attempt succeeded 和 Work completed；同 Artifact/Attempt 重放返回既有 Job，不增加详情版本；
 - 错误 Executor incarnation 或已变化 Source version 的详情结果只新增 `rejected=true` Artifact，Job、Work 和 Attempt 均保持原状态；
 - Profile Repository 只持久化 opaque secret reference，并以 profile version CAS 驱动 repairing/verifying；测试确认没有 Cookie、密码或 OTP 字段；

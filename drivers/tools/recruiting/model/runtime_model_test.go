@@ -15,7 +15,7 @@ func TestCheckpointRequiresCompleteBoundaryProofAndCAS(t *testing.T) {
 	candidate.RecipeVersion = 2
 	candidate.FrontierActivityAt = "2026-09-02T00:00:00Z"
 	candidate.LastOccurrenceID = "daily-1"
-	proof := ListingProgress{PreviousFrontierReached: true, OverlapCompleted: true, OrderingContractHeld: true, SameTimeGroupCompleted: true, Candidate: candidate}
+	proof := ListingProgress{IdentityComplete: true, PaginationStable: true, PreviousFrontierReached: true, OverlapCompleted: true, OrderingContractHeld: true, SameTimeGroupCompleted: true, Candidate: candidate}
 	if _, err := initial.Commit(initial.Version-1, proof); err == nil {
 		t.Fatal("stale checkpoint CAS was accepted")
 	}
@@ -43,12 +43,14 @@ func TestCheckpointRejectsEveryIncompleteBoundaryProof(t *testing.T) {
 	candidate := checkpoint
 	candidate.FrontierActivityAt = "2026-09-02T00:00:00Z"
 	candidate.LastOccurrenceID = "daily-1"
-	complete := ListingProgress{PreviousFrontierReached: true, OverlapCompleted: true, OrderingContractHeld: true, SameTimeGroupCompleted: true, Candidate: candidate}
+	complete := ListingProgress{IdentityComplete: true, PaginationStable: true, PreviousFrontierReached: true, OverlapCompleted: true, OrderingContractHeld: true, SameTimeGroupCompleted: true, Candidate: candidate}
 	for name, mutate := range map[string]func(*ListingProgress){
-		"frontier":  func(p *ListingProgress) { p.PreviousFrontierReached = false },
-		"overlap":   func(p *ListingProgress) { p.OverlapCompleted = false },
-		"ordering":  func(p *ListingProgress) { p.OrderingContractHeld = false },
-		"same_time": func(p *ListingProgress) { p.SameTimeGroupCompleted = false },
+		"identity":   func(p *ListingProgress) { p.IdentityComplete = false },
+		"pagination": func(p *ListingProgress) { p.PaginationStable = false },
+		"frontier":   func(p *ListingProgress) { p.PreviousFrontierReached = false },
+		"overlap":    func(p *ListingProgress) { p.OverlapCompleted = false },
+		"ordering":   func(p *ListingProgress) { p.OrderingContractHeld = false },
+		"same_time":  func(p *ListingProgress) { p.SameTimeGroupCompleted = false },
 	} {
 		t.Run(name, func(t *testing.T) {
 			proof := complete

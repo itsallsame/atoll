@@ -28,6 +28,8 @@ type IncrementalCheckpoint struct {
 }
 
 type ListingProgress struct {
+	IdentityComplete        bool                  `json:"identity_complete"`
+	PaginationStable        bool                  `json:"pagination_stable"`
 	PreviousFrontierReached bool                  `json:"previous_frontier_reached"`
 	OverlapCompleted        bool                  `json:"overlap_completed"`
 	OrderingContractHeld    bool                  `json:"ordering_contract_held"`
@@ -50,7 +52,8 @@ func (c IncrementalCheckpoint) Commit(expected uint64, progress ListingProgress)
 	if err := requireVersion(expected, c.Version); err != nil {
 		return IncrementalCheckpoint{}, err
 	}
-	if !progress.PreviousFrontierReached || !progress.OverlapCompleted || !progress.OrderingContractHeld || !progress.SameTimeGroupCompleted {
+	if !progress.IdentityComplete || !progress.PaginationStable || !progress.PreviousFrontierReached ||
+		!progress.OverlapCompleted || !progress.OrderingContractHeld || !progress.SameTimeGroupCompleted {
 		return IncrementalCheckpoint{}, fmt.Errorf("checkpoint proof incomplete")
 	}
 	next := progress.Candidate

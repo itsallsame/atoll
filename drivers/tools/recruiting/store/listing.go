@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +23,7 @@ type ListingIngest struct {
 	Capability   string
 	Priority     int
 	NotBefore    time.Time
+	ParentWorkID string
 }
 
 type ListingIngestResult struct {
@@ -93,7 +96,11 @@ func applyListingObservationTx(ctx context.Context, tx *sql.Tx, input ListingIng
 	}
 	needsDetail := false
 	if newJob {
-		job, err = model.NewSourceJobFromObservation(input.NewJobID, input.Observation, input.ObservedAt.UTC().Format(time.RFC3339Nano))
+		jobID := input.NewJobID
+		if jobID == "" {
+			jobID = deterministicListingEntityID("job", input.Observation.SourceID, input.Observation.SourceJobKey)
+		}
+		job, err = model.NewSourceJobFromObservation(jobID, input.Observation, input.ObservedAt.UTC().Format(time.RFC3339Nano))
 		needsDetail = err == nil
 	} else {
 		job, needsDetail, err = job.ObserveListing(job.Version, input.Observation)
@@ -128,10 +135,15 @@ INSERT INTO recruiting_listing_observations(
 
 	var detailWork *model.Work
 	if needsDetail {
-		work, err := model.NewWork(input.DetailWorkID, "job", job.JobID, "detail_sync", "listing_observation")
+		detailWorkID := input.DetailWorkID
+		if detailWorkID == "" {
+			detailWorkID = deterministicListingEntityID("work-detail", job.SourceID, job.SourceJobKey, fmt.Sprintf("%d", job.RefreshGeneration))
+		}
+		work, err := model.NewWork(detailWorkID, "job", job.JobID, "detail_sync", "listing_observation")
 		if err != nil {
 			return ListingIngestResult{}, err
 		}
+		work.ParentWorkID = input.ParentWorkID
 		businessKey, _ := model.DetailWorkKey(job.SourceID, job.SourceJobKey, job.RefreshGeneration, work.Purpose)
 		state, _ := json.Marshal(work)
 		_, err = tx.ExecContext(ctx, `
@@ -139,8 +151,8 @@ INSERT INTO recruiting_works(
   work_id, parent_work_id, business_key, target_type, target_id, purpose,
   trigger_kind, status, resolution, priority, capability, origin, profile_id,
   not_before, deadline_at, acceptance_version, version, state_json, created_at, updated_at
-) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?)`,
-			work.WorkID, businessKey, work.TargetType, work.TargetID, work.Purpose, work.Trigger, work.Status,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?)`,
+			work.WorkID, nullableString(work.ParentWorkID), businessKey, work.TargetType, work.TargetID, work.Purpose, work.Trigger, work.Status,
 			input.Priority, input.Capability, input.Origin, input.NotBefore.UTC(), work.AcceptanceVersion,
 			work.Version, state, input.ObservedAt.UTC(), input.ObservedAt.UTC())
 		if err != nil {
@@ -149,6 +161,15 @@ INSERT INTO recruiting_works(
 		detailWork = &work
 	}
 	return ListingIngestResult{Job: job, DetailWork: detailWork}, nil
+}
+
+func deterministicListingEntityID(prefix string, parts ...string) string {
+	hash := sha256.New()
+	for _, part := range parts {
+		_, _ = hash.Write([]byte(part))
+		_, _ = hash.Write([]byte{0})
+	}
+	return prefix + "-" + hex.EncodeToString(hash.Sum(nil)[:16])
 }
 
 func (r *Repository) GetJob(ctx context.Context, jobID string) (model.SourceJob, error) {
