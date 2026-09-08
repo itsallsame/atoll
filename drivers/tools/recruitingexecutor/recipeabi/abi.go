@@ -146,9 +146,11 @@ type ReadRequest struct {
 }
 
 type Extraction struct {
-	Collection string            `json:"collection,omitempty"`
-	Fields     map[string]string `json:"fields"`
-	Next       string            `json:"next,omitempty"`
+	Collection    string            `json:"collection,omitempty"`
+	Fields        map[string]string `json:"fields"`
+	Attributes    map[string]string `json:"attributes,omitempty"`
+	Next          string            `json:"next,omitempty"`
+	NextAttribute string            `json:"next_attribute,omitempty"`
 }
 
 type ListingContract struct {
@@ -159,6 +161,7 @@ type ListingContract struct {
 	UpdateRetop        bool   `json:"update_retop"`
 	OverlapPages       int    `json:"overlap_pages"`
 	MaxPages           int    `json:"max_pages"`
+	MaxItemsPerPage    int    `json:"max_items_per_page"`
 	ExcludePinnedField string `json:"exclude_pinned_field,omitempty"`
 }
 
@@ -199,6 +202,9 @@ func (s Spec) Validate() error {
 		}
 	}
 	if s.Transport == TransportHTTPJSON {
+		if len(s.Extraction.Attributes) != 0 || s.Extraction.NextAttribute != "" {
+			return fmt.Errorf("JSON extraction cannot declare HTML attributes")
+		}
 		for _, pointer := range s.Extraction.Fields {
 			if !strings.HasPrefix(pointer, "/") {
 				return fmt.Errorf("JSON extraction fields require JSON pointers")
@@ -210,6 +216,16 @@ func (s Spec) Validate() error {
 			}
 		}
 	}
+	if s.Transport == TransportHTTPHTML {
+		for field, attribute := range s.Extraction.Attributes {
+			if _, ok := s.Extraction.Fields[field]; !ok || !safeAttributeName(attribute) {
+				return fmt.Errorf("HTML attributes must reference extracted fields and use safe names")
+			}
+		}
+		if s.Extraction.NextAttribute != "" && !safeAttributeName(s.Extraction.NextAttribute) {
+			return fmt.Errorf("HTML next_attribute is invalid")
+		}
+	}
 	if s.Kind == KindListing {
 		if err := s.Listing.Validate(); err != nil {
 			return err
@@ -217,9 +233,17 @@ func (s Spec) Validate() error {
 		if _, ok := s.Extraction.Fields[s.Listing.IdentityField]; !ok {
 			return fmt.Errorf("listing identity_field must name an extracted field")
 		}
+		if s.Transport == TransportHTTPJSON && s.Extraction.Collection == "" {
+			return fmt.Errorf("JSON listing recipe requires a collection pointer")
+		}
 		if s.Listing.ActivityField != "" {
 			if _, ok := s.Extraction.Fields[s.Listing.ActivityField]; !ok {
 				return fmt.Errorf("listing activity_field must name an extracted field")
+			}
+		}
+		if s.Listing.ExcludePinnedField != "" {
+			if _, ok := s.Extraction.Fields[s.Listing.ExcludePinnedField]; !ok {
+				return fmt.Errorf("listing exclude_pinned_field must name an extracted field")
 			}
 		}
 	} else if s.Listing != nil {
@@ -230,7 +254,8 @@ func (s Spec) Validate() error {
 
 func (c *ListingContract) Validate() error {
 	if c == nil || strings.TrimSpace(c.IdentityField) == "" || c.Ordering != "newest_activity_desc" || !c.UpdateRetop ||
-		c.OverlapPages < 1 || c.OverlapPages > 20 || c.MaxPages < c.OverlapPages || c.MaxPages > 1000 {
+		c.OverlapPages < 1 || c.OverlapPages > 20 || c.MaxPages < c.OverlapPages || c.MaxPages > 1000 ||
+		c.MaxItemsPerPage < 1 || c.MaxItemsPerPage > 5000 {
 		return fmt.Errorf("listing recipe requires identity, descending activity/update-retop contract, and bounded overlap/pages")
 	}
 	switch c.BoundaryMode {
@@ -243,6 +268,14 @@ func (c *ListingContract) Validate() error {
 		return fmt.Errorf("unsupported listing boundary mode %q", c.BoundaryMode)
 	}
 	return nil
+}
+
+func safeAttributeName(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "href" || value == "datetime" || value == "content" || value == "value" || strings.HasPrefix(value, "data-") {
+		return len(value) <= 64
+	}
+	return false
 }
 
 func (s Spec) ContentHash() (string, error) {

@@ -14,6 +14,9 @@
 - Checkpoint 只有在 identity、倒序契约、旧 frontier 到达和 overlap 完成四项证明都成立时才能推进；
 - 成功输出必须包含 Artifact 证据和结构化 JSON；失败必须包含 Artifact 并使用有限分类，不能把原始错误文本当错误类别；
 - Recipe 内容哈希覆盖完整 ABI，并由确定性 JSON 编码产生稳定 SHA-256；输入、请求边界、输出与 hash 均已有 race 测试。
+- `recipeexec` 对已保存响应提供无网络的 JSON 与 HTML 执行：JSON 使用 RFC 6901 pointer，HTML 使用 CSS selector 及受限属性读取，不执行页面脚本；字段缺失、selector 错误、异常尾随输入和单页超量均 fail closed；
+- JSON/DOM 输出统一规范为稳定字段 JSON，原始响应计算 SHA-256；测试证明相同 Artifact 重放完全一致、置顶项可排除、文本空白可规范化、分页引用可提取，并从真实观测计算身份完整与活动倒序证据；
+- DOM selector 使用独立 `cascadia v1.3.3`，仅在招聘 Executor 扩展中依赖；原项目依赖清单未被 `go mod tidy` 的非任务机械删除污染。
 
 ## 当前验证
 
@@ -25,7 +28,7 @@ go vet ./drivers/tools/recruitingexecutor/...
 
 ## 尚未完成
 
-- 声明式 JSON/DOM 离线执行器与相同输入确定性重放；
+- 跨页 Listing 扫描器：旧 frontier、同时间组和 overlap 的完整闭合证明；
 - HTTP Driver 的 DNS/IP 安全、redirect 同源策略、robots/条款证据、响应限额、origin 限流、429/403 熔断；
 - Browser/Profile/Extension Driver 的隔离与秘密边界；
 - 本地确定性站点的全部异常矩阵；
