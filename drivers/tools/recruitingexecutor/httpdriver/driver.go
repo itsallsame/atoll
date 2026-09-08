@@ -23,10 +23,11 @@ import (
 )
 
 type RobotsEvidence struct {
-	PolicyURL   string `json:"policy_url"`
-	ContentHash string `json:"content_hash"`
-	Allowed     bool   `json:"allowed"`
-	CheckedAt   string `json:"checked_at"`
+	PolicyURL    string `json:"policy_url"`
+	ContentHash  string `json:"content_hash"`
+	Allowed      bool   `json:"allowed"`
+	CheckedAt    string `json:"checked_at"`
+	CrawlDelayMS int64  `json:"crawl_delay_ms,omitempty"`
 }
 
 func (e RobotsEvidence) Validate() error {
@@ -35,7 +36,7 @@ func (e RobotsEvidence) Validate() error {
 		!strings.HasPrefix(e.ContentHash, "sha256:") {
 		return fmt.Errorf("robots evidence requires policy URL and content hash")
 	}
-	if _, err := time.Parse(time.RFC3339, e.CheckedAt); err != nil {
+	if _, err := time.Parse(time.RFC3339, e.CheckedAt); err != nil || e.CrawlDelayMS < 0 || e.CrawlDelayMS > int64(time.Hour/time.Millisecond) {
 		return fmt.Errorf("robots evidence checked_at must be RFC3339")
 	}
 	return nil
@@ -175,6 +176,7 @@ func (d *Driver) Fetch(ctx context.Context, spec recipeabi.Spec, input recipeabi
 	if !robots.Allowed {
 		return Result{Robots: robots, Compliance: compliance}, &FetchError{Class: "robots_disallowed", Retryable: false}
 	}
+	d.extendOriginInterval(origin, time.Duration(robots.CrawlDelayMS)*time.Millisecond)
 	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(spec.Request.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	requestCtx = context.WithValue(requestCtx, redirectLimitKey{}, spec.Request.MaxRedirects)
@@ -275,6 +277,18 @@ func (d *Driver) circuitAllows(origin string) error {
 func (d *Driver) noteSuccess(origin string) {
 	d.mu.Lock()
 	delete(d.circuits, origin)
+	d.mu.Unlock()
+}
+
+func (d *Driver) extendOriginInterval(origin string, delay time.Duration) {
+	if delay <= d.policy.MinOriginInterval {
+		return
+	}
+	d.mu.Lock()
+	candidate := d.now().Add(delay)
+	if d.nextOrigin[origin].Before(candidate) {
+		d.nextOrigin[origin] = candidate
+	}
 	d.mu.Unlock()
 }
 

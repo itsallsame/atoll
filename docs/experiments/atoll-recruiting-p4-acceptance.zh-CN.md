@@ -24,6 +24,8 @@
 - 生产 Dialer 在实际连接前解析全部地址并拒绝 loopback、private、link-local、multicast、CGNAT、benchmark 和文档网段，避免 DNS rebinding/SSRF；redirect 只允许相同 scheme+authority 且次数受 Recipe 限制；
 - 每次 fetch 必须同时携带有效 robots 证据和条款审查版本/时间；robots 拒绝发生在网站请求之前；429、403、5xx、超时、过大响应、危险 Endpoint 和 redirect 分为稳定错误类别，连续 429/403/5xx 会打开本进程 origin circuit；
 - `httptest` 验证 GET/UA、robots 先决条件、响应截断、超时、同源与跨源 redirect、429 熔断及生产 Dialer 的私网拒绝。测试专用私网开关只存在于未导出的构造函数，生产 `New` 无法开启。
+- `RobotsTxtChecker` 使用同一生产级安全 Dialer 获取每个 origin 的 `/robots.txt`，限制 1 MiB/30s 上限，按实际 Recipe User-Agent 解析 allow/disallow 与 crawl-delay，并保存 policy URL、内容 SHA-256、检查时间；
+- robots cache 按 origin 带 TTL，单 origin lock 合并并发首次加载；401/403/429、超量、解析或网络失败均 fail closed，跨 origin redirect 被拒绝；crawl-delay 会延长 HTTP Driver 后续请求的 origin 间隔。
 
 ## 当前验证
 
@@ -35,7 +37,6 @@ go vet ./drivers/tools/recruitingexecutor/...
 
 ## 尚未完成
 
-- robots.txt 的受限获取、解析、缓存与 crawl-delay 接入；
 - 跨页 fetch loop，把每页原始响应先保存为 Artifact，再交给离线执行器和 `ListingScan`；
 - HTTP Driver 的 DNS/IP 安全、redirect 同源策略、robots/条款证据、响应限额、origin 限流、429/403 熔断；
 - Browser/Profile/Extension Driver 的隔离与秘密边界；

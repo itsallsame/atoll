@@ -4,6 +4,7 @@ go 1.25.7
 
 require (
 	github.com/andybalholm/cascadia v1.3.3
+	github.com/temoto/robotstxt v1.1.2
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/google/uuid v1.6.0
