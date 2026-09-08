@@ -777,7 +777,7 @@ Atoll timer 只负责可靠地产生到期命令，不直接修改状态；Execu
 
 每个每日 `SourceOccurrence` 是持久事实，使用稳定业务键 `source_id + schedule_date + schedule_policy_version`，并保存 Daily Run、截点时 Company/Source 版本、Endpoint、Assignment、Recipe/内容哈希、ABI/transport/capability/origin、调度策略版本、确定性 `due_at`、当前状态、关联 Work 和最终结果。仅保存当前聚合版本号不足以支持延迟执行，因为 Source 在窗口内改变后可能已无法重建旧输入；因此 occurrence 必须自带最小且无秘密的执行快照。Daily Run 与截点时全部 occurrence 必须在一个 Repeatable Read 事务内原子生成；事务失败时两者都不存在，成功时 `expected_sources` 必须精确等于 occurrence 数，不能接受调用方提供的部分集合来冒充每日名单。昂贵 Work 按 `due_at` 在窗口内渐进物化；窗口末只需核对已冻结 occurrence 的执行结果，不在历史截点后补猜名单。
 
-临时手工运行不得复用一个含糊的“手动执行”语义：`diagnostic` 只保存证据，不写 Job、不派生详情、不推进 Checkpoint；`join_occurrence` 收敛到当日 SourceOccurrence；`production` 是独立运行，可以推进 Checkpoint，但必须通过 Checkpoint CAS 与并发定时运行竞争。
+临时手工运行不得复用一个含糊的“手动执行”语义：`diagnostic` 只保存证据，不写 Job、不派生详情、不推进 Checkpoint；`join_occurrence` 收敛到当日 SourceOccurrence；`production` 是独立运行，可以推进 Checkpoint，但必须通过 Checkpoint CAS 与并发定时运行竞争。通用 `recruiting.work.create` 只创建 discovery、baseline、repair、reconcile 和 data-maintenance 等非采集控制 Work；它必须拒绝直接创建 `listing_sync`/`detail_sync`，因为缺少运行模式、occurrence 或独立执行快照的 Work 即使收到 dispatch 也不可执行。列表/详情手工抓取只能由上述专用 run 命令原子建立完整执行上下文。
 
 优先级的业务顺序默认是：
 

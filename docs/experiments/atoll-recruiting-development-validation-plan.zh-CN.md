@@ -270,7 +270,7 @@ requested_by（来自 Atoll envelope 上下文，不是客户端可填写字段�
 
 1. 查询：company/source/job/work/daily run/system/capacity；
 2. Company/Source 新增、更新、暂停、恢复、归档；
-3. Work 创建、重试、取消、resolve；
+3. Work 创建、重试、取消、resolve；通用 create 不接受 listing/detail，采集型人工运行由带明确模式和执行快照的专用 run 命令创建；
 4. timer→DailyRun/全部轻量 SourceOccurrence 的原子截点，随后按 due time 渐进物化 Work，并在窗口末对账；
 5. Attempt offer/accept/start/result/fail 和接受条件；
 6. 批量导入、预览/确认、逐项 outcome；

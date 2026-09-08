@@ -234,9 +234,12 @@ func validateManualWorkPurpose(target Target, purpose string) error {
 		return err
 	}
 	purpose = strings.TrimSpace(purpose)
+	if purpose == "listing_sync" || purpose == "detail_sync" {
+		return fmt.Errorf("purpose %q requires a dedicated run command with explicit execution semantics", purpose)
+	}
 	allowed := map[string]map[string]bool{
 		"company_discovery": {"company": true}, "source_discovery": {"company": true},
-		"baseline": {"source": true}, "listing_sync": {"source": true}, "detail_sync": {"job": true},
+		"baseline":         {"source": true},
 		"reconcile":        {"company": true, "source": true},
 		"repair":           {"company": true, "source": true, "job": true, "profile": true, "origin": true, "recipe": true},
 		"data_maintenance": {"company": true, "source": true, "job": true},

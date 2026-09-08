@@ -45,6 +45,8 @@ func TestManualWorkPurposeAndResolutionAuthority(t *testing.T) {
 		target  Target
 		purpose string
 	}{
+		{Target{Type: "source", ID: "source-1"}, "listing_sync"},
+		{Target{Type: "job", ID: "job-1"}, "detail_sync"},
 		{Target{Type: "source", ID: "source-1"}, "detail_sync"},
 		{Target{Type: "job", ID: "job-1"}, "listing_sync"},
 		{Target{Type: "source", ID: "source-1"}, "arbitrary"},
