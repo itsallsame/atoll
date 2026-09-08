@@ -42,7 +42,7 @@ func TestRecruitingCompanyImportPreviewThroughResourceAndExecutor(t *testing.T) 
 		"id": controlName, "name": controlName, "class": "recruiting", "description": "Recruiting company import control.",
 		"config": map[string]any{"executor_id": "tool:" + executorName,
 			"executors":             []map[string]any{{"actor_id": "tool:" + executorName, "capability": "company.import"}},
-			"reconcile_interval_ms": 500, "daily_schedule_enabled": false}, "visibility": "private",
+			"reconcile_interval_ms": 500, "daily_schedule_enabled": false, "company_import_apply_limit": 2}, "visibility": "private",
 	})
 	controlIntro := ws.request(homeID, "system.member.create", systemActor, map[string]any{"decl_id": controlName})
 	controlID := stringField(t, controlIntro, "member")
@@ -125,5 +125,65 @@ func TestRecruitingCompanyImportPreviewThroughResourceAndExecutor(t *testing.T) 
 	physical := filepath.Join(h.root, "recruiting-import-daemon", "daemons", deviceID, "channels", qualifiedChannel, "imports", "companies.csv")
 	if stored, err := os.ReadFile(physical); err != nil || !bytes.Equal(stored, content) {
 		t.Fatalf("input File Resource bytes changed: bytes=%d err=%v", len(stored), err)
+	}
+	confirmPayload := map[string]any{"command_id": "e2e-company-import-confirm", "import_id": "e2e-company-import-1",
+		"expected_version": nestedNumberField(t, imported, "company_import", "version"),
+		"preview_hash":     nestedStringField(t, imported, "company_import", "preview_hash"),
+		"reason":           "operator accepts the exact reviewed preview"}
+	confirmed := ws.request(homeID, "recruiting.company.import.confirm", controlID, confirmPayload)
+	applyWorkID := nestedStringField(t, confirmed, "apply_work", "work_id")
+	confirmedReplay := ws.request(homeID, "recruiting.company.import.confirm", controlID, confirmPayload)
+	if nestedStringField(t, confirmedReplay, "apply_work", "work_id") != applyWorkID {
+		t.Fatalf("company import confirmation replay changed apply Work: first=%v replay=%v", confirmed, confirmedReplay)
+	}
+	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
+	var completed map[string]any
+	deadline = time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		_, current, err := ws.tryRequest(homeID, "recruiting.company.import.get", controlID, map[string]any{"import_id": "e2e-company-import-1"})
+		if err == nil && nestedStringField(t, current, "company_import", "status") == "completed" {
+			completed = current
+			break
+		}
+		if daemon.exited() || h.server.exited() {
+			t.Fatalf("company import apply process exited\nserver:\n%s\ndaemon:\n%s", tailLog(h.server.logPath, 100), tailLog(daemonLog, 100))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if completed == nil {
+		t.Fatalf("company import did not complete bounded apply pages\nserver:\n%s\ndaemon:\n%s", tailLog(h.server.logPath, 150), tailLog(daemonLog, 150))
+	}
+	outcome, _ := completed["company_import"].(map[string]any)["outcome"].(map[string]any)
+	if numberField(t, outcome, "total") != 4 || numberField(t, outcome, "succeeded") != 2 ||
+		numberField(t, outcome, "skipped") != 1 || numberField(t, outcome, "waiting_human") != 1 {
+		t.Fatalf("company import aggregate outcome=%v", outcome)
+	}
+	work = ws.request(homeID, "recruiting.work.get", controlID, map[string]any{"id": workID})
+	if nestedStringField(t, work, "entity", "work_status") != "waiting_human" ||
+		nestedStringField(t, work, "entity", "waiting_reason") != "company_import_items_waiting_human" {
+		t.Fatalf("partially applied parent Work=%v", work)
+	}
+	applyWork := ws.request(homeID, "recruiting.work.get", controlID, map[string]any{"id": applyWorkID})
+	if nestedStringField(t, applyWork, "entity", "work_status") != "completed" {
+		t.Fatalf("company import apply coordinator Work=%v", applyWork)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM recruiting_companies WHERE company_id LIKE 'import-e2e-%'").Scan(&companies); err != nil || companies != 2 {
+		t.Fatalf("applied companies count=%d err=%v", companies, err)
+	}
+	appliedItems := ws.request(homeID, "recruiting.company.import.items", controlID,
+		map[string]any{"import_id": "e2e-company-import-1", "limit": 10})
+	itemValues, _ := appliedItems["items"].([]any)
+	if len(itemValues) != 4 {
+		t.Fatalf("applied import items=%v", appliedItems)
+	}
+	wantOutcomes := []string{"succeeded", "succeeded", "skipped", "waiting_human"}
+	for index, value := range itemValues {
+		item, _ := value.(map[string]any)
+		if stringField(t, item, "outcome") != wantOutcomes[index] || stringField(t, item, "child_work_id") == "" {
+			t.Fatalf("applied item %d=%v want outcome=%s and child Work", index, item, wantOutcomes[index])
+		}
+	}
+	if stored, err := os.ReadFile(physical); err != nil || !bytes.Equal(stored, content) {
+		t.Fatalf("confirmed import changed immutable input File Resource: bytes=%d err=%v", len(stored), err)
 	}
 }

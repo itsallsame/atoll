@@ -55,7 +55,7 @@
 
 - `recruiting.run.diagnostic` 和 `recruiting.run.production` 已进入公开 manifest（本项替代上文“专用命令均未实现”的旧范围说明）：普通运营员以 Source expected version 创建独立 ListingRun 和 Work，命令可稳定重放；Executor Offer 携带冻结 Endpoint/Recipe/Checkpoint 与 run mode，仍走统一 accept/start、预算和分类失败路径。diagnostic 成功结果只接受有界 page/trace Artifact 与质量摘要，并原子完成 Attempt/Work/ListingRun、释放 Permit、写 receipt/event/dispatch，MySQL 合同断言 Job、ListingObservation 和 Checkpoint 为零变化。production 额外要求 Source 具备已验证增量契约和已有基线，只在完整质量证明后写入岗位事实并 CAS 推进 Checkpoint；并发日常运行先推进水位时 completion 被 fence，不能完成 Work/ListingRun 或覆盖新水位。两种模式的终态非成功重试都会原子把 ListingRun 重绑到新因果 Work；
 
-- 公司导入预览现已进入同一控制面和同一个 `recruiting-executor` class：输入正文只存在 File Resource，命令保存 opaque ref、原始字节 SHA-256、schema/policy version；`company.import` capability 不申请网站 origin/Profile BudgetPermit，也不新增 Worker 类型。CSV 重复项和行错误形成 `ready|skipped|waiting_human` 预览 disposition；结果 envelope 最多 500 项，以 Attempt/incarnation、Work acceptance、batch version 和连续 sequence 共同 fence。非 root MySQL 8.4 合同已覆盖两段分片、稳定 command replay、错误 sequence/CAS、错误 completion hash 全事务回滚、控制面重算 hash、父 Work `waiting_human(preview_ready)`、无网络预算以及两页 seek pagination；Executor 单测覆盖 File Resource 读取、原始哈希不符 fail closed、重复/错误行、三段 chunk 和改变 chunk size 后按持久 item count 续传。真实进程 E2E 又由普通运营员通过 Portal 上传 daemon File Resource，启动控制 Actor 与 daemon 上的 `company.import` Executor，完成 dispatch→offer→accept/start→两段结果→completion→分页审阅；命令重放返回同一 Work，预览阶段数据库中未创建任何 Company；
+- 公司导入已进入同一控制面和同一个 `recruiting-executor` class：输入正文只存在 File Resource，命令保存 opaque ref、原始字节 SHA-256、schema/policy version；`company.import` capability 不申请网站 origin/Profile BudgetPermit，也不新增 Worker 类型。CSV 重复项和行错误形成 `ready|skipped|waiting_human` 预览 disposition；结果 envelope 最多 500 项，以 Attempt/incarnation、Work acceptance、batch version 和连续 sequence 共同 fence。非 root MySQL 8.4 合同覆盖两段预览分片、稳定 command replay、错误 sequence/CAS、错误 completion hash 全事务回滚、控制面重算 hash、父 Work `waiting_human(preview_ready)`、seek pagination、精确 hash/version 确认和有界 apply 多页续跑。apply 每项独立事务创建 Company/子 Work/outcome，数据库既有公司形成 `waiting_human` 而不回滚成功项。Executor 单测覆盖 File Resource 读取、原始哈希不符 fail closed、重复/错误行、改变 chunk size 后续传及 apply envelope 校验。真实进程 E2E 由普通运营员通过 Portal 上传 daemon File Resource，完成 preview→分页审阅→confirm→两页 apply；命令重放返回相同 Work，最终为 2 成功/1 跳过/1 等待人工，输入 Resource 字节不变；
 
 ## 当前验证
 
@@ -77,7 +77,7 @@ go test -race ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/
 - Work correct 和 DailyRun 修改控制词；Work resolve 的真实 `waiting_human` 旅程依赖后续 Attempt/repair 切片；Source validate 当前只进入 `validating`，验证 Attempt 的接受、契约证明和原子发布仍属于后续纵向切片；
 - 日报关闭后的 recovered 补偿记录仍待实现；
 - 分类失败已有版本化、有界退避并能转 `waiting_human`；按 origin/Recipe/Profile 故障域创建单飞 RepairIncident、站点级覆盖参数和修复后分批唤醒仍待实现。主动 incarnation 失效信号当前仅按无进展超时恢复；正常 dispatch→Executor→result→ack、“Work/dispatch 已提交、首次投递前 server 退出”及 completion acknowledgement 丢失均已通过真实进程与真实网站，仍需 Executor 处理中退出和业务结果 acknowledgement 丢失等切点；execution offer 和高频 page 是否写 ledger/outbox 的审计分层仍待按容量测试确定（accept/start/fail/result 的数据库 receipt 已完成）；
-- 批量导入 preview 已完成；confirm 后的逐公司独立 Work/outcome、部分失败、取消和续跑尚未完成；
+- 批量导入 preview、confirm、逐公司独立 Work/outcome、部分失败和多页续跑已完成；整批取消、等待人工项修复和修复后父级重新汇总尚未完成；
 - `recruiting_recovery_test.go` 的完整重启、重复 ledger delivery 与日报恢复路径。
 
 P3 仍为进行中，Company/Source/Work 纵向切片不能替代完整退出门。

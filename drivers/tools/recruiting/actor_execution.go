@@ -41,6 +41,7 @@ type diagnosticResultPayload = executioncontract.DiagnosticResult
 type detailResultPayload = executioncontract.DetailResult
 type companyImportPreviewChunkPayload = executioncontract.CompanyImportPreviewChunkResult
 type companyImportPreviewCompletionPayload = executioncontract.CompanyImportPreviewCompletionResult
+type companyImportApplyPayload = executioncontract.CompanyImportApplyResult
 
 func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, state *storedState, msg actorbase.Msg) {
 	var discriminator struct {
@@ -71,9 +72,34 @@ func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, s
 		handleCompanyImportPreviewChunk(sys, repository, msg)
 	case "company_import_preview_completion":
 		handleCompanyImportPreviewCompletion(sys, repository, msg)
+	case "company_import_apply":
+		handleCompanyImportApply(sys, repository, msg)
 	default:
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "unknown execution result_kind")
 	}
+}
+
+func handleCompanyImportApply(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload companyImportApplyPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if strings.TrimSpace(payload.CommandID) == "" || payload.ResultKind != "company_import_apply" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "company import apply command_id and result_kind are required")
+		return
+	}
+	outcome, err := repository.AcceptCompanyImportApply(msg.Ctx(), store.CompanyImportApply{
+		CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), CorrelationID: string(msg.CorrelationID),
+		AttemptID: payload.AttemptID, ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
+		ExpectedBatchVersion: payload.ExpectedBatchVersion, ReceivedAt: time.UnixMilli(msg.TS).UTC(),
+	})
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := executionControlResponse{ContractVersion: executioncontract.Version, CorrelationID: string(msg.CorrelationID),
+		RequestedBy: string(msg.Sender.ID), CompanyImport: &outcome}
+	_, _ = sys.Reply(msg, response)
 }
 
 func handleCompanyImportPreviewChunk(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
@@ -287,6 +313,7 @@ func handleListingOffer(sys actorbase.Sys, cfg Config, repository *store.Reposit
 		ProfileID:           strings.TrimSpace(payload.ProfileID),
 		OfferedAt:           time.UnixMilli(msg.TS).UTC(),
 		BudgetPolicy:        cfg.executionBudgetPolicy(),
+		CompanyImportLimit:  cfg.CompanyImportApplyLimit,
 	})
 	response := executionControlResponse{
 		ContractVersion: executioncontract.Version, CorrelationID: string(msg.CorrelationID),

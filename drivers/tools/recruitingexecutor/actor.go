@@ -182,6 +182,8 @@ func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, in
 		executorActorID: string(sys.Self()), wait: time.Duration(cfg.ControlWaitMS) * time.Millisecond}
 	if offer.Kind == "company_import" {
 		err = executeCompanyImportOffer(msg.Ctx(), control, sys.Resource(), *offer, production.batchOptions)
+	} else if offer.Kind == "company_import_apply" {
+		err = executeCompanyImportApplyOffer(msg.Ctx(), control, *offer)
 	} else {
 		err = executeOffer(msg.Ctx(), control, sys.Resource(), production.driver, *offer, production.options)
 	}

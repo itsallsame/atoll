@@ -26,6 +26,12 @@ func NewRepository(db *sql.DB) (*Repository, error) {
 }
 
 func (r *Repository) CreateCompany(ctx context.Context, company model.Company, businessAt time.Time) error {
+	return insertCompany(ctx, r.db, company, businessAt)
+}
+
+func insertCompany(ctx context.Context, executor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, company model.Company, businessAt time.Time) error {
 	if company.Version != 1 || company.CompanyID == "" {
 		return fmt.Errorf("new company must have identity and version 1")
 	}
@@ -33,7 +39,7 @@ func (r *Repository) CreateCompany(ctx context.Context, company model.Company, b
 	if err != nil {
 		return fmt.Errorf("encode company: %w", err)
 	}
-	_, err = r.db.ExecContext(ctx, `
+	_, err = executor.ExecContext(ctx, `
 INSERT INTO recruiting_companies(
   company_id, normalized_website, name, onboarding_status, control_status,
   version, state_json, created_at, updated_at

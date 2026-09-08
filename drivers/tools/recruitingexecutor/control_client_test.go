@@ -185,3 +185,16 @@ func TestSubmitCompanyImportResultAcceptsOnlyCompanyImportAcknowledgement(t *tes
 		t.Fatal("company import result accepted a listing acknowledgement")
 	}
 }
+
+func TestSubmitCompanyImportApplyAcceptsCompanyImportAcknowledgement(t *testing.T) {
+	response := executioncontract.ResultResponse{Status: "completed", ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-import-apply", RequestedBy: "tool:executor:1",
+		CompanyImport: json.RawMessage(`{"accepted_items":2}`)}
+	caller := &callerStub{pending: &pendingStub{response: controlResponse(t, executioncontract.TypeResult, response)}}
+	payload := executioncontract.CompanyImportApplyResult{CommandID: "apply-1", ResultKind: "company_import_apply",
+		AttemptID: "attempt-1", ExecutorIncarnation: "boot-1", ExpectedBatchVersion: 5}
+	if err := submitExecutionResult(context.Background(), caller, message.Root(), "tool:control", "tool:executor:1",
+		payload.ResultKind, payload, time.Second); err != nil {
+		t.Fatal(err)
+	}
+}

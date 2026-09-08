@@ -88,6 +88,38 @@ func executeCompanyImportOffer(ctx context.Context, control executionControl, re
 	return nil
 }
 
+func executeCompanyImportApplyOffer(ctx context.Context, control executionControl, offer executioncontract.Offer) error {
+	if ctx == nil || control == nil || offer.Kind != "company_import_apply" || offer.CompanyImport == nil ||
+		offer.Work.Purpose != "company_import_apply" || offer.Work.TargetID != offer.CompanyImport.ImportID ||
+		offer.CompanyImport.Status != model.CompanyImportRunning || offer.Attempt.BatchVersion != offer.CompanyImport.Version ||
+		len(offer.CompanyImportItems) > 500 {
+		return fmt.Errorf("company import apply requires a bounded, running, version-fenced offer")
+	}
+	seen := make(map[string]struct{}, len(offer.CompanyImportItems))
+	for index, value := range offer.CompanyImportItems {
+		if value.Version == 0 || value.Item.ItemKey == "" || (index > 0 && value.Ordinal <= offer.CompanyImportItems[index-1].Ordinal) {
+			return fmt.Errorf("company import apply items must be versioned and strictly ordered")
+		}
+		if _, duplicate := seen[value.Item.ItemKey]; duplicate {
+			return fmt.Errorf("company import apply item keys must be unique")
+		}
+		seen[value.Item.ItemKey] = struct{}{}
+	}
+	if err := control.Accept(ctx, offer); err != nil {
+		return fmt.Errorf("accept company import apply offer: %w", err)
+	}
+	if err := control.Started(ctx, offer); err != nil {
+		return fmt.Errorf("start company import apply offer: %w", err)
+	}
+	result := executioncontract.CompanyImportApplyResult{CommandID: "company-import-apply-" + offer.Attempt.AttemptID,
+		ResultKind: "company_import_apply", AttemptID: offer.Attempt.AttemptID,
+		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, ExpectedBatchVersion: offer.CompanyImport.Version}
+	if err := control.Submit(ctx, result.ResultKind, result); err != nil {
+		return fmt.Errorf("submit company import apply result: %w", err)
+	}
+	return nil
+}
+
 func readCompanyImportResource(resources executionResourceAccess, batch model.CompanyImport, maxBytes int64) ([]byte, error) {
 	if resources == nil || maxBytes < 1 || int64(len(batch.InputArtifactRef)) > maxBytes {
 		return nil, errors.New("company import Resource reader and byte limit are required")

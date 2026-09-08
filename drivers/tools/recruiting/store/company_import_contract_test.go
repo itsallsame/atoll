@@ -83,12 +83,13 @@ func TestCompanyImportPreviewPersistsBoundedChunksAndVerifiesHash(t *testing.T) 
 	second := []model.CompanyImportItem{
 		{ItemKey: "row-3", PreviewDisposition: model.CompanyImportSkipped, Detail: "duplicate normalized website"},
 		{ItemKey: "row-4", PreviewDisposition: model.CompanyImportWaitingHuman, Detail: "name is missing"},
+		{ItemKey: "row-5", CompanyID: "import-company-5", Name: "Five", Website: "https://existing.import.example"},
 	}
 	secondOutcome, err := repository.AcceptCompanyImportPreviewChunk(ctx, CompanyImportPreviewChunk{CommandID: "company-import-chunk-2",
 		RequestHash: "sha256:chunk-2", CorrelationID: "correlation-2", AttemptID: offer.Attempt.AttemptID,
 		ExecutorActorID: offer.Attempt.ExecutorActorID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation,
 		ExpectedBatchVersion: next.Version, ChunkSequence: 1, Items: second, ReceivedAt: now.Add(2 * time.Second)})
-	if err != nil || secondOutcome.Import == nil || secondOutcome.Import.ItemCount != 4 || secondOutcome.Import.NextChunkSequence != 2 {
+	if err != nil || secondOutcome.Import == nil || secondOutcome.Import.ItemCount != 5 || secondOutcome.Import.NextChunkSequence != 2 {
 		t.Fatalf("second chunk = %+v err=%v", secondOutcome, err)
 	}
 	next = *secondOutcome.Import
@@ -119,7 +120,7 @@ func TestCompanyImportPreviewPersistsBoundedChunksAndVerifiesHash(t *testing.T) 
 		t.Fatalf("completion replay = %+v err=%v", completionReplay, err)
 	}
 	items, err := repository.ListCompanyImportItems(ctx, batch.ImportID)
-	if err != nil || len(items) != 4 || items[0].Item.Website != "https://one.import.example" || items[3].Item.PreviewDisposition != model.CompanyImportWaitingHuman {
+	if err != nil || len(items) != 5 || items[0].Item.Website != "https://one.import.example" || items[3].Item.PreviewDisposition != model.CompanyImportWaitingHuman {
 		t.Fatalf("stored items = %+v err=%v", items, err)
 	}
 	firstPage, err := repository.ListCompanyImportItemPage(ctx, batch.ImportID, "", 2)
@@ -127,8 +128,12 @@ func TestCompanyImportPreviewPersistsBoundedChunksAndVerifiesHash(t *testing.T) 
 		t.Fatalf("first item page = %+v err=%v", firstPage, err)
 	}
 	secondPage, err := repository.ListCompanyImportItemPage(ctx, batch.ImportID, firstPage.NextCursor, 2)
-	if err != nil || len(secondPage.Items) != 2 || secondPage.HasMore || secondPage.Items[0].Ordinal != 2 {
+	if err != nil || len(secondPage.Items) != 2 || !secondPage.HasMore || secondPage.Items[0].Ordinal != 2 {
 		t.Fatalf("second item page = %+v err=%v", secondPage, err)
+	}
+	thirdPage, err := repository.ListCompanyImportItemPage(ctx, batch.ImportID, secondPage.NextCursor, 2)
+	if err != nil || len(thirdPage.Items) != 1 || thirdPage.HasMore || thirdPage.Items[0].Ordinal != 4 {
+		t.Fatalf("third item page = %+v err=%v", thirdPage, err)
 	}
 	storedParent, err := repository.GetWork(ctx, parent.WorkID)
 	if err != nil || storedParent.WorkID != parent.WorkID {
@@ -172,6 +177,111 @@ func TestCompanyImportPreviewPersistsBoundedChunksAndVerifiesHash(t *testing.T) 
 		storedApply.Status != model.WorkOpen || storedApply.ParentWorkID != storedParent.WorkID {
 		t.Fatalf("confirmed state: batch=%+v parent=%+v apply=%+v errors=%v/%v/%v", storedBatch, storedParent,
 			storedApply, err, parentErr, applyErr)
+	}
+	existing, _ := model.NewCompany("already-present", "Existing", "https://existing.import.example")
+	if err := repository.CreateCompany(ctx, existing, now.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	firstApplyOffer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "company-import-apply-attempt-1",
+		ExecutorActorID: "tool:company-import-executor:1", ExecutorIncarnation: "boot-1", Capability: "company.import",
+		OfferedAt: now.Add(6 * time.Second), BudgetPolicy: testExecutionBudgetPolicy(), CompanyImportLimit: 3})
+	if err != nil || firstApplyOffer.Kind != "company_import_apply" || firstApplyOffer.CompanyImport == nil ||
+		len(firstApplyOffer.CompanyImportItems) != 3 || firstApplyOffer.CompanyImportItems[0].Item.ItemKey != "row-1" ||
+		firstApplyOffer.Budget.PermitID != "" {
+		t.Fatalf("first apply offer = %+v err=%v", firstApplyOffer, err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, firstApplyOffer.Attempt.AttemptID, firstApplyOffer.Attempt.ExecutorActorID,
+		firstApplyOffer.Attempt.ExecutorIncarnation, now.Add(6*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, firstApplyOffer.Attempt.AttemptID, firstApplyOffer.Attempt.ExecutorActorID,
+		firstApplyOffer.Attempt.ExecutorIncarnation, now.Add(6*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	firstApplyInput := CompanyImportApply{CommandID: "company-import-apply-result-1", RequestHash: "sha256:apply-result-1",
+		CorrelationID: "correlation-apply-1", AttemptID: firstApplyOffer.Attempt.AttemptID,
+		ExecutorActorID: firstApplyOffer.Attempt.ExecutorActorID, ExecutorIncarnation: firstApplyOffer.Attempt.ExecutorIncarnation,
+		ExpectedBatchVersion: firstApplyOffer.CompanyImport.Version, ReceivedAt: now.Add(7 * time.Second)}
+	// Simulate a process dying after one independently committed item but
+	// before the page-level receipt. Retrying the result must skip that item.
+	if err := repository.applyCompanyImportItem(ctx, firstApplyOffer, firstApplyOffer.CompanyImportItems[0],
+		firstApplyInput.CommandID, firstApplyInput.ReceivedAt); err != nil {
+		t.Fatalf("seed partially applied page: %v", err)
+	}
+	firstApply, err := repository.AcceptCompanyImportApply(ctx, firstApplyInput)
+	if err != nil || !firstApply.HasMore || firstApply.AcceptedItems != 3 || firstApply.Work == nil ||
+		firstApply.Work.Status != model.WorkWaitingRetry || firstApply.Attempt == nil || firstApply.Attempt.Status != model.AttemptSucceeded {
+		t.Fatalf("first apply page = %+v err=%v", firstApply, err)
+	}
+	if _, err := repository.GetCompany(ctx, "import-company-1"); err != nil {
+		t.Fatalf("first imported company: %v", err)
+	}
+	if _, err := repository.GetCompany(ctx, "import-company-2"); err != nil {
+		t.Fatalf("second imported company: %v", err)
+	}
+	secondApplyOffer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "company-import-apply-attempt-2",
+		ExecutorActorID: "tool:company-import-executor:1", ExecutorIncarnation: "boot-1", Capability: "company.import",
+		OfferedAt: now.Add(8 * time.Second), BudgetPolicy: testExecutionBudgetPolicy(), CompanyImportLimit: 3})
+	if err != nil || secondApplyOffer.Work.WorkID != firstApplyOffer.Work.WorkID || len(secondApplyOffer.CompanyImportItems) != 2 ||
+		secondApplyOffer.CompanyImportItems[0].Item.ItemKey != "row-4" {
+		t.Fatalf("second apply offer = %+v err=%v", secondApplyOffer, err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, secondApplyOffer.Attempt.AttemptID, secondApplyOffer.Attempt.ExecutorActorID,
+		secondApplyOffer.Attempt.ExecutorIncarnation, now.Add(8*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, secondApplyOffer.Attempt.AttemptID, secondApplyOffer.Attempt.ExecutorActorID,
+		secondApplyOffer.Attempt.ExecutorIncarnation, now.Add(8*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the harder crash cut: every item transaction committed, but the
+	// Attempt/page finalizer never ran. Recovery must offer an empty finalizer
+	// page instead of stranding a running import with no pending rows.
+	for _, offeredItem := range secondApplyOffer.CompanyImportItems {
+		if err := repository.applyCompanyImportItem(ctx, secondApplyOffer, offeredItem,
+			"company-import-apply-result-lost", now.Add(9*time.Second)); err != nil {
+			t.Fatalf("seed fully applied unfinalized page: %v", err)
+		}
+	}
+	recovery, err := repository.RecoverStaleAttempts(ctx, now.Add(10*time.Second), 10, now.Add(20*time.Second))
+	if err != nil || recovery.Expired != 1 || recovery.RetryQueued != 1 {
+		t.Fatalf("recover fully applied unfinalized page = %+v err=%v", recovery, err)
+	}
+	finalizerOffer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "company-import-apply-attempt-3",
+		ExecutorActorID: "tool:company-import-executor:1", ExecutorIncarnation: "boot-2", Capability: "company.import",
+		OfferedAt: now.Add(21 * time.Second), BudgetPolicy: testExecutionBudgetPolicy(), CompanyImportLimit: 3})
+	if err != nil || finalizerOffer.Work.WorkID != secondApplyOffer.Work.WorkID || len(finalizerOffer.CompanyImportItems) != 0 {
+		t.Fatalf("empty recovered finalizer offer = %+v err=%v", finalizerOffer, err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, finalizerOffer.Attempt.AttemptID, finalizerOffer.Attempt.ExecutorActorID,
+		finalizerOffer.Attempt.ExecutorIncarnation, now.Add(21*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, finalizerOffer.Attempt.AttemptID, finalizerOffer.Attempt.ExecutorActorID,
+		finalizerOffer.Attempt.ExecutorIncarnation, now.Add(21*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	finalizerInput := CompanyImportApply{CommandID: "company-import-apply-finalizer", RequestHash: "sha256:apply-finalizer",
+		CorrelationID: "correlation-apply-finalizer", AttemptID: finalizerOffer.Attempt.AttemptID,
+		ExecutorActorID: finalizerOffer.Attempt.ExecutorActorID, ExecutorIncarnation: finalizerOffer.Attempt.ExecutorIncarnation,
+		ExpectedBatchVersion: finalizerOffer.CompanyImport.Version, ReceivedAt: now.Add(22 * time.Second)}
+	finalApply, err := repository.AcceptCompanyImportApply(ctx, finalizerInput)
+	if err != nil || finalApply.HasMore || finalApply.Import == nil || finalApply.Import.Status != model.CompanyImportCompleted ||
+		finalApply.Import.Outcome.Total != 5 || finalApply.Import.Outcome.Succeeded != 2 || finalApply.Import.Outcome.Skipped != 1 ||
+		finalApply.Import.Outcome.WaitingHuman != 2 || finalApply.ParentWork == nil ||
+		finalApply.ParentWork.Status != model.WorkWaitingHuman || finalApply.Work == nil || finalApply.Work.Status != model.WorkCompleted {
+		t.Fatalf("final apply page = %+v err=%v", finalApply, err)
+	}
+	finalReplay, err := repository.AcceptCompanyImportApply(ctx, finalizerInput)
+	if err != nil || !finalReplay.Replayed || finalReplay.Import == nil || finalReplay.Import.Outcome.Total != 5 {
+		t.Fatalf("final apply replay = %+v err=%v", finalReplay, err)
+	}
+	items, err = repository.ListCompanyImportItems(ctx, batch.ImportID)
+	if err != nil || items[0].Outcome != model.BatchItemSucceeded || items[1].Outcome != model.BatchItemSucceeded ||
+		items[2].Outcome != model.BatchItemSkipped || items[3].Outcome != model.BatchItemWaitingHuman ||
+		items[4].Outcome != model.BatchItemWaitingHuman || !strings.Contains(items[4].OutcomeDetail, "already exists") ||
+		items[0].ChildWorkID == "" || items[4].ChildWorkID == "" {
+		t.Fatalf("applied item outcomes = %+v err=%v", items, err)
 	}
 }
 

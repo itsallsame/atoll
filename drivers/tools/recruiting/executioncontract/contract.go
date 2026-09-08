@@ -138,6 +138,7 @@ type Offer struct {
 	Occurrence          *model.SourceOccurrence      `json:"occurrence,omitempty"`
 	ListingRun          *model.ListingRun            `json:"listing_run,omitempty"`
 	CompanyImport       *model.CompanyImport         `json:"company_import,omitempty"`
+	CompanyImportItems  []CompanyImportApplyItem     `json:"company_import_items,omitempty"`
 	Checkpoint          *model.IncrementalCheckpoint `json:"checkpoint,omitempty"`
 	Detail              *DetailInput                 `json:"detail,omitempty"`
 	Budget              model.BudgetPermit           `json:"budget"`
@@ -145,6 +146,16 @@ type Offer struct {
 	RequestedCapability string                       `json:"requested_capability"`
 	RequestedOrigin     string                       `json:"requested_origin,omitempty"`
 	RequestedProfileID  string                       `json:"requested_profile_id,omitempty"`
+}
+
+// CompanyImportApplyItem is a bounded, immutable slice of the confirmed
+// preview. The control plane remains authoritative for the actual mutation;
+// the executor only acknowledges this exact envelope. A recovered finalizer
+// may receive an empty slice after all item commits but before page closure.
+type CompanyImportApplyItem struct {
+	Ordinal uint64                  `json:"ordinal"`
+	Item    model.CompanyImportItem `json:"item"`
+	Version uint64                  `json:"version"`
 }
 
 type DetailInput struct {
@@ -239,6 +250,14 @@ type CompanyImportPreviewCompletionResult struct {
 	ExecutorIncarnation  string `json:"executor_incarnation"`
 	ExpectedBatchVersion uint64 `json:"expected_batch_version"`
 	PreviewHash          string `json:"preview_hash"`
+}
+
+type CompanyImportApplyResult struct {
+	CommandID            string `json:"command_id"`
+	ResultKind           string `json:"result_kind"`
+	AttemptID            string `json:"attempt_id"`
+	ExecutorIncarnation  string `json:"executor_incarnation"`
+	ExpectedBatchVersion uint64 `json:"expected_batch_version"`
 }
 
 type DetailResult struct {

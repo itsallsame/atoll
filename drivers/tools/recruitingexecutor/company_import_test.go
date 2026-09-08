@@ -105,3 +105,37 @@ func TestExecuteCompanyImportResumesFromPersistedItemCountAcrossChunkSizeChange(
 		t.Fatalf("resume chunk=%+v completion=%+v", chunk, completion)
 	}
 }
+
+func TestExecuteCompanyImportApplyAcknowledgesExactBoundedOffer(t *testing.T) {
+	parent, _ := model.NewWork("import-parent-apply", "company_set", "import-apply", "company_import", "human")
+	parent, _ = parent.Start(parent.Version)
+	work, _ := model.NewChildWork(parent, "import-apply-work-1", "company_import", "import-apply", "company_import_apply", "parent")
+	batch, _ := model.NewCompanyImport("import-apply", parent.WorkID, "artifact://imports/apply.csv",
+		"sha256:"+strings.Repeat("a", 64), "company-import.v1", 1)
+	batch.Status, batch.PreviewHash, batch.ItemCount, batch.Version = model.CompanyImportRunning, "sha256:"+strings.Repeat("b", 64), 2, 5
+	attempt, _ := model.NewAttempt("import-apply-attempt-1", work)
+	attempt, _ = attempt.BindExecutor("tool:import-executor:1", "boot-apply", "company.import")
+	attempt, _ = attempt.WithBatchFence(batch.Version)
+	offer := executioncontract.Offer{Kind: "company_import_apply", Attempt: attempt, Work: work, CompanyImport: &batch,
+		CompanyImportItems: []executioncontract.CompanyImportApplyItem{
+			{Ordinal: 0, Version: 1, Item: model.CompanyImportItem{ItemKey: "row-1", CompanyID: "company-1", Name: "One"}},
+			{Ordinal: 1, Version: 1, Item: model.CompanyImportItem{ItemKey: "row-2", PreviewDisposition: model.CompanyImportSkipped, Detail: "duplicate"}},
+		}}
+	control := &executeControlStub{}
+	if err := executeCompanyImportApplyOffer(context.Background(), control, offer); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(control.calls, ",") != "accept,started,submit:company_import_apply" || len(control.submissions) != 1 {
+		t.Fatalf("apply lifecycle=%v submissions=%d", control.calls, len(control.submissions))
+	}
+	result := control.submissions[0].(executioncontract.CompanyImportApplyResult)
+	if result.AttemptID != attempt.AttemptID || result.ExpectedBatchVersion != batch.Version || result.ResultKind != "company_import_apply" {
+		t.Fatalf("apply result=%+v", result)
+	}
+	finalizer := offer
+	finalizer.CompanyImportItems = nil
+	finalizerControl := &executeControlStub{}
+	if err := executeCompanyImportApplyOffer(context.Background(), finalizerControl, finalizer); err != nil {
+		t.Fatalf("empty recovered finalizer offer: %v", err)
+	}
+}

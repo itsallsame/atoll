@@ -10,6 +10,7 @@ import (
 	"time"
 
 	mysql "github.com/go-sql-driver/mysql"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
@@ -341,17 +342,48 @@ func (r *Repository) FinishCompanyImportPreview(ctx context.Context, importID st
 }
 
 type CompanyImportItemRecord struct {
-	Ordinal     uint64                  `json:"ordinal"`
-	Item        model.CompanyImportItem `json:"item"`
-	Outcome     model.BatchItemStatus   `json:"outcome,omitempty"`
-	ChildWorkID string                  `json:"child_work_id,omitempty"`
-	Version     uint64                  `json:"version"`
+	Ordinal       uint64                  `json:"ordinal"`
+	Item          model.CompanyImportItem `json:"item"`
+	Outcome       model.BatchItemStatus   `json:"outcome,omitempty"`
+	OutcomeDetail string                  `json:"outcome_detail,omitempty"`
+	ChildWorkID   string                  `json:"child_work_id,omitempty"`
+	Version       uint64                  `json:"version"`
 }
 
 type CompanyImportItemPage struct {
 	Items      []CompanyImportItemRecord
 	NextCursor string
 	HasMore    bool
+}
+
+func listPendingCompanyImportApplyItemsWith(ctx context.Context, query interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, importID string, limit int) ([]executioncontract.CompanyImportApplyItem, error) {
+	if importID == "" || limit < 1 || limit > 500 {
+		return nil, fmt.Errorf("pending company import items require import ID and limit in [1,500]")
+	}
+	rows, err := query.QueryContext(ctx, `
+SELECT item_ordinal, state_json, version
+FROM recruiting_company_import_items
+WHERE import_id = ? AND outcome_status IS NULL
+ORDER BY item_ordinal LIMIT ?`, importID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending company import items: %w", err)
+	}
+	defer rows.Close()
+	var result []executioncontract.CompanyImportApplyItem
+	for rows.Next() {
+		var value executioncontract.CompanyImportApplyItem
+		var state []byte
+		if err := rows.Scan(&value.Ordinal, &state, &value.Version); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(state, &value.Item); err != nil {
+			return nil, fmt.Errorf("decode pending company import item: %w", err)
+		}
+		result = append(result, value)
+	}
+	return result, rows.Err()
 }
 
 type companyImportItemCursor struct {
@@ -372,7 +404,7 @@ func (r *Repository) ListCompanyImportItemPage(ctx context.Context, importID, cu
 		after = decoded.Ordinal + 1
 	}
 	rows, err := r.db.QueryContext(ctx, `
-SELECT item_ordinal, state_json, COALESCE(outcome_status, ''), COALESCE(child_work_id, ''), version
+SELECT item_ordinal, state_json, COALESCE(outcome_status, ''), COALESCE(detail, ''), COALESCE(child_work_id, ''), version
 FROM recruiting_company_import_items
 WHERE import_id = ? AND item_ordinal >= ?
 ORDER BY item_ordinal LIMIT ?`, importID, after, limit+1)
@@ -384,7 +416,7 @@ ORDER BY item_ordinal LIMIT ?`, importID, after, limit+1)
 	for rows.Next() {
 		var record CompanyImportItemRecord
 		var state []byte
-		if err := rows.Scan(&record.Ordinal, &state, &record.Outcome, &record.ChildWorkID, &record.Version); err != nil {
+		if err := rows.Scan(&record.Ordinal, &state, &record.Outcome, &record.OutcomeDetail, &record.ChildWorkID, &record.Version); err != nil {
 			return CompanyImportItemPage{}, fmt.Errorf("scan company import item page: %w", err)
 		}
 		if err := json.Unmarshal(state, &record.Item); err != nil {
@@ -415,7 +447,7 @@ func listCompanyImportItemsWith(ctx context.Context, query interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, importID string) ([]CompanyImportItemRecord, error) {
 	rows, err := query.QueryContext(ctx, `
-SELECT item_ordinal, state_json, COALESCE(outcome_status, ''), COALESCE(child_work_id, ''), version
+SELECT item_ordinal, state_json, COALESCE(outcome_status, ''), COALESCE(detail, ''), COALESCE(child_work_id, ''), version
 FROM recruiting_company_import_items
 WHERE import_id = ? ORDER BY item_ordinal`, importID)
 	if err != nil {
@@ -426,7 +458,7 @@ WHERE import_id = ? ORDER BY item_ordinal`, importID)
 	for rows.Next() {
 		var record CompanyImportItemRecord
 		var state []byte
-		if err := rows.Scan(&record.Ordinal, &state, &record.Outcome, &record.ChildWorkID, &record.Version); err != nil {
+		if err := rows.Scan(&record.Ordinal, &state, &record.Outcome, &record.OutcomeDetail, &record.ChildWorkID, &record.Version); err != nil {
 			return nil, fmt.Errorf("scan company import item: %w", err)
 		}
 		if err := json.Unmarshal(state, &record.Item); err != nil {

@@ -10,7 +10,7 @@ func TestParseConfigDefaultsAndRejectsUnknownFields(t *testing.T) {
 	if err != nil || cfg.ExecutorID != "recruiting-executor" || cfg.DatabaseDSNEnv != "ATOLL_RECRUITING_MYSQL_DSN" || cfg.ReconcileIntervalMS != 30_000 ||
 		!cfg.DailyScheduleEnabled || cfg.DailyScheduleTimezone != "UTC" || cfg.DailyCutoffLocal != "00:00:00" ||
 		cfg.AttemptStaleAfterMS != 900_000 || cfg.AttemptRecoveryLimit != 100 || cfg.DailyWindowDurationMinutes != 480 ||
-		cfg.DailySchedulePolicyVersion != 1 || cfg.DailyWorkMaterializeLimit != 100 || cfg.BudgetPolicyVersion != 1 ||
+		cfg.DailySchedulePolicyVersion != 1 || cfg.DailyWorkMaterializeLimit != 100 || cfg.CompanyImportApplyLimit != 100 || cfg.BudgetPolicyVersion != 1 ||
 		cfg.BudgetMaxActive != 1_000 || cfg.BudgetMaxPerOrigin != 8 || cfg.BudgetMaxPerProfile != 1 || cfg.BudgetPermitTTLMS != 900_000 ||
 		cfg.RetryPolicyVersion != 1 || cfg.RetryMaxAutomaticAttempts != 4 || cfg.RetryBaseDelayMS != 30_000 ||
 		cfg.RetryMaxDelayMS != 1_800_000 || cfg.RetryThrottledDelayMS != 300_000 {

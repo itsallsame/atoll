@@ -47,6 +47,8 @@ type CompanyImportResultOutcome struct {
 	Work            *model.Work          `json:"work,omitempty"`
 	Attempt         *model.Attempt       `json:"attempt,omitempty"`
 	AcceptedItems   int                  `json:"accepted_items,omitempty"`
+	HasMore         bool                 `json:"has_more,omitempty"`
+	ParentWork      *model.Work          `json:"parent_work,omitempty"`
 	Replayed        bool                 `json:"replayed,omitempty"`
 }
 
