@@ -64,7 +64,7 @@
 
 可机读的紧凑证据位于 `docs/experiments/evidence/recruiting-live-smoke-greenhouse-20260908.json`。第三方原始岗位 payload 不提交到 Git；本次运行对象保存在报告记录的本地 Artifact 路径，Git 只保存内容哈希和审计结论。
 
-同日又以 `scripts/recruiting-live-e2e.sh` 完成一次真实进程纵向验收，而非命令行 Driver 探针：普通运营员在自己的 Home Channel 创建 server 侧 Recruiting Actor 与 daemon 侧 Executor；每日 durable timer 自动物化 occurrence、Work 和 capability dispatch；Executor 从真实 Recipe KV 解析相同只读 Recipe，经生产 HTTP/robots/条款边界访问 Greenhouse，再把页面及 failure Artifact 写入 daemon File Resource，通过 Atoll Message 提交分类失败并确认 dispatch。实测终态为 Work `waiting_human`、Attempt `failed`、failure class `quality_rejected`、delivered dispatch 1；质量拒绝没有被测试代码改写成成功，也没有推进 Checkpoint。测试默认跳过第三方网络，只有显式 `ATOLL_RECRUITING_LIVE_E2E=1` 才运行。
+同日又以 `scripts/recruiting-live-e2e.sh` 完成一次真实进程纵向验收，而非命令行 Driver 探针：普通运营员在自己的 Home Channel 创建 server 侧 Recruiting Actor 与 daemon 侧 Executor；每日 durable timer 自动物化 occurrence、Work 和 capability dispatch。测试确认 pending dispatch 已提交后、首次投递前强杀 server，随后重启 server、重新登录并等待 daemon Executor 恢复 present；恢复后的 Recruiting Actor 从 MySQL 找回并投递同一 dispatch。Executor 从真实 Recipe KV 解析相同只读 Recipe，经生产 HTTP/robots/条款边界访问 Greenhouse，再把页面及 failure Artifact 写入 daemon File Resource，通过 Atoll Message 提交分类失败并确认 dispatch。实测终态为 Work `waiting_human`、Attempt `failed`、failure class `quality_rejected`、delivered dispatch 1；质量拒绝没有被测试代码改写成成功，也没有推进 Checkpoint。测试默认跳过第三方网络，只有显式 `ATOLL_RECRUITING_LIVE_E2E=1` 才运行。
 
 ## 当前验证
 
@@ -85,6 +85,6 @@ make recruiting-live-smoke
 - Recipe KV 与 Artifact File 已在真实 Atoll server/daemon 的允许路径通过；权限拒绝和重启保持 e2e 仍待补齐；
 - 已有 Repository 合同证明旧 listing Attempt 只保存 rejected Artifact、不能提交业务结果；仍缺真实 Executor Actor 经 Atoll Message 提交该迟到结果的进程级端到端证明。
 - 页面进度已改为 Attempt 作用域，并通过 MySQL 8.4 的 crash/retry 合同：Attempt A 接受第一页后失败，Attempt B 可从第一页重新运行；A/B 页面证据同时保留，B 的 completion 只统计 B 的页面。Failure Artifact 的原子控制面合同及真实进程自动执行正常路径已闭合；启用前仍须补齐真实进程崩溃切点。
-- accept/start/failed 以及 page/completion/detail 的 command receipt 已闭合，控制面也已有 capability-aware fleet 的持久单次 wake 和 authenticated completion acknowledgement；尚缺跨真实 Atoll 进程在“控制面已提交 dispatch、Executor 未收到”“Executor 已处理、控制面未收到 acknowledgement”等切点的恢复证明，而不是仅有 Repository/Actor 单元层语义。
+- accept/start/failed 以及 page/completion/detail 的 command receipt 已闭合，控制面也已有 capability-aware fleet 的持久单次 wake 和 authenticated completion acknowledgement；“控制面已提交 dispatch、首次投递前 server 退出”已有真实 Atoll 进程恢复证明，尚缺“Executor 处理中退出”“业务结果已提交但响应丢失”“Executor 已处理、控制面未收到 completion acknowledgement”等切点。
 
 P4 仍为进行中；ABI 冻结不等于 Driver 与真实站点验收完成。

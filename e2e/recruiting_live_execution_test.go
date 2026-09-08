@@ -62,7 +62,8 @@ func TestRecruitingLiveExecutionThroughAtoll(t *testing.T) {
 
 	cutoff := time.Now().UTC().Add(8 * time.Second).Truncate(time.Second)
 	const policyVersion uint64 = 17
-	sourceID := sourceIDWithEarlyDailyDue(cutoff.Format("2006-01-02"), policyVersion, time.Minute)
+	const dailyWindow = 3 * time.Minute
+	sourceID := sourceIDWithEarlyDailyDue(cutoff.Format("2006-01-02"), policyVersion, dailyWindow)
 	seedLiveRecruitingSource(t, runtimeDSN, sourceID, contentRef, spec, cutoff.Add(-time.Minute))
 
 	const controlName = "recruiting-live-control"
@@ -72,8 +73,11 @@ func TestRecruitingLiveExecutionThroughAtoll(t *testing.T) {
 		"description": "Recruiting live execution control.",
 		"config": map[string]any{
 			"executor_id": "tool:" + executorName, "executors": []map[string]any{{"actor_id": "tool:" + executorName, "capability": "http.fetch"}},
-			"reconcile_interval_ms": 200, "daily_schedule_enabled": true, "daily_schedule_timezone": "UTC",
-			"daily_cutoff_local": cutoff.Format("15:04:05"), "daily_window_duration_minutes": 1,
+			// Keep automatic reconciliation beyond the observation window so the
+			// test can crash the server after the SQL dispatch commit but before
+			// the first delivery attempt.
+			"reconcile_interval_ms": 30000, "daily_schedule_enabled": true, "daily_schedule_timezone": "UTC",
+			"daily_cutoff_local": cutoff.Format("15:04:05"), "daily_window_duration_minutes": int(dailyWindow / time.Minute),
 			"daily_schedule_policy_version": policyVersion,
 		},
 		"visibility": "private",
@@ -103,6 +107,20 @@ func TestRecruitingLiveExecutionThroughAtoll(t *testing.T) {
 	executorID := stringField(t, executorIntro, "member")
 	waitActorPresenceInChannel(t, ws, homeID, executorID, daemon, daemonLog)
 
+	waitPendingLiveDispatch(t, runtimeDSN, sourceID, 30*time.Second)
+	h.restartServer()
+	recoveredOperator := newAPIClient(t, h.base)
+	if login := recoveredOperator.login("recruiting-live-operator@example.test", "operator-local-password"); login["id"] != "recruiting-live-operator" {
+		t.Fatalf("live operator login after dispatch crash=%v", login)
+	}
+	recovered := dialWS(t, h.base, recoveredOperator.cookieHeader(), map[string]int64{homeID: 0})
+	waitRecruitingReady(t, recovered, homeID, controlID, h.server)
+	waitActorPresenceInChannel(t, recovered, homeID, executorID, daemon, daemonLog)
+	reconcile := recovered.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
+	if posted, _ := reconcile["dispatch_posted"].(float64); posted < 1 {
+		t.Fatalf("recovered control did not post the committed dispatch: %v", reconcile)
+	}
+
 	work, attemptStatus, dispatches := waitLiveRecruitingExecution(t, runtimeDSN, sourceID, 90*time.Second)
 	t.Logf("live result: work_status=%s failure_class=%s attempt_status=%s delivered_dispatches=%d",
 		work.Status, work.LastFailureClass, attemptStatus, dispatches)
@@ -118,6 +136,27 @@ func TestRecruitingLiveExecutionThroughAtoll(t *testing.T) {
 	if work.Status == model.WorkWaitingHuman && work.LastFailureClass != "quality_rejected" && work.LastFailureClass != "contract_violated" {
 		t.Fatalf("deterministic live quality failure class=%q", work.LastFailureClass)
 	}
+}
+
+func waitPendingLiveDispatch(t *testing.T, dsn, sourceID string, timeout time.Duration) {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		var pending, works int
+		err = db.QueryRow(`
+SELECT
+  (SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE delivery_status = 'pending' AND cause_kind = 'work_materialized'),
+  (SELECT COUNT(*) FROM recruiting_works WHERE target_id = ? AND purpose = 'listing_sync')`, sourceID).Scan(&pending, &works)
+		if err == nil && pending > 0 && works == 1 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("daily Work did not commit a pending dispatch before crash: %v", err)
 }
 
 func waitActorPresenceInChannel(t *testing.T, ws *wsClient, channelID, actorID string, daemon *proc, logPath string) {
