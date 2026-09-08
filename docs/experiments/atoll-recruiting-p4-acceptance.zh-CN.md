@@ -30,6 +30,10 @@
 - 成功结果包含所有去重观测、逐页 Artifact 和仅供 Actor CAS 的 Checkpoint candidate；HTTP/解析/分页/质量失败返回有限类别、原始页面及额外 failure Artifact，保留当时质量证明，且不产生 Checkpoint；Artifact sink 失败直接中止执行；
 - 三页真实 `httptest` 流程验证：顶部新岗位→完整旧时间组→更旧边界→一页 overlap 后停止，保存三页 Artifact 并生成 checkpoint version+1；另覆盖畸形 JSON、跨源 next 和 Artifact 写失败。
 - JSON 稳定岗位键支持字符串和整数两种无歧义标量；整数保持任意精度并规范成十进制字符串，浮点、指数、布尔、null、对象和数组仍 fail closed。该兼容性由真实 Greenhouse 数据暴露，并只修改招聘 Recipe 执行扩展。
+- browserdriver 已固定受控 Browser Broker 边界：招聘 Executor 只发送 profile:// opaque ref，Cookie、密码、OTP 和 Authorization 不出现在 SessionRequest；秘密只允许由授权设备侧 Broker 解析；
+- Browser Plan 仅支持 wait_selector、scroll_page 和 follow_link，没有任意 JavaScript、输入文本、表单提交、通用 click 或下载动作；selector、次数、导航数、DOM 字节和整次 timeout 均有硬上限，follow_link 必须由 Broker 解析 href 后按同源 GET 导航；
+- Broker 必须返回网络效果 attestation：只允许 GET/HEAD，写请求、跨源文档导航、表单、下载和 popup 都必须为 0；同时证明解析地址为公网、robots allowed、条款版本吻合，以及使用 Profile 时 lease 已授权。任一项不符均分类为 effect policy violation；
+- Browser DOM 同样先保存 Artifact，之后才检查 attestation、最终 URL 与离线 DOM Recipe；策略违规、跨源、超量和解析失败仍保留证据。当前实现是安全契约和可替换 Broker adapter，尚未宣称已经接入某个 Chromium 运行时。
 
 ## 真实站点 Live Smoke（诊断通过，增量认证拒绝）
 
@@ -51,7 +55,7 @@ make recruiting-live-smoke
 
 ## 尚未完成
 
-- Browser/Profile/Extension Driver 的隔离与秘密边界；
+- Browser Broker 的 Chromium/CDP 实现、OS/container 级隔离，以及 Extension 候选 Recipe 捕获与人工审批链；
 - 本地确定性站点的全部异常矩阵；
 - 更多站型的 Nightly/Weekly Live 验证，以及由正式 Artifact 存储提供保留期，而不是验收机本地文件；
 - 旧 Attempt 只保存 rejected Artifact、不能提交业务结果的端到端证明。

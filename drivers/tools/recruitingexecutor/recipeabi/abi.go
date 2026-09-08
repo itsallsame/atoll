@@ -226,7 +226,7 @@ func (s Spec) Validate() error {
 			}
 		}
 	}
-	if s.Transport == TransportHTTPHTML {
+	if s.Transport == TransportHTTPHTML || s.Transport == TransportBrowser || s.Transport == TransportExtension {
 		for field, attribute := range s.Extraction.Attributes {
 			if _, ok := s.Extraction.Fields[field]; !ok || !safeAttributeName(attribute) {
 				return fmt.Errorf("HTML attributes must reference extracted fields and use safe names")
