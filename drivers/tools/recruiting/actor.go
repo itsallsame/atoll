@@ -25,12 +25,13 @@ import (
 const stateKey resource.ResourceID = "recruiting.p0.state"
 
 type storedState struct {
-	Works            map[string]model.ProbeWork `json:"works"`
-	CommandWorks     map[string]string          `json:"command_works"`
-	Receipts         map[string]json.RawMessage `json:"receipts"`
-	ReconcileTimerID string                     `json:"reconcile_timer_id,omitempty"`
-	DailyTimerID     string                     `json:"daily_timer_id,omitempty"`
-	DailyWorkTimerID string                     `json:"daily_work_timer_id,omitempty"`
+	Works             map[string]model.ProbeWork `json:"works"`
+	CommandWorks      map[string]string          `json:"command_works"`
+	Receipts          map[string]json.RawMessage `json:"receipts"`
+	ReconcileTimerID  string                     `json:"reconcile_timer_id,omitempty"`
+	DailyTimerID      string                     `json:"daily_timer_id,omitempty"`
+	DailyWorkTimerID  string                     `json:"daily_work_timer_id,omitempty"`
+	DailyCloseTimerID string                     `json:"daily_close_timer_id,omitempty"`
 }
 
 type probeStartPayload struct {
@@ -125,6 +126,11 @@ func run(sys actorbase.Sys, cfg Config) error {
 			return err
 		}
 	}
+	if repository != nil && cfg.DailyScheduleEnabled && state.DailyCloseTimerID == "" {
+		if err := armNextDailyCloseTimer(sys, cfg, state, repository, time.Now().UTC()); err != nil {
+			return err
+		}
+	}
 	for {
 		msg, err := sys.Recv()
 		if err != nil {
@@ -144,6 +150,10 @@ func run(sys actorbase.Sys, cfg Config) error {
 				}
 			case typeDailyWorkDue:
 				if err := handleDailyWorkDue(sys, cfg, state, repository, msg); err != nil {
+					return err
+				}
+			case typeDailyCloseDue:
+				if err := handleDailyCloseDue(sys, cfg, state, repository, msg); err != nil {
 					return err
 				}
 			}

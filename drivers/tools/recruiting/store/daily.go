@@ -292,11 +292,17 @@ func validateOccurrenceTransition(current, next model.SourceOccurrence) error {
 	case current.Status == model.OccurrenceQueued && next.Status == model.OccurrenceRunning:
 		expected, err = current.Start(current.Version)
 	case current.Status == model.OccurrenceRunning && (next.Status == model.OccurrenceCompleted || next.Status == model.OccurrenceException):
-		expected, err = current.Finish(current.Version, next.Status == model.OccurrenceCompleted, next.Outcome)
+		if next.Status == model.OccurrenceException {
+			expected, err = current.CloseWithException(current.Version, next.Outcome)
+		} else {
+			expected, err = current.Finish(current.Version, true, next.Outcome)
+		}
 	case current.Status == model.OccurrencePlanned && next.Status == model.OccurrenceExcluded:
 		expected, err = current.Exclude(current.Version, next.Outcome)
 	case current.Status == model.OccurrencePlanned && next.Status == model.OccurrenceException:
-		expected, err = current.ExpireBeforeQueue(current.Version, next.Outcome)
+		expected, err = current.CloseWithException(current.Version, next.Outcome)
+	case current.Status == model.OccurrenceQueued && next.Status == model.OccurrenceException:
+		expected, err = current.CloseWithException(current.Version, next.Outcome)
 	default:
 		return &model.InvalidTransitionError{Entity: "source occurrence", From: string(current.Status), Action: "update"}
 	}

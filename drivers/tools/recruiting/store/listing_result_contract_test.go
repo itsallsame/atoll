@@ -179,6 +179,45 @@ func TestStaleListingResultOnlyRetainsRejectedArtifact(t *testing.T) {
 	}
 }
 
+func TestDailyCloseFencesNewListingPages(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	offerAt, _ := prepareListingExecutionWork(t, ctx, repository, "listing-window-closed", 1)
+	offer := startListingAttempt(t, ctx, repository, "listing-window-closed", offerAt)
+	if _, err := repository.CloseDailyRunAtWindow(ctx, "listing-window-closed-daily", offerAt.Add(2*time.Hour), "window-close"); err != nil {
+		t.Fatal(err)
+	}
+
+	artifact := mustResultArtifact(t, "listing-window-closed-page", model.ArtifactPage, offer.Work.WorkID, offer.Attempt.AttemptID)
+	page := ListingPageResult{
+		AttemptID: offer.Attempt.AttemptID, ExecutorActorID: "listing-window-closed-executor",
+		ExecutorIncarnation: "listing-window-closed-boot", PageSequence: 1, Terminal: true,
+		Artifact: artifact, ObservedAt: offerAt.Add(2*time.Hour + time.Second),
+	}
+	if _, err := repository.AcceptListingPage(ctx, page); !errors.Is(err, ErrResultFenced) {
+		t.Fatalf("post-window listing page was not fenced: %v", err)
+	}
+	work, _ := repository.GetWork(ctx, offer.Work.WorkID)
+	occurrence, _ := repository.GetOccurrence(ctx, offer.Occurrence.OccurrenceID)
+	var rejected, progress int
+	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_artifacts WHERE artifact_id = ? AND rejected = TRUE", artifact.ArtifactID).Scan(&rejected)
+	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_listing_page_progress WHERE work_id = ?", offer.Work.WorkID).Scan(&progress)
+	if work.Status != model.WorkCanceled || occurrence.Status != model.OccurrenceException || rejected != 1 || progress != 0 {
+		t.Fatalf("post-window facts work=%s occurrence=%s rejected=%d progress=%d", work.Status, occurrence.Status, rejected, progress)
+	}
+}
+
 func startListingAttempt(t *testing.T, ctx context.Context, repository *Repository, prefix string, at time.Time) ListingExecutionOffer {
 	t.Helper()
 	executorID := prefix + "-executor"

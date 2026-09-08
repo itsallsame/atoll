@@ -263,7 +263,7 @@ requested_by（来自 Atoll envelope 上下文，不是客户端可填写字段�
 
 ## 8. P3：Recruiting Actor 控制面
 
-执行状态：进行中。Company、Source、Work 的首批人工运维词，以及 Job/DailyRun/Occurrence 查询已通过真实 Portal 或隔离 MySQL 纵向验收；Atoll durable timer 已接入可信的每日原子截点名单和按最早 `due_at` 驱动的 Work 渐进物化。listing Attempt 的 offer/accept/start/fail 已实现单活动执行权、完整输入快照、Executor incarnation 和领域 fence，并通过多实例 MySQL 领取测试；有界 page 接受及 terminal result→Checkpoint/Attempt/Work/Occurrence/outbox 原子事务也已通过 MySQL 合同测试。无进展 Attempt 已复用 reconcile timer 做有界、并发安全的 expire/retry 恢复。listing failure 分类、主动 incarnation 失效、真实 Executor 消息 e2e 和窗口末闭账尚未接通。其余 System/Capacity/批量控制词、Work correct 和 Source 验证结果发布仍待实现。证据记录于 `docs/experiments/atoll-recruiting-p3-acceptance.zh-CN.md`。
+执行状态：进行中。Company、Source、Work 的首批人工运维词，以及 Job/DailyRun/Occurrence 查询已通过真实 Portal 或隔离 MySQL 纵向验收；Atoll durable timer 已接入可信的每日原子截点名单、按最早 `due_at` 驱动的 Work 渐进物化，以及窗口末自动闭账。listing Attempt 的 offer/accept/start/fail 已实现单活动执行权、完整输入快照、Executor incarnation 和领域 fence，并通过多实例 MySQL 领取测试；有界 page 接受及 terminal result→Checkpoint/Attempt/Work/Occurrence/outbox 原子事务也已通过 MySQL 合同测试。无进展 Attempt 已复用 reconcile timer 做有界、并发安全的 expire/retry 恢复。listing failure 分类、主动 incarnation 失效和真实 Executor 消息 e2e 尚未接通；日报关闭后的 recovered 补偿也仍待实现。其余 System/Capacity/批量控制词、Work correct 和 Source 验证结果发布仍待实现。证据记录于 `docs/experiments/atoll-recruiting-p3-acceptance.zh-CN.md`。
 
 ### 开发顺序
 
@@ -284,6 +284,7 @@ Actor handler 不等待网站请求。每个响应包含 correlation、Target、
 - payload 伪造 initiator 无效；
 - Actor 重启、server 重启、重复 ledger 交付后状态一致；
 - 截点前后新增、暂停、归档都产生规定的 occurrence 结果；
+- daily close timer 在窗口结束时只结算一份固定名单；未开始、重试中和仍运行项均有明确异常结果，未完成 Work 被 acceptance version 栅栏，日报与完成事件可稳定重放；
 - 每日关闭后恢复只追加 recovered 记录，不改写原日报。
 
 退出门：`e2e/recruiting_journey_test.go` 和 `recruiting_recovery_test.go` 使用真实 server/daemon 进程通过。

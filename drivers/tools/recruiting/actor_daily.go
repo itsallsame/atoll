@@ -100,6 +100,11 @@ func handleDailyCutoffDue(sys actorbase.Sys, cfg Config, state *storedState, rep
 			return err
 		}
 	}
+	if state.DailyCloseTimerID == "" {
+		if err := armNextDailyCloseTimer(sys, cfg, state, repository, time.Now().UTC()); err != nil {
+			return err
+		}
+	}
 	return armDailyTimer(sys, cfg, state, time.Now().UTC())
 }
 

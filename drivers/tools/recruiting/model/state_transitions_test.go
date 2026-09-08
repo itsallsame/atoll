@@ -283,6 +283,12 @@ func TestDailyRunAndOccurrenceTransitionMatrix(t *testing.T) {
 		if (status == OccurrencePlanned) != (excludeErr == nil) {
 			t.Fatalf("occurrence exclusion from %q: %v", status, excludeErr)
 		}
+		occurrence.WorkID = "work-occurrence-1"
+		_, closeErr := occurrence.CloseWithException(occurrence.Version, "window ended")
+		canClose := status == OccurrencePlanned || status == OccurrenceQueued || status == OccurrenceRunning
+		if canClose != (closeErr == nil) {
+			t.Fatalf("occurrence window close from %q: %v", status, closeErr)
+		}
 	}
 }
 

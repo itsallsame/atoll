@@ -89,6 +89,9 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 		}
 		return replay, nil, nil
 	}
+	if occurrence.Status != model.OccurrenceRunning {
+		return ListingPageOutcome{}, fmt.Errorf("occurrence is no longer accepting listing results"), nil
+	}
 	_, currentFence, err := loadListingOfferFence(ctx, tx, occurrence, attempt.ProfileID)
 	if err != nil {
 		return ListingPageOutcome{}, err, nil
@@ -237,6 +240,9 @@ func (r *Repository) acceptListingCompletionOnce(ctx context.Context, input List
 			return ListingCompletionOutcome{}, nil, err
 		}
 		return replay, nil, nil
+	}
+	if occurrence.Status != model.OccurrenceRunning {
+		return ListingCompletionOutcome{}, fmt.Errorf("occurrence is no longer accepting listing results"), nil
 	}
 	_, currentFence, err := loadListingOfferFence(ctx, tx, occurrence, attempt.ProfileID)
 	if err != nil {

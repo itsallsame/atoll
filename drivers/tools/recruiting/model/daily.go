@@ -245,6 +245,21 @@ func (o SourceOccurrence) ExpireBeforeQueue(expected uint64, reason string) (Sou
 	return o, nil
 }
 
+// CloseWithException accounts for work that did not reach a successful
+// checkpoint before its immutable daily execution window ended. Unlike
+// ExpireBeforeQueue it also covers queued and running occurrences, retaining
+// the Work link as evidence for operations and late-result fencing.
+func (o SourceOccurrence) CloseWithException(expected uint64, reason string) (SourceOccurrence, error) {
+	if err := requireVersion(expected, o.Version); err != nil {
+		return SourceOccurrence{}, err
+	}
+	if (o.Status != OccurrencePlanned && o.Status != OccurrenceQueued && o.Status != OccurrenceRunning) || strings.TrimSpace(reason) == "" {
+		return SourceOccurrence{}, &InvalidTransitionError{Entity: "source occurrence", From: string(o.Status), Action: "close with exception"}
+	}
+	o.Status, o.Outcome, o.Version = OccurrenceException, strings.TrimSpace(reason), o.Version+1
+	return o, nil
+}
+
 func (o SourceOccurrence) Finish(expected uint64, checkpointCommitted bool, outcome string) (SourceOccurrence, error) {
 	if err := requireVersion(expected, o.Version); err != nil {
 		return SourceOccurrence{}, err
