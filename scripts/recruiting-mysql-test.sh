@@ -6,6 +6,11 @@ database_name="atoll_recruiting_test_$$_${RANDOM}"
 test_password="atoll_recruiting_test_only_$$"
 runtime_password="atoll_recruiting_runtime_test_only_$$"
 iterations="${RECRUITING_MYSQL_ITERATIONS:-1}"
+test_run="${RECRUITING_MYSQL_TEST_RUN:-}"
+test_args=()
+if [[ -n "$test_run" ]]; then
+  test_args=(-run "$test_run")
+fi
 init_directory=$(mktemp -d /tmp/atoll-recruiting-mysql-init.XXXXXX)
 init_sql="${init_directory}/10-recruiting-runtime.sql"
 
@@ -91,7 +96,7 @@ DROP TABLE IF EXISTS
 SET FOREIGN_KEY_CHECKS = 1;
 SQL
   fi
-  go test -race ./drivers/tools/recruiting/store -count=1
+  go test -race ./drivers/tools/recruiting/store -count=1 "${test_args[@]}"
 done
 
 echo "recruiting mysql: ok (ephemeral MySQL 8.4, migration/runtime non-root accounts, schema=${database_name}, iterations=${iterations})"

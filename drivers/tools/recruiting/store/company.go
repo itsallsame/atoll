@@ -74,7 +74,17 @@ func (r *Repository) UpdateCompanyCAS(ctx context.Context, expectedVersion uint6
 	if err != nil {
 		return fmt.Errorf("encode company: %w", err)
 	}
-	result, err := r.db.ExecContext(ctx, `
+	// MySQL autocommit can win a race with context-driven connection
+	// cancellation after a lock wait. Keep the UPDATE uncommitted until this
+	// method explicitly observes success; a canceled connection then rolls the
+	// transaction back. Command receipts handle commit-ack ambiguity above this
+	// primitive.
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin company update: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_companies
 SET normalized_website = ?, name = ?, onboarding_status = ?, control_status = ?,
     version = ?, state_json = ?, updated_at = ?
@@ -93,14 +103,22 @@ WHERE company_id = ? AND version = ?`,
 		return fmt.Errorf("inspect company update: %w", err)
 	}
 	if changed == 1 {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit company update: %w", err)
+		}
 		return nil
 	}
-	actual, readErr := r.GetCompany(ctx, company.CompanyID)
-	if errors.Is(readErr, ErrNotFound) {
+	var actualState []byte
+	readErr := tx.QueryRowContext(ctx, "SELECT state_json FROM recruiting_companies WHERE company_id = ?", company.CompanyID).Scan(&actualState)
+	if errors.Is(readErr, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if readErr != nil {
 		return readErr
+	}
+	var actual model.Company
+	if err := json.Unmarshal(actualState, &actual); err != nil {
+		return fmt.Errorf("decode company after failed update CAS: %w", err)
 	}
 	return &model.VersionConflictError{Expected: expectedVersion, Actual: actual.Version}
 }

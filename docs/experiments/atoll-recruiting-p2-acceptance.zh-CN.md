@@ -44,10 +44,10 @@ P1 契约基线：`a94d2b8d`
 - Listing 页提交把 Work version/acceptance fence、最多 500 条 Observation/Job/Detail Work 和 append-only Progress 放入同一事务；失败页不留下 Job 或 resume cursor，同页确认丢失可精确重放，暂停后的旧执行者不能推进进度，恢复后的新 fence 可继续；
 - Baseline staging 每块锁定 generation，finalize 后不可修改；finalize 在同一锁内校验数据库实际 staging 数与 `details_expected`，消除并发晚写和伪造计数；
 - 10,000 条 baseline staging 通过主键 seek 形成 20 个页事务，实测恰好产生 10,000 个 SourceJob 和 10,000 个唯一 Detail Work；`EXPLAIN FORMAT=JSON` 验证 seek 使用复合主键；
-- 真实 MySQL 行锁 timeout 会返回 deadline 且不留下 Company 半更新；真实 InnoDB deadlock 验证一个事务完整获胜、另一个完整回滚，不出现两行混合结果；
+- 真实 MySQL 行锁 timeout 会返回 deadline 且不留下 Company 半更新；压力分片曾暴露 autocommit UPDATE 的取消竞态：客户端先收到 deadline，释放测试锁后服务端仍可能在连接关闭前提交。Company CAS 已改为显式事务，超时连接只能回滚；同一 fault test 在 4 个独立 MySQL 容器中累计 100/100 次通过，随后完整 contract 单轮通过；
 - 子测试进程在未提交事务中被 OS kill，连接断开后 MySQL 回滚；在命令事务已提交但客户端尚未确认时被 kill，重启后稳定 receipt 可重放且 pending outbox 仍可找回；
 - MySQL 测试身份拆为非 root `staircase_migrator` 与 `staircase_runtime`；migration binary 只用前者，全部 Repository contract 使用后者，实测 runtime 具备所需 DML 且执行 DDL 被数据库拒绝；
-- harness 使用进程号与随机数命名一次性 schema，支持 `RECRUITING_MYSQL_ITERATIONS=N`；已连续完成 2 轮“精确清空本测试 schema→migration→完整 contract”，容器退出后整体删除；
+- harness 使用进程号与随机数命名一次性 schema，支持 `RECRUITING_MYSQL_ITERATIONS=N` 和无 eval 的 `RECRUITING_MYSQL_TEST_RUN` 定向回归；stress 入口把总轮数精确分配给多个独立容器/schema/非 root 账号，并逐 shard 校验终态成功标记；已连续完成 2 轮完整预检和 100 轮 timeout fault 定向回归，容器退出后整体删除；
 - `EXPLAIN FORMAT=JSON` 验证 Company seek 查询使用专用索引；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
@@ -55,6 +55,7 @@ P1 契约基线：`a94d2b8d`
 
 ```text
 make recruiting-mysql-test
+make recruiting-mysql-stress
 go test -race ./drivers/tools/recruiting/...
 go vet ./drivers/tools/recruiting/...
 make build-go
@@ -65,6 +66,6 @@ make build-go
 
 - 其余修改命令的 receipt/聚合/outbox 原子编排随 P3 Actor command handler 实现；P2 已用 Company 命令纵向证明事务模板，并完成全部 Resource 纵向合同；
 - 10,000 条基线不使用超大事务已经验证；仍需所有关键领取查询的 EXPLAIN；
-- 随机数据库连续 100 次 migration+contract（循环器与 2 轮预检已通过），以及最终残留 schema 核对。
+- 随机数据库完整 contract 连续 100 次（4×25 stress 入口已就绪；首次正式运行在第 12 个累计成功结果前暴露并修复 timeout/autocommit 竞态，修复后的 100 轮定向 fault 已通过），以及最终残留 schema 核对。
 
 P2 仍为进行中，不能以首个 Repository 切片替代完整退出门。
