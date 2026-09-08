@@ -318,6 +318,24 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	if got := stringField(t, runnableWork, "work_id"); got != "e2e-work-repair-retry" {
 		t.Fatalf("runnable work=%q: %v", got, runnable)
 	}
+	operational := recovered.request(homeID, "recruiting.work.list", controlID, map[string]any{
+		"view": "operational", "status": "open", "purpose": "repair",
+		"target": map[string]any{"target_type": "source", "target_id": "elac-context-maintenance-invalid"}, "limit": 1,
+	})
+	if listedWorks, _ := operational["works"].([]any); len(listedWorks) != 0 {
+		t.Fatalf("work center leaked a different target: %v", operational)
+	}
+	operational = recovered.request(homeID, "recruiting.work.list", controlID, map[string]any{
+		"view": "operational", "status": "open", "purpose": "repair",
+		"target": map[string]any{"target_type": "source", "target_id": "e2e-source-a"}, "limit": 1,
+	})
+	listedWorks, _ := operational["works"].([]any)
+	placements, _ := operational["placements"].(map[string]any)
+	page, _ = operational["page"].(map[string]any)
+	if len(listedWorks) != 1 || stringField(t, listedWorks[0].(map[string]any), "work_id") != "e2e-work-repair-retry" ||
+		placements["e2e-work-repair-retry"] == nil || page["has_more"] != false {
+		t.Fatalf("operational work center result = %v", operational)
+	}
 	if _, _, err := recovered.tryRequest(homeID, "recruiting.source.get", controlID, map[string]any{"id": "missing-source"}); err == nil {
 		t.Fatal("missing Source query unexpectedly succeeded")
 	}

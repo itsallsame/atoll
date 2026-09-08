@@ -937,9 +937,11 @@ Recruiting Actor 的恢复 handler 检查长期无进展 Work/Attempt、已上�
 
 用户可按 trigger、purpose、状态、等待原因、Target、发起者和时间筛选 Work，并查看输入、Recipe、Attempt、Artifact 和因果链；执行创建、领取人工项、暂停、恢复、取消、修正、重试、跳过、批准、拒绝或终止。界面必须分别显示列表覆盖、详情待处理、当前仍可用详情、失败原因和下一动作，不能把详情失败显示成列表漏采。
 
+`recruiting.work.list` 明确区分两个用途：默认或 `view=operational` 是面向人的 Work Center，按 `updated_at, work_id` 倒序 seek 分页，支持 `status`、`purpose`、`trigger`、`waiting_reason`、完整 Target、`initiator_actor_id` 和更新时间半开区间；`waiting_reason` 必须与 `status=waiting_human` 同时使用。响应返回 Work、以 `work_id` 为键的 placement 以及 opaque page cursor，cursor 与全部筛选条件绑定，改变条件后不得复用。`view=runnable` 是 Executor/诊断使用的有界候选查询，要求 `due_at` 和 capability，可选 origin/Profile；历史调用只要携带 `due_at` 仍按 runnable 语义执行。两种视图不得混合字段，Work Center 查询不领取、不修改 Work。
+
 批量导入、基线、纠正和发布还显示总数、成功、失败、跳过、等待人工、取消及可重试项；手工运行显示 `run_mode`、关联 SourceOccurrence、读写前后 Checkpoint、边界证明、数据变化、派生详情和预算消耗；人工结案显示 resolution、决定人、理由和证据。
 
-Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预算的投影，不要求独立 Actor。
+Review Queue 是 `status=waiting_human` 的 Work Center 视图，可再按结构化等待原因收窄；Capacity 是 Executor 和预算的投影，不要求独立 Actor。
 
 ## 13. 可观测性
 

@@ -75,6 +75,8 @@ Executor 先上传外部对象，再返回不可变引用。接受事务验证 A
 
 查询分页采用稳定 seek cursor `(updated_at, id)` 或业务对应的稳定复合键，不使用大 offset。所有日常扫描必须有 `EXPLAIN` 证据；测试拒绝关键查询 `type=ALL` 且无适用 key。
 
+migration 13 为 Work Center 增加全局 `(updated_at, work_id)` 以及 status、purpose、trigger 分别前置的倒序分页索引；Target 与 initiator 复用 migration 3 已有复合索引。查询按最具选择性的已建索引选择固定白名单中的 `FORCE INDEX`，其余组合条件为残余过滤。`waiting_reason` 首版只允许在 `waiting_human` 状态内使用 JSON 残余过滤，避免在尚无容量证据时复制一列可变诊断枚举；若该 Review Queue 证明成为高基数热点，再以独立 migration 投影索引列。
+
 ## migration 与权限
 
 - migration 从空 schema 开始，不识别、不导入也不删除 Staircase 旧表；

@@ -51,6 +51,8 @@
 - 上述普通用户黑盒日程现使用两个 verified Source：一个由 durable due timer 物化，另一个在较晚 due time 前通过 `recruiting.run.join_occurrence` 按 occurrence version 提前加入。命令与重放返回同一 Work，最终两个 Source 各有且仅有一个 runnable listing Work，证明人工参与复用日报快照、Atoll 权限和统一执行队列，而不是数据库旁路或独立 Worker；
 - P0 probe Actor→Executor、持久 timer 和重启路径保留，Company 控制面没有替换 Atoll 的 actor、message、ledger 或 scheduler。
 
+- `recruiting.work.list` 已分成默认 `operational` 和显式/兼容 `runnable` 两个视图。operational 支持 Work Center 所需筛选、倒序 opaque cursor、Work 与 placement 同页返回且只读；runnable 保留携带 `due_at` 的旧调用。普通运营员 Portal 黑盒已按 Source、open 状态和 repair purpose 找到唯一 retry Work，并验证无关 Target 返回空集；
+
 ## 当前验证
 
 ```text

@@ -71,6 +71,8 @@ P1 契约基线：`a94d2b8d`
 - migration `000012` 增加 Work `(status, deadline_at, work_id)` 运维索引。System/Capacity Repository 在 Repeatable Read 只读事务中形成同一时点快照，分别返回状态计数、runnable/最老等待/deadline miss、双 outbox backlog，以及最多 100 个活动预算和每类最多 100 个 capability/origin/Profile runnable 分组；分组输入按 `open`/`waiting_retry` 各最多扫描 5,000 条最老 runnable，并返回 exact/truncated 证明，避免有限输出背后的无界 GROUP BY。合同用 `EXPLAIN FORMAT=JSON` 证明 deadline 与 capacity scan 各命中专用索引；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
+- migration 13 为 Work Center 增加全局/status/purpose/trigger 的稳定倒序分页索引；Repository 支持状态、purpose、trigger、`waiting_human` 原因、Target、initiator 和更新时间区间组合筛选，游标绑定完整 selector 并返回 placement。MySQL 8.4 合同已验证跨页顺序、跨 selector 拒绝及全局/status `EXPLAIN` 命中预期索引；测试仍使用分离的非 root migrator/runtime 身份；
+
 ## 当前验证
 
 ```text

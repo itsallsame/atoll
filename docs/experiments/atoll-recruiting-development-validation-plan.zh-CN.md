@@ -226,7 +226,7 @@ requested_by（来自 Atoll envelope 上下文，不是客户端可填写字段�
 
 ## 7. P2：MySQL Resource、migration 与恢复
 
-执行状态：进行中。Schema ADR、migration/checksum runner、非 root DSN 防护、主要 Resource Repository、DailyRun/全部轻量 SourceOccurrence 的原子截点事务，以及 execution dispatch outbox migration/Repository 已实现；当前证据记录于 `docs/experiments/atoll-recruiting-p2-acceptance.zh-CN.md`。尚未达到 P2 退出门。
+执行状态：进行中。Schema ADR、migration/checksum runner、非 root DSN 防护、主要 Resource Repository、DailyRun/全部轻量 SourceOccurrence 的原子截点事务、execution dispatch outbox，以及 Work Center 的绑定游标/索引查询已实现；当前证据记录于 `docs/experiments/atoll-recruiting-p2-acceptance.zh-CN.md`。尚未达到 P2 退出门。
 
 ### 7.1 Schema 设计步骤
 
@@ -250,6 +250,7 @@ requested_by（来自 Atoll envelope 上下文，不是客户端可填写字段�
 同一套 Repository contract 至少验证：
 
 - create/get/list/CAS、分页稳定性和事务隔离；
+- Work Center 按状态、purpose、trigger、等待原因、Target、发起者和更新时间筛选；倒序 cursor 必须绑定完整 selector，placement 与 Work 同页返回，并为全局及主要 selector 留下 `EXPLAIN` 索引证据；
 - Repeatable Read 截点内从持久 Company/Source/Assignment/active Recipe 事实计算完整 eligible 名单，DailyRun、全部轻量 occurrence 和 outbox 要么全部提交、要么全部回滚；
 - 两个调度实例并发处理同一日期只能生成一份名单；重放必须返回相同 Source 版本和确定性 due time，改变调度策略或窗口必须冲突；
 - 两个并发命令只能一个更新相同版本；
@@ -263,6 +264,8 @@ requested_by（来自 Atoll envelope 上下文，不是客户端可填写字段�
 退出门：在随机测试库上连续运行 100 次 migration+contract suite；无残留数据库、无 root 连接、无明文秘密、无不可恢复半完成。
 
 ## 8. P3：Recruiting Actor 控制面
+
+Work 查询现已分离面向人的 operational Work Center 与面向执行面的 runnable 候选视图；前者具备绑定全部筛选条件的稳定倒序分页，并在同页返回 Work placement，后者保留既有 `due_at` 兼容契约。
 
 执行状态：进行中。Company、Source、Work 的首批人工运维词，以及 Job/DailyRun/Occurrence/System/Capacity 查询已通过真实 Portal 或隔离 MySQL 纵向验收；System/Capacity 以只读一致性事务投影状态、runnable/deadline、活动预算与双 outbox backlog，不引入容量 Actor。Atoll durable timer 已接入可信的每日原子截点名单、按最早 `due_at` 驱动的 Work 渐进物化，以及窗口末自动闭账。首个专用人工运行词 `run.join_occurrence` 已通过普通用户 Portal 与 MySQL 合同：它以 occurrence version 把一个尚未到期的 planned 项原子物化进同一执行队列，并与 timer 物化并发收敛。统一 Attempt 生命周期已按 capability/origin/priority 领取 listing 或 detail Work，具备单活动执行权、不可变 offer、Executor incarnation 和领域 fence；有界 listing page、terminal checkpoint result 及 detail result 的原子事务已通过 MySQL 合同测试。Listing Page Progress 已按 Attempt 隔离，并验证部分页面后崩溃的新 Attempt 可从第 1 页重跑且 completion 不混入旧页；Driver 的分类失败与 Failure Artifact metadata 也可随 Attempt/Work/Permit 在同一事务落库。accept/start/failed/page/completion/detail command receipt 已与对应状态事务原子提交，请求哈希绑定 authenticated Executor，并通过并发接受、稳定重放和 command ID 冲突合同。分类失败已使用版本化配置执行有界退避，持久化 Attempt 计数和下一次领取时间，确定性/不可重试/耗尽错误进入 `waiting_human`，对应协作事件也与失败事务原子提交。不含轮询/调度策略的单次 Offer 编排已串起 accept/start、Recipe Resource、HTTP Driver 和结果/失败控制消息，并挂到默认关闭、严格配置、每次仅执行一份 Work 的 Executor wake 入口。控制面现已按 extension config 的 Executor fleet 和 capability 创建持久定向 dispatch；每日渐进物化、人工新增/重试以及 Attempt 成功/失败/未来重试均在对应业务事务中生成 wake，Executor 完成或 idle 后以 authenticated identity 确认，未确认投递由现有 reconcile timer 有界恢复。人工重试每日 listing Work 时，未终结 occurrence 现与新因果 Work、receipt、event 和 dispatch 在同一事务重绑，避免“控制面显示重试成功但执行面无法按新 Work 找到 occurrence”。正常链路、“pending dispatch 已提交、首次投递前 server 退出”和 completion acknowledgement 丢失切点已用普通运营员、真实 server/daemon、Recipe KV、Artifact File、非 root MySQL 和 Greenhouse 公共 API 跑通；completion 重投没有增加 Attempt，并正确以 `quality_rejected` 停在 `waiting_human` 而不推进 Checkpoint。无进展 Attempt 已复用 reconcile timer 做有界、并发安全的 expire/retry 恢复。`run.diagnostic`、独立 `run.production`、主动 incarnation 失效、Executor 处理中退出和业务结果 acknowledgement 丢失 e2e 尚未接通；日报关闭后的 recovered 补偿也仍待实现。其余批量控制词、Work correct 和 Source 验证结果发布仍待实现。证据记录于 `docs/experiments/atoll-recruiting-p3-acceptance.zh-CN.md`。
 

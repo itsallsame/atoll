@@ -37,7 +37,7 @@ func manifest() introspect.Manifest {
 			TypeJobGet:                 {Description: "get one source job"},
 			TypeJobList:                {Description: "seek-page jobs belonging to one recruitment source"},
 			TypeWorkGet:                {Description: "get one operational work item"},
-			TypeWorkList:               {Description: "list runnable work by capability and optional resource constraints"},
+			TypeWorkList:               {Description: "seek-page operational work or list runnable work by capability"},
 			TypeWorkCreate:             {Description: "create one manually initiated operational work item"},
 			TypeWorkPause:              {Description: "pause work and fence results from existing attempts"},
 			TypeWorkResume:             {Description: "resume paused work as open"},
