@@ -1,0 +1,245 @@
+schema_version: "0.1"
+scenario_id: day-02-fourth-patient
+day: 2
+title: 第四个病人
+duration: 六小时
+start: 同治六年五月初九 卯正
+inherits: day-01-south-field
+end_condition: 林素云以某种称谓进入第二日册局记录，渡口形成新的通行规则
+result_state_key: claimant.lin_suyun.recorded_as
+memory_characters: [lin_suyun, shen_yanqiu, zhou_jiren]
+initial_world_state:
+  disease.temple_cases: 4
+  grain.price_per_sheng: 66
+  ferry.status: open
+  river.level: high
+
+chapter:
+  number: 2
+  title: 第四个病人
+  pov: 林素云
+  opening: 第四个人开始呕吐的时候，庙祝才肯让人去册局报信。
+  passages:
+    - source: seed_search_message
+      text: 渡船还没有靠岸，船户先把魏家的口信喊过了水面：午后有人来接林氏回去。庙廊下四个病人的草席同时被风掀起一角。
+    - source: decision_zhou_ferry
+      option: restrict_crossing
+      text: 周继仁叫人横一根竹篙在跳板前。官差和送药的船可以过，其余人等到日落。那道禁令替她挡住了来人，也把她自己留在洲上。
+    - source: decision_lin_name
+      option: demand_birth_name
+      text: 她走回册局，说昨日的申报还少了一样。不是契，不是中人，是她自己的名字。她要沈砚秋写林素云，不写魏林氏。
+    - source: decision_shen_wording
+      option: record_birth_name_with_note
+      text: 沈砚秋落笔以后，又在旁边添了六个小字：出嫁，权属待核。字很小，名字却第一次没有藏在任何男人后面。
+  closing: 河那边的人仍在喊她夫家的姓。林素云把两只手压在新写的名字上，直到墨迹干透。
+
+initial_public_state:
+  notice: 南湾七号田附注挂号，水退后复勘；水母庙出现腹泻病人。
+  weather: 夜雨未停，清晨转小
+  river: 高水位，渡船仍勉强可行
+
+initial_private_state:
+  lin_suyun:
+    knows: [丈夫家最快今日来人, 自己一旦离洲将很难再回册局]
+    immediate_pressure: 在被带走前让自己的主张和名字都留下
+  shen_yanqiu:
+    knows: [林素云急于离开夫家, 昨日残契仍未公开]
+    immediate_pressure: 不能让一次称谓选择暴露她在替当事人主张权利
+  zhou_jiren:
+    knows: [县里最怕疫病沿船传播, 自己必须今日回县]
+    immediate_pressure: 既要限制民船又不能困住自己
+  lu_jinghe:
+    knows: [何阿生已经公开早年垫银, 粮价正在上涨]
+    immediate_pressure: 趁何阿生缺粮把旧债写成新凭据
+  he_asheng:
+    knows: [水再涨三寸南湾将漫苗, 自己已承担本年税粮]
+    immediate_pressure: 在守田、修堤和找粮之间只能选一项
+
+seed_events:
+  - id: seed_night_rain
+    order: 10
+    at: 卯正
+    event: 夜雨使河水再涨三寸，南湾最低处开始漫苗。
+    director_source: inherited river pressure
+    location: 南湾七号田
+    actor: environment
+    action: advance_environment
+    perceived_goal: 自然过程没有人物目标。
+    intended_effect: 无。
+    actual_effect: 南湾耕作风险上升，修堤与守田开始争夺劳力。
+    participants: []
+    observers: [he_asheng]
+  - id: seed_fourth_patient
+    order: 20
+    at: 辰初
+    event: 水母庙出现第四名腹泻病人，庙祝到册局报信。
+    director_source: inherited background disease
+    location: 水母庙廊
+    actor: environment
+    action: disease_progress
+    perceived_goal: 病程没有人物目标。
+    intended_effect: 无。
+    actual_effect: 昨日未进入主线的疾病成为渡运与聚集规则必须处理的问题。
+    participants: []
+    observers: [zhou_jiren, shen_yanqiu, lin_suyun]
+  - id: seed_search_message
+    order: 30
+    at: 辰初一刻
+    event: 对岸船户传来魏家口信，午后将有人到洲上接林素云回夫家。
+    director_source: lin_suyun immediate pressure
+    location: 乌篷渡
+    actor: environment
+    action: relay_message
+    perceived_goal: 传达来人安排。
+    intended_effect: 让林素云准备离洲。
+    actual_effect: 林素云确认自己的行动窗口只剩半日。
+    participants: []
+    observers: [lin_suyun, shen_yanqiu]
+
+decision_points:
+  - id: decision_zhou_ferry
+    order: 40
+    at: 辰正
+    location: 乌篷渡
+    actor: zhou_jiren
+    causes: [seed_fourth_patient, seed_search_message]
+    participants: [zhou_jiren, shen_yanqiu, lin_suyun]
+    observers: [zhou_jiren, shen_yanqiu, lin_suyun, lu_jinghe]
+    options:
+      - id: restrict_crossing
+        action: restrict_route
+        summary: 周继仁命渡口日落前只许官差、送药人与急信通行，其余人不得上下洲。
+        perceived_goal: 阻断可能的疫病传播，同时保留自己回县的路。
+        intended_effect: 降低人员聚集和跨河传播风险。
+        actual_effect: 魏家来人暂时不能登洲，林素云也无法自行离开；官差例外引起不满。
+        delta: {ferry.status: restricted_until_sunset, disease.mobility: reduced, lin_suyun.exit: blocked}
+        utility: {avoid_epidemic: 6, preserve_official_route: 5, fairness: -3, finish_register: 2}
+      - id: close_ferry_completely
+        action: close_route
+        summary: 周继仁下令所有船只一律停航。
+        perceived_goal: 最大限度避免疫病外传。
+        intended_effect: 完全切断人员流动。
+        actual_effect: 他自己也被困在洲上，药物无法及时送达。
+        delta: {ferry.status: closed, medicine.delivery: blocked}
+        utility: {avoid_epidemic: 7, preserve_official_route: -6, fairness: 2, finish_register: -3}
+      - id: keep_ferry_open
+        action: refuse
+        summary: 周继仁称无县令不得封渡，渡船照常。
+        perceived_goal: 避免承担越权责任。
+        intended_effect: 维持交通。
+        actual_effect: 病人亲属与来洲者继续聚集在渡口。
+        delta: {ferry.status: open, disease.mobility: increased}
+        utility: {avoid_epidemic: -6, preserve_official_route: 4, fairness: 3, finish_register: 2}
+
+  - id: decision_lu_grain
+    order: 50
+    at: 巳初
+    location: 南湾七号田
+    actor: lu_jinghe
+    causes: [seed_night_rain]
+    participants: [lu_jinghe, he_asheng]
+    observers: [lu_jinghe, he_asheng]
+    options:
+      - id: offer_grain_for_note
+        action: offer_exchange
+        summary: 陆敬和提出借何阿生两斗陈粮，条件是重写一张承认早年税银未清的欠据。
+        perceived_goal: 把昨日公开的模糊旧债固定成可执行文书。
+        intended_effect: 取得债据并维持陆氏救济者声誉。
+        actual_effect: 何阿生得到现实选择，陆氏的土地争夺转化为债务争夺。
+        delta: {lu_offer.grain_dou: 2, lu_offer.requires: written_debt}
+        utility: {recover_debt: 6, public_order: 3, grain_cost: -2, exposure_risk: -1}
+      - id: demand_field_now
+        action: submit_claim
+        summary: 陆敬和直接以旧债要求接管南湾七号田。
+        perceived_goal: 趁水灾逼迫何阿生交田。
+        intended_effect: 取得土地控制。
+        actual_effect: 昨日附注立刻受到公开挑战，陆氏显得乘灾夺田。
+        delta: {lu_claim.land: public, lu_reputation: damaged}
+        utility: {recover_debt: 7, public_order: -4, grain_cost: 0, exposure_risk: -3}
+
+  - id: decision_he_response
+    order: 60
+    at: 巳初一刻
+    location: 南湾七号田
+    actor: he_asheng
+    causes: [decision_lu_grain, seed_night_rain]
+    participants: [he_asheng, lu_jinghe]
+    observers: [he_asheng, lu_jinghe]
+    options:
+      - id: repair_dyke_refuse_note
+        action: refuse
+        summary: 何阿生拒绝写新欠据，带着养女去缺口装土袋，把今日口粮押给船户换麻绳。
+        perceived_goal: 保住稻苗和不被重新定义的七年劳作。
+        intended_effect: 先阻住漫水，不让旧恩变成新债。
+        actual_effect: 南湾暂缓进水，但何家当日无粮，船户取得新的小额债权。
+        delta: {south_field.flooding: slowed, he_household.food_today: none, ferryman.claim: one_day_grain}
+        utility: {keep_field: 6, avoid_lu_debt: 5, hunger: -4, protect_self_image: 3}
+      - id: accept_grain_note
+        action: accept_debt
+        summary: 何阿生接受两斗粮并按陆敬和拟好的文字落押。
+        perceived_goal: 保证全家度过涨水的几日。
+        intended_effect: 取得粮食。
+        actual_effect: 陆氏获得可与土地争议结合的新债据，何家短期免于断粮。
+        delta: {he_household.grain_dou: 2, lu_debt.documented: true}
+        utility: {keep_field: 1, avoid_lu_debt: -6, hunger: 7, protect_self_image: -2}
+
+  - id: decision_lin_name
+    order: 70
+    at: 巳正
+    location: 旧社仓册局
+    actor: lin_suyun
+    causes: [decision_zhou_ferry, seed_search_message]
+    participants: [lin_suyun, shen_yanqiu, zhou_jiren]
+    observers: [lin_suyun, shen_yanqiu, zhou_jiren]
+    options:
+      - id: demand_birth_name
+        action: submit_claim
+        summary: 林素云要求昨日申报补记她的本名“林素云”，不只写“魏林氏”。
+        perceived_goal: 即使被带回夫家，也让自己的主张能够以自己的名字继续存在。
+        intended_effect: 取得独立可识别的申报人记录。
+        actual_effect: 册局必须决定出嫁女性能否以本名作为土地争议当事人。
+        delta: {claimant.lin_suyun.requested_name: 林素云, naming_dispute: opened}
+        utility: {independent_identity: 7, preserve_claim: 6, avoid_husband_notice: -3, convention_cost: -2}
+      - id: keep_married_name
+        action: refuse
+        summary: 林素云没有纠正“魏林氏”的称谓，只催问复勘日期。
+        perceived_goal: 不在丈夫家来人前制造新的公开冲突。
+        intended_effect: 低调保留土地争议。
+        actual_effect: 她的申报继续依附夫家身份，丈夫可以更容易主张代理她。
+        delta: {claimant.lin_suyun.requested_name: 魏林氏, husband代理风险: increased}
+        utility: {independent_identity: -4, preserve_claim: 3, avoid_husband_notice: 5, convention_cost: 3}
+
+  - id: decision_shen_wording
+    order: 80
+    at: 午初
+    location: 旧社仓册局
+    actor: shen_yanqiu
+    causes: [decision_lin_name]
+    participants: [shen_yanqiu, lin_suyun, zhou_jiren]
+    observers: [shen_yanqiu, lin_suyun, zhou_jiren]
+    options:
+      - id: record_birth_name_with_note
+        action: mark_register
+        summary: 沈砚秋以“林素云”记作申报人，旁注“出嫁，权属待核”；周继仁没有命她涂改。
+        perceived_goal: 准确识别人，同时把婚姻身份与产权判断分开。
+        intended_effect: 让申报可追踪而不预断继承资格。
+        actual_effect: 林素云的本名第一次进入册局事实；一个程序例外也被创造出来。
+        delta: {claimant.lin_suyun.recorded_as: 林素云, claimant.lin_suyun.note: 出嫁权属待核, naming_precedent: provisional}
+        utility: {accuracy: 6, preserve_claim: 5, convention_risk: -3, protect_self_image: 3}
+      - id: record_married_name_only
+        action: mark_register
+        summary: 沈砚秋仍写“魏林氏”，把林素云三字留在草稿背面。
+        perceived_goal: 遵守惯常称谓并减少册局风险。
+        intended_effect: 避免程序争论。
+        actual_effect: 申报可继续，但林素云的独立身份没有进入正式记录。
+        delta: {claimant.lin_suyun.recorded_as: 魏林氏, naming_precedent: none}
+        utility: {accuracy: 1, preserve_claim: 3, convention_risk: 5, protect_self_image: -3}
+
+required_outputs:
+  objective_ledger: {description: 第二日全部客观事件与继承状态}
+  subjective_memories:
+    characters: [lin_suyun, shen_yanqiu, zhou_jiren]
+  state_diff: {description: 第一日结束状态到第二日结束状态}
+  scene_candidate:
+    pov: lin_suyun
+    requirement: 疾病先改变交通，再改变称谓与身份选择

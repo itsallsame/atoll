@@ -1,0 +1,189 @@
+schema_version: "0.1"
+
+state_domains:
+  person:
+    - location
+    - health
+    - fatigue
+    - hunger
+    - cash_and_grain
+    - obligations
+    - intentions
+    - beliefs
+    - memories
+    - possessions
+    - pairwise_trust
+    - pairwise_fear
+    - public_reputation
+  world:
+    - time
+    - weather
+    - river_level
+    - routes
+    - prices
+    - resource_stocks
+    - document_locations
+    - plot_conditions
+    - institutional_queue
+    - public_notices
+
+causal_networks:
+  - id: flood_chain
+    seed: 上游降雨
+    propagation:
+      - 水位上涨，渡运时间和船价不确定
+      - 县城消息、纸墨和粮食延迟
+      - 低田积水，旧界沟变得不可见
+      - 丈量被迫提前或延期，田间冲突增加
+      - 腹泻传播，劳力和证人可能缺席
+      - 册局为赶期限提高先登后议的概率
+    narrative_uses: [迫使角色在证据不全时选择, 改变谁能及时到场, 让自然痕迹与文字记录冲突]
+  - id: grain_chain
+    seed: 陈粮不足或船运延迟
+    propagation:
+      - 粮价上涨，赊粮需求增加
+      - 有粮大户获得新的担保与证言筹码
+      - 佃户减少丈量出工以保住插秧
+      - 册局进度放缓，县吏压力上升
+      - 某些人用登记让步交换口粮
+    narrative_uses: [把抽象产权变成当日生存, 创造并不自愿的联盟]
+  - id: rumor_chain
+    seed: 一项程序决定被旁观者听见
+    propagation:
+      - 茶棚把缓登说成没收或定案
+      - 利害关系人抢在正式公示前行动
+      - 行动本身又被当成心虚证据
+      - 图董为维持秩序作出更强硬决定
+    narrative_uses: [让错误信念产生真实后果, 不靠反派操纵也能升级冲突]
+  - id: writing_chain
+    seed: 草册中的一个称谓、排序或附注
+    propagation:
+      - 读者把措辞当成册局倾向
+      - 证人调整自己的说法以靠近可能胜方
+      - 新的多数证言反过来强化原措辞
+      - 暂时描述成为可援引的社会事实
+    narrative_uses: [体现沈砚秋无署名但真实存在的权力]
+  - id: injury_chain
+    seed: 某人物受伤或病倒
+    propagation:
+      - 缺席一次现场指界或复核
+      - 对手的陈述先进入草册
+      - 缺席被解释为心虚或放弃
+      - 为扭转印象，角色承担更高风险
+    narrative_uses: [让身体限制进入因果链, 避免人物只靠语言存在]
+
+action_grammar:
+  - verb: submit_claim
+    requires: [申报人到场或有被接受的代理, 能指明地块]
+    consumes: [时间, 文书或口头信用]
+    effects: [产生可复核主张, 通知潜在反对人]
+  - verb: inspect_boundary
+    requires: [可通行路线, 至少一名指界人, 丈量工具]
+    risks: [损坏作物, 发现界址矛盾, 证人缺席]
+    effects: [新增观察事实, 不自动决定归属]
+  - verb: testify
+    requires: [角色愿意公开承担说法]
+    effects: [改变听者信念, 创造未来可追责的承诺]
+  - verb: withhold_evidence
+    requires: [持有或控制证据位置]
+    effects: [延迟他人推理, 增加日后暴露成本]
+  - verb: disclose_evidence
+    requires: [掌握证据, 选择接收者]
+    effects: [改变制度队列和人物信念, 暴露持有史]
+  - verb: relay_rumor
+    requires: [听到过一个版本]
+    effects: [复制事件骨架, 按欲望与恐惧改变因果解释]
+  - verb: offer_exchange
+    requires: [拥有资源、信息、劳动、担保或沉默]
+    effects: [创建显性或隐性义务]
+  - verb: accept_debt
+    requires: [紧迫需要]
+    effects: [短期资源增加, 未来行动空间缩小]
+  - verb: mark_register
+    requires: [册局写入权限或实际抄写机会]
+    effects: [产生暂时可引用文本, 触发书写因果链]
+  - verb: suspend_case
+    requires: [图董或县吏程序权力]
+    effects: [避免即时定案, 同时把等待成本转给弱势一方]
+  - verb: move
+    requires: [路线可用, 身体允许]
+    effects: [改变可观察范围, 消耗时间, 可能错过别处事件]
+  - verb: refuse
+    requires: [收到请求或命令]
+    effects: [保住底线, 改变声誉, 迫使他人另寻路径]
+
+decision_policy:
+  description: 每次行动从角色当时可见且可行的候选动作中选择，不从作者期望的剧情倒推。
+  factors:
+    - 当前公开目标与私人目标
+    - 对立即损失的规避
+    - 身体与资源限制
+    - 对相关人物的信任、恐惧和债务
+    - 对后果的主观预测
+    - 红线与自我形象
+    - 时间压力
+  tie_breaker: 优先选择最能维护角色自我解释、而非客观收益最大的动作。
+
+memory_model:
+  observation_creation:
+    - 只有在场且感官可及者获得亲历观察
+    - 注意力被当前目标占用时可能遗漏细节
+    - 私人想法不会自动广播
+  consolidation:
+    - 高情绪事件记住核心冲突但可能扭曲顺序与措辞
+    - 重复转述提高信心，不保证提高真实性
+    - 与自我形象冲突的记忆更易被重新解释
+  update:
+    - 新证据可以修正信念，也可以被角色解释为伪造或偏见
+    - 信念变化幅度取决于来源信任和承认错误的社会成本
+
+event_contract:
+  required_fields:
+    - event_id
+    - occurred_at
+    - location
+    - participants
+    - action
+    - perceived_goal_by_actor
+    - cause_event_ids
+    - intended_effect
+    - actual_effect
+    - world_state_delta
+    - observers
+  derived_records:
+    - 为每名观察者生成独立 observation
+    - observation 经角色偏差转化为 character_belief 更新
+    - 叙事层另行决定是否以及何时写入 reader_disclosure
+
+director_policy:
+  allowed:
+    - 推进预先存在的天气、期限、生理和制度过程
+    - 从已定义外部世界送达可信的新消息或人物
+    - 选择镜头所见地点和时间段
+    - 在同一状态上分叉模拟并比较结果
+  forbidden:
+    - 指令人物背叛、相爱、认罪或改变信念
+    - 创造专门解决当前困境的新证据
+    - 让未在场人物知道私密谈话
+    - 为追求高潮取消已经发生的后果
+  intervention_log_fields: [time, intervention, prior_seed, foreseeable_effects, justification]
+
+story_sifting:
+  event_importance:
+    dimensions:
+      - 是否改变资源、权力、关系、信念或身份可执行性
+      - 是否迫使角色跨越代价门槛
+      - 是否使先前选择产生延迟后果
+      - 是否同时被两名以上人物赋予不同意义
+      - 是否打开新问题而非只提供说明
+  microstory_patterns:
+    - 互惠破裂：过去的帮助被双方解释成相反债务
+    - 证言勒索：说真话的条件会伤害另一个无辜者
+    - 身份擦除：程序简化使一个实际存在的人无处登记
+    - 援助后的背叛：接受救济制造无法偿还的新义务
+    - 错误承认：众人认错一个人，却因此暴露真实需要
+    - 书写自证：暂时措辞诱发行为，行为又证明措辞似乎正确
+  scene_candidate_rule: >-
+    一个候选场景至少包含欲望、阻碍、选择、状态变化四项；
+    只有信息说明而没有选择的事件不得独立成场。
+

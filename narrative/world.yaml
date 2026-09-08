@@ -1,0 +1,171 @@
+schema_version: "0.1"
+
+clock:
+  start: 同治六年五月初八 辰正
+  tick: 重大事件或半个时辰
+  rhythms:
+    - 晨间开渡与早市
+    - 午后丈量
+    - 酉初册局收件
+    - 每三日一次争议复核
+    - 五月十八初榜
+    - 六月初七封册
+
+geography:
+  county_relation: 归鹭洲距县城水路二十五里，晴日半日可达，涨水时不定。
+  places:
+    - id: place_registry
+      name: 旧社仓册局
+      properties: [公开, 有门槛, 可封存文书, 雨天拥挤]
+      social_effect: 进入者的一举一动容易被看见，但屏风后抄写者不一定被承认为在场。
+    - id: place_ferry
+      name: 乌篷渡
+      properties: [交通瓶颈, 水情观测点, 消息交换点]
+      social_effect: 船户决定谁先离洲，也最早带来县城消息。
+    - id: place_teahouse
+      name: 沈记茶棚
+      properties: [半公开, 低门槛, 流言加速]
+      social_effect: 话语传播快但来源在两次转述后经常丢失。
+    - id: place_south_field
+      name: 南湾七号田
+      properties: [低洼, 双重申报, 旧界石缺失, 现有稻苗]
+      social_effect: 首日争议中心；谁踩坏稻苗也会成为新的债。
+    - id: place_ancestral_hall
+      name: 陆氏支祠
+      properties: [私域, 储有族谱和契据, 对女性与外姓有限开放]
+      social_effect: 保存大量证据，同时控制证据出现的顺序。
+    - id: place_shen_house
+      name: 沈家东厢
+      properties: [隐蔽抄写处, 潮湿, 夜间可工作]
+      social_effect: 沈砚秋在这里形成事实草稿，但草稿没有独立法律身份。
+    - id: place_temple
+      name: 水母庙廊
+      properties: [流民暂居, 无稳定私密性, 夜间聚集]
+      social_effect: 册外者交换记忆、劳力和保护。
+
+institutions:
+  cadastral_rebuild:
+    goal: 重造土地税册，恢复征收与过割秩序。
+    process:
+      - 户主或利害关系人申报地块、坐落、四至、来源和纳税人
+      - 图董与相邻地户到地指界
+      - 册书记录面积、业主、佃户、凭据和异议
+      - 图内复核后形成初榜
+      - 无异议者先行成册，有异议者挂起或附注
+      - 县吏抽查并决定是否收受
+    failure_modes:
+      - 图董偏袒
+      - 旧名与现名无法对应
+      - 面积短少导致税粮无着
+      - 实际耕作者与契面业主分离
+      - 一地多卖、一契多押、绝户田被侵占
+  lineage:
+    powers: [保存族谱, 提供担保, 调解族内纠纷, 资助诉讼]
+    limits: [不能直接替代县署判决, 内部分支利益不一致]
+  market_credit:
+    mechanisms: [赊粮, 抵押, 人情担保, 劳役抵债]
+    consequence: 每次短期救济都会创造未来债权。
+
+evidence_system:
+  principle: 证据的作用取决于来源、连续性、当前持有人、相互印证和提出时机。
+  types:
+    - id: deed_chain
+      name: 契据链
+      strengths: [记载交易, 可见中人和年月]
+      weaknesses: [可能缺张, 一地多契, 名称变更, 可被扣留]
+    - id: tax_receipt
+      name: 完粮串票
+      strengths: [显示有人承担税粮]
+      weaknesses: [纳税人不必然是业主, 可能代纳]
+    - id: genealogy
+      name: 族谱与祠簿
+      strengths: [说明亲属与继承顺序]
+      weaknesses: [女性、养子、外来者可能被删略]
+    - id: family_document
+      name: 分家、婚书、招赘与过继文书
+      strengths: [解释土地如何进入家庭关系]
+      weaknesses: [常为私书, 副本分散, 对弱者记载含混]
+    - id: boundary
+      name: 界石、沟渠、老树与耕作痕迹
+      strengths: [可现场查验]
+      weaknesses: [水毁、迁移、自然变化]
+    - id: testimony
+      name: 四邻、中人、旧业主与实际耕作者证言
+      strengths: [能补足文书空白]
+      weaknesses: [受恩怨、地位、恐惧和记忆影响]
+
+evidence_admissibility:
+  weights_are_not_scores: true
+  questions:
+    - 谁在什么场合保存了它？
+    - 它能否与至少一种异质证据相互印证？
+    - 谁因其出现而获益，谁因其迟到而受损？
+    - 当前持有人是否有扣留其他文书的能力？
+    - 反对者能否进入提出异议的场所？
+
+resources:
+  food:
+    initial_state: 新粮未登场，陈粮偏紧
+    variables: [各户存粮, 市价, 赊欠, 船运到达]
+  labor:
+    initial_state: 丈量、插秧、修堤争夺同一批壮劳力
+    variables: [可用人日, 伤病, 欠工, 强制差役]
+  transport:
+    initial_state: 一艘公渡船、两艘私船可用
+    variables: [水位, 风, 船户意愿, 船资, 官差优先权]
+  writing:
+    initial_state: 纸张够十二日常量，墨锭受潮一块
+    variables: [纸, 墨, 印, 封泥, 抄写时间, 识字劳力]
+  credibility:
+    initial_state: 不是统一数值，而是每一对人物之间的有向判断
+    variables: [身份, 既往履约, 当众失言, 共同见证, 流言]
+
+environment:
+  river:
+    level: 略高于常年
+    trend: 缓涨
+    uncertainty: 上游雨情两日后才可靠传到
+  weather:
+    current: 闷热、多云
+    latent_front: 三日内可能连续降雨
+  disease:
+    current: 水母庙有两人腹泻，尚未被册局重视
+  crop:
+    current: 插秧尾声；南湾稻苗刚返青，不耐踩踏和淹水
+
+information_ecology:
+  channels:
+    official_notice:
+      speed: 慢
+      fidelity: 高
+      access: 识字者或能请人代读者
+    ferry_gossip:
+      speed: 快
+      fidelity: 中
+      distortion: 倾向放大县城惩罚和期限
+    teahouse_rumor:
+      speed: 很快
+      fidelity: 低
+      distortion: 倾向把程序性决定解释为私人胜负
+    lineage_message:
+      speed: 中
+      fidelity: 对族内高、对外不可验证
+    private_letter:
+      speed: 取决于船
+      fidelity: 高但可能被截留
+  transformation_rule: 每次转述保留事件骨架，但会按转述者的欲望和恐惧改写因果解释。
+
+external_pressures:
+  - id: pressure_deadline
+    name: 三十日封册期限
+    escalation: 每过三日，册局更倾向先登后议。
+  - id: pressure_tax_gap
+    name: 原额税粮缺口
+    escalation: 未落实纳税人的田越多，全图被驳回的风险越高。
+  - id: pressure_flood
+    name: 汛期
+    escalation: 水位影响界址、渡运、粮价、疾病和证据保存。
+  - id: pressure_returnees
+    name: 归乡者陆续回来
+    escalation: 每个归乡者都可能带回新证据，也可能推翻已形成的安排。
+

@@ -1,0 +1,145 @@
+schema_version: "0.1"
+
+characters:
+  - id: shen_yanqiu
+    name: 沈砚秋
+    age: 27
+    public_identity: 陆门沈氏，寡居；替眼病父亲磨墨理纸
+    actual_function: 册局主要抄写者与事实整理者
+    public_goal: 帮父亲按期交出一册没有明显错漏的归鹭图草册
+    private_goal: 取得一份不依赖亡夫或父亲的可执行生计与社会身份
+    fear: 她的劳动一旦被承认，她的越界也会同时被追究
+    misbelief: 只要记录足够准确，个人就可以不必承担选择的责任
+    secret: 她保存着亡夫生前交给她的一张残契，涉及南湾七号田
+    leverage:
+      - 能阅读并比较不同文书的细小矛盾
+      - 控制草册中异议如何被措辞
+      - 多数人误以为她只是誊写，不防备她
+    red_line: 不主动写入一项她明知从未发生的交易
+    embodied_state:
+      health: 长期睡眠不足，右腕偶有麻痛
+      sensory_bias: 对笔迹、纸张和用词异常高度敏感
+    social_blind_spot: 低估沉默、拖延和排列顺序本身也是权力
+    voice: 说话短而具体，避免判断；内心会把人际关系看成待核对的文书缺口
+
+  - id: shen_boan
+    name: 沈伯安
+    age: 58
+    public_identity: 旧册书，被推为归鹭图图董之一
+    public_goal: 在失明暴露前完成清丈，保住沈家最后的体面
+    private_goal: 让女儿在他死后仍被陆氏承认为有居处、有口粮的人
+    fear: 女儿的笔迹被县吏识出，父女同受欺官之罪
+    misbelief: 只要把女儿的功劳永远藏在自己名下，就能保护她
+    secret: 十年前曾替陆家把两笔实际分开的田税并到同一户名下
+    leverage: [熟悉旧地名, 认识绝户与迁徙者, 保有旧册残页的记忆]
+    red_line: 不当众承认自己已无法独立核册
+    embodied_state:
+      health: 近乎失明，久坐咳喘
+      dependency: 必须依靠女儿读写，却仍在公开场合发号施令
+    voice: 对外引经据例，对女儿则用省略的命令掩饰请求
+
+  - id: lu_jinghe
+    name: 陆敬和
+    age: 43
+    public_identity: 陆氏二房掌事，图董
+    public_goal: 用族中保存的契据尽快完成无争议地块登记
+    private_goal: 把战争期间由陆氏代纳税粮的土地并入可控制的产业
+    fear: 重查契据链会暴露二房曾抵押同一块田两次
+    misbelief: 没有强户暂时接管，归鹭洲只会重新陷入荒芜和械斗
+    secret: 南湾七号田的上手契仍锁在支祠，没有随申报一并提交
+    leverage: [粮仓, 族谱, 契据, 对县吏的接待能力, 可垫付全图税粮]
+    red_line: 不允许陆氏族产在公开场合被称作侵占
+    embodied_state:
+      health: 左腿旧伤，不能久走泥田
+      dependency: 需要别人替他完成现场指界
+    voice: 总把私人要求表述为替全洲承担风险
+
+  - id: he_asheng
+    name: 何阿生
+    age: 35
+    public_identity: 南湾佃户，战时留守者
+    public_goal: 把连续耕种七年的南湾七号田登记为自己承粮的田
+    private_goal: 让十二岁的养女何小满被承认为家内继承人
+    fear: 一旦承认自己只是代耕，七年投入和养女未来都会归零
+    misbelief: 实际耕作和替田纳税足以天然产生所有权
+    secret: 最初两年的税粮由陆家出银，他只是以劳役偿还
+    leverage: [现状占有, 邻田对其耕作的记忆, 修堤功劳, 掌握水道变化]
+    red_line: 不让陆家带人收割这一季稻谷
+    embodied_state:
+      health: 右脚有未愈合的锄伤
+      dependency: 农忙期不能失去劳力或被长期拘留
+    voice: 少说历史，多指向田里的实际痕迹；受辱时会突然把私事当众说出
+
+  - id: lin_suyun
+    name: 林素云
+    age: 31
+    public_identity: 逃难归来的林家长女，已嫁外县
+    public_goal: 以父亲遗下的半张红契取回南湾七号田
+    private_goal: 用田产换取离开暴力夫家的资本，并带走幼子
+    fear: 被认定为出嫁女无权代表绝户娘家，她将不得不回到丈夫身边
+    misbelief: 只要契是真的，别人就没有资格追问她为何迟到七年
+    secret: 她知道弟弟可能仍活着；若弟弟回来，她自己的继承主张会削弱
+    leverage: [半张红契, 对旧宅与界址的童年记忆, 县城女佣关系带来的消息]
+    red_line: 不公开承认田产是她离婚家出走的筹码
+    embodied_state:
+      health: 左耳听力受损
+      dependency: 必须在丈夫派人来寻她之前完成申报
+    voice: 对制度用词生疏但记忆极具体；会把不确定的记忆说得过分肯定
+
+  - id: zhou_jiren
+    name: 周继仁
+    age: 39
+    public_identity: 县粮房书吏，奉命巡核各图进度
+    public_goal: 按期限收齐格式合规、税额对得上的清册
+    private_goal: 不让上司发现全县重造的时限根本不现实
+    fear: 任何复杂争议都会变成他的失职记录
+    misbelief: 程序上的暂时决定不会真正伤害人，之后总能申诉纠正
+    secret: 县里已暗示，无法落实纳税人的荒田可先归入愿意承粮的大户名下
+    leverage: [格式解释权, 抽查权, 收件或退件权, 县城消息]
+    red_line: 不接受一份会令总税额减少的册子
+    embodied_state:
+      health: 怕水，乘船后眩晕恶心
+      dependency: 在洲上必须依靠当地人安排食宿与交通
+    voice: 避免谈归属，只谈格式、期限和可操作性
+
+relationships:
+  - from: shen_yanqiu
+    to: shen_boan
+    public: 孝顺女儿依附父亲
+    private: 相互保护也相互囚禁
+    debt: 父亲教她识字；她维持父亲仍能任事的假象
+    tension: 她越能干，父亲越不能承认她
+  - from: shen_yanqiu
+    to: lu_jinghe
+    public: 亡夫族叔与寡侄媳
+    private: 他提供居处，她替族中处理过不愿公开的文书
+    debt: 陆氏供给她口粮，但占有她劳动的署名权
+    tension: 两人都知道残契可能存在，都不愿先说破
+  - from: shen_yanqiu
+    to: lin_suyun
+    public: 初次相见的申报人与代笔者
+    private: 两名制度边缘女性可能结盟，也可能争夺唯一可被承认的例外
+    tension: 沈砚秋掌握的残契能补全林素云的红契，也可能证明她无权继承
+  - from: he_asheng
+    to: lu_jinghe
+    public: 佃户与旧东家
+    private: 战时互相依赖，战后都在重写那段依赖的含义
+    debt: 陆家出过种粮和早期税银；何阿生救过陆家留守老人
+    tension: 双方都把同一笔往来解释成对方欠自己
+  - from: he_asheng
+    to: lin_suyun
+    public: 现耕者与旧业主之女
+    private: 林素云童年曾认识他，他却声称从未见过她
+    tension: 她需要他的耕作证明土地存在，他需要否定她对土地的资格
+  - from: zhou_jiren
+    to: shen_boan
+    public: 县吏与地方图董
+    private: 一个需要快速完成，一个需要掩盖无法亲自核册
+    tension: 彼此都能揭穿对方交付不可能完成的工作
+
+shared_unknowns:
+  - 南湾七号田残契与林素云半张红契是否原属同一份文书
+  - 林素云的弟弟是否仍活着以及何时可能回来
+  - 沈伯安十年前并税的两笔田中是否包含南湾七号田
+  - 县里所谓先登后议是否真的允许日后更正
+

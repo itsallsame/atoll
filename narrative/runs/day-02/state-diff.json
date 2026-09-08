@@ -1,0 +1,91 @@
+{
+  "scenario": "day-02-fourth-patient",
+  "before": {
+    "boundary.east": "disputed",
+    "crop.damage_rows": 3,
+    "disease.temple_cases": 4,
+    "evidence.fragment_match": "probable",
+    "evidence.upper_deed": "withheld",
+    "ferry.status": "open",
+    "grain.price_per_sheng": 66,
+    "he_asheng.credibility": "mixed_increase",
+    "he_asheng.tax_origin": "public",
+    "inspection.status": "ordered",
+    "lu_claim.debt_basis": "opened",
+    "ownership": "unresolved",
+    "registration.south_field_7": "attached_pending",
+    "review.after_flood": true,
+    "river.level": "high",
+    "rumor.tax_takeover": "amplified",
+    "shen_yanqiu.public_role": "visible_to_participants",
+    "shen_yanqiu.secret_exposure": "unchanged",
+    "taxpayer.current_year": "he_asheng"
+  },
+  "after": {
+    "boundary.east": "disputed",
+    "claimant.lin_suyun.note": "出嫁权属待核",
+    "claimant.lin_suyun.recorded_as": "林素云",
+    "claimant.lin_suyun.requested_name": "林素云",
+    "crop.damage_rows": 3,
+    "disease.mobility": "reduced",
+    "disease.temple_cases": 4,
+    "evidence.fragment_match": "probable",
+    "evidence.upper_deed": "withheld",
+    "ferry.status": "restricted_until_sunset",
+    "ferryman.claim": "one_day_grain",
+    "grain.price_per_sheng": 66,
+    "he_asheng.credibility": "mixed_increase",
+    "he_asheng.tax_origin": "public",
+    "he_household.food_today": "none",
+    "inspection.status": "ordered",
+    "lin_suyun.exit": "blocked",
+    "lu_claim.debt_basis": "opened",
+    "lu_offer.grain_dou": 2,
+    "lu_offer.requires": "written_debt",
+    "naming_dispute": "opened",
+    "naming_precedent": "provisional",
+    "ownership": "unresolved",
+    "registration.south_field_7": "attached_pending",
+    "review.after_flood": true,
+    "river.level": "high",
+    "rumor.tax_takeover": "amplified",
+    "shen_yanqiu.public_role": "visible_to_participants",
+    "shen_yanqiu.secret_exposure": "unchanged",
+    "south_field.flooding": "slowed",
+    "taxpayer.current_year": "he_asheng"
+  },
+  "changes": [
+    {
+      "change": "南湾耕作风险上升，修堤与守田开始争夺劳力。",
+      "event_id": "E001"
+    },
+    {
+      "change": "昨日未进入主线的疾病成为渡运与聚集规则必须处理的问题。",
+      "event_id": "E002"
+    },
+    {
+      "change": "林素云确认自己的行动窗口只剩半日。",
+      "event_id": "E003"
+    },
+    {
+      "change": "魏家来人暂时不能登洲，林素云也无法自行离开；官差例外引起不满。",
+      "event_id": "E004"
+    },
+    {
+      "change": "何阿生得到现实选择，陆氏的土地争夺转化为债务争夺。",
+      "event_id": "E005"
+    },
+    {
+      "change": "南湾暂缓进水，但何家当日无粮，船户取得新的小额债权。",
+      "event_id": "E006"
+    },
+    {
+      "change": "册局必须决定出嫁女性能否以本名作为土地争议当事人。",
+      "event_id": "E007"
+    },
+    {
+      "change": "林素云的本名第一次进入册局事实；一个程序例外也被创造出来。",
+      "event_id": "E008"
+    }
+  ]
+}

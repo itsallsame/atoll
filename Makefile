@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope dev clean e2e-loop
+.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope dev clean e2e-loop narrative-web narrative-serve
 
 # server/daemon ship namespaced (atoll-server / atoll-daemon); the entry
 # command itself is plain `atoll` — its own name IS the namespace.
@@ -58,6 +58,13 @@ build-release:
 	  echo "[build-release] cmd/$$b -> bin/$$out (stripped)"; \
 	  go build -ldflags="$(LDFLAGS_RELEASE)" -o bin/$$out ./cmd/$$b || exit 1; \
 	done
+
+narrative-web:
+	@mkdir -p bin
+	go build -o bin/narrative-web ./cmd/narrative-web
+
+narrative-serve: narrative-web
+	./bin/narrative-web --addr 0.0.0.0:8841 --content narrative
 
 # ----------------------------------------------------------------------------
 # web — 按 WEB_VERSION 取 atoll-web 的那个 tag，构建，铺进 web/dist。

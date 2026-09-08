@@ -1,0 +1,12 @@
+{
+  "scenario_id": "day-01-south-field",
+  "day": 1,
+  "title": "第一张挂号",
+  "chapter_title": "第一张挂号",
+  "pov": "沈砚秋",
+  "event_count": 10,
+  "seeded_events": 4,
+  "emergent_events": 6,
+  "end_condition_met": true,
+  "registration_state": "attached_pending"
+}

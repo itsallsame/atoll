@@ -1,0 +1,92 @@
+schema_version: "0.1"
+work_title: 名册之外
+
+author_contract:
+  reader_promise: >-
+    读者将看见一个共同体如何在日常申报、丈量、交换、隐瞒和作证中重新制造秩序；
+    每一次制度决定同时也是私人关系的选择。
+  central_question: 谁有权让哪一种过去成为有效的过去？
+  emotional_question: 一个人能否在替别人书写身份时，为自己争得一个名字？
+  governing_paradox: 沈砚秋书写了所有人的名字，却不能以自己的名字在册局署名。
+  tone:
+    - 克制而紧张
+    - 具体的物质生活先于抽象议论
+    - 人物都能为自己的行为提出可信理由
+    - 正义总伴随成本，获救者也可能成为别人的灾难
+  exclusions:
+    - 不把人物写成现代政治立场的古装代言人
+    - 不用一册统管土地、户籍、婚姻、债务和身份
+    - 不设全知全能或价值中立的三人证言委员会
+    - 不靠突然出现的绝对证据一次解决争议
+    - 不让灾难只承担制造高潮的机械功能
+    - 不在小说表层出现 Agent、提示词或模拟器术语
+
+historical_frame:
+  calendar: 清同治六年农历五月
+  gregorian_year: 1867
+  region: 浙西衢江支流流域
+  county: 澜溪县（虚构）
+  focus_unit: 归鹭图及归鹭洲市镇
+  reconstruction: 战后土地清丈与鱼鳞图册重造
+  thirty_day_scope: 完成归鹭图第一轮申报、丈量和争议挂起清册，不是重建全县全部档案
+
+invariants:
+  - id: INV-01
+    rule: 没有任何角色能够直接获得完整客观事实。
+  - id: INV-02
+    rule: 每项关键权利至少牵涉两类证据；单张纸不能自动终结争议。
+  - id: INV-03
+    rule: 新册改变的是权利可执行性，不会回溯性地改变历史真相。
+  - id: INV-04
+    rule: 角色的重大决定必须能从其目标、信念、关系、身体和当时可见信息推出。
+  - id: INV-05
+    rule: 任何获益都必须产生承担者、成本或新的义务。
+  - id: INV-06
+    rule: 导演只能投放既有世界允许的压力、机会和信息，不能指定角色内心或结论。
+  - id: INV-07
+    rule: 巧合可以制造困境，不能直接解决困境。
+  - id: INV-08
+    rule: 重要事件一经进入事实账只能追加解释，不能覆写。
+
+truth_planes:
+  world_fact:
+    visibility: 仅模拟器与作者可读
+    mutable: false
+    purpose: 保存事件、物件、空间与制度状态的客观变更
+  character_belief:
+    visibility: 仅对应角色可读；通过语言或行为才能外显
+    mutable: true
+    properties: [source, confidence, emotional_weight, last_reinforced_at, distortion]
+  reader_disclosure:
+    visibility: 作者层
+    mutable: true
+    purpose: 决定读者在每个场景知道、怀疑和误判什么
+
+narrative_attractors:
+  - id: NA-01
+    name: 第一张挂号
+    pressure: 册局必须在争议未清时决定一块田是先登、缓登还是附注登册。
+  - id: NA-02
+    name: 消失的人回来
+    pressure: 一个被当作死者处理的人回来，使既有婚姻、继承或占有关系同时失稳。
+  - id: NA-03
+    name: 税粮缺口
+    pressure: 有田无人愿意署名纳税；不补足缺口，整图清丈都可能被驳回。
+  - id: NA-04
+    name: 水抹去界线
+    pressure: 汛水使旧界址和新丈量结果发生矛盾。
+  - id: NA-05
+    name: 榜册公示
+    pressure: 暂时的书写第一次成为公众能够引用的现实。
+  - id: NA-06
+    name: 无名者落笔
+    pressure: 沈砚秋必须决定是否在一份足以改变他人命运的文书上留下自己的名字。
+
+ending_constraint:
+  fixed_destination: 第三十日，新册或争议册必须被封缄送县。
+  not_fixed:
+    - 谁获得哪块土地
+    - 沈砚秋是否署真名
+    - 哪一份过去被共同体承认
+    - 谁付出最终代价
+

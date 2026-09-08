@@ -1,0 +1,12 @@
+{
+  "scenario_id": "day-02-fourth-patient",
+  "day": 2,
+  "title": "第四个病人",
+  "chapter_title": "第四个病人",
+  "pov": "林素云",
+  "event_count": 8,
+  "seeded_events": 3,
+  "emergent_events": 5,
+  "end_condition_met": true,
+  "registration_state": "林素云"
+}

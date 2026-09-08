@@ -1,0 +1,70 @@
+{
+  "scenario": "day-01-south-field",
+  "before": {
+    "boundary.east": "missing",
+    "registration.south_field_7": "two_unresolved_claims",
+    "river.level": "slightly_high",
+    "shen_yanqiu.public_role": "unacknowledged_copyist",
+    "taxpayer.current_year": "unassigned"
+  },
+  "after": {
+    "boundary.east": "disputed",
+    "crop.damage_rows": 3,
+    "evidence.fragment_match": "probable",
+    "evidence.upper_deed": "withheld",
+    "he_asheng.credibility": "mixed_increase",
+    "he_asheng.tax_origin": "public",
+    "inspection.status": "ordered",
+    "lu_claim.debt_basis": "opened",
+    "ownership": "unresolved",
+    "registration.south_field_7": "attached_pending",
+    "review.after_flood": true,
+    "river.level": "noticeably_rising",
+    "rumor.tax_takeover": "amplified",
+    "shen_yanqiu.public_role": "visible_to_participants",
+    "shen_yanqiu.secret_exposure": "unchanged",
+    "taxpayer.current_year": "he_asheng"
+  },
+  "changes": [
+    {
+      "change": "半张红契获收看但尚未获正式收件。",
+      "event_id": "E001"
+    },
+    {
+      "change": "串票证明连续纳粮，但未证明最初来源或所有权。",
+      "event_id": "E002"
+    },
+    {
+      "change": "未经证实的水情迅速进入茶棚和册局。",
+      "event_id": "E003"
+    },
+    {
+      "change": "她确认两纸原属同张的可能性很高，但继承资格仍未得到证明；林素云只看见她停笔片刻。",
+      "event_id": "E004"
+    },
+    {
+      "change": "茶棚把程序可能性传成了已经决定的没收，册局门外开始聚人。",
+      "event_id": "E005"
+    },
+    {
+      "change": "册局从证据收集转入限时处置。",
+      "event_id": "E006"
+    },
+    {
+      "change": "沈砚秋第一次以实际册书身份公开随行，沈伯安的失明疑点加深。",
+      "event_id": "E007"
+    },
+    {
+      "change": "现场观察削弱了界石的证明力，却没有证明枫杨旧址；丈量踩倒了三行新苗。",
+      "event_id": "E008"
+    },
+    {
+      "change": "何阿生的坦白提高了其个人可信度，却给陆氏留下主张债权的入口；林素云的记忆得到细节但仍无旁证。",
+      "event_id": "E009"
+    },
+    {
+      "change": "何阿生保住当季耕作却承担税粮；林素云进入记录却没有收回田；陆氏未能取得登记但获得追索垫银的理由；沈砚秋的措辞成为公开现实。",
+      "event_id": "E010"
+    }
+  ]
+}

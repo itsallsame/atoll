@@ -1,0 +1,365 @@
+schema_version: "0.1"
+scenario_id: day-01-south-field
+day: 1
+title: 第一张挂号
+duration: 四小时
+start: 同治六年五月初八 辰正
+end_condition: 南湾七号田被写入草册为先登、缓登或附注登册之一
+result_state_key: registration.south_field_7
+memory_characters: [shen_yanqiu, he_asheng, lin_suyun]
+initial_world_state:
+  river.level: slightly_high
+  boundary.east: missing
+  registration.south_field_7: two_unresolved_claims
+  taxpayer.current_year: unassigned
+  shen_yanqiu.public_role: unacknowledged_copyist
+
+chapter:
+  number: 1
+  title: 第一张挂号
+  pov: 沈砚秋
+  opening: 林素云把半张红契推到桌心的时候，沈砚秋先看见的不是字，是纸边第三个虫孔。
+  passages:
+    - source: seed_he_claim
+      text: 何阿生随后把五张完粮串票压在红契旁边。两种年月、两种纸色，都指着南湾同一块田。
+    - source: decision_fragment
+      option: compare_and_withhold
+      text: 她借着替父亲磨墨，把袖中的残纸隔在下面。虫孔一一透亮，断边也咬得严丝合缝。她没有说话，只把林素云的名字往下挪了一行。
+    - source: decision_boundary
+      option: water_reveals_ambiguity
+      text: 午前赶到南湾，旧沟已经没进浑水。何阿生指的石头底下没有旧土色，林素云说的枫杨却也只剩一句童年的话。
+    - source: decision_registration
+      option: attach_and_separate_tax
+      text: 她写到“林氏故业”时，何阿生的脚从门槛上收了回去。写到“今岁粮暂由何阿生承纳”，林素云却笑了一声。
+  closing: 砚秋没有抬头。水正从南湾那条已经看不见的旧沟里，一寸一寸漫上来。
+
+purpose:
+  - 验证角色是否依据私有目标和不完整信念自主行动
+  - 验证环境变化能否经过至少两层因果传导改变制度选择
+  - 生成同一事件的三个相互冲突但各自可信的记忆版本
+
+initial_public_state:
+  notice: 今日受理南湾地块申报，午前到田指界，酉初前决定是否挂号。
+  registry_queue:
+    - 林素云申报南湾七号田为林家遗产
+    - 何阿生申报南湾七号田为战后承粮自耕田
+  weather: 闷热无雨，远处有雷
+  river: 缓涨但渡船仍通
+  missing_item: 南湾七号田东界石未找到
+
+initial_private_state:
+  shen_yanqiu:
+    knows:
+      - 两份申报指向同一块田
+      - 她的残契可能与林素云的半张红契相关
+      - 父亲今日无法看清契面细字
+    does_not_know:
+      - 陆敬和仍持有上手契
+      - 何阿生前两年税银的真正来源
+    immediate_pressure: 必须在周继仁到册局前整理出可交付格式
+  shen_boan:
+    knows:
+      - 旧册上的地名与如今南湾七号未必完全对应
+      - 陆氏十年前并税可能牵涉此田
+    immediate_pressure: 不能让人发现他无法亲自核验文书
+  lu_jinghe:
+    knows:
+      - 上手契在支祠
+      - 若出示全套契据，二房另一笔重复抵押也可能暴露
+    immediate_pressure: 促成先由陆氏承粮，避免全图税额出现空缺
+  he_asheng:
+    knows:
+      - 自己连续耕种七年
+      - 前两年陆家出银但他已用劳役偿还
+      - 涨水后东侧旧沟会消失
+    immediate_pressure: 午后必须回田看水，不能整天耗在册局
+  lin_suyun:
+    knows:
+      - 半张红契真实
+      - 她记得东界是一棵枫杨，不是界石
+      - 丈夫的人最快明日可能到洲上
+    immediate_pressure: 今日必须让主张进入公开记录
+  zhou_jiren:
+    knows:
+      - 县里倾向愿意纳税者先行挂号
+      - 归鹭图总额不能减少
+    immediate_pressure: 午后还要去下一图，不愿留下过夜
+
+seed_events:
+  - id: seed_lin_claim
+    order: 10
+    at: 辰正
+    event: 林素云把半张红契交到册局，要求立刻收件。
+    director_source: 初始条件
+    location: 旧社仓册局
+    actor: lin_suyun
+    action: submit_claim
+    perceived_goal: 让林家旧业主张在丈夫寻来前进入公开记录。
+    intended_effect: 立即收件并取得申报次序。
+    actual_effect: 半张红契获收看但尚未获正式收件。
+    participants: [lin_suyun, shen_yanqiu, shen_boan]
+    observers: [lin_suyun, shen_yanqiu, shen_boan]
+  - id: seed_he_claim
+    order: 20
+    at: 辰正后一刻
+    event: 何阿生带着近五年的完粮串票到场，拒绝与林素云共同申报。
+    director_source: 初始条件
+    location: 旧社仓册局
+    actor: he_asheng
+    action: submit_claim
+    perceived_goal: 保住七年耕作和养女未来。
+    intended_effect: 以串票证明自己有资格承粮并占有。
+    actual_effect: 串票证明连续纳粮，但未证明最初来源或所有权。
+    participants: [he_asheng, lin_suyun, shen_yanqiu, shen_boan]
+    observers: [he_asheng, lin_suyun, shen_yanqiu, shen_boan]
+  - id: seed_rain_rumor
+    order: 30
+    at: 巳初
+    event: 渡口传来上游昨夜暴雨的未经证实消息。
+    director_source: world.environment.latent_front
+    location: 乌篷渡
+    actor: environment
+    action: relay_rumor
+    perceived_goal: 传递可能影响出行的水情。
+    intended_effect: 提醒洲民上游来水。
+    actual_effect: 未经证实的水情迅速进入茶棚和册局。
+    participants: []
+    observers: [lu_jinghe, he_asheng, shen_yanqiu]
+  - id: seed_zhou_arrives
+    order: 60
+    at: 巳正
+    event: 周继仁提前抵达，宣布午后离洲前要看到处理意见。
+    director_source: world.external_pressures.pressure_deadline
+    location: 旧社仓册局
+    actor: zhou_jiren
+    action: arrive
+    perceived_goal: 在午后离洲前收走可交差的处理意见。
+    intended_effect: 压缩复核时间。
+    actual_effect: 册局从证据收集转入限时处置。
+    participants: [zhou_jiren, shen_boan, shen_yanqiu, he_asheng, lin_suyun]
+    observers: [zhou_jiren, shen_boan, shen_yanqiu, he_asheng, lin_suyun]
+
+decision_points:
+  - id: decision_fragment
+    order: 40
+    at: 巳初一刻
+    location: 旧社仓册局
+    actor: shen_yanqiu
+    causes: [seed_lin_claim, seed_he_claim]
+    participants: [shen_yanqiu, lin_suyun]
+    observers: [shen_yanqiu, lin_suyun]
+    options:
+      - id: compare_and_withhold
+        action: compare_documents
+        summary: 沈砚秋趁众人争论，把半张红契与自己暗藏的残契隔纸比对，发现虫孔与断边相合，却没有立即说出残契来源。
+        perceived_goal: 确认文书关系，同时避免暴露亡夫交付残契的秘密。
+        intended_effect: 增加对林素云申报的判断依据。
+        actual_effect: 她确认两纸原属同张的可能性很高，但继承资格仍未得到证明；林素云只看见她停笔片刻。
+        delta: {evidence.fragment_match: probable, shen_yanqiu.secret_exposure: unchanged}
+        utility: {accuracy: 4, protect_secret: 5, red_line: 2, exposure_risk: -1}
+      - id: disclose_immediately
+        action: disclose_evidence
+        summary: 沈砚秋当众取出残契，与林素云的半契拼合。
+        perceived_goal: 让证据尽快进入公开复核。
+        intended_effect: 证明两张残纸的关系。
+        actual_effect: 她暴露残契和代为保管的历史，父亲与陆氏都必须立即回应。
+        delta: {evidence.fragment_match: public, shen_yanqiu.secret_exposure: high}
+        utility: {accuracy: 5, protect_secret: -6, red_line: 2, exposure_risk: -5}
+      - id: ignore_fragment
+        action: withhold_evidence
+        summary: 沈砚秋不作比较，仍把半契当作孤证搁置。
+        perceived_goal: 避免卷入争议。
+        intended_effect: 维持纯誊写者身份。
+        actual_effect: 册局错过了发现文书关系的机会。
+        delta: {evidence.fragment_match: unknown, shen_yanqiu.secret_exposure: unchanged}
+        utility: {accuracy: -4, protect_secret: 5, red_line: -3, exposure_risk: 1}
+
+  - id: decision_lu_evidence
+    order: 50
+    at: 巳初二刻
+    location: 沈记茶棚
+    actor: lu_jinghe
+    causes: [seed_rain_rumor]
+    participants: [lu_jinghe]
+    observers: [lu_jinghe]
+    options:
+      - id: withhold_and_rumor
+        action: withhold_evidence
+        summary: 陆敬和听见上游暴雨的传言后没有去支祠取上手契，转而让人散话说县里会把无人承粮的田并给陆氏。
+        perceived_goal: 不暴露重复抵押风险，并推动当事人接受陆氏承粮。
+        intended_effect: 以期限压力换取妥协。
+        actual_effect: 茶棚把程序可能性传成了已经决定的没收，册局门外开始聚人。
+        delta: {evidence.upper_deed: withheld, rumor.tax_takeover: amplified}
+        utility: {protect_lineage: 5, avoid_exposure: 5, finish_register: 3, reputation_risk: -2}
+      - id: fetch_full_chain
+        action: disclose_evidence
+        summary: 陆敬和立即去支祠取上手契交册局复核。
+        perceived_goal: 用完整文书链尽快结束争议。
+        intended_effect: 证明陆氏对田地的控制来源。
+        actual_effect: 上手契进入复核，同时增加另一笔重复抵押被查出的风险。
+        delta: {evidence.upper_deed: disclosed, duplicate_mortgage.exposure: possible}
+        utility: {protect_lineage: 2, avoid_exposure: -6, finish_register: 5, reputation_risk: 1}
+
+  - id: decision_zhou_process
+    order: 70
+    at: 巳正一刻
+    location: 旧社仓册局
+    actor: zhou_jiren
+    causes: [seed_lin_claim, seed_he_claim, decision_lu_evidence, seed_zhou_arrives]
+    participants: [zhou_jiren, shen_boan, shen_yanqiu, he_asheng, lin_suyun]
+    observers: [zhou_jiren, shen_boan, shen_yanqiu, he_asheng, lin_suyun]
+    options:
+      - id: inspect_before_departure
+        action: request_inspection
+        summary: 周继仁拒绝只凭半契或串票选定业主，要求午前到南湾看界；沈伯安以咳喘为由留下，由沈砚秋代记。
+        perceived_goal: 在离洲前得到一份格式上可交代的处理意见。
+        intended_effect: 缩短争论并保全税额。
+        actual_effect: 沈砚秋第一次以实际册书身份公开随行，沈伯安的失明疑点加深。
+        delta: {inspection.status: ordered, shen_yanqiu.public_role: visible_to_participants}
+        utility: {finish_today: 4, procedural_cover: 5, avoid_complexity: -2, preserve_tax: 3}
+      - id: assign_willing_taxpayer
+        action: mark_register
+        summary: 周继仁不去看田，要求先把愿意承粮者写入册中。
+        perceived_goal: 立即填平税额缺口。
+        intended_effect: 当场结束程序争议。
+        actual_effect: 归属与纳税被混同，落败者准备越级申诉。
+        delta: {inspection.status: skipped, appeal.risk: high}
+        utility: {finish_today: 6, procedural_cover: -5, avoid_complexity: 3, preserve_tax: 4}
+      - id: suspend_without_inspection
+        action: suspend_case
+        summary: 周继仁把两份申报一并退回，命令水退后重报。
+        perceived_goal: 避免在证据不足时承担责任。
+        intended_effect: 把争议留给下次复核。
+        actual_effect: 本年税粮继续无人承担，全图退件风险上升。
+        delta: {inspection.status: cancelled, tax_gap: increased}
+        utility: {finish_today: -4, procedural_cover: 2, avoid_complexity: 5, preserve_tax: -5}
+
+  - id: decision_boundary
+    order: 80
+    at: 午初
+    location: 南湾七号田
+    actor: environment
+    causes: [seed_rain_rumor, decision_zhou_process]
+    participants: [shen_yanqiu, zhou_jiren, he_asheng, lin_suyun]
+    observers: [shen_yanqiu, zhou_jiren, he_asheng, lin_suyun]
+    options:
+      - id: water_reveals_ambiguity
+        action: inspect_boundary
+        summary: 众人赶到南湾时水已漫进旧沟。何阿生指出一块石头作东界，林素云坚持儿时的东界是枫杨；石底没有多年埋压的土色。
+        perceived_goal: 各方试图用现场痕迹支持自己的土地叙述。
+        intended_effect: 在水淹前确认四至。
+        actual_effect: 现场观察削弱了界石的证明力，却没有证明枫杨旧址；丈量踩倒了三行新苗。
+        delta: {boundary.east: disputed, crop.damage_rows: 3, river.level: noticeably_rising}
+        utility: {world_consistency: 10}
+
+  - id: decision_he_testimony
+    order: 90
+    at: 午初一刻
+    location: 南湾七号田
+    actor: he_asheng
+    causes: [decision_boundary]
+    participants: [he_asheng, lin_suyun, shen_yanqiu, zhou_jiren]
+    observers: [he_asheng, lin_suyun, shen_yanqiu, zhou_jiren]
+    options:
+      - id: limited_admission
+        action: testify
+        summary: 林素云说枫杨是父亲逃难前一年亲手砍掉的。何阿生承认自己来时树已不在，也承认最初两年税银由陆家垫付，但强调已经用修堤劳役还清。
+        perceived_goal: 用有限承认保护现耕事实，不让不确定处被解释为欺骗。
+        intended_effect: 提高个人可信度并切断陆氏旧债。
+        actual_effect: 何阿生的坦白提高了其个人可信度，却给陆氏留下主张债权的入口；林素云的记忆得到细节但仍无旁证。
+        delta: {he_asheng.tax_origin: public, he_asheng.credibility: mixed_increase, lu_claim.debt_basis: opened}
+        utility: {keep_field: 4, credibility: 5, conceal_debt: -3, red_line: 2}
+      - id: deny_all_support
+        action: testify
+        summary: 何阿生坚称历年税粮全由自己承担，也否认知道旧枫杨。
+        perceived_goal: 切断陆氏和林氏的全部主张。
+        intended_effect: 把连续占有解释为完整权利。
+        actual_effect: 一旦串票来源被追查，他的全部证言都会失去信用。
+        delta: {he_asheng.tax_origin: denied, he_asheng.credibility_risk: high}
+        utility: {keep_field: 5, credibility: -5, conceal_debt: 5, red_line: -3}
+      - id: remain_silent
+        action: refuse
+        summary: 何阿生拒绝回答早年税粮来源。
+        perceived_goal: 不给任何一方新的把柄。
+        intended_effect: 保留模糊空间。
+        actual_effect: 沉默被县吏记作待查，现耕主张转弱。
+        delta: {he_asheng.tax_origin: withheld, he_asheng.credibility: decreased}
+        utility: {keep_field: -3, credibility: -2, conceal_debt: 4, red_line: 1}
+
+  - id: decision_registration
+    order: 100
+    at: 午正
+    location: 旧社仓册局
+    actor: shen_yanqiu
+    causes: [decision_fragment, decision_lu_evidence, decision_boundary, decision_he_testimony]
+    participants: [shen_yanqiu, zhou_jiren, he_asheng, lin_suyun, lu_jinghe, shen_boan]
+    observers: [shen_yanqiu, zhou_jiren, he_asheng, lin_suyun, lu_jinghe, shen_boan]
+    options:
+      - id: attach_and_separate_tax
+        action: mark_register
+        summary: "沈砚秋写下：『林氏故业，何阿生现耕；东界俟水退复勘。今岁粮暂由何阿生承纳，不作归业据。』周继仁准其附注挂号。"
+        perceived_goal: 既不抹掉林氏旧业主张，也不让当季税粮无着。
+        intended_effect: 形成一项各方暂能承受的程序决定。
+        actual_effect: 何阿生保住当季耕作却承担税粮；林素云进入记录却没有收回田；陆氏未能取得登记但获得追索垫银的理由；沈砚秋的措辞成为公开现实。
+        delta: {registration.south_field_7: attached_pending, taxpayer.current_year: he_asheng, ownership: unresolved, review.after_flood: true}
+        utility: {accuracy: 5, preserve_claims: 5, preserve_tax: 4, protect_secret: 2, finish_today: 3}
+      - id: register_lu_as_taxpayer
+        action: mark_register
+        summary: 沈砚秋按陆敬和的提议，先把陆氏写作承粮户，余议另注。
+        perceived_goal: 以最有支付能力者填平税额。
+        intended_effect: 确保册子被县里收受。
+        actual_effect: 陆氏取得事实控制，另两方必须付出更高申诉成本。
+        delta: {registration.south_field_7: lu_provisional, taxpayer.current_year: lu_lineage, ownership: biased_pending}
+        utility: {accuracy: -4, preserve_claims: -3, preserve_tax: 6, protect_secret: 4, finish_today: 5}
+      - id: suspend_everything
+        action: suspend_case
+        summary: 沈砚秋只写争议待查，不指定本年纳税人。
+        perceived_goal: 避免文字偏向任何一方。
+        intended_effect: 把所有决定留到水退复勘。
+        actual_effect: 税额出现缺口，周继仁拒绝收件并要求当日改写。
+        delta: {registration.south_field_7: suspended, taxpayer.current_year: unassigned, rejection_risk: certain}
+        utility: {accuracy: 2, preserve_claims: 5, preserve_tax: -6, protect_secret: 3, finish_today: -5}
+
+latent_events:
+  trigger_only_do_not_force:
+    - if: 有人前往南湾实地指界
+      then: 发现所谓东界石可能是近年修堤时移来的压脚石
+    - if: 林素云的红契被置于沈砚秋残契旁比较
+      then: 两张纸的纤维、虫孔和断边高度吻合，但文字仍不能单独证明继承资格
+    - if: 有人公开追问早年税粮来源
+      then: 何阿生必须在承认陆家资助和撒谎之间选择
+    - if: 陆敬和离开众人视线超过半个时辰
+      then: 他有机会去支祠取出、调换或继续扣留上手契
+    - if: 水位在午前明显上涨
+      then: 南湾丈量窗口缩短，册局更可能依据不完整材料作程序决定
+
+forbidden_shortcuts:
+  - 不得出现能单独决定田归属的完整官契
+  - 不得让失踪弟弟在本场景及时回来作证
+  - 不得由县吏直接宣判最终产权
+  - 不得让沈砚秋仅因同情某一方而违反其红线
+
+required_outputs:
+  objective_ledger:
+    description: 按 event_contract 写出全部客观事件与状态变化
+  subjective_memories:
+    characters: [shen_yanqiu, he_asheng, lin_suyun]
+    description: 各自只包含可感知内容，并标明信心、情绪权重与可能扭曲
+  state_diff:
+    description: 比较前后资源、关系、信念、制度队列和公开声誉
+  scene_candidate:
+    length_cn_chars: 2500-4000
+    pov: shen_yanqiu
+    requirement: 删除模拟器术语后仍具有欲望、阻碍、选择、转折与余波
+
+evaluation:
+  - id: E-01
+    check: 是否至少三项关键行动不是种子事件直接指定的？
+  - id: E-02
+    check: 水情或消息是否经过至少两个中间状态才影响人物选择？
+  - id: E-03
+    check: 三份记忆是否在事实骨架一致的情况下对原因和意义产生分歧？
+  - id: E-04
+    check: 最终程序决定是否让至少一人获益、至少一人承担成本并产生新义务？
+  - id: E-05
+    check: 沈砚秋是否通过措辞、顺序或沉默作出不能伪装成纯誊写的选择？
