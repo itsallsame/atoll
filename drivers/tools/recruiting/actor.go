@@ -133,7 +133,9 @@ func run(sys actorbase.Sys, cfg Config) error {
 		case TypeCompanyAdd, TypeCompanyUpdate, TypeCompanyPause, TypeCompanyResume, TypeCompanyArchive, TypeCompanyRestore,
 			TypeCompanyGet, TypeCompanyList:
 			handleCompanyMessage(sys, repository, msg)
-		case TypeSourceGet, TypeJobGet, TypeWorkGet, TypeWorkList, TypeDailyRunGet:
+		case TypeSourceAdd, TypeSourceUpdate, TypeSourceValidate, TypeSourcePause, TypeSourceResume, TypeSourceArchive, TypeSourceRestore:
+			handleSourceMessage(sys, repository, msg)
+		case TypeSourceGet, TypeSourceList, TypeJobGet, TypeWorkGet, TypeWorkList, TypeDailyRunGet:
 			handleResourceQuery(sys, repository, msg)
 		case TypeSystemReconcile:
 			handleOutboxReconcile(sys, repository, msg)
@@ -221,7 +223,7 @@ func handleStart(sys actorbase.Sys, cfg Config, state *storedState, msg actorbas
 		}
 	}
 	if err := dispatch(sys, msg.Cause(), work); err != nil {
-		_, _ = sys.Fail(msg, "dispatch_failed", err.Error())
+		_, _ = sys.Fail(msg, ErrorExecutionUnavailable, "executor dispatch failed: "+err.Error())
 		return
 	}
 	response := responseFor(work)
@@ -331,12 +333,12 @@ func handleExecutionResult(sys actorbase.Sys, state *storedState, msg actorbase.
 		return
 	}
 	if msg.Sender.ID != actor.ActorID(work.ExecutorID) {
-		_, _ = sys.Fail(msg, "unauthorized_executor", "result sender does not own this attempt")
+		_, _ = sys.Fail(msg, ErrorUnauthorizedExecutor, "result sender does not own this attempt")
 		return
 	}
 	updated, err := work.AcceptResult(p.AttemptID, p.ExpectedWorkVersion, p.Result)
 	if err != nil {
-		_, _ = sys.Fail(msg, "result_rejected", err.Error())
+		_, _ = sys.Fail(msg, ErrorExecutionRejected, "execution result rejected: "+err.Error())
 		return
 	}
 	state.Works[p.WorkID] = updated

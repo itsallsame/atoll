@@ -20,6 +20,11 @@ type runnableWorkPayload struct {
 	Limit      int    `json:"limit,omitempty"`
 }
 
+type sourceListPayload struct {
+	CompanyID string `json:"company_id,omitempty"`
+	PageRequest
+}
+
 func handleResourceQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
 	if repository == nil {
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
@@ -27,6 +32,10 @@ func handleResourceQuery(sys actorbase.Sys, repository *store.Repository, msg ac
 	}
 	if msg.Type == TypeWorkList {
 		handleRunnableWorkQuery(sys, repository, msg)
+		return
+	}
+	if msg.Type == TypeSourceList {
+		handleSourceListQuery(sys, repository, msg)
 		return
 	}
 	var payload entityGetPayload
@@ -55,6 +64,29 @@ func handleResourceQuery(sys actorbase.Sys, repository *store.Repository, msg ac
 		return
 	}
 	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "entity": value})
+}
+
+func handleSourceListQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload sourceListPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if err := payload.PageRequest.Validate(500); err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	if payload.Limit == 0 {
+		payload.Limit = 50
+	}
+	page, err := repository.ListSources(msg.Ctx(), strings.TrimSpace(payload.CompanyID), payload.Cursor, payload.Limit)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{
+		"contract_version": ContractVersion, "sources": page.Items,
+		"page": PageInfo{NextCursor: page.NextCursor, HasMore: page.HasMore},
+	})
 }
 
 func handleRunnableWorkQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

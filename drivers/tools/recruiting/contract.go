@@ -10,15 +10,19 @@ import (
 const ContractVersion = "recruiting.v1alpha1"
 
 const (
-	ErrorPayloadInvalid       = "payload_invalid"
-	ErrorNotFound             = "not_found"
-	ErrorVersionConflict      = "version_conflict"
-	ErrorBusinessKeyConflict  = "business_key_conflict"
-	ErrorCommandConflict      = "command_conflict"
-	ErrorQualityRejected      = "quality_rejected"
-	ErrorBudgetBlocked        = "budget_blocked"
-	ErrorWaitingHuman         = "waiting_human"
-	ErrorUnauthorizedExecutor = "unauthorized_executor"
+	ErrorPayloadInvalid      = "payload_invalid"
+	ErrorNotFound            = "not_found"
+	ErrorVersionConflict     = "version_conflict"
+	ErrorBusinessKeyConflict = "business_key_conflict"
+	ErrorCommandConflict     = "command_conflict"
+	ErrorQualityRejected     = "quality_rejected"
+	ErrorBudgetBlocked       = "budget_blocked"
+	ErrorWaitingHuman        = "waiting_human"
+	// Keep transport-facing codes inside Atoll's existing classified
+	// vocabulary; the detail still identifies the recruiting-specific cause.
+	ErrorUnauthorizedExecutor = "unauthorized_sender"
+	ErrorExecutionUnavailable = "channel_unavailable"
+	ErrorExecutionRejected    = "invalid_action"
 	ErrorInternalUnavailable  = "internal_unavailable"
 )
 

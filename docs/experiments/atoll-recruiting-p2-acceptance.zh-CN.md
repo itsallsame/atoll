@@ -2,7 +2,7 @@
 
 状态：进行中，尚未通过退出门
 
-日期：2026-09-07
+日期：2026-09-08
 
 P1 契约基线：`a94d2b8d`
 
@@ -13,8 +13,10 @@ P1 契约基线：`a94d2b8d`
 - migration 使用 MySQL advisory lock 串行化，成功重跑幂等，checksum 改变拒绝启动，残留 `applying` 状态要求从升级前备份恢复；
 - DSN 必须显式数据库和非 root 用户，adapter 强制 UTC、关闭 multi-statements，并设置有界连接池；
 - Company Repository 已实现 create/get、规范官网并发唯一约束、`updated_at + company_id` seek pagination 和单版本 CAS；
+- Source Repository 已实现 create/get、按 Company 或全局 seek pagination 和单版本 CAS；追加 migration `000002` 建立 `(company_id, updated_at, source_id)` 索引，游标绑定 Company selector，不能跨公司复用；
 - 两个并发 Company 更新验证只有一个成功、另一个得到明确 VersionConflict；
 - Company 修改命令把聚合 CAS、逐字节稳定 response receipt 和领域 event outbox 放在同一事务；相同 command ID 并发重放只生效一次，不同 request hash 被拒绝；
+- Source add/update/validate/pause/resume/archive/restore 同样把聚合 CAS、稳定 response receipt 和 outbox 放在单一短事务；创建时在事务内锁定所属 Company 并拒绝 archived 状态，消除 Actor 预检与插入之间的竞态；已提交命令仍在 Company 后续归档后稳定重放；
 - outbox 插入失败会同时回滚聚合与 receipt；数据库提交后即使尚未写入 Atoll ledger，pending event 仍可查询和补投；
 - Baseline staging 固定每 500 条一个事务；10,000 行实测形成 20 个提交块，完整重扫后仍收敛为 10,000 个来源岗位键；
 - baseline listing finalize 只 CAS generation 并原子建立首个 Checkpoint，不搬移或删除 staging；Checkpoint 冲突会回滚 generation 更新，不留下半完成状态；
@@ -49,7 +51,7 @@ P1 契约基线：`a94d2b8d`
 - MySQL 测试身份拆为非 root `staircase_migrator` 与 `staircase_runtime`；migration binary 只用前者，全部 Repository contract 使用后者，实测 runtime 具备所需 DML 且执行 DDL 被数据库拒绝；
 - harness 使用进程号与随机数命名一次性 schema，支持 `RECRUITING_MYSQL_ITERATIONS=N` 和无 eval 的 `RECRUITING_MYSQL_TEST_RUN` 定向回归；stress 入口把总轮数精确分配给多个独立容器/schema/非 root 账号，并逐 shard 校验终态成功标记；commit `0af563b3f7d2` 已完成 4×25＝100 轮完整 migration+25-test contract，另完成 100 轮 timeout fault 定向回归；所有容器及其随机 schema 随后整体删除；
 - 完整 100 轮的四份 runtime log 各含 25 个成功结果和最终 schema/identity 标记；紧凑证据及日志 SHA-256 保存在 `docs/experiments/evidence/recruiting-mysql-stress-0af563b3.json`，原始日志留在 ignored `.cache`，不把一次性数据库输出提交到 Git；
-- `EXPLAIN FORMAT=JSON` 验证 Company seek 查询使用专用索引；
+- `EXPLAIN FORMAT=JSON` 验证 Company seek 和按 Company 的 Source seek 查询使用专用索引；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
 ## 当前验证
@@ -65,7 +67,7 @@ make build-go
 
 ## 尚未完成
 
-- 其余修改命令的 receipt/聚合/outbox 原子编排随 P3 Actor command handler 实现；P2 已用 Company 命令纵向证明事务模板，并完成全部 Resource 纵向合同；
+- 其余修改命令的 receipt/聚合/outbox 原子编排随 P3 Actor command handler 实现；P2 已用 Company、Source 命令纵向证明事务模板，并完成全部 Resource 纵向合同；
 - 10,000 条基线不使用超大事务已经验证；仍需所有关键领取查询的 EXPLAIN；
 - 首次 100 轮压力运行暴露的 timeout/autocommit 竞态已修复；修复提交上的完整 100 轮与容器残留核对均已通过，不再列为未完成项。
 

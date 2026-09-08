@@ -160,7 +160,7 @@ INSERT INTO recruiting_event_outbox(
 		event.EventID, event.Kind, event.AggregateType, event.AggregateID, event.AggregateVersion,
 		event.CauseCommandID, eventAt.UTC(), []byte(event.Payload), defaultOutboxMaxDeliveryAttempts, nextAttemptAt.UTC())
 	if err != nil {
-		return fmt.Errorf("append company event intent: %w", err)
+		return fmt.Errorf("append recruiting event intent: %w", err)
 	}
 	return nil
 }

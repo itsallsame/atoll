@@ -80,7 +80,7 @@ func run(sys actorbase.Sys, cfg Config) error {
 			Payload: raw, Audience: message.Audience{p.ReplyTo}, Cause: msg.Cause(),
 		})
 		if err != nil {
-			_, _ = sys.Fail(msg, "result_delivery_failed", err.Error())
+			_, _ = sys.Fail(msg, "channel_unavailable", "result delivery failed: "+err.Error())
 			continue
 		}
 		_, _ = sys.Reply(msg, map[string]any{"attempt_id": p.AttemptID, "status": "submitted"})

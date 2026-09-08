@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestRecruitingCompanyControlUsesMySQLAcrossServerRestart(t *testing.T) {
+func TestRecruitingCompanyAndSourceControlUsesMySQLAcrossServerRestart(t *testing.T) {
 	h := newHarnessShell(t)
 	runtimeDSN := startRecruitingMySQL(t)
 	h.env = append(h.env, "ATOLL_RECRUITING_MYSQL_DSN="+runtimeDSN)
@@ -111,6 +111,102 @@ func TestRecruitingCompanyControlUsesMySQLAcrossServerRestart(t *testing.T) {
 	})
 	if got := nestedNumberField(t, resumed, "company", "version"); got != 4 {
 		t.Fatalf("resume after restart version=%v: %v", got, resumed)
+	}
+	sourceAdd := map[string]any{
+		"command_id": "e2e-source-add-a", "source_id": "e2e-source-a", "company_id": "e2e-company-1",
+		"endpoint": "HTTPS://JOBS.EXAMPLE.COM:443/engineering?utm_source=ignored", "category": "engineering",
+		"discovery_generation": 1, "reason": "operator confirmed first careers list",
+	}
+	addedSource := recovered.request(homeID, "recruiting.source.add", controlID, sourceAdd)
+	if got := nestedStringField(t, addedSource, "source", "source_id"); got != "e2e-source-a" {
+		t.Fatalf("added source=%q: %v", got, addedSource)
+	}
+	if got := nestedNumberField(t, addedSource, "source", "version"); got != 1 {
+		t.Fatalf("new source version=%v: %v", got, addedSource)
+	}
+	replayedSource := recovered.request(homeID, "recruiting.source.add", controlID, sourceAdd)
+	if got := nestedNumberField(t, replayedSource, "source", "version"); got != 1 {
+		t.Fatalf("source add replay changed version=%v: %v", got, replayedSource)
+	}
+	recovered.request(homeID, "recruiting.source.add", controlID, map[string]any{
+		"command_id": "e2e-source-add-b", "source_id": "e2e-source-b", "company_id": "e2e-company-1",
+		"endpoint": "https://jobs.example.com/sales", "category": "sales", "discovery_generation": 1,
+		"reason": "operator confirmed second careers list",
+	})
+	firstSources := recovered.request(homeID, "recruiting.source.list", controlID, map[string]any{"company_id": "e2e-company-1", "limit": 1})
+	items, _ := firstSources["sources"].([]any)
+	page, _ := firstSources["page"].(map[string]any)
+	if len(items) != 1 || page["has_more"] != true || stringField(t, page, "next_cursor") == "" {
+		t.Fatalf("first source page=%v", firstSources)
+	}
+	secondSources := recovered.request(homeID, "recruiting.source.list", controlID, map[string]any{
+		"company_id": "e2e-company-1", "cursor": stringField(t, page, "next_cursor"), "limit": 1,
+	})
+	secondItems, _ := secondSources["sources"].([]any)
+	if len(secondItems) != 1 {
+		t.Fatalf("second source page=%v", secondSources)
+	}
+	updatedSource := recovered.request(homeID, "recruiting.source.update", controlID, map[string]any{
+		"command_id": "e2e-source-update", "target": map[string]any{"target_type": "source", "target_id": "e2e-source-a"},
+		"expected_version": 1, "reason": "correct list category", "category": "product-engineering",
+	})
+	if got := nestedNumberField(t, updatedSource, "source", "version"); got != 2 {
+		t.Fatalf("updated source version=%v: %v", got, updatedSource)
+	}
+	validatingSource := recovered.request(homeID, "recruiting.source.validate", controlID, map[string]any{
+		"command_id": "e2e-source-validate", "target": map[string]any{"target_type": "source", "target_id": "e2e-source-a"},
+		"expected_version": 2, "reason": "validate corrected endpoint",
+	})
+	if got := nestedStringField(t, validatingSource, "source", "readiness_status"); got != "validating" {
+		t.Fatalf("validating source status=%q: %v", got, validatingSource)
+	}
+	pausedSource := recovered.request(homeID, "recruiting.source.pause", controlID, map[string]any{
+		"command_id": "e2e-source-pause", "target": map[string]any{"target_type": "source", "target_id": "e2e-source-a"},
+		"expected_version": 3, "reason": "source maintenance", "pause_mode": "drain",
+	})
+	if got := nestedStringField(t, pausedSource, "source", "control_status"); got != "paused" {
+		t.Fatalf("paused source status=%q: %v", got, pausedSource)
+	}
+	archivedSource := recovered.request(homeID, "recruiting.source.archive", controlID, map[string]any{
+		"command_id": "e2e-source-archive", "target": map[string]any{"target_type": "source", "target_id": "e2e-source-a"},
+		"expected_version": 4, "reason": "verify source archive",
+	})
+	if got := nestedStringField(t, archivedSource, "source", "control_status"); got != "archived" {
+		t.Fatalf("archived source status=%q: %v", got, archivedSource)
+	}
+	restoredSource := recovered.request(homeID, "recruiting.source.restore", controlID, map[string]any{
+		"command_id": "e2e-source-restore", "target": map[string]any{"target_type": "source", "target_id": "e2e-source-a"},
+		"expected_version": 5, "reason": "verify controlled restore",
+	})
+	if got := nestedStringField(t, restoredSource, "source", "control_status"); got != "paused" {
+		t.Fatalf("restored source status=%q: %v", got, restoredSource)
+	}
+	resumedSource := recovered.request(homeID, "recruiting.source.resume", controlID, map[string]any{
+		"command_id": "e2e-source-resume", "target": map[string]any{"target_type": "source", "target_id": "e2e-source-a"},
+		"expected_version": 6, "reason": "verify controlled resume",
+	})
+	if got := nestedNumberField(t, resumedSource, "source", "version"); got != 7 {
+		t.Fatalf("resumed source version=%v: %v", got, resumedSource)
+	}
+	if _, _, err := recovered.tryRequest(homeID, "recruiting.source.update", controlID, map[string]any{
+		"command_id": "e2e-source-stale", "target": map[string]any{"target_type": "source", "target_id": "e2e-source-a"},
+		"expected_version": 2, "reason": "stale source edit", "category": "must-not-win",
+	}); err == nil {
+		t.Fatal("stale source command unexpectedly succeeded")
+	}
+	recovered.request(homeID, "recruiting.company.archive", controlID, map[string]any{
+		"command_id": "e2e-company-archive", "target": map[string]any{"target_type": "company", "target_id": "e2e-company-1"},
+		"expected_version": 4, "reason": "verify source replay after parent state changes",
+	})
+	replayedAfterArchive := recovered.request(homeID, "recruiting.source.add", controlID, sourceAdd)
+	if got := nestedNumberField(t, replayedAfterArchive, "source", "version"); got != 1 {
+		t.Fatalf("source add did not replay after company archive: %v", replayedAfterArchive)
+	}
+	if _, _, err := recovered.tryRequest(homeID, "recruiting.source.add", controlID, map[string]any{
+		"command_id": "e2e-source-under-archive", "source_id": "e2e-source-rejected", "company_id": "e2e-company-1",
+		"endpoint": "https://jobs.example.com/rejected", "discovery_generation": 1, "reason": "must be rejected",
+	}); err == nil {
+		t.Fatal("archived company accepted a new source")
 	}
 	time.Sleep(1500 * time.Millisecond)
 	emptyReconcile := recovered.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})

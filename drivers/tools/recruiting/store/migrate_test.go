@@ -131,7 +131,7 @@ VALUES ('runtime-permission-fixture', 'fixture', 'hash', '{}', UTC_TIMESTAMP(6))
 
 func assertRuntimeIndexes(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
-	for _, index := range []string{"ix_recruiting_work_runnable", "ix_recruiting_occurrence_due", "ix_recruiting_outbox_pending"} {
+	for _, index := range []string{"ix_recruiting_work_runnable", "ix_recruiting_occurrence_due", "ix_recruiting_outbox_pending", "ix_recruiting_source_company_page"} {
 		var count int
 		if err := db.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM information_schema.statistics
