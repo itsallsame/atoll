@@ -9,7 +9,7 @@ P1 契约基线：`a94d2b8d`
 ## 已完成
 
 - Schema ADR 冻结访问模式、唯一约束、CAS、事务切点、outbox 恢复、基线 staging 和权限边界；
-- migration 从空库创建 25 张招聘业务表，migration runner 另建版本/checksum ledger；
+- migration 从空库创建 26 张招聘业务表，migration runner 另建版本/checksum ledger；
 - migration 使用 MySQL advisory lock 串行化，成功重跑幂等，checksum 改变拒绝启动，残留 `applying` 状态要求从升级前备份恢复；
 - DSN 必须显式数据库和非 root 用户，adapter 强制 UTC、关闭 multi-statements，并设置有界连接池；
 - Company Repository 已实现 create/get、规范官网并发唯一约束、`updated_at + company_id` seek pagination 和单版本 CAS；
@@ -54,6 +54,8 @@ P1 契约基线：`a94d2b8d`
 - Override head 不删除历史来源事实；后续 verified detail 即使版本更高仍由有效人工值覆盖，撤销版本发布后才重新显露 verified detail；历史查询有界且 `EXPLAIN FORMAT=JSON` 验证使用 target/field 专用索引；
 - Outbox event 创建时冻结最大投递次数；失败按 expected attempts 做 CAS，持久化错误分类和 `next_attempt_at`，达到上限进入 `exhausted` 并退出 runnable 集合；
 - Outbox 到期查询有界为 500 条且 `EXPLAIN FORMAT=JSON` 验证使用 pending 索引；重复成功确认幂等，迟到的真实成功可把 exhausted event 更正为 delivered，未知 event 不被伪装成成功；
+- migration `000011` 增加 execution dispatch outbox 及 pending/target 索引。稳定 dispatch ID 的精确重放幂等、改内容冲突；到期查询只返回 pending 且使用有界批次，投递尝试以 expected-attempt CAS 递增并最终 exhausted，只有记录绑定的 authenticated Executor Actor ID 可以确认 delivered，迟到确认仍可纠正 exhausted；
+- 到期 SourceOccurrence 物化可在创建 Work/推进 occurrence 的同一事务中按 capability 和 fleet 实例数写入初始 dispatch；人工 listing/detail Work create/retry，以及 Attempt 成功、失败释放容量和未来 retry 到期也与各自领域事务原子写入 dispatch。故意提供不匹配 placement 的 dispatch 时，Work、receipt、event 和 dispatch 全部回滚；
 - Listing 页提交把 Work version/acceptance fence、最多 500 条 Observation/Job/Detail Work 和 append-only Progress 放入同一事务；失败页不留下 Job 或 resume cursor，同页确认丢失可精确重放，暂停后的旧执行者不能推进进度，恢复后的新 fence 可继续；
 - Baseline staging 每块锁定 generation，finalize 后不可修改；finalize 在同一锁内校验数据库实际 staging 数与 `details_expected`，消除并发晚写和伪造计数；
 - 10,000 条 baseline staging 通过主键 seek 形成 20 个页事务，实测恰好产生 10,000 个 SourceJob 和 10,000 个唯一 Detail Work；`EXPLAIN FORMAT=JSON` 验证 seek 使用复合主键；

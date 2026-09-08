@@ -542,7 +542,22 @@ func (r *Repository) ApplyExecutionTransitionCommand(ctx context.Context, comman
 			if err != nil {
 				return err
 			}
-			return appendEventIntent(ctx, tx, event, businessAt, businessAt)
+			if err := appendEventIntent(ctx, tx, event, businessAt, businessAt); err != nil {
+				return err
+			}
+			if err := appendAttemptDispatch(ctx, tx, attempt.AttemptID, attempt.ExecutorActorID, attempt.Capability, "",
+				"capacity_released", command.CommandID, businessAt, businessAt); err != nil {
+				return err
+			}
+			if work.Status == model.WorkWaitingRetry {
+				retryAt, err := time.Parse(time.RFC3339Nano, work.RetryNotBefore)
+				if err != nil {
+					return err
+				}
+				return appendAttemptDispatch(ctx, tx, attempt.AttemptID, attempt.ExecutorActorID, attempt.Capability, attempt.ProfileID,
+					"retry_due", command.CommandID, retryAt, businessAt)
+			}
+			return nil
 		},
 	}
 	_, err := r.transitionListingExecution(ctx, command.AttemptID, command.RequestedBy, command.ExecutorIncarnation,

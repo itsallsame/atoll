@@ -156,7 +156,32 @@ func handleExecutionControlMessage(sys actorbase.Sys, cfg Config, repository *st
 		handleListingOffer(sys, cfg, repository, msg)
 		return
 	}
+	if msg.Type == TypeExecutionWakeCompleted {
+		handleExecutionWakeCompleted(sys, repository, msg)
+		return
+	}
 	handleExecutionTransition(sys, cfg, repository, msg)
+}
+
+func handleExecutionWakeCompleted(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload executioncontract.WakeCompletion
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.DispatchID, payload.DeliveryID = strings.TrimSpace(payload.DispatchID), strings.TrimSpace(payload.DeliveryID)
+	payload.AttemptID, payload.WorkID = strings.TrimSpace(payload.AttemptID), strings.TrimSpace(payload.WorkID)
+	validOutcome := payload.Status == "idle" && payload.AttemptID == "" && payload.WorkID == "" ||
+		payload.Status == "handled" && payload.AttemptID != "" && payload.WorkID != ""
+	if payload.DispatchID == "" || payload.DeliveryID == "" || !validOutcome {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "wake completion identity and idle|handled outcome are required")
+		return
+	}
+	if err := repository.CompleteExecutionDispatch(msg.Ctx(), payload.DispatchID, string(msg.Sender.ID), time.UnixMilli(msg.TS).UTC()); err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{"contract_version": executioncontract.Version, "dispatch_id": payload.DispatchID,
+		"delivery_id": payload.DeliveryID, "status": "completed"})
 }
 
 func handleListingOffer(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {

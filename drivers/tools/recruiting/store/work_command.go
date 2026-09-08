@@ -13,6 +13,16 @@ import (
 )
 
 func (r *Repository) ApplyCreateWorkCommand(ctx context.Context, work model.Work, placement WorkPlacement, receipt model.CommandReceipt, event model.EventIntent, businessAt time.Time) (CommandResult, error) {
+	return r.applyCreateWorkCommand(ctx, work, placement, receipt, event, nil, businessAt)
+}
+
+func (r *Repository) ApplyCreateWorkCommandWithDispatch(ctx context.Context, work model.Work, placement WorkPlacement,
+	receipt model.CommandReceipt, event model.EventIntent, dispatch *ExecutionDispatchIntent, businessAt time.Time) (CommandResult, error) {
+	return r.applyCreateWorkCommand(ctx, work, placement, receipt, event, dispatch, businessAt)
+}
+
+func (r *Repository) applyCreateWorkCommand(ctx context.Context, work model.Work, placement WorkPlacement, receipt model.CommandReceipt,
+	event model.EventIntent, dispatch *ExecutionDispatchIntent, businessAt time.Time) (CommandResult, error) {
 	if work.WorkID == "" || work.Version != 1 || work.Status != model.WorkOpen || receipt.CommandID == "" ||
 		event.AggregateType != "work" || event.AggregateID != work.WorkID || event.AggregateVersion != work.Version ||
 		event.CauseCommandID != receipt.CommandID {
@@ -43,6 +53,9 @@ func (r *Repository) ApplyCreateWorkCommand(ctx context.Context, work model.Work
 		return CommandResult{}, err
 	}
 	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := appendWorkCommandDispatch(ctx, tx, dispatch, placement, receipt.CommandID, "work_created", businessAt); err != nil {
 		return CommandResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -117,6 +130,18 @@ WHERE work_id = ? AND version = ?`, work.Status, nullableString(string(work.Reso
 // ApplyRetryWorkCommand locks and verifies the terminal source Work while it
 // creates a distinct causal Work. The original row is never updated.
 func (r *Repository) ApplyRetryWorkCommand(ctx context.Context, expectedPreviousVersion uint64, previousID string, retry model.Work, placement WorkPlacement, receipt model.CommandReceipt, event model.EventIntent, businessAt time.Time) (CommandResult, error) {
+	return r.applyRetryWorkCommand(ctx, expectedPreviousVersion, previousID, retry, placement, receipt, event, nil, businessAt)
+}
+
+func (r *Repository) ApplyRetryWorkCommandWithDispatch(ctx context.Context, expectedPreviousVersion uint64, previousID string,
+	retry model.Work, placement WorkPlacement, receipt model.CommandReceipt, event model.EventIntent,
+	dispatch *ExecutionDispatchIntent, businessAt time.Time) (CommandResult, error) {
+	return r.applyRetryWorkCommand(ctx, expectedPreviousVersion, previousID, retry, placement, receipt, event, dispatch, businessAt)
+}
+
+func (r *Repository) applyRetryWorkCommand(ctx context.Context, expectedPreviousVersion uint64, previousID string, retry model.Work,
+	placement WorkPlacement, receipt model.CommandReceipt, event model.EventIntent, dispatch *ExecutionDispatchIntent,
+	businessAt time.Time) (CommandResult, error) {
 	if expectedPreviousVersion == 0 || previousID == "" || retry.CauseWorkID != previousID || retry.Version != 1 ||
 		retry.Status != model.WorkOpen || receipt.CommandID == "" || event.AggregateType != "work" ||
 		event.AggregateID != retry.WorkID || event.AggregateVersion != retry.Version || event.CauseCommandID != receipt.CommandID {
@@ -167,10 +192,25 @@ func (r *Repository) ApplyRetryWorkCommand(ctx context.Context, expectedPrevious
 	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
 		return CommandResult{}, err
 	}
+	if err := appendWorkCommandDispatch(ctx, tx, dispatch, placement, receipt.CommandID, "work_retry_created", businessAt); err != nil {
+		return CommandResult{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return CommandResult{}, fmt.Errorf("commit work retry command: %w", err)
 	}
 	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
+}
+
+func appendWorkCommandDispatch(ctx context.Context, tx *sql.Tx, dispatch *ExecutionDispatchIntent, placement WorkPlacement,
+	commandID, causeKind string, businessAt time.Time) error {
+	if dispatch == nil {
+		return nil
+	}
+	if dispatch.Capability != placement.Capability || dispatch.Origin != placement.Origin || dispatch.ProfileID != placement.ProfileID ||
+		dispatch.CauseKind != causeKind || dispatch.CauseID != commandID || !dispatch.NextAttemptAt.Equal(placement.NotBefore.UTC()) {
+		return fmt.Errorf("work command execution dispatch does not match placement or cause")
+	}
+	return appendExecutionDispatch(ctx, tx, *dispatch, businessAt)
 }
 
 func reserveCommandReceipt(ctx context.Context, tx *sql.Tx, receipt model.CommandReceipt, businessAt time.Time) error {

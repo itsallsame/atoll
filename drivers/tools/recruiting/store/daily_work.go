@@ -13,9 +13,11 @@ import (
 )
 
 type DueWorkMaterializationResult struct {
-	Selected int `json:"selected"`
-	Queued   int `json:"queued"`
-	Expired  int `json:"expired"`
+	Selected           int            `json:"selected"`
+	Queued             int            `json:"queued"`
+	Expired            int            `json:"expired"`
+	DispatchesQueued   int            `json:"dispatches_queued"`
+	QueuedByCapability map[string]int `json:"queued_by_capability,omitempty"`
 }
 
 func (r *Repository) NextPlannedOccurrenceDueAt(ctx context.Context) (time.Time, bool, error) {
@@ -38,6 +40,16 @@ WHERE o.status = 'planned' AND d.status = 'running'`).Scan(&dueAt); err != nil {
 // Recruiting Actor instances to cooperate without a new scheduler or worker
 // type. Each Work, occurrence transition, and outbox intent is atomic.
 func (r *Repository) MaterializeDueOccurrenceWorks(ctx context.Context, dueAt time.Time, limit int, initiatorActorID, causeMessageID string, businessAt time.Time) (DueWorkMaterializationResult, error) {
+	return r.materializeDueOccurrenceWorks(ctx, dueAt, limit, initiatorActorID, causeMessageID, businessAt, nil)
+}
+
+func (r *Repository) MaterializeDueOccurrenceWorksWithDispatch(ctx context.Context, dueAt time.Time, limit int,
+	initiatorActorID, causeMessageID string, businessAt time.Time, targets []ExecutionDispatchTarget) (DueWorkMaterializationResult, error) {
+	return r.materializeDueOccurrenceWorks(ctx, dueAt, limit, initiatorActorID, causeMessageID, businessAt, targets)
+}
+
+func (r *Repository) materializeDueOccurrenceWorks(ctx context.Context, dueAt time.Time, limit int, initiatorActorID, causeMessageID string,
+	businessAt time.Time, targets []ExecutionDispatchTarget) (DueWorkMaterializationResult, error) {
 	if dueAt.IsZero() || businessAt.IsZero() || limit < 1 || limit > 500 ||
 		strings.TrimSpace(initiatorActorID) == "" || strings.TrimSpace(causeMessageID) == "" {
 		return DueWorkMaterializationResult{}, fmt.Errorf("due work materialization requires time, limit in [1,500], initiator, and cause")
@@ -94,7 +106,7 @@ SELECT status, window_end_at FROM recruiting_daily_runs WHERE daily_run_id = ?`,
 		}
 	}
 
-	result := DueWorkMaterializationResult{Selected: len(selected)}
+	result := DueWorkMaterializationResult{Selected: len(selected), QueuedByCapability: map[string]int{}}
 	for _, item := range selected {
 		occurrence := item.Occurrence
 		if err := occurrence.ListingExecution.Validate(occurrence.SourceID); err != nil {
@@ -160,6 +172,13 @@ SELECT status, window_end_at FROM recruiting_daily_runs WHERE daily_run_id = ?`,
 			return DueWorkMaterializationResult{}, err
 		}
 		result.Queued++
+		result.QueuedByCapability[placement.Capability]++
+	}
+	if len(targets) != 0 && result.Queued != 0 {
+		result.DispatchesQueued, err = appendCapabilityDispatches(ctx, tx, targets, result.QueuedByCapability, causeMessageID, businessAt)
+		if err != nil {
+			return DueWorkMaterializationResult{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return DueWorkMaterializationResult{}, fmt.Errorf("commit due work materialization: %w", err)

@@ -14,12 +14,28 @@ import (
 const Version = "recruiting.execution.v1"
 
 const (
-	TypeOffer   = "recruiting.execution.offer"
-	TypeAccept  = "recruiting.execution.accept"
-	TypeStarted = "recruiting.execution.started"
-	TypeFailed  = "recruiting.execution.failed"
-	TypeResult  = "recruiting.execution.result"
+	TypeOffer         = "recruiting.execution.offer"
+	TypeAccept        = "recruiting.execution.accept"
+	TypeStarted       = "recruiting.execution.started"
+	TypeFailed        = "recruiting.execution.failed"
+	TypeResult        = "recruiting.execution.result"
+	TypeWake          = "recruiting.execution.wake"
+	TypeWakeCompleted = "recruiting.execution.wake.completed"
 )
+
+type WakeRequest struct {
+	CommandID string `json:"command_id"`
+	Origin    string `json:"origin,omitempty"`
+	ProfileID string `json:"profile_id,omitempty"`
+}
+
+type WakeCompletion struct {
+	DispatchID string `json:"dispatch_id"`
+	DeliveryID string `json:"delivery_id"`
+	Status     string `json:"status"`
+	AttemptID  string `json:"attempt_id,omitempty"`
+	WorkID     string `json:"work_id,omitempty"`
+}
 
 type OfferRequest struct {
 	CommandID           string `json:"command_id"`

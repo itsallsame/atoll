@@ -198,6 +198,10 @@ WHERE work_id = ? AND version = ?`,
 	if err := appendEventIntent(ctx, tx, event, input.ObservedAt, input.ObservedAt); err != nil {
 		return DetailResultOutcome{}, nil, err
 	}
+	if err := appendAttemptDispatch(ctx, tx, succeededAttempt.AttemptID, succeededAttempt.ExecutorActorID, succeededAttempt.Capability, "",
+		"capacity_released", input.CauseCommandID, input.ObservedAt, input.ObservedAt); err != nil {
+		return DetailResultOutcome{}, nil, err
+	}
 	if err := reserveResultReceipt(ctx, tx, input.CauseCommandID, executioncontract.TypeResult, input.RequestHash, outcome, input.ObservedAt); err != nil {
 		return DetailResultOutcome{}, nil, err
 	}

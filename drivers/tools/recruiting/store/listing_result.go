@@ -382,6 +382,10 @@ WHERE source_id = ? AND checkpoint_version = ?`, committedCheckpoint.Version, co
 	if err := appendEventIntent(ctx, tx, event, input.CompletedAt, input.CompletedAt); err != nil {
 		return ListingCompletionOutcome{}, nil, err
 	}
+	if err := appendAttemptDispatch(ctx, tx, succeededAttempt.AttemptID, succeededAttempt.ExecutorActorID, succeededAttempt.Capability, "",
+		"capacity_released", input.CauseCommandID, input.CompletedAt, input.CompletedAt); err != nil {
+		return ListingCompletionOutcome{}, nil, err
+	}
 	if err := reserveResultReceipt(ctx, tx, input.CauseCommandID, executioncontract.TypeResult, input.RequestHash, outcome, input.CompletedAt); err != nil {
 		return ListingCompletionOutcome{}, nil, err
 	}

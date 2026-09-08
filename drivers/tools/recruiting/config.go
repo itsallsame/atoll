@@ -2,8 +2,11 @@ package recruiting
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,30 +19,36 @@ const Class = "recruiting"
 const DefaultActorID actor.ActorID = "recruiting"
 
 type Config struct {
-	ExecutorID                   actor.ActorID `json:"executor_id"`
-	DatabaseDSNEnv               string        `json:"database_dsn_env"`
-	ReconcileIntervalMS          int           `json:"reconcile_interval_ms"`
-	AttemptStaleAfterMS          int           `json:"attempt_stale_after_ms"`
-	AttemptRecoveryLimit         int           `json:"attempt_recovery_limit"`
-	DailyScheduleEnabled         bool          `json:"daily_schedule_enabled"`
-	DailyScheduleTimezone        string        `json:"daily_schedule_timezone"`
-	DailyCutoffLocal             string        `json:"daily_cutoff_local"`
-	DailyWindowStartDelayMinutes int           `json:"daily_window_start_delay_minutes"`
-	DailyWindowDurationMinutes   int           `json:"daily_window_duration_minutes"`
-	DailySchedulePolicyVersion   uint64        `json:"daily_schedule_policy_version"`
-	DailyWorkMaterializeLimit    int           `json:"daily_work_materialize_limit"`
-	BudgetPolicyVersion          uint64        `json:"budget_policy_version"`
-	BudgetMaxActive              int           `json:"budget_max_active"`
-	BudgetMaxPerCapability       int           `json:"budget_max_per_capability"`
-	BudgetMaxPerOrigin           int           `json:"budget_max_per_origin"`
-	BudgetMaxPerCompany          int           `json:"budget_max_per_company"`
-	BudgetMaxPerProfile          int           `json:"budget_max_per_profile"`
-	BudgetPermitTTLMS            int           `json:"budget_permit_ttl_ms"`
-	RetryPolicyVersion           uint64        `json:"retry_policy_version"`
-	RetryMaxAutomaticAttempts    int           `json:"retry_max_automatic_attempts"`
-	RetryBaseDelayMS             int           `json:"retry_base_delay_ms"`
-	RetryMaxDelayMS              int           `json:"retry_max_delay_ms"`
-	RetryThrottledDelayMS        int           `json:"retry_throttled_delay_ms"`
+	ExecutorID                   actor.ActorID          `json:"executor_id"`
+	Executors                    []ExecutorTargetConfig `json:"executors,omitempty"`
+	DatabaseDSNEnv               string                 `json:"database_dsn_env"`
+	ReconcileIntervalMS          int                    `json:"reconcile_interval_ms"`
+	AttemptStaleAfterMS          int                    `json:"attempt_stale_after_ms"`
+	AttemptRecoveryLimit         int                    `json:"attempt_recovery_limit"`
+	DailyScheduleEnabled         bool                   `json:"daily_schedule_enabled"`
+	DailyScheduleTimezone        string                 `json:"daily_schedule_timezone"`
+	DailyCutoffLocal             string                 `json:"daily_cutoff_local"`
+	DailyWindowStartDelayMinutes int                    `json:"daily_window_start_delay_minutes"`
+	DailyWindowDurationMinutes   int                    `json:"daily_window_duration_minutes"`
+	DailySchedulePolicyVersion   uint64                 `json:"daily_schedule_policy_version"`
+	DailyWorkMaterializeLimit    int                    `json:"daily_work_materialize_limit"`
+	BudgetPolicyVersion          uint64                 `json:"budget_policy_version"`
+	BudgetMaxActive              int                    `json:"budget_max_active"`
+	BudgetMaxPerCapability       int                    `json:"budget_max_per_capability"`
+	BudgetMaxPerOrigin           int                    `json:"budget_max_per_origin"`
+	BudgetMaxPerCompany          int                    `json:"budget_max_per_company"`
+	BudgetMaxPerProfile          int                    `json:"budget_max_per_profile"`
+	BudgetPermitTTLMS            int                    `json:"budget_permit_ttl_ms"`
+	RetryPolicyVersion           uint64                 `json:"retry_policy_version"`
+	RetryMaxAutomaticAttempts    int                    `json:"retry_max_automatic_attempts"`
+	RetryBaseDelayMS             int                    `json:"retry_base_delay_ms"`
+	RetryMaxDelayMS              int                    `json:"retry_max_delay_ms"`
+	RetryThrottledDelayMS        int                    `json:"retry_throttled_delay_ms"`
+}
+
+type ExecutorTargetConfig struct {
+	ActorID    actor.ActorID `json:"actor_id"`
+	Capability string        `json:"capability"`
 }
 
 func DefaultConfig() json.RawMessage {
@@ -60,6 +69,22 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 	cfg.DatabaseDSNEnv = strings.TrimSpace(cfg.DatabaseDSNEnv)
 	cfg.DailyScheduleTimezone = strings.TrimSpace(cfg.DailyScheduleTimezone)
 	cfg.DailyCutoffLocal = strings.TrimSpace(cfg.DailyCutoffLocal)
+	seenExecutors := make(map[actor.ActorID]struct{}, len(cfg.Executors))
+	for index := range cfg.Executors {
+		cfg.Executors[index].ActorID = actor.ActorID(strings.TrimSpace(string(cfg.Executors[index].ActorID)))
+		cfg.Executors[index].Capability = strings.TrimSpace(cfg.Executors[index].Capability)
+		if cfg.Executors[index].ActorID == "" || cfg.Executors[index].Capability == "" || len(cfg.Executors[index].Capability) > 128 ||
+			strings.ContainsAny(cfg.Executors[index].Capability, "\r\n\t ") {
+			return Config{}, fmt.Errorf("recruiting config: each executor requires actor_id and normalized capability")
+		}
+		if _, duplicate := seenExecutors[cfg.Executors[index].ActorID]; duplicate {
+			return Config{}, fmt.Errorf("recruiting config: executor actor_id must be unique")
+		}
+		seenExecutors[cfg.Executors[index].ActorID] = struct{}{}
+	}
+	if len(cfg.Executors) > 10_000 {
+		return Config{}, fmt.Errorf("recruiting config: at most 10000 executor instances are supported")
+	}
 	if cfg.ExecutorID == "" || cfg.DatabaseDSNEnv == "" || cfg.ReconcileIntervalMS < 100 || cfg.ReconcileIntervalMS > 3_600_000 {
 		return Config{}, fmt.Errorf("recruiting config: executor_id, database_dsn_env, and reconcile_interval_ms in [100,3600000] are required")
 	}
@@ -123,11 +148,35 @@ func (c Config) executionFailurePolicy() store.ExecutionFailurePolicy {
 		ThrottledDelay: time.Duration(c.RetryThrottledDelayMS) * time.Millisecond}
 }
 
+func (c Config) executionDispatchTargets() []store.ExecutionDispatchTarget {
+	targets := make([]store.ExecutionDispatchTarget, 0, len(c.Executors))
+	for _, executor := range c.Executors {
+		targets = append(targets, store.ExecutionDispatchTarget{ActorID: string(executor.ActorID), Capability: executor.Capability})
+	}
+	return targets
+}
+
+func (c Config) executionDispatchTarget(capability, seed string) (store.ExecutionDispatchTarget, bool) {
+	candidates := make([]store.ExecutionDispatchTarget, 0, len(c.Executors))
+	for _, target := range c.executionDispatchTargets() {
+		if target.Capability == capability {
+			candidates = append(candidates, target)
+		}
+	}
+	if len(candidates) == 0 {
+		return store.ExecutionDispatchTarget{}, false
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ActorID < candidates[j].ActorID })
+	sum := sha256.Sum256([]byte(seed))
+	return candidates[int(binary.BigEndian.Uint64(sum[:8])%uint64(len(candidates)))], true
+}
+
 const ConfigSchema = `{
   "type":"object",
   "additionalProperties":false,
   "properties":{
     "executor_id":{"type":"string","minLength":1},
+    "executors":{"type":"array","maxItems":10000,"items":{"type":"object","additionalProperties":false,"required":["actor_id","capability"],"properties":{"actor_id":{"type":"string","minLength":1},"capability":{"type":"string","minLength":1,"maxLength":128}}}},
     "database_dsn_env":{"type":"string","minLength":1},
     "reconcile_interval_ms":{"type":"integer","minimum":100,"maximum":3600000},
     "attempt_stale_after_ms":{"type":"integer","minimum":1000,"maximum":86400000},

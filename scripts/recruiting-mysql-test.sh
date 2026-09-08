@@ -68,6 +68,7 @@ for iteration in $(seq 1 "${iterations}"); do
     MYSQL_PWD="${test_password}" mysql -h127.0.0.1 -P"${host_port}" -ustaircase_migrator "${database_name}" <<'SQL'
 SET FOREIGN_KEY_CHECKS = 0;
 DROP TABLE IF EXISTS
+  recruiting_execution_dispatch_outbox,
   recruiting_repair_affected_works,
   recruiting_event_outbox,
   recruiting_command_receipts,

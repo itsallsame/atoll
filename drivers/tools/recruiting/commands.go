@@ -60,10 +60,11 @@ const (
 	TypeRecipeRollout  = "recruiting.recipe.rollout"
 	TypeRecipeRollback = "recruiting.recipe.rollback"
 
-	TypeExecutionOffer   = executioncontract.TypeOffer
-	TypeExecutionAccept  = executioncontract.TypeAccept
-	TypeExecutionStarted = executioncontract.TypeStarted
-	TypeExecutionFailed  = executioncontract.TypeFailed
+	TypeExecutionOffer         = executioncontract.TypeOffer
+	TypeExecutionAccept        = executioncontract.TypeAccept
+	TypeExecutionStarted       = executioncontract.TypeStarted
+	TypeExecutionFailed        = executioncontract.TypeFailed
+	TypeExecutionWakeCompleted = executioncontract.TypeWakeCompleted
 
 	TypeDailyRunGet     = "recruiting.daily_run.get"
 	TypeDailyRunList    = "recruiting.daily_run.list"

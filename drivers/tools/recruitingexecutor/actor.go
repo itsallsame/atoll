@@ -24,7 +24,7 @@ import (
 
 const (
 	TypeProbe = "recruiting.execution.probe"
-	TypeWake  = "recruiting.execution.wake"
+	TypeWake  = executioncontract.TypeWake
 )
 
 type probePayload struct {
@@ -42,11 +42,7 @@ type resultPayload struct {
 	Result              string `json:"result"`
 }
 
-type wakePayload struct {
-	CommandID string `json:"command_id"`
-	Origin    string `json:"origin,omitempty"`
-	ProfileID string `json:"profile_id,omitempty"`
-}
+type wakePayload = executioncontract.WakeRequest
 
 type productionRuntime struct {
 	driver  *httpdriver.Driver
@@ -168,6 +164,10 @@ func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, in
 		return
 	}
 	if offer == nil {
+		if err := completeWake(sys, cfg.ControlActorID, msg, payload.CommandID, "idle", "", ""); err != nil {
+			_, _ = sys.Fail(msg, "completion_unavailable", err.Error())
+			return
+		}
 		_, _ = sys.Reply(msg, map[string]any{"status": "idle", "executor_incarnation": incarnation})
 		return
 	}
@@ -177,13 +177,34 @@ func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, in
 		_, _ = sys.Fail(msg, "execution_incomplete", err.Error(), map[string]any{"attempt_id": offer.Attempt.AttemptID, "work_id": offer.Work.WorkID})
 		return
 	}
+	if err := completeWake(sys, cfg.ControlActorID, msg, payload.CommandID, "handled", offer.Attempt.AttemptID, offer.Work.WorkID); err != nil {
+		_, _ = sys.Fail(msg, "completion_unavailable", err.Error(), map[string]any{"attempt_id": offer.Attempt.AttemptID, "work_id": offer.Work.WorkID})
+		return
+	}
 	_, _ = sys.Reply(msg, map[string]any{"status": "handled", "attempt_id": offer.Attempt.AttemptID,
 		"work_id": offer.Work.WorkID, "kind": offer.Kind, "executor_incarnation": incarnation})
+}
+
+func completeWake(sys actorbase.Sys, controlActor actor.ActorID, msg actorbase.Msg, dispatchID, status, attemptID, workID string) error {
+	completion := executioncontract.WakeCompletion{DispatchID: dispatchID, DeliveryID: string(msg.ID), Status: status,
+		AttemptID: attemptID, WorkID: workID}
+	raw, err := json.Marshal(completion)
+	if err != nil {
+		return err
+	}
+	_, err = sys.Post(behavior.RequestSpec{ID: message.ID("wake-completed-" + stableWakeDigest(string(msg.ID))),
+		Type: executioncontract.TypeWakeCompleted, Payload: raw, Audience: message.Audience{controlActor}, Cause: msg.Cause()})
+	return err
 }
 
 func wakeOfferCommandID(incarnation, commandID string) string {
 	sum := sha256.Sum256([]byte("recruiting.execution.wake.v1\n" + incarnation + "\n" + commandID))
 	return fmt.Sprintf("wake-offer-%x", sum[:16])
+}
+
+func stableWakeDigest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", sum[:16])
 }
 
 func decode(sys actorbase.Sys, msg actorbase.Msg, dst any) bool {

@@ -28,6 +28,13 @@ func TestParseConfigDefaultsAndRejectsUnknownFields(t *testing.T) {
 	if _, err := parseConfig(json.RawMessage(`{"reconcile_interval_ms":99}`)); err == nil {
 		t.Fatal("too-small reconcile interval was accepted")
 	}
+	fleet, err := parseConfig(json.RawMessage(`{"executors":[{"actor_id":" executor-a ","capability":"http.fetch"},{"actor_id":"executor-b","capability":"browser.recipe"}]}`))
+	if err != nil || len(fleet.Executors) != 2 || fleet.Executors[0].ActorID != "executor-a" || fleet.Executors[1].Capability != "browser.recipe" {
+		t.Fatalf("executor fleet = %+v err=%v", fleet.Executors, err)
+	}
+	if _, err := parseConfig(json.RawMessage(`{"executors":[{"actor_id":"executor-a","capability":"http.fetch"},{"actor_id":"executor-a","capability":"browser.recipe"}]}`)); err == nil {
+		t.Fatal("duplicate executor actor was accepted")
+	}
 	for _, raw := range []json.RawMessage{
 		json.RawMessage(`{"daily_schedule_timezone":"Not/AZone"}`),
 		json.RawMessage(`{"daily_cutoff_local":"24:00:00"}`),
@@ -51,6 +58,27 @@ func TestParseConfigDefaultsAndRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestExecutionDispatchTargetIsCapabilityBoundAndDeterministic(t *testing.T) {
+	cfg := Config{Executors: []ExecutorTargetConfig{
+		{ActorID: "executor-http-b", Capability: "http.fetch"},
+		{ActorID: "executor-browser", Capability: "browser.recipe"},
+		{ActorID: "executor-http-a", Capability: "http.fetch"},
+	}}
+	first, found := cfg.executionDispatchTarget("http.fetch", "command-1\nwork-1")
+	if !found || first.Capability != "http.fetch" || (first.ActorID != "executor-http-a" && first.ActorID != "executor-http-b") {
+		t.Fatalf("selected HTTP target = %+v found=%v", first, found)
+	}
+	for index := 0; index < 10; index++ {
+		next, nextFound := cfg.executionDispatchTarget("http.fetch", "command-1\nwork-1")
+		if !nextFound || next != first {
+			t.Fatalf("selection changed: first=%+v next=%+v", first, next)
+		}
+	}
+	if _, found := cfg.executionDispatchTarget("document.parse", "command-1\nwork-1"); found {
+		t.Fatal("selected an executor for an unsupported capability")
+	}
+}
+
 func TestManifestExposesControlAndExecutorResultWords(t *testing.T) {
 	words := manifest().Words
 	for _, word := range []string{
@@ -61,7 +89,7 @@ func TestManifestExposesControlAndExecutorResultWords(t *testing.T) {
 		TypeSourceResume, TypeSourceArchive, TypeSourceRestore, TypeSourceGet, TypeSourceList,
 		TypeJobGet, TypeJobList, TypeWorkGet, TypeWorkList, TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary,
 		TypeWorkCreate, TypeWorkPause, TypeWorkResume, TypeWorkRetry, TypeWorkCancel, TypeWorkResolve,
-		TypeSystemReconcile,
+		TypeSystemReconcile, TypeExecutionWakeCompleted,
 	} {
 		if _, ok := words[word]; !ok {
 			t.Fatalf("manifest does not expose %q", word)

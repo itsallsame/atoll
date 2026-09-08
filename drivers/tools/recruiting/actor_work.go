@@ -47,22 +47,22 @@ type workCommandResponse struct {
 	NextAction      string     `json:"next_action"`
 }
 
-func handleWorkMessage(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+func handleWorkMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	if repository == nil {
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
 		return
 	}
 	switch msg.Type {
 	case TypeWorkCreate:
-		handleWorkCreate(sys, repository, msg)
+		handleWorkCreate(sys, cfg, repository, msg)
 	case TypeWorkRetry:
-		handleWorkRetry(sys, repository, msg)
+		handleWorkRetry(sys, cfg, repository, msg)
 	default:
 		handleWorkMutation(sys, repository, msg)
 	}
 }
 
-func handleWorkCreate(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+func handleWorkCreate(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	var payload workCreatePayload
 	if !decode(sys, msg, &payload) {
 		return
@@ -103,7 +103,12 @@ func handleWorkCreate(sys actorbase.Sys, repository *store.Repository, msg actor
 	}
 	placement.BusinessKey = "manual|" + work.WorkID
 	response := makeWorkResponse(msg, work)
-	result, err := applyWorkCreateFacts(repository, msg, payload.CommandID, payload.Reason, response, work, placement)
+	dispatch, err := workCommandDispatch(cfg, work, placement, payload.CommandID, "work_created")
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	result, err := applyWorkCreateFacts(repository, msg, payload.CommandID, payload.Reason, response, work, placement, dispatch)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
@@ -168,7 +173,7 @@ func handleWorkMutation(sys actorbase.Sys, repository *store.Repository, msg act
 	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
 }
 
-func handleWorkRetry(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+func handleWorkRetry(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	var payload workRetryPayload
 	if !decode(sys, msg, &payload) {
 		return
@@ -211,7 +216,12 @@ func handleWorkRetry(sys actorbase.Sys, repository *store.Repository, msg actorb
 		return
 	}
 	response := makeWorkResponse(msg, retry)
-	result, err := applyWorkRetryFacts(repository, msg, payload.CommandID, payload.Reason, response, record.Work, retry, placement)
+	dispatch, err := workCommandDispatch(cfg, retry, placement, payload.CommandID, "work_retry_created")
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	result, err := applyWorkRetryFacts(repository, msg, payload.CommandID, payload.Reason, response, record.Work, retry, placement, dispatch)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
@@ -317,12 +327,13 @@ func retrySchedule(notBefore, deadline string, businessAt time.Time) (time.Time,
 	return notBeforeAt.UTC(), deadlineAt, nil
 }
 
-func applyWorkCreateFacts(repository *store.Repository, msg actorbase.Msg, commandID, reason string, response workCommandResponse, work model.Work, placement store.WorkPlacement) (store.CommandResult, error) {
+func applyWorkCreateFacts(repository *store.Repository, msg actorbase.Msg, commandID, reason string, response workCommandResponse,
+	work model.Work, placement store.WorkPlacement, dispatch *store.ExecutionDispatchIntent) (store.CommandResult, error) {
 	receipt, event, businessAt, err := workCommandFacts(msg, commandID, reason, response, "work.created")
 	if err != nil {
 		return store.CommandResult{}, err
 	}
-	return repository.ApplyCreateWorkCommand(msg.Ctx(), work, placement, receipt, event, businessAt)
+	return repository.ApplyCreateWorkCommandWithDispatch(msg.Ctx(), work, placement, receipt, event, dispatch, businessAt)
 }
 
 func applyWorkMutationFacts(repository *store.Repository, msg actorbase.Msg, commandID, reason string, response workCommandResponse, work model.Work, expected uint64) (store.CommandResult, error) {
@@ -333,12 +344,29 @@ func applyWorkMutationFacts(repository *store.Repository, msg actorbase.Msg, com
 	return repository.ApplyWorkCommand(msg.Ctx(), expected, work, receipt, event, businessAt)
 }
 
-func applyWorkRetryFacts(repository *store.Repository, msg actorbase.Msg, commandID, reason string, response workCommandResponse, previous, retry model.Work, placement store.WorkPlacement) (store.CommandResult, error) {
+func applyWorkRetryFacts(repository *store.Repository, msg actorbase.Msg, commandID, reason string, response workCommandResponse,
+	previous, retry model.Work, placement store.WorkPlacement, dispatch *store.ExecutionDispatchIntent) (store.CommandResult, error) {
 	receipt, event, businessAt, err := workCommandFacts(msg, commandID, reason, response, "work.retry_created")
 	if err != nil {
 		return store.CommandResult{}, err
 	}
-	return repository.ApplyRetryWorkCommand(msg.Ctx(), previous.Version, previous.WorkID, retry, placement, receipt, event, businessAt)
+	return repository.ApplyRetryWorkCommandWithDispatch(msg.Ctx(), previous.Version, previous.WorkID, retry, placement, receipt, event, dispatch, businessAt)
+}
+
+func workCommandDispatch(cfg Config, work model.Work, placement store.WorkPlacement, commandID, causeKind string) (*store.ExecutionDispatchIntent, error) {
+	if work.Purpose != "listing_sync" && work.Purpose != "detail_sync" {
+		return nil, nil
+	}
+	target, found := cfg.executionDispatchTarget(placement.Capability, commandID+"\n"+work.WorkID)
+	if !found {
+		return nil, nil
+	}
+	dispatch, err := store.NewExecutionDispatchIntent("dispatch-work-"+stableDigest(commandID+"|"+target.ActorID), target.ActorID,
+		placement.Capability, placement.Origin, placement.ProfileID, causeKind, commandID, placement.NotBefore)
+	if err != nil {
+		return nil, err
+	}
+	return &dispatch, nil
 }
 
 func workCommandFacts(msg actorbase.Msg, commandID, reason string, response workCommandResponse, eventKind string) (model.CommandReceipt, model.EventIntent, time.Time, error) {

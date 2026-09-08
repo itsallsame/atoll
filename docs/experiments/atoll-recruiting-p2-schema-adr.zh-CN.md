@@ -14,7 +14,7 @@
 
 1. 当前带版本聚合：Company、Source、Assignment、Checkpoint、SourceJob、DailyRun、Occurrence、Work、Attempt、Profile、BudgetPermit、RepairIncident；
 2. append-only 证据：ListingObservation、JobDetailVersion、Artifact、OverrideVersion、领域事件 outbox；
-3. 可恢复流程：command receipt、baseline generation/staging、repair affected Work。
+3. 可恢复流程：command receipt、baseline generation/staging、repair affected Work、execution dispatch outbox。
 
 聚合同时保存强类型索引列与 `state_json`。索引列用于唯一约束、CAS 和领取查询，JSON 用于无损恢复 P1 聚合；写入必须由 adapter 从同一个领域对象同时生成，禁止只修改 JSON 或只修改索引列。
 
@@ -32,6 +32,7 @@
 - command receipt 以 `command_id` 唯一，并保存 request hash；同 ID 不同请求拒绝；
 - Artifact 以 ID 唯一、内容哈希建普通索引；相同内容可因权限、保留策略或 Work 血缘不同而有多个元数据记录。
 - BudgetPermit 每 Attempt 唯一；`budget_usage` 为 global、capability、origin、company 和可选 profile 保存活动计数。领取按稳定维度顺序锁定计数行，容量判断、计数递增、Permit 和 Attempt 同事务提交；完成、失败或过期在原事务中递减，禁止用并发不安全的 `COUNT(*)` 后插入。
+- execution dispatch 以稳定 `dispatch_id` 唯一，绑定唯一目标 Executor Actor、capability、可选 origin/Profile、cause 和到期时间；相同 ID 改写任一字段必须冲突。状态只允许 `pending|delivered|exhausted`，投递次数以 CAS 更新，目标 Executor 的 authenticated Actor ID 才能确认完成。
 
 所有可修改聚合执行：
 
@@ -47,6 +48,8 @@ WHERE id = ? AND version = ?
 ### 普通命令
 
 单一事务内完成：锁定/读取 command receipt → CAS 聚合 → 插入 append-only 证据（如有）→ 插入 outbox event intent → 保存稳定 receipt。Outbox intent 创建时冻结最大投递次数；失败以 expected attempts 做 CAS，记录错误分类和下次投递时间，达到上限进入 `exhausted`，不能无限重试。提交后再通过 Atoll ledger 发送事件；ledger 失败时 outbox 保留并可重放。接收方仍按 event ID 幂等，因此数据库提交与 ledger append 不要求分布式事务。
+
+可执行 Work 的创建与对应 execution dispatch intent 必须在同一事务提交；Attempt 成功、分类失败及未来重试到期同样在关闭执行权的事务内写入后续 dispatch。Recruiting Actor 使用已有 reconcile timer 按 `(delivery_status, next_attempt_at, dispatch_id)` 有界扫描并发送一次 wake，发送后等待目标 Executor completion acknowledgement；进程在发送与确认之间退出时允许重新投递，但稳定 dispatch command、Attempt 唯一约束和结果 receipt 保证不重复生效。该 outbox 是招聘应用的可恢复流程事实，不修改 Atoll ledger、timer 或 Message 语义。
 
 ### 每日列表页
 
@@ -66,7 +69,7 @@ Executor 先上传外部对象，再返回不可变引用。接受事务验证 A
 
 ## 领取与索引
 
-每日到期领取使用 `source_occurrences(status, due_at, occurrence_id)`；Work 使用 `(status, not_before, priority, deadline_at, work_id)`，并辅以 `(capability, status, not_before)`、`(origin, status, not_before)`、`(profile_id, status, not_before)`。实现可使用 `SELECT ... FOR UPDATE SKIP LOCKED`，但对外仍表达 execution offer/accept，不暴露数据库 lease 语义。
+每日到期领取使用 `source_occurrences(status, due_at, occurrence_id)`；Work 使用 `(status, not_before, priority, deadline_at, work_id)`，并辅以 `(capability, status, not_before)`、`(origin, status, not_before)`、`(profile_id, status, not_before)`；execution dispatch 使用 `(delivery_status, next_attempt_at, dispatch_id)`。实现可使用 `SELECT ... FOR UPDATE SKIP LOCKED`，但对外仍表达 execution offer/accept，不暴露数据库 lease 语义。
 
 活动 Attempt 的普通无进展扫描使用 `(attempt_status, updated_at, attempt_id)`；较短 Permit 独立使用 `(permit_status, expires_at, attempt_id)` 找到期项。两条有界索引扫描在应用层去重，避免带跨表 `OR` 的全量扫描；二者都复用同一个 reconcile timer。
 

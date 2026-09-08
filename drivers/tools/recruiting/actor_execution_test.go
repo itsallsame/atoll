@@ -30,7 +30,7 @@ func TestExecutionCommandHashIncludesAuthenticatedExecutor(t *testing.T) {
 
 func TestManifestExposesExecutionLifecycle(t *testing.T) {
 	words := manifest().Words
-	for _, word := range []string{TypeExecutionOffer, TypeExecutionAccept, TypeExecutionStarted, TypeExecutionResult, TypeExecutionFailed} {
+	for _, word := range []string{TypeExecutionOffer, TypeExecutionAccept, TypeExecutionStarted, TypeExecutionResult, TypeExecutionFailed, TypeExecutionWakeCompleted} {
 		if _, exists := words[word]; !exists {
 			t.Fatalf("manifest does not expose %s", word)
 		}

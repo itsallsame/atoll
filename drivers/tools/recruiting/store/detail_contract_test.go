@@ -55,7 +55,7 @@ INSERT INTO recruiting_checkpoints(
 	if work.Status != model.WorkCompleted || attempt.Status != model.AttemptSucceeded {
 		t.Fatalf("terminal work/attempt = %+v %+v", work, attempt)
 	}
-	var details, artifacts, events, receipts int
+	var details, artifacts, events, receipts, dispatches int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_job_detail_versions WHERE job_id = ?", fixture.job.JobID).Scan(&details); err != nil {
 		t.Fatal(err)
 	}
@@ -68,8 +68,12 @@ INSERT INTO recruiting_checkpoints(
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id = ?", result.CauseCommandID).Scan(&receipts); err != nil {
 		t.Fatal(err)
 	}
-	if details != 1 || artifacts != 1 || events != 1 || receipts != 1 {
-		t.Fatalf("detail facts=%d artifacts=%d events=%d receipts=%d", details, artifacts, events, receipts)
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE target_actor_id = ? AND cause_id = ?",
+		fixture.attempt.ExecutorActorID, result.CauseCommandID).Scan(&dispatches); err != nil {
+		t.Fatal(err)
+	}
+	if details != 1 || artifacts != 1 || events != 1 || receipts != 1 || dispatches != 1 {
+		t.Fatalf("detail facts=%d artifacts=%d events=%d receipts=%d dispatches=%d", details, artifacts, events, receipts, dispatches)
 	}
 }
 

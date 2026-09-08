@@ -128,9 +128,15 @@ ORDER BY due_at, occurrence_id LIMIT 500`, now.Add(3*time.Hour)).Scan(&explain);
 		t.Fatalf("due query did not use intended index: %s", explain)
 	}
 
-	materialized, err := repository.MaterializeDueOccurrenceWorks(ctx, now.Add(3*time.Hour), 100, "recruiting", "timer:daily-work", now.Add(3*time.Hour))
-	if err != nil || materialized.Queued != 1 || materialized.Expired != 0 {
+	materialized, err := repository.MaterializeDueOccurrenceWorksWithDispatch(ctx, now.Add(3*time.Hour), 100, "recruiting", "timer:daily-work", now.Add(3*time.Hour),
+		[]ExecutionDispatchTarget{{ActorID: "tool:http-executor-a", Capability: "http.fetch"}, {ActorID: "tool:browser-executor", Capability: "browser.recipe"}})
+	if err != nil || materialized.Queued != 1 || materialized.Expired != 0 || materialized.DispatchesQueued != 1 || materialized.QueuedByCapability["http.fetch"] != 1 {
 		t.Fatalf("due work materialization = %+v err=%v", materialized, err)
+	}
+	var dispatchCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox
+WHERE cause_id = 'timer:daily-work' AND target_actor_id = 'tool:http-executor-a' AND capability = 'http.fetch'`).Scan(&dispatchCount); err != nil || dispatchCount != 1 {
+		t.Fatalf("materialization dispatch count=%d err=%v", dispatchCount, err)
 	}
 	first, err = repository.GetOccurrence(ctx, first.OccurrenceID)
 	if err != nil || first.Status != model.OccurrenceQueued || first.WorkID == "" {

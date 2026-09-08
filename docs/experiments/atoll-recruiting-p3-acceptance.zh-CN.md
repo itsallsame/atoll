@@ -36,6 +36,7 @@
 - 日报关闭前拒绝提前结算；关闭后相同调用稳定重放且不重复事件。已成功详情、人工接受缺口和其他终态/未终态详情分别计入 `succeeded/accepted_gap/exceptions`，不会用“有终态”冒充 coverage；新的迟到 listing 页面或完成证明因 occurrence 终态及 Work fence 被拒绝，仅允许已接受结果的精确幂等重放；
 - Company 和 Source 新增/修改命令均将稳定 response receipt、聚合创建/CAS 和 outbox event intent 原子提交；新增冲突不留下 receipt；Source 创建还在同一事务锁定所属 Company，拒绝向 archived Company 添加 Source，同时不妨碍历史成功命令在父对象状态改变后重放；
 - `recruiting.system.reconcile` 每次只读取最多 500 条到期 outbox，将完整 EventIntent 作为公开业务事件写入 Atoll ledger；事件 ID 与 fingerprint 稳定，覆盖 Emit 成功但 SQL checkpoint 前崩溃的重放窗口；失败采用持久 CAS 次数、有界指数退避和 exhausted 终态；
+- migration 11 新增独立 execution dispatch outbox。每日 Work 渐进物化按 capability 和可配置 Executor fleet 只创建不超过实例数的初始 wake；人工 listing/detail Work、新 Retry Work、Attempt 成功/失败释放容量及未来 `retry_not_before` 都在各自领域事务中原子写入定向 dispatch。现有 reconcile timer 每轮最多投递 500 条，Executor 每次只领取一份 Work，并在 handled 或 idle 后以 authenticated Actor ID 确认；未确认投递使用稳定 dispatch command、有界 CAS 次数和退避恢复，不新增 Worker class、轮询器或 Atoll core 语义；
 - Actor 在招聘侧状态中持久保存唯一 reconcile timer ID，使用 Atoll 现有 durable timer 自动运行；下一 timer 在当前 fire 被确认前完成挂载与持久化，重启窗口中的孤立 timer 因 ID 不匹配只能被确认、不能继续生长，避免重复周期链；周期可配置为 100ms 至 1h，单轮仍固定最多 100 条以保护 mailbox 公平性；
 - `requested_by` 只取 Atoll envelope sender，客户端附带同名未知字段会被严格解码拒绝；
 - 已认证但不属于招聘 Channel 的第二个普通用户，对 Company 查询和修改均由 Atoll 入口以无 eligibility 拒绝；Recruiting Actor 不复制 Channel 权限逻辑，也没有数据库绕行入口；

@@ -134,7 +134,7 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 	if _, err := repository.AcceptListingCompletion(ctx, conflictingCompletion); !errors.Is(err, ErrCommandConflict) {
 		t.Fatalf("listing completion command reuse = %v", err)
 	}
-	var acceptedArtifacts, rejectedArtifacts, observations, details, events, receipts int
+	var acceptedArtifacts, rejectedArtifacts, observations, details, events, receipts, dispatches int
 	queries := []struct {
 		query string
 		args  []any
@@ -146,15 +146,16 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 		{"SELECT COUNT(*) FROM recruiting_works WHERE parent_work_id = ? AND purpose = 'detail_sync' AND target_id = ?", []any{offer.Work.WorkID, acceptedPage.Items[0].Job.JobID}, &details},
 		{"SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = ?", []any{"listing-completed-" + offer.Attempt.AttemptID}, &events},
 		{"SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id IN (?, ?)", []any{page.CommandID, completion.CauseCommandID}, &receipts},
+		{"SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE target_actor_id = ? AND cause_id = ?", []any{offer.Attempt.ExecutorActorID, completion.CauseCommandID}, &dispatches},
 	}
 	for _, query := range queries {
 		if err := db.QueryRowContext(ctx, query.query, query.args...).Scan(query.out); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if acceptedArtifacts != 2 || rejectedArtifacts != 1 || observations != 1 || details != 1 || events != 1 || receipts != 2 {
-		t.Fatalf("accepted facts artifacts=%d rejected=%d observations=%d detail_works=%d events=%d receipts=%d",
-			acceptedArtifacts, rejectedArtifacts, observations, details, events, receipts)
+	if acceptedArtifacts != 2 || rejectedArtifacts != 1 || observations != 1 || details != 1 || events != 1 || receipts != 2 || dispatches != 1 {
+		t.Fatalf("accepted facts artifacts=%d rejected=%d observations=%d detail_works=%d events=%d receipts=%d dispatches=%d",
+			acceptedArtifacts, rejectedArtifacts, observations, details, events, receipts, dispatches)
 	}
 }
 

@@ -6,12 +6,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 	"github.com/wanpengxie/atoll/lib/actorbase"
 	"github.com/wanpengxie/atoll/lib/behavior"
+	"github.com/wanpengxie/atoll/protocol/actor"
 	"github.com/wanpengxie/atoll/protocol/message"
 	"github.com/wanpengxie/atoll/runtime/schedule"
 )
@@ -27,17 +30,21 @@ type outboxReconcilePayload struct {
 }
 
 type outboxReconcileResponse struct {
-	ContractVersion  string `json:"contract_version"`
-	Scanned          int    `json:"scanned"`
-	Delivered        int    `json:"delivered"`
-	RetryScheduled   int    `json:"retry_scheduled"`
-	Exhausted        int    `json:"exhausted"`
-	Conflicts        int    `json:"conflicts"`
-	CheckpointError  int    `json:"checkpoint_error"`
-	AttemptsScanned  int    `json:"attempts_scanned"`
-	AttemptsExpired  int    `json:"attempts_expired"`
-	WorksRetryQueued int    `json:"works_retry_queued"`
-	AttemptConflicts int    `json:"attempt_conflicts"`
+	ContractVersion   string `json:"contract_version"`
+	Scanned           int    `json:"scanned"`
+	Delivered         int    `json:"delivered"`
+	RetryScheduled    int    `json:"retry_scheduled"`
+	Exhausted         int    `json:"exhausted"`
+	Conflicts         int    `json:"conflicts"`
+	CheckpointError   int    `json:"checkpoint_error"`
+	AttemptsScanned   int    `json:"attempts_scanned"`
+	AttemptsExpired   int    `json:"attempts_expired"`
+	WorksRetryQueued  int    `json:"works_retry_queued"`
+	AttemptConflicts  int    `json:"attempt_conflicts"`
+	DispatchScanned   int    `json:"dispatch_scanned"`
+	DispatchPosted    int    `json:"dispatch_posted"`
+	DispatchRetries   int    `json:"dispatch_retries"`
+	DispatchExhausted int    `json:"dispatch_exhausted"`
 }
 
 type outboxReconcileDuePayload struct {
@@ -78,7 +85,65 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 	}
 	response.AttemptsScanned, response.AttemptsExpired = recovery.Scanned, recovery.Expired
 	response.WorksRetryQueued, response.AttemptConflicts = recovery.RetryQueued, recovery.Conflicts
+	dispatch, err := reconcileExecutionDispatches(msg.Ctx(), sys, repository, payload.Limit, now,
+		time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response.DispatchScanned, response.DispatchPosted = dispatch.Scanned, dispatch.Posted
+	response.DispatchRetries, response.DispatchExhausted = dispatch.RetryScheduled, dispatch.Exhausted
 	_, _ = sys.Reply(msg, response)
+}
+
+type dispatchReconcileResult struct {
+	Scanned        int
+	Posted         int
+	RetryScheduled int
+	Exhausted      int
+	Conflicts      int
+}
+
+func reconcileExecutionDispatches(ctx context.Context, sys actorbase.Sys, repository *store.Repository, limit int,
+	now time.Time, completionTimeout time.Duration) (dispatchReconcileResult, error) {
+	pending, err := repository.ListPendingExecutionDispatches(ctx, now, limit)
+	if err != nil {
+		return dispatchReconcileResult{}, err
+	}
+	result := dispatchReconcileResult{Scanned: len(pending)}
+	for _, item := range pending {
+		deliveryID := "execution-dispatch-" + stableDigest(item.Intent.DispatchID) + "-" + fmt.Sprintf("%d", item.Attempts+1)
+		payload, marshalErr := json.Marshal(executioncontract.WakeRequest{CommandID: item.Intent.DispatchID,
+			Origin: item.Intent.Origin, ProfileID: item.Intent.ProfileID})
+		if marshalErr != nil {
+			return result, marshalErr
+		}
+		_, postErr := sys.Post(behavior.RequestSpec{ID: message.ID(deliveryID), Type: executioncontract.TypeWake,
+			Payload: payload, Audience: message.Audience{actor.ActorID(item.Intent.TargetActorID)}, Cause: message.Root()})
+		nextAttemptAt, errorClass := now.Add(completionTimeout), "awaiting_completion"
+		if postErr != nil {
+			nextAttemptAt = now.Add(outboxRetryDelay(item.Attempts))
+			errorClass = classifyOutboxDeliveryError(postErr)
+		}
+		update, updateErr := repository.RecordExecutionDispatchFailureCAS(ctx, item.Intent.DispatchID, item.Attempts,
+			nextAttemptAt, errorClass)
+		if errors.Is(updateErr, store.ErrDispatchConflict) {
+			result.Conflicts++
+			continue
+		}
+		if updateErr != nil {
+			return result, updateErr
+		}
+		if postErr == nil {
+			result.Posted++
+		}
+		if update.Status == "exhausted" {
+			result.Exhausted++
+		} else {
+			result.RetryScheduled++
+		}
+	}
+	return result, nil
 }
 
 func reconcileOutbox(ctx context.Context, sys actorbase.Sys, repository *store.Repository, limit int, now time.Time) (outboxReconcileResponse, error) {
@@ -157,6 +222,8 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 		now := time.Now().UTC()
 		_, _ = repository.RecoverStaleAttempts(msg.Ctx(), now.Add(-time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond), cfg.AttemptRecoveryLimit, now)
 		_, _ = reconcileOutbox(msg.Ctx(), sys, repository, defaultReconcileLimit, now)
+		_, _ = reconcileExecutionDispatches(msg.Ctx(), sys, repository, defaultReconcileLimit, now,
+			time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond)
 	}
 	// Rearm and persist before the raw Proc calls Recv again and acknowledges
 	// the current fire. A crash on either side therefore leaves one of the two

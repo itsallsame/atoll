@@ -60,8 +60,8 @@ func handleDailyWorkDue(sys actorbase.Sys, cfg Config, state *storedState, repos
 		return fmt.Errorf("recruiting daily work database is not configured")
 	}
 	now := time.Now().UTC()
-	if _, err := repository.MaterializeDueOccurrenceWorks(msg.Ctx(), now, cfg.DailyWorkMaterializeLimit,
-		string(sys.Self()), string(msg.ID), now); err != nil {
+	if _, err := repository.MaterializeDueOccurrenceWorksWithDispatch(msg.Ctx(), now, cfg.DailyWorkMaterializeLimit,
+		string(sys.Self()), string(msg.ID), now, cfg.executionDispatchTargets()); err != nil {
 		return fmt.Errorf("materialize recruiting daily work: %w", err)
 	}
 	return armNextDailyWorkTimer(sys, cfg, state, repository, time.Now().UTC())

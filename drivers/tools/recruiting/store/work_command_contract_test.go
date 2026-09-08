@@ -33,11 +33,13 @@ func TestWorkCommandsKeepReceiptStateOutboxAndRetryCausalityAtomic(t *testing.T)
 	createResponse := json.RawMessage(`{"work":{"work_id":"command-work","version":1}}`)
 	createReceipt, _ := model.NewCommandReceipt("work-create-command", "recruiting.work.create", "sha256:create-work", createResponse)
 	createEvent, _ := model.NewEventIntent("work-create-event", "work.created", "work", work.WorkID, 1, now.Format(time.RFC3339), createReceipt.CommandID, json.RawMessage(`{}`))
-	first, err := repository.ApplyCreateWorkCommand(ctx, work, placement, createReceipt, createEvent, now)
+	createDispatch, _ := NewExecutionDispatchIntent("dispatch-work-create-command", "executor-http-a", placement.Capability,
+		placement.Origin, placement.ProfileID, "work_created", createReceipt.CommandID, placement.NotBefore)
+	first, err := repository.ApplyCreateWorkCommandWithDispatch(ctx, work, placement, createReceipt, createEvent, &createDispatch, now)
 	if err != nil || first.Replayed {
 		t.Fatalf("create work command = %+v %v", first, err)
 	}
-	replay, err := repository.ApplyCreateWorkCommand(ctx, work, placement, createReceipt, createEvent, now)
+	replay, err := repository.ApplyCreateWorkCommandWithDispatch(ctx, work, placement, createReceipt, createEvent, &createDispatch, now)
 	if err != nil || !replay.Replayed || string(replay.Response) != string(createResponse) {
 		t.Fatalf("create work replay = %+v %v", replay, err)
 	}
@@ -73,7 +75,10 @@ func TestWorkCommandsKeepReceiptStateOutboxAndRetryCausalityAtomic(t *testing.T)
 	retryPlacement.NotBefore = now.Add(4 * time.Second)
 	retryReceipt, _ := model.NewCommandReceipt("work-retry-command", "recruiting.work.retry", "sha256:retry-work", json.RawMessage(`{"work_id":"command-work-retry"}`))
 	retryEvent, _ := model.NewEventIntent("work-retry-event", "work.retry_created", "work", retry.WorkID, 1, now.Add(4*time.Second).Format(time.RFC3339), retryReceipt.CommandID, json.RawMessage(`{}`))
-	retryResult, err := repository.ApplyRetryWorkCommand(ctx, canceled.Version, canceled.WorkID, retry, retryPlacement, retryReceipt, retryEvent, now.Add(4*time.Second))
+	retryDispatch, _ := NewExecutionDispatchIntent("dispatch-work-retry-command", "executor-http-b", retryPlacement.Capability,
+		retryPlacement.Origin, retryPlacement.ProfileID, "work_retry_created", retryReceipt.CommandID, retryPlacement.NotBefore)
+	retryResult, err := repository.ApplyRetryWorkCommandWithDispatch(ctx, canceled.Version, canceled.WorkID, retry, retryPlacement,
+		retryReceipt, retryEvent, &retryDispatch, now.Add(4*time.Second))
 	if err != nil || retryResult.Replayed {
 		t.Fatalf("retry command = %+v %v", retryResult, err)
 	}
@@ -83,7 +88,8 @@ func TestWorkCommandsKeepReceiptStateOutboxAndRetryCausalityAtomic(t *testing.T)
 		storedRetry.Status != model.WorkOpen || storedRetry.CauseWorkID != canceled.WorkID {
 		t.Fatalf("original=%+v retry=%+v err=%v", storedOriginal, storedRetry, err)
 	}
-	if replay, err := repository.ApplyRetryWorkCommand(ctx, canceled.Version, canceled.WorkID, retry, retryPlacement, retryReceipt, retryEvent, now.Add(4*time.Second)); err != nil || !replay.Replayed {
+	if replay, err := repository.ApplyRetryWorkCommandWithDispatch(ctx, canceled.Version, canceled.WorkID, retry, retryPlacement,
+		retryReceipt, retryEvent, &retryDispatch, now.Add(4*time.Second)); err != nil || !replay.Replayed {
 		t.Fatalf("retry replay = %+v %v", replay, err)
 	}
 	if _, err := repository.ApplyRetryWorkCommand(ctx, canceled.Version-1, canceled.WorkID, retry, retryPlacement,
@@ -96,6 +102,53 @@ func TestWorkCommandsKeepReceiptStateOutboxAndRetryCausalityAtomic(t *testing.T)
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = ?", id).Scan(&count); err != nil || count != 1 {
 			t.Fatalf("event %s count=%d err=%v", id, count, err)
 		}
+	}
+	for _, expected := range []ExecutionDispatchIntent{createDispatch, retryDispatch} {
+		actual, found, err := getExecutionDispatch(ctx, db, expected.DispatchID)
+		if err != nil || !found || actual.Intent != expected || actual.Attempts != 0 {
+			t.Fatalf("execution dispatch %s = %+v found=%v err=%v", expected.DispatchID, actual, found, err)
+		}
+	}
+}
+
+func TestWorkCommandDispatchMismatchRollsBackEveryFact(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	now := time.Date(2090, 9, 8, 11, 30, 0, 0, time.UTC)
+
+	work, _ := model.NewWork("dispatch-rollback-work", "source", "source-rollback", "listing_sync", "manual")
+	placement := WorkPlacement{BusinessKey: "manual|dispatch-rollback-work", Capability: "http.fetch", NotBefore: now}
+	receipt := mustWorkReceipt(t, "dispatch-rollback-command", "sha256:dispatch-rollback")
+	event := mustWorkEvent(t, "dispatch-rollback-event", receipt.CommandID, work, now)
+	// A dispatch for another capability must invalidate the whole transaction.
+	dispatch, _ := NewExecutionDispatchIntent("dispatch-rollback", "executor-browser", "browser.navigate", "", "",
+		"work_created", receipt.CommandID, now)
+	if _, err := repository.ApplyCreateWorkCommandWithDispatch(ctx, work, placement, receipt, event, &dispatch, now); err == nil {
+		t.Fatal("mismatched work dispatch was accepted")
+	}
+	if _, err := repository.GetWork(ctx, work.WorkID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("rolled back work lookup = %v", err)
+	}
+	if _, found, err := repository.LookupCommand(ctx, receipt.CommandID, receipt.RequestHash); err != nil || found {
+		t.Fatalf("rolled back receipt found=%v err=%v", found, err)
+	}
+	if _, found, err := getExecutionDispatch(ctx, db, dispatch.DispatchID); err != nil || found {
+		t.Fatalf("rolled back dispatch found=%v err=%v", found, err)
+	}
+	var eventCount int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = ?", event.EventID).Scan(&eventCount); err != nil || eventCount != 0 {
+		t.Fatalf("rolled back event count=%d err=%v", eventCount, err)
 	}
 }
 
