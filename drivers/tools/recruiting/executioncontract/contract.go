@@ -125,3 +125,14 @@ type DetailResult struct {
 	NormalizedContentHash string                 `json:"normalized_content_hash"`
 	Detail                json.RawMessage        `json:"detail"`
 }
+
+type ResultResponse struct {
+	Status          string          `json:"status"`
+	Reason          string          `json:"reason,omitempty"`
+	ContractVersion string          `json:"contract_version"`
+	CorrelationID   string          `json:"correlation_id"`
+	RequestedBy     string          `json:"requested_by"`
+	Page            json.RawMessage `json:"page,omitempty"`
+	Completion      json.RawMessage `json:"completion,omitempty"`
+	Detail          json.RawMessage `json:"detail,omitempty"`
+}

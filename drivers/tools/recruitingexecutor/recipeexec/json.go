@@ -86,6 +86,9 @@ func ExecuteJSON(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 			if err != nil {
 				return DocumentResult{}, fmt.Errorf("row %d field %s: %w", index, field, err)
 			}
+			if text, ok := value.(string); ok {
+				value = strings.TrimSpace(text)
+			}
 			raw, err := json.Marshal(value)
 			if err != nil {
 				return DocumentResult{}, fmt.Errorf("row %d field %s: %w", index, field, err)

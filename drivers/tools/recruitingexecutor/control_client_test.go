@@ -130,3 +130,20 @@ func TestExecutionControlCompletedResponseRejectsUnknownFields(t *testing.T) {
 		t.Fatal("expected unknown response field rejection")
 	}
 }
+
+func TestSubmitExecutionResultRequiresMatchingAcknowledgement(t *testing.T) {
+	response := executioncontract.ResultResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-result", RequestedBy: "executor-1", Page: json.RawMessage(`{"replayed":false}`)}
+	caller := &callerStub{pending: &pendingStub{response: controlResponse(t, executioncontract.TypeResult, response)}}
+	payload := executioncontract.ListingPageResult{CommandID: "page-1", ResultKind: "listing_page", AttemptID: "attempt-1"}
+	if err := submitExecutionResult(context.Background(), caller, message.Root(), "control-1", "executor-1",
+		"listing_page", payload, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	response.Page, response.Detail = nil, json.RawMessage(`{"content_changed":true}`)
+	caller.pending.response = controlResponse(t, executioncontract.TypeResult, response)
+	if err := submitExecutionResult(context.Background(), caller, message.Root(), "control-1", "executor-1",
+		"listing_page", payload, time.Second); err == nil {
+		t.Fatal("expected cross-kind acknowledgement rejection")
+	}
+}
