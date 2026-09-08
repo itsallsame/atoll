@@ -194,6 +194,14 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("recipe header %q is not allowed", name)
 		}
 	}
+	for name, value := range s.Request.Headers {
+		if strings.ContainsAny(name+value, "\r\n") {
+			return fmt.Errorf("recipe headers cannot contain control newlines")
+		}
+	}
+	if strings.ContainsAny(s.Request.UserAgent, "\r\n") {
+		return fmt.Errorf("recipe user agent cannot contain control newlines")
+	}
 	if len(s.Extraction.Fields) == 0 {
 		return fmt.Errorf("at least one extraction field is required")
 	}
@@ -362,8 +370,8 @@ func (artifact ArtifactRef) Validate() error {
 
 func (failure Failure) Validate() error {
 	switch failure.Class {
-	case "transport_timeout", "response_too_large", "redirect_rejected", "robots_disallowed", "throttled", "forbidden",
-		"auth_expired", "captcha", "parse_error", "quality_rejected", "contract_violated", "budget_revoked":
+	case "transport_timeout", "endpoint_rejected", "response_too_large", "redirect_rejected", "robots_disallowed", "throttled", "forbidden",
+		"upstream_5xx", "unexpected_status", "auth_expired", "captcha", "parse_error", "quality_rejected", "contract_violated", "budget_revoked":
 	default:
 		return fmt.Errorf("unsupported failure class %q", failure.Class)
 	}

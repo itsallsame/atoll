@@ -20,6 +20,10 @@
 - 扫描按稳定岗位键去重，相同键跨页内容冲突会令 `pagination_stable=false`；边界消失、逆序、身份缺失或先碰到 `max_pages` 均不能生成 Checkpoint；安全完成时只生成 version+1 候选，最终 CAS 仍由 Recruiting Actor 控制；
 - baseline 只有读到输入末尾才可产生首个 Checkpoint；置顶广告在提取必填岗位字段之前排除，因此不要求广告伪装成岗位；
 - DOM selector 使用独立 `cascadia v1.3.3`，仅在招聘 Executor 扩展中依赖；原项目依赖清单未被 `go mod tidy` 的非任务机械删除污染。
+- `httpdriver` 已实现只读 GET 效果边界：Recipe timeout/响应字节/redirect 上限、显式 User-Agent、Accept header 白名单、全局并发和每 origin 最小间隔；响应体在内存和返回 Artifact 字节两处都不超过上限；
+- 生产 Dialer 在实际连接前解析全部地址并拒绝 loopback、private、link-local、multicast、CGNAT、benchmark 和文档网段，避免 DNS rebinding/SSRF；redirect 只允许相同 scheme+authority 且次数受 Recipe 限制；
+- 每次 fetch 必须同时携带有效 robots 证据和条款审查版本/时间；robots 拒绝发生在网站请求之前；429、403、5xx、超时、过大响应、危险 Endpoint 和 redirect 分为稳定错误类别，连续 429/403/5xx 会打开本进程 origin circuit；
+- `httptest` 验证 GET/UA、robots 先决条件、响应截断、超时、同源与跨源 redirect、429 熔断及生产 Dialer 的私网拒绝。测试专用私网开关只存在于未导出的构造函数，生产 `New` 无法开启。
 
 ## 当前验证
 
@@ -31,7 +35,8 @@ go vet ./drivers/tools/recruitingexecutor/...
 
 ## 尚未完成
 
-- HTTP Driver 与跨页 fetch loop，把每页原始响应先保存为 Artifact，再交给离线执行器和 `ListingScan`；
+- robots.txt 的受限获取、解析、缓存与 crawl-delay 接入；
+- 跨页 fetch loop，把每页原始响应先保存为 Artifact，再交给离线执行器和 `ListingScan`；
 - HTTP Driver 的 DNS/IP 安全、redirect 同源策略、robots/条款证据、响应限额、origin 限流、429/403 熔断；
 - Browser/Profile/Extension Driver 的隔离与秘密边界；
 - 本地确定性站点的全部异常矩阵；
