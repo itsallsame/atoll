@@ -3,6 +3,7 @@ package model
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 type WorkStatus string
@@ -28,22 +29,79 @@ const (
 )
 
 type Work struct {
-	WorkID            string         `json:"work_id"`
-	ParentWorkID      string         `json:"parent_work_id,omitempty"`
-	InitiatorActorID  string         `json:"initiator_actor_id,omitempty"`
-	CauseMessageID    string         `json:"cause_message_id,omitempty"`
-	CauseWorkID       string         `json:"cause_work_id,omitempty"`
-	TargetType        string         `json:"target_type"`
-	TargetID          string         `json:"target_id"`
-	Purpose           string         `json:"purpose"`
-	Trigger           string         `json:"trigger"`
-	Status            WorkStatus     `json:"work_status"`
-	WaitingReason     string         `json:"waiting_reason,omitempty"`
-	Resolution        WorkResolution `json:"resolution,omitempty"`
-	ResolutionActorID string         `json:"resolution_actor_id,omitempty"`
-	ResolutionReason  string         `json:"resolution_reason,omitempty"`
-	AcceptanceVersion uint64         `json:"acceptance_version"`
-	Version           uint64         `json:"version"`
+	WorkID             string         `json:"work_id"`
+	ParentWorkID       string         `json:"parent_work_id,omitempty"`
+	InitiatorActorID   string         `json:"initiator_actor_id,omitempty"`
+	CauseMessageID     string         `json:"cause_message_id,omitempty"`
+	CauseWorkID        string         `json:"cause_work_id,omitempty"`
+	TargetType         string         `json:"target_type"`
+	TargetID           string         `json:"target_id"`
+	Purpose            string         `json:"purpose"`
+	Trigger            string         `json:"trigger"`
+	Status             WorkStatus     `json:"work_status"`
+	WaitingReason      string         `json:"waiting_reason,omitempty"`
+	Resolution         WorkResolution `json:"resolution,omitempty"`
+	ResolutionActorID  string         `json:"resolution_actor_id,omitempty"`
+	ResolutionReason   string         `json:"resolution_reason,omitempty"`
+	AcceptanceVersion  uint64         `json:"acceptance_version"`
+	Version            uint64         `json:"version"`
+	RetryPolicyVersion uint64         `json:"retry_policy_version,omitempty"`
+	AutomaticAttempts  uint64         `json:"automatic_attempts,omitempty"`
+	LastFailureClass   string         `json:"last_failure_class,omitempty"`
+	RetryNotBefore     string         `json:"retry_not_before,omitempty"`
+}
+
+type FailureRoute string
+
+const (
+	FailureRetry FailureRoute = "retry"
+	FailureHuman FailureRoute = "human"
+)
+
+type ExecutionFailureDecision struct {
+	PolicyVersion  uint64
+	AttemptCount   uint64
+	FailureClass   string
+	Route          FailureRoute
+	RetryNotBefore string
+}
+
+// ApplyExecutionFailure records the control plane's versioned decision on the
+// Work itself. Placement persists the same retry time for indexed claiming;
+// keeping it here makes the reason and policy visible to operators and audit.
+func (w Work) ApplyExecutionFailure(expected uint64, decision ExecutionFailureDecision) (Work, error) {
+	if err := requireVersion(expected, w.Version); err != nil {
+		return Work{}, err
+	}
+	if w.Status != WorkRunning || decision.PolicyVersion == 0 || decision.AttemptCount != w.AutomaticAttempts+1 ||
+		strings.TrimSpace(decision.FailureClass) == "" || decision.FailureClass != strings.TrimSpace(decision.FailureClass) {
+		return Work{}, fmt.Errorf("running work and complete monotonic failure decision are required")
+	}
+	switch decision.Route {
+	case FailureRetry:
+		if strings.TrimSpace(decision.RetryNotBefore) == "" {
+			return Work{}, fmt.Errorf("retry failure decision requires not-before time")
+		}
+		if _, err := time.Parse(time.RFC3339Nano, decision.RetryNotBefore); err != nil {
+			return Work{}, fmt.Errorf("retry failure decision requires RFC3339 not-before time")
+		}
+		w.Status = WorkWaitingRetry
+		w.RetryNotBefore = strings.TrimSpace(decision.RetryNotBefore)
+	case FailureHuman:
+		if strings.TrimSpace(decision.RetryNotBefore) != "" {
+			return Work{}, fmt.Errorf("human failure decision cannot carry retry time")
+		}
+		w.Status = WorkWaitingHuman
+		w.RetryNotBefore = ""
+	default:
+		return Work{}, fmt.Errorf("unknown failure route %q", decision.Route)
+	}
+	w.WaitingReason = decision.FailureClass
+	w.RetryPolicyVersion = decision.PolicyVersion
+	w.AutomaticAttempts = decision.AttemptCount
+	w.LastFailureClass = decision.FailureClass
+	w.Version++
+	return w, nil
 }
 
 // NewChildWork creates an independently versioned unit of work while retaining

@@ -416,32 +416,32 @@ WHERE s.source_id = ?`, job.SourceID).Scan(&companyState, &sourceState, &assignm
 // The name is retained for API compatibility; it accepts both executable
 // purposes selected by OfferExecution.
 func (r *Repository) AcceptListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation string, businessAt time.Time) (model.Attempt, error) {
-	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "accept", "", nil, businessAt, nil)
+	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "accept", "", nil, nil, businessAt, nil)
 }
 
 // StartListingExecution atomically starts Attempt, Work, and the first
 // occurrence execution. A retry starts a new Attempt while retaining the
 // already-running occurrence lifecycle.
 func (r *Repository) StartListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation string, businessAt time.Time) (model.Attempt, error) {
-	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "start", "", nil, businessAt, nil)
+	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "start", "", nil, nil, businessAt, nil)
 }
 
 // FailListingExecution releases the active Attempt slot and moves Work to a
 // retryable state. Retry policy and repair classification are a later control
 // decision; the repository never loops automatically.
 func (r *Repository) FailListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation, reason string, businessAt time.Time) (model.Attempt, error) {
-	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "fail", reason, nil, businessAt, nil)
+	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "fail", reason, nil, nil, businessAt, nil)
 }
 
 func (r *Repository) FailExecutionWithReport(ctx context.Context, attemptID, executorActorID, executorIncarnation, reason string,
-	report executioncontract.FailureReport, businessAt time.Time) (model.Attempt, error) {
+	report executioncontract.FailureReport, policy ExecutionFailurePolicy, businessAt time.Time) (model.Attempt, error) {
 	if err := report.Validate(attemptID); err != nil {
 		return model.Attempt{}, err
 	}
 	if strings.TrimSpace(reason) != report.Class {
 		return model.Attempt{}, fmt.Errorf("execution failure reason must match its classified report")
 	}
-	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "fail", reason, &report, businessAt, nil)
+	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "fail", reason, &report, &policy, businessAt, nil)
 }
 
 type ExecutionTransitionCommand struct {
@@ -455,11 +455,12 @@ type ExecutionTransitionCommand struct {
 	Action              string
 	Reason              string
 	Failure             *executioncontract.FailureReport
+	FailurePolicy       ExecutionFailurePolicy
 }
 
 type executionTransitionHooks struct {
 	before func(*sql.Tx) (bool, error)
-	after  func(*sql.Tx, model.Attempt) error
+	after  func(*sql.Tx, model.Attempt, model.Work) error
 }
 
 // ApplyExecutionTransitionCommand makes the executor's command receipt and
@@ -483,13 +484,14 @@ func (r *Repository) ApplyExecutionTransitionCommand(ctx context.Context, comman
 			return CommandResult{}, fmt.Errorf("start execution command shape is invalid")
 		}
 	case "fail":
-		if command.Word != executioncontract.TypeFailed || strings.TrimSpace(command.Reason) == "" {
+		if command.Word != executioncontract.TypeFailed || strings.TrimSpace(command.Reason) == "" || command.Failure == nil {
 			return CommandResult{}, fmt.Errorf("failed execution command shape is invalid")
 		}
-		if command.Failure != nil {
-			if err := command.Failure.Validate(command.AttemptID); err != nil || command.Failure.Class != strings.TrimSpace(command.Reason) {
-				return CommandResult{}, fmt.Errorf("failed execution command report is invalid")
-			}
+		if err := command.Failure.Validate(command.AttemptID); err != nil || command.Failure.Class != strings.TrimSpace(command.Reason) {
+			return CommandResult{}, fmt.Errorf("failed execution command report is invalid")
+		}
+		if err := command.FailurePolicy.Validate(); err != nil {
+			return CommandResult{}, err
 		}
 	default:
 		return CommandResult{}, fmt.Errorf("unsupported execution transition action %q", command.Action)
@@ -505,7 +507,7 @@ func (r *Repository) ApplyExecutionTransitionCommand(ctx context.Context, comman
 			response, replayed = stored, true
 			return true, nil
 		},
-		after: func(tx *sql.Tx, attempt model.Attempt) error {
+		after: func(tx *sql.Tx, attempt model.Attempt, work model.Work) error {
 			var err error
 			response, err = json.Marshal(struct {
 				ContractVersion string         `json:"contract_version"`
@@ -520,11 +522,31 @@ func (r *Repository) ApplyExecutionTransitionCommand(ctx context.Context, comman
 			if err != nil {
 				return err
 			}
-			return reserveCommandReceipt(ctx, tx, receipt, businessAt)
+			if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {
+				return err
+			}
+			if command.Action != "fail" {
+				return nil
+			}
+			eventType := "work.retry_scheduled"
+			if work.Status == model.WorkWaitingHuman {
+				eventType = "work.waiting_human"
+			}
+			payload, _ := json.Marshal(map[string]any{
+				"attempt_id": attempt.AttemptID, "work_id": work.WorkID, "failure_class": work.LastFailureClass,
+				"retry_policy_version": work.RetryPolicyVersion, "automatic_attempts": work.AutomaticAttempts,
+				"retry_not_before": work.RetryNotBefore, "failure_artifact_id": command.Failure.Artifact.ArtifactID,
+			})
+			event, err := model.NewEventIntent("execution-failed-"+attempt.AttemptID, eventType, "work", work.WorkID,
+				work.Version, businessAt.UTC().Format(time.RFC3339Nano), command.CommandID, payload)
+			if err != nil {
+				return err
+			}
+			return appendEventIntent(ctx, tx, event, businessAt, businessAt)
 		},
 	}
 	_, err := r.transitionListingExecution(ctx, command.AttemptID, command.RequestedBy, command.ExecutorIncarnation,
-		command.Action, command.Reason, command.Failure, businessAt, hooks)
+		command.Action, command.Reason, command.Failure, failurePolicyPointer(command), businessAt, hooks)
 	if errors.Is(err, ErrCommandConflict) {
 		return r.replayCommittedCommand(ctx, command.CommandID, command.RequestHash)
 	}
@@ -535,7 +557,7 @@ func (r *Repository) ApplyExecutionTransitionCommand(ctx context.Context, comman
 }
 
 func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation, action, reason string,
-	report *executioncontract.FailureReport, businessAt time.Time, hooks *executionTransitionHooks) (model.Attempt, error) {
+	report *executioncontract.FailureReport, failurePolicy *ExecutionFailurePolicy, businessAt time.Time, hooks *executionTransitionHooks) (model.Attempt, error) {
 	if strings.TrimSpace(attemptID) == "" || strings.TrimSpace(executorActorID) == "" || strings.TrimSpace(executorIncarnation) == "" || businessAt.IsZero() ||
 		(action == "fail" && strings.TrimSpace(reason) == "") {
 		return model.Attempt{}, fmt.Errorf("execution transition requires attempt, executor identity, incarnation, time, and failure reason when applicable")
@@ -629,9 +651,22 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 		attempt, err = attempt.Fail()
 		if err == nil {
 			previousWorkVersion := work.Version
-			work, err = work.WaitRetry(work.Version, strings.TrimSpace(reason))
-			if err == nil {
-				err = updateWorkTx(ctx, tx, previousWorkVersion, work, businessAt)
+			if report == nil {
+				work, err = work.WaitRetry(work.Version, strings.TrimSpace(reason))
+				if err == nil {
+					err = updateWorkTx(ctx, tx, previousWorkVersion, work, businessAt)
+				}
+			} else if failurePolicy == nil {
+				err = fmt.Errorf("classified execution failure requires retry policy")
+			} else {
+				var decision model.ExecutionFailureDecision
+				decision, err = failurePolicy.Decide(work, *report, businessAt)
+				if err == nil {
+					work, err = work.ApplyExecutionFailure(work.Version, decision)
+				}
+				if err == nil {
+					err = updateFailedWorkTx(ctx, tx, previousWorkVersion, work, decision, businessAt)
+				}
 			}
 		}
 		if err == nil {
@@ -659,7 +694,7 @@ WHERE attempt_id = ? AND attempt_status = ?`, attempt.Status, state, businessAt.
 		return model.Attempt{}, ErrAttemptConflict
 	}
 	if hooks != nil && hooks.after != nil {
-		if err := hooks.after(tx, attempt); err != nil {
+		if err := hooks.after(tx, attempt, work); err != nil {
 			return model.Attempt{}, err
 		}
 	}
@@ -667,6 +702,39 @@ WHERE attempt_id = ? AND attempt_status = ?`, attempt.Status, state, businessAt.
 		return model.Attempt{}, fmt.Errorf("commit execution transition: %w", err)
 	}
 	return attempt, nil
+}
+
+func failurePolicyPointer(command ExecutionTransitionCommand) *ExecutionFailurePolicy {
+	if command.Failure == nil {
+		return nil
+	}
+	policy := command.FailurePolicy
+	return &policy
+}
+
+func updateFailedWorkTx(ctx context.Context, tx *sql.Tx, expected uint64, work model.Work,
+	decision model.ExecutionFailureDecision, businessAt time.Time) error {
+	notBefore := businessAt.UTC()
+	if decision.Route == model.FailureRetry {
+		var err error
+		notBefore, err = time.Parse(time.RFC3339Nano, decision.RetryNotBefore)
+		if err != nil {
+			return fmt.Errorf("parse retry not-before: %w", err)
+		}
+	}
+	state, _ := json.Marshal(work)
+	result, err := tx.ExecContext(ctx, `
+UPDATE recruiting_works
+SET status = ?, resolution = ?, acceptance_version = ?, version = ?, state_json = ?, not_before = ?, updated_at = ?
+WHERE work_id = ? AND version = ?`, work.Status, nullableString(string(work.Resolution)), work.AcceptanceVersion,
+		work.Version, state, notBefore.UTC(), businessAt.UTC(), work.WorkID, expected)
+	if err != nil {
+		return err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return ErrAttemptConflict
+	}
+	return nil
 }
 
 func getWorkPlacementWith(ctx context.Context, tx *sql.Tx, workID string) (WorkPlacement, error) {

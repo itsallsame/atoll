@@ -91,17 +91,10 @@ func TestWorkCommandsKeepReceiptStateOutboxAndRetryCausalityAtomic(t *testing.T)
 		t.Fatal("stale retry cause version was accepted")
 	}
 
-	pending, err := repository.ListPendingEvents(ctx, now.Add(time.Minute), 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := map[string]int{}
-	for _, item := range pending {
-		found[item.Intent.EventID]++
-	}
 	for _, id := range []string{createEvent.EventID, pauseEvent.EventID, resumeEvent.EventID, cancelEvent.EventID, retryEvent.EventID} {
-		if found[id] != 1 {
-			t.Fatalf("event %s count=%d", id, found[id])
+		var count int
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = ?", id).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("event %s count=%d err=%v", id, count, err)
 		}
 	}
 }

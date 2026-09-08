@@ -19,6 +19,7 @@
 - Work 渐进物化同样使用 Atoll durable one-shot timer，但不固定频率轮询：Actor 查询数据库最早 planned `due_at` 后只挂一个 timer；到点以配置上限领取，仍有到期项时续挂 1ms timer，无待办时不产生空轮询。多个 Actor 依靠 occurrence 行级 `SKIP LOCKED` 协作，Work capability/origin 来自截点 Recipe 快照；
 - `recruiting.execution.offer/accept/started/failed` 已进入同一个 Recruiting Actor；Executor 必须是 Atoll envelope 中的 authenticated tool actor，稳定 Actor ID 取 envelope，incarnation 由本次执行进程声明并在后续每一步严格匹配，客户端不能替换 envelope 身份；
 - accept/started/failed 的 command receipt 已与 Attempt/Work/Permit/Failure Artifact 置于同一 MySQL 事务。请求哈希绑定 word、原始 payload 和 authenticated Executor；响应丢失后同命令返回第一次的稳定领域响应（Atoll correlation 按本次投递重建），复用 command ID 改参数或换 Executor 被拒绝。两个相同 accept 并发到达时，Attempt 行锁保证一个推进、一个 receipt replay；
+- `execution.failed` 现在强制携带分类 Failure Artifact，不能用无证据失败绕过控制面策略。策略版本、自动 Attempt 计数、最后失败类别和下一次可运行时间随 Work 状态保存，索引化 `not_before` 同事务更新：瞬态失败按可配置 base/max 指数退避，429 类至少等待独立 throttled delay；确定性 Recipe/质量错误、不可重试错误或达到可配置次数上限进入 `waiting_human`。`work.retry_scheduled|work.waiting_human` 事件与 Attempt/Work/Permit/Artifact/receipt 原子提交；
 - listing offer 在一个 MySQL 事务内锁定单个 runnable Work、重读 cutoff SourceOccurrence 及当前 Company/Source/Assignment/Recipe/Checkpoint/Profile 条件、创建绑定 Executor 的 Attempt；Recipe 正文仍只通过 opaque content ref 传递，完整轻量 offer（含当时 checkpoint）随 Attempt 持久化，因此 Actor/Executor 重启后相同命令可精确重放原始输入，不会读到后来推进的 checkpoint；
 - 同一 Work 的活动 Attempt 由数据库生成列唯一约束保证最多一个；领取先无锁读取最多 100 个候选 ID，再按 Work 主键逐项 `FOR UPDATE SKIP LOCKED`，避免 MySQL 对带 `ORDER BY/EXISTS` 的 range locking read 扩大锁范围。两个 Executor 的并发领取连续三轮均获得不同 Work；
 - accept 在执行权授予前重检完整领域 fence；started 在一个事务内推进 `Attempt accepted→running`、`Work open/waiting_retry→running` 和首次 `Occurrence queued→running`。错误 incarnation、暂停/变更后的 Source 或不再 active 的 Recipe 均不能启动；failed 不发布业务数据，允许在配置变化后关闭旧执行权，并把 Work 显式置为 `waiting_retry`，不在 Repository 内盲目自动循环。生产失败可携带绑定本 Attempt/Work 的结构化 FailureReport，失败 Artifact metadata、Attempt/Work 状态与 BudgetPermit 释放在同一事务提交；
@@ -64,7 +65,7 @@ go test -race ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/
 
 - System/Capacity 查询、Work correct 和 DailyRun 修改控制词；Work resolve 的真实 `waiting_human` 旅程依赖后续 Attempt/repair 切片；Source validate 当前只进入 `validating`，验证 Attempt 的接受、契约证明和原子发布仍属于后续纵向切片；
 - 日报关闭后的 recovered 补偿记录仍待实现；
-- 分类失败已经保存 Failure Artifact 并回到显式 `waiting_retry`，但按 origin/error 的退避与 repair 决策仍待实现；主动 incarnation 失效信号当前仅按无进展超时恢复；execution offer 和高频 page 是否写 ledger/outbox 的审计分层仍待按容量测试确定（accept/start/fail/result 的数据库 receipt 已完成）；
+- 分类失败已有版本化、有界退避并能转 `waiting_human`；按 origin/Recipe/Profile 故障域创建单飞 RepairIncident、站点级覆盖参数和修复后分批唤醒仍待实现。主动 incarnation 失效信号当前仅按无进展超时恢复；execution offer 和高频 page 是否写 ledger/outbox 的审计分层仍待按容量测试确定（accept/start/fail/result 的数据库 receipt 已完成）；
 - 批量导入 preview/confirm 和逐项 outcome；
 - `recruiting_recovery_test.go` 的完整重启、重复 ledger delivery 与日报恢复路径。
 

@@ -23,6 +23,11 @@ func testExecutionBudgetPolicy() ExecutionBudgetPolicy {
 	return policy
 }
 
+func testExecutionFailurePolicy() ExecutionFailurePolicy {
+	return ExecutionFailurePolicy{Version: 7, MaxAutomaticAttempts: 4, BaseDelay: 30 * time.Second,
+		MaxDelay: 10 * time.Minute, ThrottledDelay: 5 * time.Minute}
+}
+
 func pauseExecutionSource(t *testing.T, ctx context.Context, repository *Repository, sourceID string, at time.Time) {
 	t.Helper()
 	source, err := repository.GetSource(ctx, sourceID)
@@ -104,12 +109,14 @@ func TestListingExecutionOfferAndLifecycleAreFenced(t *testing.T) {
 	}
 	failureArtifact := mustResultArtifact(t, "execution-life-failure", model.ArtifactFailure, offer.Work.WorkID, offer.Attempt.AttemptID)
 	failed, err := repository.FailExecutionWithReport(ctx, offer.Attempt.AttemptID, "executor-a", "boot-a", "transport_timeout",
-		executioncontract.FailureReport{Class: "transport_timeout", Retryable: true, Artifact: failureArtifact}, offerAt.Add(2*time.Second))
+		executioncontract.FailureReport{Class: "transport_timeout", Retryable: true, Artifact: failureArtifact},
+		testExecutionFailurePolicy(), offerAt.Add(2*time.Second))
 	if err != nil || failed.Status != model.AttemptFailed {
 		t.Fatalf("failed attempt = %+v err=%v", failed, err)
 	}
 	work, _ = repository.GetWork(ctx, workID)
-	if work.Status != model.WorkWaitingRetry || work.WaitingReason != "transport_timeout" {
+	if work.Status != model.WorkWaitingRetry || work.WaitingReason != "transport_timeout" || work.RetryPolicyVersion != 7 ||
+		work.AutomaticAttempts != 1 || work.RetryNotBefore != offerAt.Add(32*time.Second).Format(time.RFC3339Nano) {
 		t.Fatalf("failed execution did not become retryable: %+v", work)
 	}
 	var failureArtifacts int
@@ -125,7 +132,7 @@ func TestListingExecutionOfferAndLifecycleAreFenced(t *testing.T) {
 	}
 	retry, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
 		AttemptID: "attempt-execution-life-2", ExecutorActorID: "executor-b", ExecutorIncarnation: "boot-b",
-		Capability: "http.fetch", Origin: "https://execution-life.example.com", OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(),
+		Capability: "http.fetch", Origin: "https://execution-life.example.com", OfferedAt: offerAt.Add(32 * time.Second), BudgetPolicy: testExecutionBudgetPolicy(),
 	})
 	if err != nil || retry.Work.WorkID != workID || retry.Attempt.AcceptanceVersion != work.AcceptanceVersion {
 		t.Fatalf("retry offer = %+v err=%v", retry, err)
@@ -214,21 +221,122 @@ func TestExecutionTransitionCommandsReplayAtomically(t *testing.T) {
 	command = ExecutionTransitionCommand{CommandID: "execution-command-fail", Word: executioncontract.TypeFailed,
 		RequestHash: "sha256:fail", CorrelationID: "correlation-fail", RequestedBy: offer.Attempt.ExecutorActorID,
 		AttemptID: offer.Attempt.AttemptID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Action: "fail",
-		Reason: report.Class, Failure: &report}
+		Reason: report.Class, Failure: &report, FailurePolicy: testExecutionFailurePolicy()}
 	if _, err := repository.ApplyExecutionTransitionCommand(ctx, command, offerAt.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	var receipts, artifacts int
+	var receipts, artifacts, events int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id LIKE 'execution-command-%'").Scan(&receipts); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_artifacts WHERE artifact_id = ?", failureArtifact.ArtifactID).Scan(&artifacts); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = ? AND event_kind = 'work.retry_scheduled'",
+		"execution-failed-"+offer.Attempt.AttemptID).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
 	storedAttempt, _ := repository.GetAttempt(ctx, offer.Attempt.AttemptID)
 	work, _ := repository.GetWork(ctx, offer.Work.WorkID)
-	if receipts != 3 || artifacts != 1 || storedAttempt.Status != model.AttemptFailed || work.Status != model.WorkWaitingRetry {
-		t.Fatalf("execution command facts receipts=%d artifacts=%d attempt=%s work=%s", receipts, artifacts, storedAttempt.Status, work.Status)
+	if receipts != 3 || artifacts != 1 || events != 1 || storedAttempt.Status != model.AttemptFailed || work.Status != model.WorkWaitingRetry {
+		t.Fatalf("execution command facts receipts=%d artifacts=%d events=%d attempt=%s work=%s",
+			receipts, artifacts, events, storedAttempt.Status, work.Status)
+	}
+}
+
+func TestClassifiedFailureBackoffIsBoundedAndRepairStopsAutomaticOffers(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	policy := testExecutionFailurePolicy()
+	policy.MaxAutomaticAttempts = 3
+
+	offerAt, _ := prepareListingExecutionWork(t, ctx, repository, "execution-backoff", 1)
+	nextAt := offerAt
+	for number := 1; number <= 3; number++ {
+		executorID := fmt.Sprintf("backoff-executor-%d", number)
+		incarnation := fmt.Sprintf("backoff-boot-%d", number)
+		offer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: fmt.Sprintf("backoff-attempt-%d", number),
+			ExecutorActorID: executorID, ExecutorIncarnation: incarnation, Capability: "http.fetch",
+			Origin: "https://execution-backoff.example.com", OfferedAt: nextAt, BudgetPolicy: testExecutionBudgetPolicy()})
+		if err != nil {
+			t.Fatalf("offer %d: %v", number, err)
+		}
+		if _, err := repository.AcceptListingExecution(ctx, offer.Attempt.AttemptID, executorID, incarnation, nextAt); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repository.StartListingExecution(ctx, offer.Attempt.AttemptID, executorID, incarnation, nextAt); err != nil {
+			t.Fatal(err)
+		}
+		failedAt := nextAt.Add(time.Second)
+		artifact := mustResultArtifact(t, fmt.Sprintf("backoff-failure-%d", number), model.ArtifactFailure, offer.Work.WorkID, offer.Attempt.AttemptID)
+		if _, err := repository.FailExecutionWithReport(ctx, offer.Attempt.AttemptID, executorID, incarnation, "transport_timeout",
+			executioncontract.FailureReport{Class: "transport_timeout", Retryable: true, Artifact: artifact}, policy, failedAt); err != nil {
+			t.Fatal(err)
+		}
+		work, _ := repository.GetWork(ctx, offer.Work.WorkID)
+		if work.AutomaticAttempts != uint64(number) || work.RetryPolicyVersion != policy.Version {
+			t.Fatalf("failure %d audit = %+v", number, work)
+		}
+		if number == 3 {
+			if work.Status != model.WorkWaitingHuman || work.RetryNotBefore != "" {
+				t.Fatalf("exhausted failure did not stop = %+v", work)
+			}
+			if _, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "backoff-forbidden-attempt", ExecutorActorID: "executor-x",
+				ExecutorIncarnation: "boot-x", Capability: "http.fetch", Origin: "https://execution-backoff.example.com",
+				OfferedAt: failedAt.Add(24 * time.Hour), BudgetPolicy: testExecutionBudgetPolicy()}); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("waiting-human work was offered: %v", err)
+			}
+			break
+		}
+		retryAt, err := time.Parse(time.RFC3339Nano, work.RetryNotBefore)
+		if err != nil || work.Status != model.WorkWaitingRetry {
+			t.Fatalf("retry %d = %+v err=%v", number, work, err)
+		}
+		if _, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: fmt.Sprintf("backoff-early-%d", number), ExecutorActorID: "executor-early",
+			ExecutorIncarnation: "boot-early", Capability: "http.fetch", Origin: "https://execution-backoff.example.com",
+			OfferedAt: retryAt.Add(-time.Millisecond), BudgetPolicy: testExecutionBudgetPolicy()}); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("retry %d was offered before not_before: %v", number, err)
+		}
+		nextAt = retryAt
+	}
+
+	repairAt, _ := prepareListingExecutionWork(t, ctx, repository, "execution-repair-stop", 1)
+	offer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "repair-stop-attempt", ExecutorActorID: "repair-executor",
+		ExecutorIncarnation: "repair-boot", Capability: "http.fetch", Origin: "https://execution-repair-stop.example.com",
+		OfferedAt: repairAt, BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = repository.AcceptListingExecution(ctx, offer.Attempt.AttemptID, "repair-executor", "repair-boot", repairAt)
+	_, _ = repository.StartListingExecution(ctx, offer.Attempt.AttemptID, "repair-executor", "repair-boot", repairAt)
+	artifact := mustResultArtifact(t, "repair-stop-failure", model.ArtifactFailure, offer.Work.WorkID, offer.Attempt.AttemptID)
+	report := executioncontract.FailureReport{Class: "parse_error", NeedsRepair: true, Artifact: artifact}
+	if _, err := repository.ApplyExecutionTransitionCommand(ctx, ExecutionTransitionCommand{
+		CommandID: "repair-stop-command", Word: executioncontract.TypeFailed, RequestHash: "sha256:repair-stop",
+		CorrelationID: "correlation-repair-stop", RequestedBy: "repair-executor", AttemptID: offer.Attempt.AttemptID,
+		ExecutorIncarnation: "repair-boot", Action: "fail", Reason: report.Class, Failure: &report, FailurePolicy: policy,
+	}, repairAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	work, _ := repository.GetWork(ctx, offer.Work.WorkID)
+	if work.Status != model.WorkWaitingHuman || work.WaitingReason != "parse_error" || work.AutomaticAttempts != 1 {
+		t.Fatalf("repair failure routing = %+v", work)
+	}
+	var waitingHumanEvents int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = ? AND event_kind = 'work.waiting_human'",
+		"execution-failed-"+offer.Attempt.AttemptID).Scan(&waitingHumanEvents); err != nil || waitingHumanEvents != 1 {
+		t.Fatalf("waiting-human event count=%d err=%v", waitingHumanEvents, err)
 	}
 }
 

@@ -156,7 +156,7 @@ func handleExecutionControlMessage(sys actorbase.Sys, cfg Config, repository *st
 		handleListingOffer(sys, cfg, repository, msg)
 		return
 	}
-	handleExecutionTransition(sys, repository, msg)
+	handleExecutionTransition(sys, cfg, repository, msg)
 }
 
 func handleListingOffer(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -197,7 +197,7 @@ func handleListingOffer(sys actorbase.Sys, cfg Config, repository *store.Reposit
 	_, _ = sys.Reply(msg, response)
 }
 
-func handleExecutionTransition(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+func handleExecutionTransition(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	var payload executionTransitionPayload
 	if !decode(sys, msg, &payload) {
 		return
@@ -221,11 +221,13 @@ func handleExecutionTransition(sys actorbase.Sys, repository *store.Repository, 
 			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "reason is required for execution.failed")
 			return
 		}
-		if payload.Failure != nil {
-			if err := payload.Failure.Validate(payload.AttemptID); err != nil || strings.TrimSpace(payload.Reason) != payload.Failure.Class {
-				_, _ = sys.Fail(msg, ErrorPayloadInvalid, "execution.failed report is invalid or does not match reason")
-				return
-			}
+		if payload.Failure == nil {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "execution.failed requires classified failure evidence")
+			return
+		}
+		if err := payload.Failure.Validate(payload.AttemptID); err != nil || strings.TrimSpace(payload.Reason) != payload.Failure.Class {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "execution.failed report is invalid or does not match reason")
+			return
 		}
 		action = "fail"
 	default:
@@ -235,7 +237,7 @@ func handleExecutionTransition(sys actorbase.Sys, repository *store.Repository, 
 	result, err := repository.ApplyExecutionTransitionCommand(msg.Ctx(), store.ExecutionTransitionCommand{
 		CommandID: payload.CommandID, Word: msg.Type, RequestHash: executionCommandRequestHash(msg), CorrelationID: string(msg.CorrelationID),
 		RequestedBy: string(msg.Sender.ID), AttemptID: payload.AttemptID, ExecutorIncarnation: payload.ExecutorIncarnation,
-		Action: action, Reason: payload.Reason, Failure: payload.Failure,
+		Action: action, Reason: payload.Reason, Failure: payload.Failure, FailurePolicy: cfg.executionFailurePolicy(),
 	}, businessAt)
 	if err != nil {
 		failStoreError(sys, msg, err)

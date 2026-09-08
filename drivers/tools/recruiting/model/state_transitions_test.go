@@ -1,6 +1,9 @@
 package model
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestWorkRetryPauseResumeFailureAndAttemptTerminals(t *testing.T) {
 	work, err := NewWork("work-1", "source", "source-1", "listing_sync", "timer")
@@ -49,6 +52,28 @@ func TestWorkRetryPauseResumeFailureAndAttemptTerminals(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestWorkRecordsVersionedRetryAndHumanFailureDecisions(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	work, _ := NewWork("failure-work", "source", "source-1", "listing_sync", "timer")
+	work, _ = work.Start(work.Version)
+	retryAt := now.Add(time.Minute).Format(time.RFC3339Nano)
+	retry, err := work.ApplyExecutionFailure(work.Version, ExecutionFailureDecision{PolicyVersion: 3, AttemptCount: 1,
+		FailureClass: "transport_timeout", Route: FailureRetry, RetryNotBefore: retryAt})
+	if err != nil || retry.Status != WorkWaitingRetry || retry.RetryPolicyVersion != 3 || retry.AutomaticAttempts != 1 || retry.RetryNotBefore != retryAt {
+		t.Fatalf("retry decision = %+v err=%v", retry, err)
+	}
+	retry, _ = retry.Start(retry.Version)
+	human, err := retry.ApplyExecutionFailure(retry.Version, ExecutionFailureDecision{PolicyVersion: 4, AttemptCount: 2,
+		FailureClass: "parse_error", Route: FailureHuman})
+	if err != nil || human.Status != WorkWaitingHuman || human.RetryPolicyVersion != 4 || human.AutomaticAttempts != 2 || human.RetryNotBefore != "" {
+		t.Fatalf("human decision = %+v err=%v", human, err)
+	}
+	if _, err := work.ApplyExecutionFailure(work.Version, ExecutionFailureDecision{PolicyVersion: 3, AttemptCount: 2,
+		FailureClass: "transport_timeout", Route: FailureRetry, RetryNotBefore: retryAt}); err == nil {
+		t.Fatal("non-monotonic automatic attempt count was accepted")
 	}
 }
 

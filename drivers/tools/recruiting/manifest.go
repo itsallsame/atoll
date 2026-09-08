@@ -47,7 +47,7 @@ func manifest() introspect.Manifest {
 			TypeExecutionOffer:   {Description: "offer one capability-matched listing or detail execution to an authenticated executor"},
 			TypeExecutionAccept:  {Description: "accept a bound execution attempt using executor incarnation fencing"},
 			TypeExecutionStarted: {Description: "atomically start an attempt, its work, and an associated listing occurrence when present"},
-			TypeExecutionFailed:  {Description: "record an execution failure and return its work to retryable control"},
+			TypeExecutionFailed:  {Description: "record classified failure evidence and apply versioned retry or human routing"},
 			TypeDailyRunGet:      {Description: "get one immutable daily coverage run"},
 			TypeDailyRunList:     {Description: "seek-page immutable daily coverage runs"},
 			TypeDailyRunSummary:  {Description: "inspect live coverage counts and seek-page source occurrences"},

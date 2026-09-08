@@ -35,6 +35,11 @@ type Config struct {
 	BudgetMaxPerCompany          int           `json:"budget_max_per_company"`
 	BudgetMaxPerProfile          int           `json:"budget_max_per_profile"`
 	BudgetPermitTTLMS            int           `json:"budget_permit_ttl_ms"`
+	RetryPolicyVersion           uint64        `json:"retry_policy_version"`
+	RetryMaxAutomaticAttempts    int           `json:"retry_max_automatic_attempts"`
+	RetryBaseDelayMS             int           `json:"retry_base_delay_ms"`
+	RetryMaxDelayMS              int           `json:"retry_max_delay_ms"`
+	RetryThrottledDelayMS        int           `json:"retry_throttled_delay_ms"`
 }
 
 func DefaultConfig() json.RawMessage {
@@ -73,6 +78,9 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 		budget.PermitTTL < time.Second || budget.PermitTTL > 24*time.Hour {
 		return Config{}, fmt.Errorf("recruiting config: invalid execution budget policy")
 	}
+	if err := cfg.executionFailurePolicy().Validate(); err != nil {
+		return Config{}, fmt.Errorf("recruiting config: %w", err)
+	}
 	if cfg.DailyScheduleEnabled {
 		if _, err := time.LoadLocation(cfg.DailyScheduleTimezone); err != nil {
 			return Config{}, fmt.Errorf("recruiting config: invalid daily_schedule_timezone: %w", err)
@@ -97,6 +105,8 @@ func defaultConfig() Config {
 		DailyWorkMaterializeLimit: 100,
 		BudgetPolicyVersion:       1, BudgetMaxActive: 1_000, BudgetMaxPerCapability: 1_000,
 		BudgetMaxPerOrigin: 8, BudgetMaxPerCompany: 50, BudgetMaxPerProfile: 1, BudgetPermitTTLMS: 900_000,
+		RetryPolicyVersion: 1, RetryMaxAutomaticAttempts: 4, RetryBaseDelayMS: 30_000,
+		RetryMaxDelayMS: 1_800_000, RetryThrottledDelayMS: 300_000,
 	}
 }
 
@@ -105,6 +115,12 @@ func (c Config) executionBudgetPolicy() store.ExecutionBudgetPolicy {
 		MaxPerCapability: c.BudgetMaxPerCapability, MaxPerOrigin: c.BudgetMaxPerOrigin,
 		MaxPerCompany: c.BudgetMaxPerCompany, MaxPerProfile: c.BudgetMaxPerProfile,
 		PermitTTL: time.Duration(c.BudgetPermitTTLMS) * time.Millisecond}
+}
+
+func (c Config) executionFailurePolicy() store.ExecutionFailurePolicy {
+	return store.ExecutionFailurePolicy{Version: c.RetryPolicyVersion, MaxAutomaticAttempts: uint64(c.RetryMaxAutomaticAttempts),
+		BaseDelay: time.Duration(c.RetryBaseDelayMS) * time.Millisecond, MaxDelay: time.Duration(c.RetryMaxDelayMS) * time.Millisecond,
+		ThrottledDelay: time.Duration(c.RetryThrottledDelayMS) * time.Millisecond}
 }
 
 const ConfigSchema = `{
@@ -130,5 +146,10 @@ const ConfigSchema = `{
 	,"budget_max_per_company":{"type":"integer","minimum":1,"maximum":100000}
 	,"budget_max_per_profile":{"type":"integer","minimum":1,"maximum":100000}
 	,"budget_permit_ttl_ms":{"type":"integer","minimum":1000,"maximum":86400000}
+	,"retry_policy_version":{"type":"integer","minimum":1}
+	,"retry_max_automatic_attempts":{"type":"integer","minimum":1,"maximum":100}
+	,"retry_base_delay_ms":{"type":"integer","minimum":1000,"maximum":86400000}
+	,"retry_max_delay_ms":{"type":"integer","minimum":1000,"maximum":604800000}
+	,"retry_throttled_delay_ms":{"type":"integer","minimum":1000,"maximum":604800000}
   }
 }`

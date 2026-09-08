@@ -11,7 +11,9 @@ func TestParseConfigDefaultsAndRejectsUnknownFields(t *testing.T) {
 		!cfg.DailyScheduleEnabled || cfg.DailyScheduleTimezone != "UTC" || cfg.DailyCutoffLocal != "00:00:00" ||
 		cfg.AttemptStaleAfterMS != 900_000 || cfg.AttemptRecoveryLimit != 100 || cfg.DailyWindowDurationMinutes != 480 ||
 		cfg.DailySchedulePolicyVersion != 1 || cfg.DailyWorkMaterializeLimit != 100 || cfg.BudgetPolicyVersion != 1 ||
-		cfg.BudgetMaxActive != 1_000 || cfg.BudgetMaxPerOrigin != 8 || cfg.BudgetMaxPerProfile != 1 || cfg.BudgetPermitTTLMS != 900_000 {
+		cfg.BudgetMaxActive != 1_000 || cfg.BudgetMaxPerOrigin != 8 || cfg.BudgetMaxPerProfile != 1 || cfg.BudgetPermitTTLMS != 900_000 ||
+		cfg.RetryPolicyVersion != 1 || cfg.RetryMaxAutomaticAttempts != 4 || cfg.RetryBaseDelayMS != 30_000 ||
+		cfg.RetryMaxDelayMS != 1_800_000 || cfg.RetryThrottledDelayMS != 300_000 {
 		t.Fatalf("default config = %+v, %v", cfg, err)
 	}
 	if _, err := parseConfig(json.RawMessage(`{"unknown":true}`)); err == nil {
@@ -37,6 +39,11 @@ func TestParseConfigDefaultsAndRejectsUnknownFields(t *testing.T) {
 		json.RawMessage(`{"budget_max_active":0}`),
 		json.RawMessage(`{"budget_max_active":4,"budget_max_per_origin":5}`),
 		json.RawMessage(`{"budget_permit_ttl_ms":999}`),
+		json.RawMessage(`{"retry_policy_version":0}`),
+		json.RawMessage(`{"retry_max_automatic_attempts":101}`),
+		json.RawMessage(`{"retry_base_delay_ms":999}`),
+		json.RawMessage(`{"retry_base_delay_ms":60000,"retry_max_delay_ms":30000}`),
+		json.RawMessage(`{"retry_base_delay_ms":60000,"retry_throttled_delay_ms":30000}`),
 	} {
 		if _, err := parseConfig(raw); err == nil {
 			t.Fatalf("invalid daily config was accepted: %s", raw)
