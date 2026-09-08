@@ -152,6 +152,64 @@ func TestWorkCommandDispatchMismatchRollsBackEveryFact(t *testing.T) {
 	}
 }
 
+func TestListingWorkRetryAtomicallyRebindsItsDailyOccurrence(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	offerAt, workID := prepareListingExecutionWork(t, ctx, repository, "listing-human-retry", 1)
+	record, err := repository.GetWorkRecord(ctx, workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceled, err := record.Work.Cancel(record.Work.Version)
+	if err != nil {
+		t.Fatalf("cancel listing Work = %+v err=%v", canceled, err)
+	}
+	if err := repository.UpdateWorkCAS(ctx, record.Work.Version, canceled, offerAt); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := model.NewRetryWork(canceled, workID+"-retry", "human:operator", "message-listing-retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	placement := record.Placement
+	placement.BusinessKey = "retry|" + workID + "|" + retry.WorkID
+	placement.NotBefore = offerAt.Add(time.Second)
+	receipt := mustWorkReceipt(t, "listing-human-retry-command", "sha256:listing-human-retry")
+	event := mustWorkEvent(t, "listing-human-retry-command-event", receipt.CommandID, retry, placement.NotBefore)
+	dispatch, _ := NewExecutionDispatchIntent("dispatch-listing-human-retry", "tool:listing-executor", placement.Capability,
+		placement.Origin, placement.ProfileID, "work_retry_created", receipt.CommandID, placement.NotBefore)
+	if _, err := repository.ApplyRetryWorkCommandWithDispatch(ctx, canceled.Version, canceled.WorkID, retry, placement,
+		receipt, event, &dispatch, placement.NotBefore); err != nil {
+		t.Fatal(err)
+	}
+	occurrence, err := getOccurrenceByWorkWith(ctx, db, retry.WorkID, false)
+	if err != nil || occurrence.WorkID != retry.WorkID || (occurrence.Status != model.OccurrenceQueued && occurrence.Status != model.OccurrenceRunning) {
+		t.Fatalf("rebound occurrence = %+v err=%v", occurrence, err)
+	}
+	if _, err := getOccurrenceByWorkWith(ctx, db, canceled.WorkID, false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old Work remained the occurrence execution link: %v", err)
+	}
+	offer, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
+		AttemptID: "listing-human-retry-attempt", ExecutorActorID: "tool:listing-executor:1", ExecutorIncarnation: "boot-retry",
+		Capability: placement.Capability, Origin: placement.Origin, ProfileID: placement.ProfileID,
+		OfferedAt: placement.NotBefore, BudgetPolicy: testExecutionBudgetPolicy(),
+	})
+	if err != nil || offer.Work.WorkID != retry.WorkID || offer.Occurrence == nil || offer.Occurrence.WorkID != retry.WorkID {
+		t.Fatalf("retried listing offer = %+v err=%v", offer, err)
+	}
+}
+
 func TestFailedWorkCreateLeavesNoReceipt(t *testing.T) {
 	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
 	if dsn == "" {

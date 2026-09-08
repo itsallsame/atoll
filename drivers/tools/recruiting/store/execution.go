@@ -254,13 +254,15 @@ FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE`, request.AttemptID).Sc
 	return offer, true, nil
 }
 
-func getOccurrenceByWorkWith(ctx context.Context, tx *sql.Tx, workID string, lock bool) (model.SourceOccurrence, error) {
+func getOccurrenceByWorkWith(ctx context.Context, queryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, workID string, lock bool) (model.SourceOccurrence, error) {
 	query := "SELECT state_json FROM recruiting_source_occurrences WHERE listing_work_id = ?"
 	if lock {
 		query += " FOR UPDATE"
 	}
 	var state []byte
-	if err := tx.QueryRowContext(ctx, query, workID).Scan(&state); err != nil {
+	if err := queryer.QueryRowContext(ctx, query, workID).Scan(&state); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return model.SourceOccurrence{}, ErrNotFound
 		}

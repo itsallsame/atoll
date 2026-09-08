@@ -202,14 +202,14 @@ SET listing_work_id = ?, status = ?, version = ?, state_json = ?, updated_at = ?
 WHERE occurrence_id = ? AND version = ?`, nullableString(occurrence.WorkID), occurrence.Status, occurrence.Version,
 		state, businessAt.UTC(), occurrence.OccurrenceID, expected)
 	if err != nil {
-		return fmt.Errorf("update occurrence in due materialization: %w", err)
+		return fmt.Errorf("update occurrence: %w", err)
 	}
 	changed, err := result.RowsAffected()
 	if err != nil {
 		return err
 	}
 	if changed != 1 {
-		return errors.New("occurrence changed while locked for due materialization")
+		return errors.New("occurrence changed while locked")
 	}
 	return nil
 }

@@ -26,7 +26,7 @@ P1 契约基线：`a94d2b8d`
 - Detail Work 写入故障会回滚同事务中的 Observation 与 Job 更新，重试不会看到半完成分页结果；
 - Work Repository 支持业务键唯一、版本 CAS，以及按 capability/origin/Profile、`not_before`、deadline 和 priority 过滤排序的 runnable 查询；EXPLAIN 验证使用招聘专用索引；
 - migration `000003` 为 Work 增加 initiator/message/work cause 列和专用索引；Work get 同时返回领域状态与 placement，人工创建、暂停、恢复、取消、结案和 retry 均采用 receipt/聚合或新 Work/outbox 单事务；失败创建不留下 receipt；
-- retry 事务锁定并重读原 Work 的版本和终态，验证 target/purpose/parent 因果一致后只插入新 Work；原 Work 不更新，在途结果仍由原 acceptance fence 判定；
+- retry 事务锁定并重读原 Work 的版本和终态，验证 target/purpose/parent 因果一致后插入新 Work；对于 `listing_sync`，同一事务还锁定未终结 SourceOccurrence，以精确旧 Work/version 将其重绑到新 Work，再提交 receipt、event 和 execution dispatch。合同测试证明新 Work 可被 listing Offer 领取、旧 Work 不再解析为 occurrence；原 Work/Attempt 不更新，在途结果仍由原 acceptance fence 判定，终态 occurrence 不能重开；
 - Attempt 保存 Executor identity/incarnation 与全部领域 fence；状态通过预期前态 CAS，两个并发 accept 只有一个成功，状态机无循环因此不产生 ABA；
 - Recipe 使用 `(recipe_id, recipe_version)` 身份和独立 state version CAS；ABI、opaque content ref、transport、required capability、内容与 contract 在同一 Recipe version 内不可变，Repository 只接受领域状态机产生的状态转换；Source candidate→validating 单独持久化，ready Endpoint 与首个 Listing Assignment 同事务发布；
 - Recipe rollout 要求匹配 active kind/contract，并在同一事务比较 Source version 与 Assignment version；两个并发 rollout 只有一个成功，任一 CAS 冲突都会回滚另一侧，数据库不会出现 Source JSON 与 Assignment 行不一致；

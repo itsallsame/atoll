@@ -232,10 +232,21 @@ func TestOccurrenceSnapshotAndCoverageOutcome(t *testing.T) {
 	if err != nil || o.Status != OccurrenceQueued || o.WorkID != "work-occ-1" {
 		t.Fatalf("queued occurrence = %+v, %v", o, err)
 	}
+	rebound, err := o.RebindWork(o.Version, "work-occ-1", "work-occ-1-retry")
+	if err != nil || rebound.WorkID != "work-occ-1-retry" || rebound.Status != OccurrenceQueued || rebound.Version != o.Version+1 {
+		t.Fatalf("rebound occurrence = %+v, %v", rebound, err)
+	}
+	if _, err := rebound.RebindWork(rebound.Version, "work-occ-1", "another-retry"); err == nil {
+		t.Fatal("occurrence rebound from a stale Work link")
+	}
+	o = rebound
 	o, _ = o.Start(o.Version)
 	o, err = o.Finish(o.Version, false, "boundary_missing")
 	if err != nil || o.Status != OccurrenceException {
 		t.Fatalf("exception occurrence = %+v, %v", o, err)
+	}
+	if _, err := o.RebindWork(o.Version, o.WorkID, "work-after-terminal"); err == nil {
+		t.Fatal("terminal occurrence was rebound to a retry Work")
 	}
 	if _, err := OccurrenceKey("source-1", "not-a-date", 3); err == nil {
 		t.Fatal("invalid schedule date was accepted")

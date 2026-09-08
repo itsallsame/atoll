@@ -189,6 +189,19 @@ func (r *Repository) applyRetryWorkCommand(ctx context.Context, expectedPrevious
 	if err := insertWork(ctx, tx, retry, placement, businessAt); err != nil {
 		return CommandResult{}, err
 	}
+	if retry.Purpose == "listing_sync" {
+		occurrence, err := getOccurrenceByWorkWith(ctx, tx, previousID, true)
+		if err != nil {
+			return CommandResult{}, fmt.Errorf("load listing occurrence for retry: %w", err)
+		}
+		rebound, err := occurrence.RebindWork(occurrence.Version, previousID, retry.WorkID)
+		if err != nil {
+			return CommandResult{}, err
+		}
+		if err := updateOccurrenceInTx(ctx, tx, occurrence.Version, rebound, businessAt); err != nil {
+			return CommandResult{}, fmt.Errorf("rebind listing occurrence for retry: %w", err)
+		}
+	}
 	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
 		return CommandResult{}, err
 	}

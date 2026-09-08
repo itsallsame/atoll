@@ -287,6 +287,8 @@ func validateOccurrenceTransition(current, next model.SourceOccurrence) error {
 	var expected model.SourceOccurrence
 	var err error
 	switch {
+	case (current.Status == model.OccurrenceQueued || current.Status == model.OccurrenceRunning) && next.Status == current.Status && next.WorkID != current.WorkID:
+		expected, err = current.RebindWork(current.Version, current.WorkID, next.WorkID)
 	case current.Status == model.OccurrencePlanned && next.Status == model.OccurrenceQueued:
 		expected, err = current.Queue(current.Version, next.WorkID)
 	case current.Status == model.OccurrenceQueued && next.Status == model.OccurrenceRunning:

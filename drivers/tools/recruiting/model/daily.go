@@ -223,6 +223,22 @@ func (o SourceOccurrence) Start(expected uint64) (SourceOccurrence, error) {
 	return o, nil
 }
 
+// RebindWork moves an unfinished daily occurrence to a distinct causal Work
+// created by an operator retry. The old Work remains immutable history; the
+// occurrence points at the one current Work whose Attempt may finish it.
+func (o SourceOccurrence) RebindWork(expected uint64, previousWorkID, retryWorkID string) (SourceOccurrence, error) {
+	if err := requireVersion(expected, o.Version); err != nil {
+		return SourceOccurrence{}, err
+	}
+	previousWorkID, retryWorkID = strings.TrimSpace(previousWorkID), strings.TrimSpace(retryWorkID)
+	if (o.Status != OccurrenceQueued && o.Status != OccurrenceRunning) || previousWorkID == "" || retryWorkID == "" ||
+		previousWorkID == retryWorkID || o.WorkID != previousWorkID {
+		return SourceOccurrence{}, &InvalidTransitionError{Entity: "source occurrence", From: string(o.Status), Action: "rebind retry work"}
+	}
+	o.WorkID, o.Version = retryWorkID, o.Version+1
+	return o, nil
+}
+
 func (o SourceOccurrence) Queue(expected uint64, workID string) (SourceOccurrence, error) {
 	if err := requireVersion(expected, o.Version); err != nil {
 		return SourceOccurrence{}, err
