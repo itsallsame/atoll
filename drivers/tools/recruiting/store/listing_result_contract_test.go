@@ -174,6 +174,9 @@ func TestStaleListingResultOnlyRetainsRejectedArtifact(t *testing.T) {
 		t.Fatalf("stale result changed business facts: rejected=%d progress=%d work=%s attempt=%s checkpoint=%d",
 			rejected, progress, work.Status, attempt.Status, checkpoint.Version)
 	}
+	if _, err := repository.FailListingExecution(ctx, offer.Attempt.AttemptID, "listing-stale-executor", "listing-stale-boot", "fixture_cleanup", offerAt); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func startListingAttempt(t *testing.T, ctx context.Context, repository *Repository, prefix string, at time.Time) ListingExecutionOffer {

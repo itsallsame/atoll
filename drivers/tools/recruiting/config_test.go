@@ -9,7 +9,8 @@ func TestParseConfigDefaultsAndRejectsUnknownFields(t *testing.T) {
 	cfg, err := parseConfig(nil)
 	if err != nil || cfg.ExecutorID != "recruiting-executor" || cfg.DatabaseDSNEnv != "ATOLL_RECRUITING_MYSQL_DSN" || cfg.ReconcileIntervalMS != 30_000 ||
 		!cfg.DailyScheduleEnabled || cfg.DailyScheduleTimezone != "UTC" || cfg.DailyCutoffLocal != "00:00:00" ||
-		cfg.DailyWindowDurationMinutes != 480 || cfg.DailySchedulePolicyVersion != 1 || cfg.DailyWorkMaterializeLimit != 100 {
+		cfg.AttemptStaleAfterMS != 900_000 || cfg.AttemptRecoveryLimit != 100 || cfg.DailyWindowDurationMinutes != 480 ||
+		cfg.DailySchedulePolicyVersion != 1 || cfg.DailyWorkMaterializeLimit != 100 {
 		t.Fatalf("default config = %+v, %v", cfg, err)
 	}
 	if _, err := parseConfig(json.RawMessage(`{"unknown":true}`)); err == nil {
@@ -30,6 +31,8 @@ func TestParseConfigDefaultsAndRejectsUnknownFields(t *testing.T) {
 		json.RawMessage(`{"daily_window_duration_minutes":0}`),
 		json.RawMessage(`{"daily_schedule_policy_version":0}`),
 		json.RawMessage(`{"daily_work_materialize_limit":501}`),
+		json.RawMessage(`{"attempt_stale_after_ms":999}`),
+		json.RawMessage(`{"attempt_recovery_limit":501}`),
 	} {
 		if _, err := parseConfig(raw); err == nil {
 			t.Fatalf("invalid daily config was accepted: %s", raw)

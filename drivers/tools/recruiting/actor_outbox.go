@@ -27,13 +27,17 @@ type outboxReconcilePayload struct {
 }
 
 type outboxReconcileResponse struct {
-	ContractVersion string `json:"contract_version"`
-	Scanned         int    `json:"scanned"`
-	Delivered       int    `json:"delivered"`
-	RetryScheduled  int    `json:"retry_scheduled"`
-	Exhausted       int    `json:"exhausted"`
-	Conflicts       int    `json:"conflicts"`
-	CheckpointError int    `json:"checkpoint_error"`
+	ContractVersion  string `json:"contract_version"`
+	Scanned          int    `json:"scanned"`
+	Delivered        int    `json:"delivered"`
+	RetryScheduled   int    `json:"retry_scheduled"`
+	Exhausted        int    `json:"exhausted"`
+	Conflicts        int    `json:"conflicts"`
+	CheckpointError  int    `json:"checkpoint_error"`
+	AttemptsScanned  int    `json:"attempts_scanned"`
+	AttemptsExpired  int    `json:"attempts_expired"`
+	WorksRetryQueued int    `json:"works_retry_queued"`
+	AttemptConflicts int    `json:"attempt_conflicts"`
 }
 
 type outboxReconcileDuePayload struct {
@@ -44,7 +48,7 @@ type outboxReconcileDuePayload struct {
 // It projects durable recruiting facts into Atoll's ledger, while the stable
 // event ID and fingerprint make a crash after Emit but before the SQL delivery
 // checkpoint safe to replay.
-func handleOutboxReconcile(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	if repository == nil {
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
 		return
@@ -61,11 +65,19 @@ func handleOutboxReconcile(sys actorbase.Sys, repository *store.Repository, msg 
 		return
 	}
 
-	response, err := reconcileOutbox(msg.Ctx(), sys, repository, payload.Limit, time.Now().UTC())
+	now := time.Now().UTC()
+	recovery, err := repository.RecoverStaleAttempts(msg.Ctx(), now.Add(-time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond), cfg.AttemptRecoveryLimit, now)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
 	}
+	response, err := reconcileOutbox(msg.Ctx(), sys, repository, payload.Limit, now)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response.AttemptsScanned, response.AttemptsExpired = recovery.Scanned, recovery.Expired
+	response.WorksRetryQueued, response.AttemptConflicts = recovery.RetryQueued, recovery.Conflicts
 	_, _ = sys.Reply(msg, response)
 }
 
@@ -142,7 +154,9 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 		return nil
 	}
 	if repository != nil {
-		_, _ = reconcileOutbox(msg.Ctx(), sys, repository, defaultReconcileLimit, time.Now().UTC())
+		now := time.Now().UTC()
+		_, _ = repository.RecoverStaleAttempts(msg.Ctx(), now.Add(-time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond), cfg.AttemptRecoveryLimit, now)
+		_, _ = reconcileOutbox(msg.Ctx(), sys, repository, defaultReconcileLimit, now)
 	}
 	// Rearm and persist before the raw Proc calls Recv again and acknowledges
 	// the current fire. A crash on either side therefore leaves one of the two

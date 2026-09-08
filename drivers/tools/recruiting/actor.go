@@ -163,7 +163,7 @@ func run(sys actorbase.Sys, cfg Config) error {
 			TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary:
 			handleResourceQuery(sys, repository, msg)
 		case TypeSystemReconcile:
-			handleOutboxReconcile(sys, repository, msg)
+			handleOutboxReconcile(sys, cfg, repository, msg)
 		case TypeProbeStart:
 			handleStart(sys, cfg, state, msg)
 		case TypeProbeSchedule:

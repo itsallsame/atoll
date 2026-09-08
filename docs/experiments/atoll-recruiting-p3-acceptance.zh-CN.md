@@ -23,6 +23,8 @@
 - accept 在执行权授予前重检完整领域 fence；started 在一个事务内推进 `Attempt accepted→running`、`Work open/waiting_retry→running` 和首次 `Occurrence queued→running`。错误 incarnation、暂停/变更后的 Source 或不再 active 的 Recipe 均不能启动；failed 不发布业务数据，允许在配置变化后关闭旧执行权，并把 Work 显式置为 `waiting_retry`，不在 Repository 内盲目自动循环；
 - `recruiting.execution.result` 现在以 `listing_page|listing_completion` 区分有界页面和最终证明，同时保留 P0 probe 的旧消息路径；生产结果只接受 authenticated tool actor。页面提交最多 500 个 Observation，并将 Artifact、岗位事实、detail Work 和恢复游标原子落库；最终提交原子推进 Checkpoint、Attempt、Work、Occurrence 与 outbox，Actor handler 不读取网站或等待外部 I/O；
 - Result message 不能声明当前领域版本，也不能选择派生 Job/Work ID、detail capability/origin 或 Checkpoint 控制字段；这些值由数据库 fence、Recipe、规范 URL、业务键和 occurrence 决定。失败的 fence/质量证明仅留下 `rejected=true` Artifact；相同 Artifact 页面重放及 terminal outcome 重放稳定；
+- Executor 无进展恢复复用已有 reconcile durable timer，不增加 Worker/Actor 类型或 heartbeat 流量。`attempt_stale_after_ms` 默认 15 分钟、限制 1 秒至 24 小时，单轮 `attempt_recovery_limit` 默认 100、最大 500；offered/accepted 超时释放活动 Attempt 槽，running 超时同时把仍匹配 acceptance fence 的 Work 置为 `waiting_retry`，Occurrence 保留其业务生命周期；
+- 恢复查询有专用状态/更新时间索引，先读取有界候选，再按 Attempt 主键逐行 `SKIP LOCKED`；两个恢复实例并发处理同一 Attempt 只有一个提交。每次过期追加 `attempt.expired` outbox，当前 tick 随后复用原有 outbox 投递，避免另建周期链；
 - Company 和 Source 新增/修改命令均将稳定 response receipt、聚合创建/CAS 和 outbox event intent 原子提交；新增冲突不留下 receipt；Source 创建还在同一事务锁定所属 Company，拒绝向 archived Company 添加 Source，同时不妨碍历史成功命令在父对象状态改变后重放；
 - `recruiting.system.reconcile` 每次只读取最多 500 条到期 outbox，将完整 EventIntent 作为公开业务事件写入 Atoll ledger；事件 ID 与 fingerprint 稳定，覆盖 Emit 成功但 SQL checkpoint 前崩溃的重放窗口；失败采用持久 CAS 次数、有界指数退避和 exhausted 终态；
 - Actor 在招聘侧状态中持久保存唯一 reconcile timer ID，使用 Atoll 现有 durable timer 自动运行；下一 timer 在当前 fire 被确认前完成挂载与持久化，重启窗口中的孤立 timer 因 ID 不匹配只能被确认、不能继续生长，避免重复周期链；周期可配置为 100ms 至 1h，单轮仍固定最多 100 条以保护 mailbox 公平性；
@@ -54,7 +56,7 @@ go test -race ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/
 
 - System/Capacity 查询、Work correct 和 DailyRun 修改控制词；Work resolve 的真实 `waiting_human` 旅程依赖后续 Attempt/repair 切片；Source validate 当前只进入 `validating`，验证 Attempt 的接受、契约证明和原子发布仍属于后续纵向切片；
 - 窗口末对账、DailyRun 自动闭账和 recovered 补偿仍待实现；
-- detail Attempt 的自动 offer 输入构造；listing failure Artifact 与分类修复决策；Attempt 超时/Actor incarnation 消失后的 expire/reconcile；execution accept/start/fail/page 的 command receipt/outbox 审计仍待完成；
+- detail Attempt 的自动 offer 输入构造；listing failure Artifact 与分类修复决策；主动 incarnation 失效信号（当前仅按无进展超时恢复）；execution accept/start/fail/page 的 command receipt/outbox 审计仍待完成；
 - 批量导入 preview/confirm 和逐项 outcome；
 - `recruiting_recovery_test.go` 的完整重启、重复 ledger delivery 与日报恢复路径。
 

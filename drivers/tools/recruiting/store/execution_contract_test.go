@@ -114,6 +114,10 @@ func TestListingExecutionOfferAndLifecycleAreFenced(t *testing.T) {
 	if _, err := repository.AcceptListingExecution(ctx, retry.Attempt.AttemptID, "executor-b", "boot-b", offerAt); !errors.Is(err, ErrResultFenced) {
 		t.Fatalf("changed source fence accepted retry attempt: %v", err)
 	}
+	expiredRetry, _ := retry.Attempt.Expire()
+	if err := repository.UpdateAttemptCAS(ctx, retry.Attempt.Status, expiredRetry, offerAt); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestConcurrentListingOffersClaimDistinctWorks(t *testing.T) {
