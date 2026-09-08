@@ -31,6 +31,7 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 
 	pageArtifact := mustResultArtifact(t, "listing-result-page", model.ArtifactPage, offer.Work.WorkID, offer.Attempt.AttemptID)
 	page := ListingPageResult{
+		CommandID: "listing-result-page-command", RequestHash: "sha256:listing-result-page",
 		AttemptID: offer.Attempt.AttemptID, ExecutorActorID: "listing-result-executor", ExecutorIncarnation: "listing-result-boot",
 		PageSequence: 1, Terminal: true, Artifact: pageArtifact, ObservedAt: offerAt,
 		Observations: []model.ListingObservation{{
@@ -41,14 +42,33 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 			RecipeVersion: offer.Attempt.RecipeVersion, ArtifactID: pageArtifact.ArtifactID,
 		}},
 	}
-	acceptedPage, err := repository.AcceptListingPage(ctx, page)
-	if err != nil || acceptedPage.Replayed || len(acceptedPage.Items) != 1 || acceptedPage.Items[0].DetailWork == nil || !acceptedPage.Progress.EndOfInput {
-		t.Fatalf("accepted listing page = %+v err=%v", acceptedPage, err)
+	type pageCall struct {
+		outcome ListingPageOutcome
+		err     error
 	}
-	replayedPage, err := repository.AcceptListingPage(ctx, page)
-	if err != nil || !replayedPage.Replayed || !reflect.DeepEqual(replayedPage.Progress, acceptedPage.Progress) ||
-		!reflect.DeepEqual(replayedPage.Items, acceptedPage.Items) {
-		t.Fatalf("listing page replay = %+v err=%v", replayedPage, err)
+	pageCalls := make(chan pageCall, 2)
+	for range 2 {
+		go func() {
+			outcome, err := repository.AcceptListingPage(ctx, page)
+			pageCalls <- pageCall{outcome: outcome, err: err}
+		}()
+	}
+	firstCall, secondCall := <-pageCalls, <-pageCalls
+	if firstCall.err != nil || secondCall.err != nil || firstCall.outcome.Replayed == secondCall.outcome.Replayed {
+		t.Fatalf("concurrent listing page calls = %+v %+v", firstCall, secondCall)
+	}
+	acceptedPage, replayedPage := firstCall.outcome, secondCall.outcome
+	if acceptedPage.Replayed {
+		acceptedPage, replayedPage = replayedPage, acceptedPage
+	}
+	if len(acceptedPage.Items) != 1 || acceptedPage.Items[0].DetailWork == nil || !acceptedPage.Progress.EndOfInput ||
+		!reflect.DeepEqual(replayedPage.Progress, acceptedPage.Progress) || !reflect.DeepEqual(replayedPage.Items, acceptedPage.Items) {
+		t.Fatalf("accepted/replayed listing page = %+v %+v", acceptedPage, replayedPage)
+	}
+	conflictingPage := page
+	conflictingPage.RequestHash = "sha256:listing-result-page-conflict"
+	if _, err := repository.AcceptListingPage(ctx, conflictingPage); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("listing page command reuse = %v", err)
 	}
 	detailRecord, err := repository.GetWorkRecord(ctx, acceptedPage.Items[0].DetailWork.WorkID)
 	if err != nil || detailRecord.Placement.Capability != "http.fetch" || detailRecord.Placement.Origin != "https://listing-result.example.com" {
@@ -68,7 +88,7 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 	if _, err := repository.AcceptListingCompletion(ctx, ListingCompletion{
 		AttemptID: offer.Attempt.AttemptID, ExecutorActorID: "listing-result-executor", ExecutorIncarnation: "listing-result-boot",
 		Artifact: rejectedCompletionArtifact, Progress: incompleteProof, CompletedAt: offerAt.Add(time.Second),
-		CauseCommandID: "listing-result-incomplete-command", ItemCount: 1,
+		CauseCommandID: "listing-result-incomplete-command", RequestHash: "sha256:listing-result-incomplete", ItemCount: 1,
 	}); !errors.Is(err, ErrResultFenced) {
 		t.Fatalf("incomplete quality proof advanced listing: %v", err)
 	}
@@ -81,6 +101,7 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 	completion := ListingCompletion{
 		AttemptID: offer.Attempt.AttemptID, ExecutorActorID: "listing-result-executor", ExecutorIncarnation: "listing-result-boot",
 		Artifact: completionArtifact, Progress: proof, ItemCount: 1, CompletedAt: offerAt.Add(time.Second), CauseCommandID: "listing-result-command",
+		RequestHash: "sha256:listing-result-completion",
 	}
 	completed, err := repository.AcceptListingCompletion(ctx, completion)
 	if err != nil || completed.Replayed || completed.Checkpoint.Version != offer.Checkpoint.Version+1 ||
@@ -108,7 +129,12 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 	if err != nil || !replayedCompletion.Replayed || !reflect.DeepEqual(replayedCompletion.Checkpoint, completed.Checkpoint) {
 		t.Fatalf("listing completion replay = %+v err=%v", replayedCompletion, err)
 	}
-	var acceptedArtifacts, rejectedArtifacts, observations, details, events int
+	conflictingCompletion := completion
+	conflictingCompletion.RequestHash = "sha256:listing-result-completion-conflict"
+	if _, err := repository.AcceptListingCompletion(ctx, conflictingCompletion); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("listing completion command reuse = %v", err)
+	}
+	var acceptedArtifacts, rejectedArtifacts, observations, details, events, receipts int
 	queries := []struct {
 		query string
 		args  []any
@@ -119,15 +145,16 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 		{"SELECT COUNT(*) FROM recruiting_listing_observations WHERE occurrence_id = ?", []any{offer.Occurrence.OccurrenceID}, &observations},
 		{"SELECT COUNT(*) FROM recruiting_works WHERE parent_work_id = ? AND purpose = 'detail_sync' AND target_id = ?", []any{offer.Work.WorkID, acceptedPage.Items[0].Job.JobID}, &details},
 		{"SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = ?", []any{"listing-completed-" + offer.Attempt.AttemptID}, &events},
+		{"SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id IN (?, ?)", []any{page.CommandID, completion.CauseCommandID}, &receipts},
 	}
 	for _, query := range queries {
 		if err := db.QueryRowContext(ctx, query.query, query.args...).Scan(query.out); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if acceptedArtifacts != 2 || rejectedArtifacts != 1 || observations != 1 || details != 1 || events != 1 {
-		t.Fatalf("accepted facts artifacts=%d rejected=%d observations=%d detail_works=%d events=%d",
-			acceptedArtifacts, rejectedArtifacts, observations, details, events)
+	if acceptedArtifacts != 2 || rejectedArtifacts != 1 || observations != 1 || details != 1 || events != 1 || receipts != 2 {
+		t.Fatalf("accepted facts artifacts=%d rejected=%d observations=%d detail_works=%d events=%d receipts=%d",
+			acceptedArtifacts, rejectedArtifacts, observations, details, events, receipts)
 	}
 }
 
@@ -198,6 +225,7 @@ func TestListingRetryStartsAtPageOneAndCompletesFromCurrentAttemptOnly(t *testin
 	completed, err := repository.AcceptListingCompletion(ctx, ListingCompletion{
 		AttemptID: second.Attempt.AttemptID, ExecutorActorID: second.Attempt.ExecutorActorID, ExecutorIncarnation: second.Attempt.ExecutorIncarnation,
 		Artifact: completionArtifact, Progress: proof, ItemCount: 0, CompletedAt: offerAt.Add(4 * time.Second), CauseCommandID: "listing-retry-pages-complete",
+		RequestHash: "sha256:listing-retry-pages-complete",
 	})
 	if err != nil || completed.Work.Status != model.WorkCompleted {
 		t.Fatalf("retry completion = %+v err=%v", completed, err)

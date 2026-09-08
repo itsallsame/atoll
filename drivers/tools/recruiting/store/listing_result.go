@@ -9,10 +9,13 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
 type ListingPageResult struct {
+	CommandID           string
+	RequestHash         string
 	AttemptID           string
 	ExecutorActorID     string
 	ExecutorIncarnation string
@@ -37,6 +40,9 @@ func (r *Repository) AcceptListingPage(ctx context.Context, input ListingPageRes
 	if input.AttemptID == "" || input.ExecutorActorID == "" || input.ExecutorIncarnation == "" ||
 		input.PageSequence == 0 || len(input.Observations) > listingPageMaxItems || input.ObservedAt.IsZero() {
 		return ListingPageOutcome{}, fmt.Errorf("listing page result requires execution identity, sequence, bounded observations, and time")
+	}
+	if err := validateOptionalResultCommand(input.CommandID, input.RequestHash); err != nil {
+		return ListingPageOutcome{}, err
 	}
 	if err := validateResultArtifact(input.Artifact, input.AttemptID, model.ArtifactPage); err != nil {
 		return ListingPageOutcome{}, err
@@ -81,9 +87,18 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 	if input.Artifact.WorkID != work.WorkID {
 		return ListingPageOutcome{}, nil, fmt.Errorf("listing page artifact belongs to another work")
 	}
+	if replay, found, err := readResultReceipt[ListingPageOutcome](ctx, tx, input.CommandID, input.RequestHash); err != nil {
+		return ListingPageOutcome{}, nil, err
+	} else if found {
+		replay.Replayed = true
+		return replay, nil, nil
+	}
 	if replay, found, err := replayListingPage(ctx, tx, input); err != nil {
 		return ListingPageOutcome{}, nil, err
 	} else if found {
+		if err := reserveResultReceipt(ctx, tx, input.CommandID, executioncontract.TypeResult, input.RequestHash, replay, input.ObservedAt); err != nil {
+			return ListingPageOutcome{}, nil, err
+		}
 		if err := tx.Commit(); err != nil {
 			return ListingPageOutcome{}, nil, err
 		}
@@ -168,6 +183,9 @@ INSERT INTO recruiting_listing_page_progress(
 	if err != nil {
 		return ListingPageOutcome{}, nil, fmt.Errorf("append accepted listing page progress: %w", err)
 	}
+	if err := reserveResultReceipt(ctx, tx, input.CommandID, executioncontract.TypeResult, input.RequestHash, outcome, input.ObservedAt); err != nil {
+		return ListingPageOutcome{}, nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return ListingPageOutcome{}, nil, err
 	}
@@ -175,6 +193,7 @@ INSERT INTO recruiting_listing_page_progress(
 }
 
 type ListingCompletion struct {
+	RequestHash         string
 	AttemptID           string
 	ExecutorActorID     string
 	ExecutorIncarnation string
@@ -198,6 +217,9 @@ func (r *Repository) AcceptListingCompletion(ctx context.Context, input ListingC
 	if input.AttemptID == "" || input.ExecutorActorID == "" || input.ExecutorIncarnation == "" ||
 		input.CauseCommandID == "" || input.CompletedAt.IsZero() || input.ItemCount < 0 {
 		return ListingCompletionOutcome{}, fmt.Errorf("listing completion requires execution identity, command cause, and time")
+	}
+	if err := validateOptionalResultCommand(input.CauseCommandID, input.RequestHash); err != nil {
+		return ListingCompletionOutcome{}, err
 	}
 	if err := validateResultArtifact(input.Artifact, input.AttemptID, model.ArtifactListingDelta); err != nil {
 		return ListingCompletionOutcome{}, err
@@ -236,9 +258,18 @@ func (r *Repository) acceptListingCompletionOnce(ctx context.Context, input List
 	if input.Artifact.WorkID != work.WorkID {
 		return ListingCompletionOutcome{}, nil, fmt.Errorf("listing completion artifact belongs to another work")
 	}
+	if replay, found, err := readResultReceipt[ListingCompletionOutcome](ctx, tx, input.CauseCommandID, input.RequestHash); err != nil {
+		return ListingCompletionOutcome{}, nil, err
+	} else if found {
+		replay.Replayed = true
+		return replay, nil, nil
+	}
 	if replay, found, err := replayListingCompletion(ctx, tx, input, attempt, work, occurrence); err != nil {
 		return ListingCompletionOutcome{}, nil, err
 	} else if found {
+		if err := reserveResultReceipt(ctx, tx, input.CauseCommandID, executioncontract.TypeResult, input.RequestHash, replay, input.CompletedAt); err != nil {
+			return ListingCompletionOutcome{}, nil, err
+		}
 		if err := tx.Commit(); err != nil {
 			return ListingCompletionOutcome{}, nil, err
 		}
@@ -349,6 +380,9 @@ WHERE source_id = ? AND checkpoint_version = ?`, committedCheckpoint.Version, co
 		return ListingCompletionOutcome{}, nil, err
 	}
 	if err := appendEventIntent(ctx, tx, event, input.CompletedAt, input.CompletedAt); err != nil {
+		return ListingCompletionOutcome{}, nil, err
+	}
+	if err := reserveResultReceipt(ctx, tx, input.CauseCommandID, executioncontract.TypeResult, input.RequestHash, outcome, input.CompletedAt); err != nil {
 		return ListingCompletionOutcome{}, nil, err
 	}
 	if err := tx.Commit(); err != nil {

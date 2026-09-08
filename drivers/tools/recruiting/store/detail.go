@@ -10,6 +10,7 @@ import (
 	"time"
 
 	mysql "github.com/go-sql-driver/mysql"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
@@ -23,6 +24,7 @@ type DetailResult struct {
 	DetailJSON            json.RawMessage
 	ObservedAt            time.Time
 	CauseCommandID        string
+	RequestHash           string
 }
 
 type DetailResultOutcome struct {
@@ -48,6 +50,9 @@ func (r *Repository) AcceptDetailResult(ctx context.Context, input DetailResult)
 	if err := validateResultArtifact(input.Artifact, input.AttemptID, model.ArtifactResponse); err != nil {
 		return DetailResultOutcome{}, err
 	}
+	if err := validateOptionalResultCommand(input.CauseCommandID, input.RequestHash); err != nil {
+		return DetailResultOutcome{}, err
+	}
 	outcome, fenceErr, err := r.acceptDetailResultTransaction(ctx, input)
 	if err != nil {
 		return DetailResultOutcome{}, err
@@ -68,38 +73,6 @@ func (r *Repository) acceptDetailResultTransaction(ctx context.Context, input De
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var existingRejected bool
-	var existingAttemptID string
-	err = tx.QueryRowContext(ctx, "SELECT rejected, COALESCE(attempt_id, '') FROM recruiting_artifacts WHERE artifact_id = ?", input.Artifact.ArtifactID).Scan(&existingRejected, &existingAttemptID)
-	if err == nil {
-		if !existingRejected && existingAttemptID == input.AttemptID {
-			attempt, readErr := getAttemptWith(ctx, tx, input.AttemptID, false)
-			if readErr != nil {
-				return DetailResultOutcome{}, nil, readErr
-			}
-			work, readErr := getWorkWith(ctx, tx, attempt.WorkID, false)
-			if readErr != nil {
-				return DetailResultOutcome{}, nil, readErr
-			}
-			if attempt.Status == model.AttemptSucceeded && work.Status == model.WorkCompleted {
-				var resultState []byte
-				if readErr := tx.QueryRowContext(ctx, "SELECT execution_result_json FROM recruiting_attempts WHERE attempt_id = ?", input.AttemptID).Scan(&resultState); readErr != nil {
-					return DetailResultOutcome{}, nil, readErr
-				}
-				var snapshot detailResultSnapshot
-				if len(resultState) == 0 || json.Unmarshal(resultState, &snapshot) != nil || snapshot.InputHash != detailResultInputHash(input) {
-					return DetailResultOutcome{}, fmt.Errorf("accepted detail result replay does not match its immutable input"), nil
-				}
-				snapshot.Outcome.Replayed = true
-				return snapshot.Outcome, nil, nil
-			}
-		}
-		return DetailResultOutcome{}, fmt.Errorf("artifact ID already belongs to another result"), nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return DetailResultOutcome{}, nil, fmt.Errorf("check detail result replay: %w", err)
-	}
-
 	attempt, err := getAttemptWith(ctx, tx, input.AttemptID, true)
 	if err != nil {
 		return DetailResultOutcome{}, nil, err
@@ -110,6 +83,40 @@ func (r *Repository) acceptDetailResultTransaction(ctx context.Context, input De
 	}
 	if work.TargetType != "job" || input.Artifact.WorkID != work.WorkID {
 		return DetailResultOutcome{}, fmt.Errorf("detail result work target or artifact link is inconsistent"), nil
+	}
+	if replay, found, err := readResultReceipt[DetailResultOutcome](ctx, tx, input.CauseCommandID, input.RequestHash); err != nil {
+		return DetailResultOutcome{}, nil, err
+	} else if found {
+		replay.Replayed = true
+		return replay, nil, nil
+	}
+
+	var existingRejected bool
+	var existingAttemptID string
+	err = tx.QueryRowContext(ctx, "SELECT rejected, COALESCE(attempt_id, '') FROM recruiting_artifacts WHERE artifact_id = ?", input.Artifact.ArtifactID).Scan(&existingRejected, &existingAttemptID)
+	if err == nil {
+		if !existingRejected && existingAttemptID == input.AttemptID && attempt.Status == model.AttemptSucceeded && work.Status == model.WorkCompleted {
+			var resultState []byte
+			if readErr := tx.QueryRowContext(ctx, "SELECT execution_result_json FROM recruiting_attempts WHERE attempt_id = ?", input.AttemptID).Scan(&resultState); readErr != nil {
+				return DetailResultOutcome{}, nil, readErr
+			}
+			var snapshot detailResultSnapshot
+			if len(resultState) == 0 || json.Unmarshal(resultState, &snapshot) != nil || snapshot.InputHash != detailResultInputHash(input) {
+				return DetailResultOutcome{}, fmt.Errorf("accepted detail result replay does not match its immutable input"), nil
+			}
+			snapshot.Outcome.Replayed = true
+			if err := reserveResultReceipt(ctx, tx, input.CauseCommandID, executioncontract.TypeResult, input.RequestHash, snapshot.Outcome, input.ObservedAt); err != nil {
+				return DetailResultOutcome{}, nil, err
+			}
+			if err := tx.Commit(); err != nil {
+				return DetailResultOutcome{}, nil, err
+			}
+			return snapshot.Outcome, nil, nil
+		}
+		return DetailResultOutcome{}, fmt.Errorf("artifact ID already belongs to another result"), nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return DetailResultOutcome{}, nil, fmt.Errorf("check detail result replay: %w", err)
 	}
 	if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, input.ObservedAt); err != nil {
 		return DetailResultOutcome{}, err, nil
@@ -189,6 +196,9 @@ WHERE work_id = ? AND version = ?`,
 		return DetailResultOutcome{}, nil, err
 	}
 	if err := appendEventIntent(ctx, tx, event, input.ObservedAt, input.ObservedAt); err != nil {
+		return DetailResultOutcome{}, nil, err
+	}
+	if err := reserveResultReceipt(ctx, tx, input.CauseCommandID, executioncontract.TypeResult, input.RequestHash, outcome, input.ObservedAt); err != nil {
 		return DetailResultOutcome{}, nil, err
 	}
 	if err := tx.Commit(); err != nil {

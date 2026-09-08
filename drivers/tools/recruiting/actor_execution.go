@@ -78,7 +78,7 @@ func handleDetailResult(sys actorbase.Sys, repository *store.Repository, msg act
 		AttemptID: payload.AttemptID, ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
 		Artifact: payload.Artifact, DetailVersionID: payload.DetailVersionID,
 		NormalizedContentHash: payload.NormalizedContentHash, DetailJSON: payload.Detail,
-		ObservedAt: time.UnixMilli(msg.TS).UTC(), CauseCommandID: payload.CommandID,
+		ObservedAt: time.UnixMilli(msg.TS).UTC(), CauseCommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg),
 	})
 	if err != nil {
 		failStoreError(sys, msg, err)
@@ -99,7 +99,8 @@ func handleListingPageResult(sys actorbase.Sys, repository *store.Repository, ms
 		return
 	}
 	outcome, err := repository.AcceptListingPage(msg.Ctx(), store.ListingPageResult{
-		AttemptID: payload.AttemptID, ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
+		CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), AttemptID: payload.AttemptID,
+		ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
 		PageSequence: payload.PageSequence, ResumeCursor: payload.ResumeCursor, Terminal: payload.Terminal,
 		Artifact: payload.Artifact, Observations: payload.Observations, ObservedAt: time.UnixMilli(msg.TS).UTC(),
 	})
@@ -131,7 +132,7 @@ func handleListingCompletionResult(sys actorbase.Sys, repository *store.Reposito
 	outcome, err := repository.AcceptListingCompletion(msg.Ctx(), store.ListingCompletion{
 		AttemptID: payload.AttemptID, ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
 		Artifact: payload.Artifact, Progress: progress, CompletedAt: time.UnixMilli(msg.TS).UTC(), CauseCommandID: payload.CommandID,
-		ItemCount: payload.Quality.ItemCount,
+		ItemCount: payload.Quality.ItemCount, RequestHash: executionCommandRequestHash(msg),
 	})
 	if err != nil {
 		failStoreError(sys, msg, err)

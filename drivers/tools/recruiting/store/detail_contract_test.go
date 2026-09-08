@@ -46,6 +46,7 @@ INSERT INTO recruiting_checkpoints(
 	}
 	alteredReplay := result
 	alteredReplay.DetailJSON = json.RawMessage(`{"title":"Altered"}`)
+	alteredReplay.RequestHash = "sha256:altered-" + result.Artifact.ArtifactID
 	if _, err := repository.AcceptDetailResult(ctx, alteredReplay); err == nil {
 		t.Fatal("accepted detail artifact replay allowed a different structured result")
 	}
@@ -54,7 +55,7 @@ INSERT INTO recruiting_checkpoints(
 	if work.Status != model.WorkCompleted || attempt.Status != model.AttemptSucceeded {
 		t.Fatalf("terminal work/attempt = %+v %+v", work, attempt)
 	}
-	var details, artifacts, events int
+	var details, artifacts, events, receipts int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_job_detail_versions WHERE job_id = ?", fixture.job.JobID).Scan(&details); err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +65,11 @@ INSERT INTO recruiting_checkpoints(
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = ?", "detail-completed-"+fixture.attempt.AttemptID).Scan(&events); err != nil {
 		t.Fatal(err)
 	}
-	if details != 1 || artifacts != 1 || events != 1 {
-		t.Fatalf("detail facts=%d artifacts=%d events=%d", details, artifacts, events)
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id = ?", result.CauseCommandID).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if details != 1 || artifacts != 1 || events != 1 || receipts != 1 {
+		t.Fatalf("detail facts=%d artifacts=%d events=%d receipts=%d", details, artifacts, events, receipts)
 	}
 }
 
@@ -136,6 +140,7 @@ func (f detailFixture) result(artifactID string) DetailResult {
 		ExecutorIncarnation: f.attempt.ExecutorIncarnation, Artifact: artifact,
 		DetailVersionID: "version-" + artifactID, NormalizedContentHash: "sha256:normalized-" + f.job.JobID,
 		DetailJSON: json.RawMessage(`{"title":"Engineer"}`), ObservedAt: f.now.Add(time.Minute), CauseCommandID: "command-" + artifactID,
+		RequestHash: "sha256:request-" + artifactID,
 	}
 }
 

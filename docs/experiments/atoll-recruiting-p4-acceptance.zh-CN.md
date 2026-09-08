@@ -21,6 +21,7 @@
 - Executor 内部已有不含调度策略的单次 Offer 编排：在 accept 前校验 immutable offer、Permit/expiry 与 HTTP transport，随后按 accept→started→Recipe Resource resolve→HTTP listing/detail→page/completion/detail 或 classified failed 顺序调用控制面。单元合同覆盖详情成功、列表页先于 completion、Recipe 解析失败转 Failure Artifact；结果提交出现歧义时不会擅自把 Attempt 判失败，而留给幂等重放/恢复。该编排尚未挂到 Actor 唤醒入口；
 - HTTP Detail runner 已实现“先证据、后解析”：成功响应先保存 response Artifact，再由同一声明式 JSON/HTML Recipe 离线提取且必须恰好得到一条记录，规范 JSON 和 normalized SHA-256 随稳定 detail-version ID 提交；HTTP 失败保留 failure Artifact，解析失败同时保留原始 response 与独立分类 failure Artifact。JSON 字符串字段现在与 DOM 一样去除首尾空白，确保规范详情重放稳定；
 - Executor 的 result 客户端已通过共享 `recruiting.execution.result` 类型提交，并严格要求控制面 acknowledgement 的 `page|completion|detail` 分支与所提交 result_kind 唯一匹配；
+- result command 的请求哈希包含 word、原始 payload 与 authenticated Executor sender；Listing Page、Listing Completion、Detail 的稳定 response receipt 和各自业务事实处于同一 MySQL 事务。MySQL 8.4 合同已验证相同页面命令并发只接受一次、另一次稳定重放，以及相同 command ID 改请求明确冲突；这关闭了“Artifact 可重放但 command ID 可被另一结果复用”的缺口；
 - 固定 Recipe 类型 `listing|detail|discovery` 和执行 transport `http_json|http_html|browser`，但 capability 仍为可扩展字符串，不制造多种 Worker class；Extension 是候选 Recipe 捕获入口，不是日常执行 transport；
 - 声明式请求只能为 GET；timeout、响应大小和 redirect 次数有硬上限；Recipe 只能声明 Accept/Accept-Language，不能携带 Cookie、Authorization 等秘密；
 - Listing Recipe 必须声明稳定 identity、`newest_activity_desc`、update-retop、`activity_time|frontier_keys` 边界、安全重叠页数和最大页数；identity/activity 必须引用实际提取字段；
@@ -79,5 +80,6 @@ make recruiting-live-smoke
 - Resource 适配器已经过内存 capability 合同测试，但仍缺真实 Atoll daemon 上 Recipe KV 与 Artifact File 的跨进程读写、权限拒绝和重启保持 e2e；
 - 已有 Repository 合同证明旧 listing Attempt 只保存 rejected Artifact、不能提交业务结果；仍缺真实 Executor Actor 经 Atoll Message 提交该迟到结果的进程级端到端证明。
 - 页面进度已改为 Attempt 作用域，并通过 MySQL 8.4 的 crash/retry 合同：Attempt A 接受第一页后失败，Attempt B 可从第一页重新运行；A/B 页面证据同时保留，B 的 completion 只统计 B 的页面。Failure Artifact 的原子控制面合同也已闭合；进程级自动执行仍须补齐消息唤醒与真实进程崩溃切点后才能启用。
+- accept/start/failed 以及 page/completion/detail 的 command receipt 已闭合；尚缺的是跨真实 Atoll 进程在“控制面已提交、Executor 未收到 acknowledgement”切点的恢复证明，而不是 Repository 内的结果幂等语义。
 
 P4 仍为进行中；ABI 冻结不等于 Driver 与真实站点验收完成。

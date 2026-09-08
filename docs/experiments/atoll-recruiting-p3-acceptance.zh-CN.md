@@ -23,6 +23,7 @@
 - 同一 Work 的活动 Attempt 由数据库生成列唯一约束保证最多一个；领取先无锁读取最多 100 个候选 ID，再按 Work 主键逐项 `FOR UPDATE SKIP LOCKED`，避免 MySQL 对带 `ORDER BY/EXISTS` 的 range locking read 扩大锁范围。两个 Executor 的并发领取连续三轮均获得不同 Work；
 - accept 在执行权授予前重检完整领域 fence；started 在一个事务内推进 `Attempt accepted→running`、`Work open/waiting_retry→running` 和首次 `Occurrence queued→running`。错误 incarnation、暂停/变更后的 Source 或不再 active 的 Recipe 均不能启动；failed 不发布业务数据，允许在配置变化后关闭旧执行权，并把 Work 显式置为 `waiting_retry`，不在 Repository 内盲目自动循环。生产失败可携带绑定本 Attempt/Work 的结构化 FailureReport，失败 Artifact metadata、Attempt/Work 状态与 BudgetPermit 释放在同一事务提交；
 - `recruiting.execution.result` 现在以 `listing_page|listing_completion|detail` 区分有界页面、列表最终证明和详情结果，同时保留 P0 probe 的旧消息路径；生产结果只接受 authenticated tool actor。页面提交最多 500 个 Observation，并将 Artifact、岗位事实、detail Work 和恢复游标原子落库；最终提交原子推进 Checkpoint、Attempt、Work、Occurrence 与 outbox，Actor handler 不读取网站或等待外部 I/O；
+- `listing_page/listing_completion/detail` 三类结果的 command receipt 已分别与页面事实或终态业务事务原子提交，请求哈希绑定原始消息和 authenticated Executor。相同命令并发到达时由 Attempt 行锁串行化，只产生一份页面、岗位、详情版本及 outbox，后续调用返回首次 outcome 快照；复用 command ID 改 payload 或更换 Executor 明确冲突。Artifact 业务键仍作为独立第二层幂等，可为升级前已经提交但尚无 receipt 的历史结果补建回执；
 - 页面恢复序列按 Attempt 隔离：同一 Work 的旧 Attempt 页面作为不可变证据保留，新 Attempt 从第 1 页重新执行，terminal 与条目质量统计只读取当前 Attempt。该行为已通过 MySQL 8.4 的部分页面→执行失败→新 Attempt→完成合同测试；
 - 同一个 `recruiting.execution.offer/accept/started/failed/result` 生命周期现在按全局 Work priority 为同一 Executor class 领取 `listing_sync` 或 `detail_sync`，步骤类型通过 offer discriminator 表达，不新增 Detail Worker/Actor。detail offer 固定 Job、Detail Assignment、active Recipe/opaque content ref、capability、origin、Profile 和 refresh generation；accept/start/result 均重检 Company/Source/Assignment/Recipe/Profile/Job fence；
 - offer 同时在数据库内原子取得 BudgetPermit：global、capability、origin、company、可选 profile 五个维度按稳定顺序锁定计数行，所有上限由带版本的 extension config 配置。并发 origin=1 合约证明两名 Executor 只会获得一个 Permit；失败或成功随 Attempt 事务释放，Permit 到期由已有 reconcile 的独立索引扫描回收，不新增轮询或 Worker 类型；
@@ -63,7 +64,7 @@ go test -race ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/
 
 - System/Capacity 查询、Work correct 和 DailyRun 修改控制词；Work resolve 的真实 `waiting_human` 旅程依赖后续 Attempt/repair 切片；Source validate 当前只进入 `validating`，验证 Attempt 的接受、契约证明和原子发布仍属于后续纵向切片；
 - 日报关闭后的 recovered 补偿记录仍待实现；
-- listing failure Artifact 与分类修复决策；主动 incarnation 失效信号（当前仅按无进展超时恢复）；execution accept/start/fail/page 的 command receipt/outbox 审计仍待完成；
+- 分类失败已经保存 Failure Artifact 并回到显式 `waiting_retry`，但按 origin/error 的退避与 repair 决策仍待实现；主动 incarnation 失效信号当前仅按无进展超时恢复；execution offer 和高频 page 是否写 ledger/outbox 的审计分层仍待按容量测试确定（accept/start/fail/result 的数据库 receipt 已完成）；
 - 批量导入 preview/confirm 和逐项 outcome；
 - `recruiting_recovery_test.go` 的完整重启、重复 ledger delivery 与日报恢复路径。
 
