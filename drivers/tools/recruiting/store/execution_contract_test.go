@@ -39,7 +39,7 @@ func TestListingExecutionOfferAndLifecycleAreFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 	workID := offer.Work.WorkID
-	if workID == "" || offer.Attempt.Status != model.AttemptOffered || offer.Occurrence.Status != model.OccurrenceQueued ||
+	if workID == "" || offer.Kind != "listing" || offer.Attempt.Status != model.AttemptOffered || offer.Occurrence.Status != model.OccurrenceQueued ||
 		offer.Occurrence.ListingExecution.Execution.ContentRef == "" || offer.Attempt.RecipeID != offer.Occurrence.ListingExecution.RecipeID {
 		t.Fatalf("incomplete execution offer: %+v", offer)
 	}

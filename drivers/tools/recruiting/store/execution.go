@@ -12,17 +12,31 @@ import (
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
-// ListingExecutionOffer is the immutable input accepted by one executor.
+// ExecutionOffer is the immutable input accepted by one executor. Kind
+// selects the domain payload while Work/Attempt and routing stay uniform, so
+// listing and detail steps do not become separate worker types.
 // Large recipe bodies remain behind RecipeExecution.ContentRef; this value is
 // safe to carry in an Atoll control message.
-type ListingExecutionOffer struct {
+type ExecutionOffer struct {
+	Kind                string                       `json:"kind"`
 	Attempt             model.Attempt                `json:"attempt"`
 	Work                model.Work                   `json:"work"`
-	Occurrence          model.SourceOccurrence       `json:"occurrence"`
+	Occurrence          *model.SourceOccurrence      `json:"occurrence,omitempty"`
 	Checkpoint          *model.IncrementalCheckpoint `json:"checkpoint,omitempty"`
+	Detail              *DetailExecutionInput        `json:"detail,omitempty"`
 	RequestedCapability string                       `json:"requested_capability"`
 	RequestedOrigin     string                       `json:"requested_origin,omitempty"`
 	RequestedProfileID  string                       `json:"requested_profile_id,omitempty"`
+}
+
+// ListingExecutionOffer remains an alias for source compatibility with the
+// first vertical slice. New callers should use ExecutionOffer.
+type ListingExecutionOffer = ExecutionOffer
+
+type DetailExecutionInput struct {
+	Job        model.SourceJob              `json:"job"`
+	Assignment model.SourceRecipeAssignment `json:"assignment"`
+	Recipe     model.Recipe                 `json:"recipe"`
 }
 
 type ListingOfferRequest struct {
@@ -39,20 +53,30 @@ type ListingOfferRequest struct {
 // active Attempt in the same transaction. The public protocol remains
 // offer/accept; SKIP LOCKED is only the repository's scale-out mechanism.
 func (r *Repository) OfferListingExecution(ctx context.Context, request ListingOfferRequest) (ListingExecutionOffer, error) {
+	return r.offerExecution(ctx, request, "listing_sync")
+}
+
+// OfferExecution lets one capability-bearing executor claim either listing
+// or detail work in the control plane's global priority order.
+func (r *Repository) OfferExecution(ctx context.Context, request ListingOfferRequest) (ExecutionOffer, error) {
+	return r.offerExecution(ctx, request, "")
+}
+
+func (r *Repository) offerExecution(ctx context.Context, request ListingOfferRequest, requiredPurpose string) (ExecutionOffer, error) {
 	if strings.TrimSpace(request.AttemptID) == "" || strings.TrimSpace(request.ExecutorActorID) == "" ||
 		strings.TrimSpace(request.ExecutorIncarnation) == "" || strings.TrimSpace(request.Capability) == "" || request.OfferedAt.IsZero() {
-		return ListingExecutionOffer{}, fmt.Errorf("listing offer requires attempt, executor identity, incarnation, capability, and time")
+		return ExecutionOffer{}, fmt.Errorf("execution offer requires attempt, executor identity, incarnation, capability, and time")
 	}
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
-		return ListingExecutionOffer{}, fmt.Errorf("begin listing offer: %w", err)
+		return ExecutionOffer{}, fmt.Errorf("begin execution offer: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if replay, found, err := getListingExecutionOfferReplay(ctx, tx, request); err != nil {
-		return ListingExecutionOffer{}, err
+	if replay, found, err := getExecutionOfferReplay(ctx, tx, request, requiredPurpose); err != nil {
+		return ExecutionOffer{}, err
 	} else if found {
 		if err := tx.Commit(); err != nil {
-			return ListingExecutionOffer{}, fmt.Errorf("commit listing offer replay: %w", err)
+			return ExecutionOffer{}, fmt.Errorf("commit execution offer replay: %w", err)
 		}
 		return replay, nil
 	}
@@ -69,36 +93,40 @@ func (r *Repository) OfferListingExecution(ctx context.Context, request ListingO
 SELECT w.work_id
 FROM recruiting_works w
 WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
-  AND w.not_before <= ? AND (w.deadline_at IS NULL OR w.deadline_at > ?)
+	  AND (? = '' OR w.purpose = ?)
+	  AND w.not_before <= ? AND (w.deadline_at IS NULL OR w.deadline_at > ?)
   AND (? = '' OR w.origin = ?) AND (? = '' OR w.profile_id = ?)
-  AND EXISTS (
-    SELECT 1 FROM recruiting_source_occurrences o
-    WHERE o.listing_work_id = w.work_id AND o.status IN ('queued', 'running')
-  )
+	  AND ((w.purpose = 'listing_sync' AND EXISTS (
+	    SELECT 1 FROM recruiting_source_occurrences o
+	    WHERE o.listing_work_id = w.work_id AND o.status IN ('queued', 'running')
+	  )) OR (w.purpose = 'detail_sync' AND EXISTS (
+	    SELECT 1 FROM recruiting_source_jobs j
+	    WHERE j.job_id = w.target_id AND j.job_status IN ('detail_pending', 'update_pending')
+	  )))
   AND NOT EXISTS (
     SELECT 1 FROM recruiting_attempts a
     WHERE a.work_id = w.work_id AND a.attempt_status IN ('offered', 'accepted', 'running')
   )
 ORDER BY w.priority DESC, w.not_before, w.work_id
-LIMIT 100`, request.Capability, request.OfferedAt.UTC(), request.OfferedAt.UTC(),
+LIMIT 100`, request.Capability, requiredPurpose, requiredPurpose, request.OfferedAt.UTC(), request.OfferedAt.UTC(),
 		request.Origin, request.Origin, request.ProfileID, request.ProfileID)
 	if err != nil {
-		return ListingExecutionOffer{}, fmt.Errorf("discover runnable listing work: %w", err)
+		return ExecutionOffer{}, fmt.Errorf("discover runnable execution work: %w", err)
 	}
 	var candidateIDs []string
 	for rows.Next() {
 		var workID string
 		if err := rows.Scan(&workID); err != nil {
 			_ = rows.Close()
-			return ListingExecutionOffer{}, err
+			return ExecutionOffer{}, err
 		}
 		candidateIDs = append(candidateIDs, workID)
 	}
 	if err := rows.Close(); err != nil {
-		return ListingExecutionOffer{}, err
+		return ExecutionOffer{}, err
 	}
 	if err := rows.Err(); err != nil {
-		return ListingExecutionOffer{}, err
+		return ExecutionOffer{}, err
 	}
 	claimed := false
 	for _, candidateID := range candidateIDs {
@@ -114,13 +142,13 @@ FOR UPDATE SKIP LOCKED`, candidateID, request.OfferedAt.UTC(), request.OfferedAt
 			continue
 		}
 		if err != nil {
-			return ListingExecutionOffer{}, fmt.Errorf("lock runnable listing work: %w", err)
+			return ExecutionOffer{}, fmt.Errorf("lock runnable execution work: %w", err)
 		}
 		var active int
 		if err := tx.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM recruiting_attempts
 WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, candidateID).Scan(&active); err != nil {
-			return ListingExecutionOffer{}, fmt.Errorf("check active listing attempt: %w", err)
+			return ExecutionOffer{}, fmt.Errorf("check active execution attempt: %w", err)
 		}
 		if active != 0 {
 			continue
@@ -129,11 +157,11 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		break
 	}
 	if !claimed {
-		return ListingExecutionOffer{}, ErrNotFound
+		return ExecutionOffer{}, ErrNotFound
 	}
 	var work model.Work
 	if err := json.Unmarshal(workState, &work); err != nil {
-		return ListingExecutionOffer{}, fmt.Errorf("decode claimed listing work: %w", err)
+		return ExecutionOffer{}, fmt.Errorf("decode claimed execution work: %w", err)
 	}
 	placement.BusinessKey, placement.Origin, placement.ProfileID = businessKey.String, origin.String, profileID.String
 	if deadline.Valid {
@@ -141,13 +169,23 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		placement.DeadlineAt = &value
 	}
 
-	occurrence, err := getOccurrenceByWorkWith(ctx, tx, work.WorkID, true)
-	if err != nil {
-		return ListingExecutionOffer{}, err
+	var occurrence model.SourceOccurrence
+	var checkpoint *model.IncrementalCheckpoint
+	var detail *DetailExecutionInput
+	var fence model.AttemptFence
+	switch work.Purpose {
+	case "listing_sync":
+		occurrence, err = getOccurrenceByWorkWith(ctx, tx, work.WorkID, true)
+		if err == nil {
+			checkpoint, fence, err = loadListingOfferFence(ctx, tx, occurrence, placement.ProfileID)
+		}
+	case "detail_sync":
+		detail, fence, err = loadDetailOfferFence(ctx, tx, work, placement)
+	default:
+		err = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)
 	}
-	checkpoint, fence, err := loadListingOfferFence(ctx, tx, occurrence, placement.ProfileID)
 	if err != nil {
-		return ListingExecutionOffer{}, err
+		return ExecutionOffer{}, err
 	}
 	attempt, err := model.NewAttempt(request.AttemptID, work)
 	if err == nil {
@@ -157,54 +195,59 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		attempt, err = attempt.WithFence(fence)
 	}
 	if err != nil {
-		return ListingExecutionOffer{}, err
+		return ExecutionOffer{}, err
 	}
-	offer := ListingExecutionOffer{
-		Attempt: attempt, Work: work, Occurrence: occurrence, Checkpoint: checkpoint,
+	offer := ExecutionOffer{
+		Kind: strings.TrimSuffix(work.Purpose, "_sync"), Attempt: attempt, Work: work, Checkpoint: checkpoint,
+		Detail:              detail,
 		RequestedCapability: strings.TrimSpace(request.Capability), RequestedOrigin: strings.TrimSpace(request.Origin),
 		RequestedProfileID: strings.TrimSpace(request.ProfileID),
 	}
+	if work.Purpose == "listing_sync" {
+		offer.Occurrence = &occurrence
+	}
 	offerState, err := json.Marshal(offer)
 	if err != nil {
-		return ListingExecutionOffer{}, err
+		return ExecutionOffer{}, err
 	}
 	if err := insertAttempt(ctx, tx, attempt, offerState, request.OfferedAt); err != nil {
-		return ListingExecutionOffer{}, err
+		return ExecutionOffer{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return ListingExecutionOffer{}, fmt.Errorf("commit listing offer: %w", err)
+		return ExecutionOffer{}, fmt.Errorf("commit execution offer: %w", err)
 	}
 	return offer, nil
 }
 
-func getListingExecutionOfferReplay(ctx context.Context, tx *sql.Tx, request ListingOfferRequest) (ListingExecutionOffer, bool, error) {
+func getExecutionOfferReplay(ctx context.Context, tx *sql.Tx, request ListingOfferRequest, requiredPurpose string) (ExecutionOffer, bool, error) {
 	var attemptState, offerState []byte
 	err := tx.QueryRowContext(ctx, `
 SELECT state_json, execution_offer_json
 FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE`, request.AttemptID).Scan(&attemptState, &offerState)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ListingExecutionOffer{}, false, nil
+		return ExecutionOffer{}, false, nil
 	}
 	if err != nil {
-		return ListingExecutionOffer{}, false, fmt.Errorf("read listing offer replay: %w", err)
+		return ExecutionOffer{}, false, fmt.Errorf("read execution offer replay: %w", err)
 	}
 	var attempt model.Attempt
 	if err := json.Unmarshal(attemptState, &attempt); err != nil {
-		return ListingExecutionOffer{}, false, err
+		return ExecutionOffer{}, false, err
 	}
 	if attempt.ExecutorActorID != strings.TrimSpace(request.ExecutorActorID) ||
 		attempt.ExecutorIncarnation != strings.TrimSpace(request.ExecutorIncarnation) ||
 		attempt.Capability != strings.TrimSpace(request.Capability) || len(offerState) == 0 {
-		return ListingExecutionOffer{}, false, fmt.Errorf("%w: attempt ID reused with different execution request", ErrAttemptConflict)
+		return ExecutionOffer{}, false, fmt.Errorf("%w: attempt ID reused with different execution request", ErrAttemptConflict)
 	}
-	var offer ListingExecutionOffer
+	var offer ExecutionOffer
 	if err := json.Unmarshal(offerState, &offer); err != nil {
-		return ListingExecutionOffer{}, false, fmt.Errorf("decode listing offer replay: %w", err)
+		return ExecutionOffer{}, false, fmt.Errorf("decode execution offer replay: %w", err)
 	}
 	if offer.Attempt.AttemptID != attempt.AttemptID || offer.Work.WorkID != attempt.WorkID ||
 		offer.RequestedCapability != strings.TrimSpace(request.Capability) ||
-		offer.RequestedOrigin != strings.TrimSpace(request.Origin) || offer.RequestedProfileID != strings.TrimSpace(request.ProfileID) {
-		return ListingExecutionOffer{}, false, fmt.Errorf("%w: persisted listing offer does not match request", ErrAttemptConflict)
+		offer.RequestedOrigin != strings.TrimSpace(request.Origin) || offer.RequestedProfileID != strings.TrimSpace(request.ProfileID) ||
+		(requiredPurpose != "" && offer.Work.Purpose != requiredPurpose) {
+		return ExecutionOffer{}, false, fmt.Errorf("%w: persisted execution offer does not match request", ErrAttemptConflict)
 	}
 	return offer, true, nil
 }
@@ -302,7 +345,74 @@ WHERE s.source_id = ?`, occurrence.SourceID).Scan(&companyState, &sourceState, &
 	return checkpoint, fence, nil
 }
 
+func loadDetailOfferFence(ctx context.Context, tx *sql.Tx, work model.Work, placement WorkPlacement) (*DetailExecutionInput, model.AttemptFence, error) {
+	if work.TargetType != "job" || work.Purpose != "detail_sync" {
+		return nil, model.AttemptFence{}, fmt.Errorf("detail execution requires a detail job work")
+	}
+	job, err := getJobWithLock(ctx, tx, work.TargetID)
+	if err != nil {
+		return nil, model.AttemptFence{}, fmt.Errorf("load detail execution job: %w", err)
+	}
+	var companyState, sourceState, assignmentState, recipeState []byte
+	err = tx.QueryRowContext(ctx, `
+SELECT c.state_json, s.state_json, a.state_json, r.state_json
+FROM recruiting_sources s
+JOIN recruiting_companies c ON c.company_id = s.company_id
+JOIN recruiting_source_assignments a ON a.source_id = s.source_id AND a.recipe_kind = 'detail'
+JOIN recruiting_recipes r ON r.recipe_id = a.recipe_id AND r.recipe_version = a.recipe_version
+WHERE s.source_id = ?`, job.SourceID).Scan(&companyState, &sourceState, &assignmentState, &recipeState)
+	if err != nil {
+		return nil, model.AttemptFence{}, fmt.Errorf("load detail execution fence: %w", err)
+	}
+	var company model.Company
+	var source model.RecruitmentSource
+	var assignment model.SourceRecipeAssignment
+	var recipe model.Recipe
+	for _, item := range []struct {
+		data  []byte
+		value any
+	}{{companyState, &company}, {sourceState, &source}, {assignmentState, &assignment}, {recipeState, &recipe}} {
+		if err := json.Unmarshal(item.data, item.value); err != nil {
+			return nil, model.AttemptFence{}, err
+		}
+	}
+	origin, err := canonicalOrigin(job.DetailURL)
+	if err != nil {
+		return nil, model.AttemptFence{}, err
+	}
+	if company.OnboardingStatus != model.CompanyReady || company.ControlStatus != model.ControlActive ||
+		source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy ||
+		source.DetailAssignment == nil || *source.DetailAssignment != assignment || assignment.Kind != model.RecipeDetail ||
+		recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDetail || recipe.RecipeID != assignment.RecipeID ||
+		recipe.Version != assignment.RecipeVersion || recipe.ContractHash != assignment.ContractHash ||
+		recipe.Execution.RequiredCapability != placement.Capability || origin != placement.Origin ||
+		(job.Status != model.JobDetailPending && job.Status != model.JobUpdatePending) {
+		return nil, model.AttemptFence{}, fmt.Errorf("detail work is fenced by changed or unavailable source, recipe, job, or placement")
+	}
+	fence := model.AttemptFence{
+		CompanyVersion: company.Version, SourceVersion: source.Version, AssignmentVersion: assignment.AssignmentVersion,
+		RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, RefreshGeneration: job.RefreshGeneration,
+	}
+	if placement.ProfileID != "" {
+		var profileState []byte
+		if err := tx.QueryRowContext(ctx, "SELECT state_json FROM recruiting_profiles WHERE profile_id = ?", placement.ProfileID).Scan(&profileState); err != nil {
+			return nil, model.AttemptFence{}, fmt.Errorf("load detail profile: %w", err)
+		}
+		var profile model.BrowserProfile
+		if err := json.Unmarshal(profileState, &profile); err != nil {
+			return nil, model.AttemptFence{}, err
+		}
+		if profile.AuthStatus != model.ProfileReady {
+			return nil, model.AttemptFence{}, fmt.Errorf("detail profile is not ready")
+		}
+		fence.ProfileID, fence.ProfileVersion = profile.ProfileID, profile.Version
+	}
+	return &DetailExecutionInput{Job: job, Assignment: assignment, Recipe: recipe}, fence, nil
+}
+
 // AcceptListingExecution records that the bound executor accepted an offer.
+// The name is retained for API compatibility; it accepts both executable
+// purposes selected by OfferExecution.
 func (r *Repository) AcceptListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation string, businessAt time.Time) (model.Attempt, error) {
 	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "accept", "", businessAt)
 }
@@ -342,18 +452,32 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 	if attempt.ExecutorActorID != executorActorID || attempt.ExecutorIncarnation != executorIncarnation || attempt.AcceptanceVersion != work.AcceptanceVersion {
 		return model.Attempt{}, ErrAttemptConflict
 	}
-	occurrence, err := getOccurrenceByWorkWith(ctx, tx, work.WorkID, true)
-	if err != nil {
-		return model.Attempt{}, err
-	}
+	var occurrence model.SourceOccurrence
+	var currentFence model.AttemptFence
 	// A failure closes execution authority but does not publish business data,
 	// so it remains safe to record after a domain configuration change. Accept
 	// and start do publish execution authority and therefore recheck every
 	// frozen fence.
 	if action != "fail" {
-		_, currentFence, fenceErr := loadListingOfferFence(ctx, tx, occurrence, attempt.ProfileID)
+		var fenceErr error
+		switch work.Purpose {
+		case "listing_sync":
+			occurrence, fenceErr = getOccurrenceByWorkWith(ctx, tx, work.WorkID, true)
+			if fenceErr == nil {
+				_, currentFence, fenceErr = loadListingOfferFence(ctx, tx, occurrence, attempt.ProfileID)
+			}
+		case "detail_sync":
+			placement, placementErr := getWorkPlacementWith(ctx, tx, work.WorkID)
+			if placementErr != nil {
+				fenceErr = placementErr
+			} else {
+				_, currentFence, fenceErr = loadDetailOfferFence(ctx, tx, work, placement)
+			}
+		default:
+			fenceErr = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)
+		}
 		if fenceErr != nil || !sameAttemptFence(attempt, currentFence) {
-			return model.Attempt{}, fmt.Errorf("%w: listing domain fence changed", ErrResultFenced)
+			return model.Attempt{}, fmt.Errorf("%w: execution domain fence changed", ErrResultFenced)
 		}
 	}
 
@@ -370,7 +494,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 				err = updateWorkTx(ctx, tx, previousWorkVersion, work, businessAt)
 			}
 		}
-		if err == nil && occurrence.Status == model.OccurrenceQueued {
+		if err == nil && work.Purpose == "listing_sync" && occurrence.Status == model.OccurrenceQueued {
 			previousOccurrenceVersion := occurrence.Version
 			occurrence, err = occurrence.Start(occurrence.Version)
 			if err == nil {
@@ -398,16 +522,37 @@ UPDATE recruiting_attempts
 SET attempt_status = ?, state_json = ?, updated_at = ?
 WHERE attempt_id = ? AND attempt_status = ?`, attempt.Status, state, businessAt.UTC(), attempt.AttemptID, previousAttemptStatus)
 	if err != nil {
-		return model.Attempt{}, fmt.Errorf("transition listing attempt: %w", err)
+		return model.Attempt{}, fmt.Errorf("transition execution attempt: %w", err)
 	}
 	changed, _ := result.RowsAffected()
 	if changed != 1 {
 		return model.Attempt{}, ErrAttemptConflict
 	}
 	if err := tx.Commit(); err != nil {
-		return model.Attempt{}, fmt.Errorf("commit listing execution transition: %w", err)
+		return model.Attempt{}, fmt.Errorf("commit execution transition: %w", err)
 	}
 	return attempt, nil
+}
+
+func getWorkPlacementWith(ctx context.Context, tx *sql.Tx, workID string) (WorkPlacement, error) {
+	var placement WorkPlacement
+	var businessKey, capability, origin, profileID sql.NullString
+	var deadline sql.NullTime
+	err := tx.QueryRowContext(ctx, `
+SELECT business_key, priority, capability, origin, profile_id, not_before, deadline_at
+FROM recruiting_works WHERE work_id = ?`, workID).Scan(&businessKey, &placement.Priority, &capability,
+		&origin, &profileID, &placement.NotBefore, &deadline)
+	if err != nil {
+		return WorkPlacement{}, err
+	}
+	placement.BusinessKey, placement.Capability = businessKey.String, capability.String
+	placement.Origin, placement.ProfileID = origin.String, profileID.String
+	placement.NotBefore = placement.NotBefore.UTC()
+	if deadline.Valid {
+		value := deadline.Time.UTC()
+		placement.DeadlineAt = &value
+	}
+	return placement, nil
 }
 
 func sameAttemptFence(attempt model.Attempt, current model.AttemptFence) bool {

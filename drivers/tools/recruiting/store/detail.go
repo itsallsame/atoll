@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -21,19 +22,31 @@ type DetailResult struct {
 	NormalizedContentHash string
 	DetailJSON            json.RawMessage
 	ObservedAt            time.Time
+	CauseCommandID        string
 }
 
 type DetailResultOutcome struct {
-	Job            model.SourceJob
-	ContentChanged bool
-	Replayed       bool
+	Job            model.SourceJob `json:"job"`
+	ContentChanged bool            `json:"content_changed"`
+	Replayed       bool            `json:"replayed"`
 }
+
+type detailResultSnapshot struct {
+	InputHash string              `json:"input_hash"`
+	Outcome   DetailResultOutcome `json:"outcome"`
+}
+
+const detailResultMaxJSONBytes = 1 << 20
 
 func (r *Repository) AcceptDetailResult(ctx context.Context, input DetailResult) (DetailResultOutcome, error) {
 	if input.AttemptID == "" || input.Artifact.ArtifactID == "" || input.Artifact.AttemptID != input.AttemptID ||
 		input.ExecutorActorID == "" || input.ExecutorIncarnation == "" || input.DetailVersionID == "" ||
-		input.NormalizedContentHash == "" || !json.Valid(input.DetailJSON) || input.ObservedAt.IsZero() {
+		input.NormalizedContentHash == "" || !json.Valid(input.DetailJSON) || len(input.DetailJSON) == 0 ||
+		len(input.DetailJSON) > detailResultMaxJSONBytes || input.ObservedAt.IsZero() || input.CauseCommandID == "" {
 		return DetailResultOutcome{}, fmt.Errorf("detail result identity, artifact, normalized content, JSON, and observed time are required")
+	}
+	if err := validateResultArtifact(input.Artifact, input.AttemptID, model.ArtifactResponse); err != nil {
+		return DetailResultOutcome{}, err
 	}
 	outcome, fenceErr, err := r.acceptDetailResultTransaction(ctx, input)
 	if err != nil {
@@ -69,11 +82,16 @@ func (r *Repository) acceptDetailResultTransaction(ctx context.Context, input De
 				return DetailResultOutcome{}, nil, readErr
 			}
 			if attempt.Status == model.AttemptSucceeded && work.Status == model.WorkCompleted {
-				job, readErr := getJobWith(ctx, tx, work.TargetID)
-				if readErr != nil {
+				var resultState []byte
+				if readErr := tx.QueryRowContext(ctx, "SELECT execution_result_json FROM recruiting_attempts WHERE attempt_id = ?", input.AttemptID).Scan(&resultState); readErr != nil {
 					return DetailResultOutcome{}, nil, readErr
 				}
-				return DetailResultOutcome{Job: job, Replayed: true}, nil, nil
+				var snapshot detailResultSnapshot
+				if len(resultState) == 0 || json.Unmarshal(resultState, &snapshot) != nil || snapshot.InputHash != detailResultInputHash(input) {
+					return DetailResultOutcome{}, fmt.Errorf("accepted detail result replay does not match its immutable input"), nil
+				}
+				snapshot.Outcome.Replayed = true
+				return snapshot.Outcome, nil, nil
 			}
 		}
 		return DetailResultOutcome{}, fmt.Errorf("artifact ID already belongs to another result"), nil
@@ -93,14 +111,15 @@ func (r *Repository) acceptDetailResultTransaction(ctx context.Context, input De
 	if work.TargetType != "job" || input.Artifact.WorkID != work.WorkID {
 		return DetailResultOutcome{}, fmt.Errorf("detail result work target or artifact link is inconsistent"), nil
 	}
-	job, err := getJobWithLock(ctx, tx, work.TargetID)
+	placement, err := getWorkPlacementWith(ctx, tx, work.WorkID)
 	if err != nil {
 		return DetailResultOutcome{}, nil, err
 	}
-	currentFence, err := loadCurrentAttemptFence(ctx, tx, job, attempt)
+	detail, currentFence, err := loadDetailOfferFence(ctx, tx, work, placement)
 	if err != nil {
-		return DetailResultOutcome{}, nil, err
+		return DetailResultOutcome{}, err, nil
 	}
+	job := detail.Job
 	if err := attempt.CanAcceptResult(work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
 		return DetailResultOutcome{}, err, nil
 	}
@@ -134,21 +153,14 @@ INSERT INTO recruiting_job_detail_versions(
 		}
 	}
 	succeededAttempt, _ := attempt.Succeed()
-	attemptState, _ := json.Marshal(succeededAttempt)
-	result, err := tx.ExecContext(ctx, `
-UPDATE recruiting_attempts SET attempt_status = ?, state_json = ?, updated_at = ?
-WHERE attempt_id = ? AND attempt_status = ?`,
-		succeededAttempt.Status, attemptState, input.ObservedAt.UTC(), attempt.AttemptID, attempt.Status)
-	if err != nil {
+	completedWork, _ := work.Complete(work.Version, model.ResolutionSucceeded, "", "")
+	outcome := DetailResultOutcome{Job: acceptance.Job, ContentChanged: acceptance.ContentChanged}
+	resultSnapshot, _ := json.Marshal(detailResultSnapshot{InputHash: detailResultInputHash(input), Outcome: outcome})
+	if err := updateAttemptStatusTx(ctx, tx, attempt.Status, succeededAttempt, resultSnapshot, input.ObservedAt); err != nil {
 		return DetailResultOutcome{}, nil, fmt.Errorf("complete detail attempt: %w", err)
 	}
-	changed, _ := result.RowsAffected()
-	if changed != 1 {
-		return DetailResultOutcome{}, ErrAttemptConflict, nil
-	}
-	completedWork, _ := work.Complete(work.Version, model.ResolutionSucceeded, "", "")
 	workState, _ := json.Marshal(completedWork)
-	result, err = tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_works
 SET status = ?, resolution = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
 WHERE work_id = ? AND version = ?`,
@@ -157,40 +169,42 @@ WHERE work_id = ? AND version = ?`,
 	if err != nil {
 		return DetailResultOutcome{}, nil, fmt.Errorf("complete detail work: %w", err)
 	}
-	changed, _ = result.RowsAffected()
+	changed, _ := result.RowsAffected()
 	if changed != 1 {
 		return DetailResultOutcome{}, fmt.Errorf("detail work changed during acceptance"), nil
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"attempt_id": succeededAttempt.AttemptID, "work_id": completedWork.WorkID, "job_id": acceptance.Job.JobID,
+		"refresh_generation": acceptance.Job.RefreshGeneration, "content_changed": acceptance.ContentChanged,
+	})
+	event, err := model.NewEventIntent("detail-completed-"+succeededAttempt.AttemptID, "detail.completed", "work",
+		completedWork.WorkID, completedWork.Version, input.ObservedAt.UTC().Format(time.RFC3339Nano), input.CauseCommandID, payload)
+	if err != nil {
+		return DetailResultOutcome{}, nil, err
+	}
+	if err := appendEventIntent(ctx, tx, event, input.ObservedAt, input.ObservedAt); err != nil {
+		return DetailResultOutcome{}, nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return DetailResultOutcome{}, nil, fmt.Errorf("commit detail result: %w", err)
 	}
-	return DetailResultOutcome{Job: acceptance.Job, ContentChanged: acceptance.ContentChanged}, nil, nil
+	return outcome, nil, nil
 }
 
-func loadCurrentAttemptFence(ctx context.Context, tx *sql.Tx, job model.SourceJob, attempt model.Attempt) (model.AttemptFence, error) {
-	var fence model.AttemptFence
-	err := tx.QueryRowContext(ctx, `
-SELECT c.version, s.version, a.assignment_version, a.recipe_id, a.recipe_version
-FROM recruiting_sources s
-JOIN recruiting_companies c ON c.company_id = s.company_id
-JOIN recruiting_source_assignments a ON a.source_id = s.source_id AND a.recipe_kind = 'detail'
-WHERE s.source_id = ?`, job.SourceID).Scan(
-		&fence.CompanyVersion, &fence.SourceVersion, &fence.AssignmentVersion, &fence.RecipeID, &fence.RecipeVersion)
-	if err != nil {
-		return model.AttemptFence{}, fmt.Errorf("load detail source fence: %w", err)
-	}
-	fence.RefreshGeneration = job.RefreshGeneration
-	err = tx.QueryRowContext(ctx, "SELECT checkpoint_version FROM recruiting_checkpoints WHERE source_id = ?", job.SourceID).Scan(&fence.CheckpointVersion)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return model.AttemptFence{}, fmt.Errorf("load checkpoint fence: %w", err)
-	}
-	if attempt.ProfileID != "" {
-		fence.ProfileID = attempt.ProfileID
-		if err := tx.QueryRowContext(ctx, "SELECT version FROM recruiting_profiles WHERE profile_id = ?", attempt.ProfileID).Scan(&fence.ProfileVersion); err != nil {
-			return model.AttemptFence{}, fmt.Errorf("load profile fence: %w", err)
-		}
-	}
-	return fence, nil
+func detailResultInputHash(input DetailResult) string {
+	value, _ := json.Marshal(struct {
+		AttemptID             string
+		ExecutorActorID       string
+		ExecutorIncarnation   string
+		Artifact              model.ArtifactMetadata
+		DetailVersionID       string
+		NormalizedContentHash string
+		DetailJSON            json.RawMessage
+		CauseCommandID        string
+	}{input.AttemptID, input.ExecutorActorID, input.ExecutorIncarnation, input.Artifact, input.DetailVersionID,
+		input.NormalizedContentHash, input.DetailJSON, input.CauseCommandID})
+	sum := sha256.Sum256(value)
+	return fmt.Sprintf("sha256:%x", sum[:])
 }
 
 func getAttemptWith(ctx context.Context, tx *sql.Tx, attemptID string, lock bool) (model.Attempt, error) {

@@ -21,7 +21,9 @@
 - listing offer 在一个 MySQL 事务内锁定单个 runnable Work、重读 cutoff SourceOccurrence 及当前 Company/Source/Assignment/Recipe/Checkpoint/Profile 条件、创建绑定 Executor 的 Attempt；Recipe 正文仍只通过 opaque content ref 传递，完整轻量 offer（含当时 checkpoint）随 Attempt 持久化，因此 Actor/Executor 重启后相同命令可精确重放原始输入，不会读到后来推进的 checkpoint；
 - 同一 Work 的活动 Attempt 由数据库生成列唯一约束保证最多一个；领取先无锁读取最多 100 个候选 ID，再按 Work 主键逐项 `FOR UPDATE SKIP LOCKED`，避免 MySQL 对带 `ORDER BY/EXISTS` 的 range locking read 扩大锁范围。两个 Executor 的并发领取连续三轮均获得不同 Work；
 - accept 在执行权授予前重检完整领域 fence；started 在一个事务内推进 `Attempt accepted→running`、`Work open/waiting_retry→running` 和首次 `Occurrence queued→running`。错误 incarnation、暂停/变更后的 Source 或不再 active 的 Recipe 均不能启动；failed 不发布业务数据，允许在配置变化后关闭旧执行权，并把 Work 显式置为 `waiting_retry`，不在 Repository 内盲目自动循环；
-- `recruiting.execution.result` 现在以 `listing_page|listing_completion` 区分有界页面和最终证明，同时保留 P0 probe 的旧消息路径；生产结果只接受 authenticated tool actor。页面提交最多 500 个 Observation，并将 Artifact、岗位事实、detail Work 和恢复游标原子落库；最终提交原子推进 Checkpoint、Attempt、Work、Occurrence 与 outbox，Actor handler 不读取网站或等待外部 I/O；
+- `recruiting.execution.result` 现在以 `listing_page|listing_completion|detail` 区分有界页面、列表最终证明和详情结果，同时保留 P0 probe 的旧消息路径；生产结果只接受 authenticated tool actor。页面提交最多 500 个 Observation，并将 Artifact、岗位事实、detail Work 和恢复游标原子落库；最终提交原子推进 Checkpoint、Attempt、Work、Occurrence 与 outbox，Actor handler 不读取网站或等待外部 I/O；
+- 同一个 `recruiting.execution.offer/accept/started/failed/result` 生命周期现在按全局 Work priority 为同一 Executor class 领取 `listing_sync` 或 `detail_sync`，步骤类型通过 offer discriminator 表达，不新增 Detail Worker/Actor。detail offer 固定 Job、Detail Assignment、active Recipe/opaque content ref、capability、origin、Profile 和 refresh generation；accept/start/result 均重检 Company/Source/Assignment/Recipe/Profile/Job fence；
+- detail result 最大 1 MiB，必须带 response Artifact、normalized content hash 和 authenticated executor incarnation；Artifact、Job 状态、仅在内容变化时追加的 DetailVersion、Attempt/Work 终态以及唯一 `detail.completed` outbox 在一个事务内提交。相同结果重放保留原 `content_changed` 语义；错误 sender、配置变化或 refresh generation 变化只保留 rejected Artifact。详情代际不绑定 Listing Checkpoint，因此列表完成推进水位不会误杀已领取的正确详情；
 - Result message 不能声明当前领域版本，也不能选择派生 Job/Work ID、detail capability/origin 或 Checkpoint 控制字段；这些值由数据库 fence、Recipe、规范 URL、业务键和 occurrence 决定。失败的 fence/质量证明仅留下 `rejected=true` Artifact；相同 Artifact 页面重放及 terminal outcome 重放稳定；
 - Executor 无进展恢复复用已有 reconcile durable timer，不增加 Worker/Actor 类型或 heartbeat 流量。`attempt_stale_after_ms` 默认 15 分钟、限制 1 秒至 24 小时，单轮 `attempt_recovery_limit` 默认 100、最大 500；offered/accepted 超时释放活动 Attempt 槽，running 超时同时把仍匹配 acceptance fence 的 Work 置为 `waiting_retry`，Occurrence 保留其业务生命周期；
 - 恢复查询有专用状态/更新时间索引，先读取有界候选，再按 Attempt 主键逐行 `SKIP LOCKED`；两个恢复实例并发处理同一 Attempt 只有一个提交。每次过期追加 `attempt.expired` outbox，当前 tick 随后复用原有 outbox 投递，避免另建周期链；
@@ -58,7 +60,7 @@ go test -race ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/
 
 - System/Capacity 查询、Work correct 和 DailyRun 修改控制词；Work resolve 的真实 `waiting_human` 旅程依赖后续 Attempt/repair 切片；Source validate 当前只进入 `validating`，验证 Attempt 的接受、契约证明和原子发布仍属于后续纵向切片；
 - 日报关闭后的 recovered 补偿记录仍待实现；
-- detail Attempt 的自动 offer 输入构造；listing failure Artifact 与分类修复决策；主动 incarnation 失效信号（当前仅按无进展超时恢复）；execution accept/start/fail/page 的 command receipt/outbox 审计仍待完成；
+- listing failure Artifact 与分类修复决策；主动 incarnation 失效信号（当前仅按无进展超时恢复）；execution accept/start/fail/page 的 command receipt/outbox 审计仍待完成；
 - 批量导入 preview/confirm 和逐项 outcome；
 - `recruiting_recovery_test.go` 的完整重启、重复 ledger delivery 与日报恢复路径。
 

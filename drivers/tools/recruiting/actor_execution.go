@@ -35,10 +35,11 @@ type executionControlResponse struct {
 	CorrelationID   string                          `json:"correlation_id"`
 	RequestedBy     string                          `json:"requested_by"`
 	Available       bool                            `json:"available,omitempty"`
-	Offer           *store.ListingExecutionOffer    `json:"offer,omitempty"`
+	Offer           *store.ExecutionOffer           `json:"offer,omitempty"`
 	Attempt         *model.Attempt                  `json:"attempt,omitempty"`
 	Page            *store.ListingPageOutcome       `json:"page,omitempty"`
 	Completion      *store.ListingCompletionOutcome `json:"completion,omitempty"`
+	Detail          *store.DetailResultOutcome      `json:"detail,omitempty"`
 }
 
 type listingPageResultPayload struct {
@@ -77,6 +78,17 @@ type listingCheckpointPayload struct {
 	FrontierJobKeys    []string `json:"frontier_job_keys,omitempty"`
 }
 
+type detailResultPayload struct {
+	CommandID             string                 `json:"command_id"`
+	ResultKind            string                 `json:"result_kind"`
+	AttemptID             string                 `json:"attempt_id"`
+	ExecutorIncarnation   string                 `json:"executor_incarnation"`
+	Artifact              model.ArtifactMetadata `json:"artifact"`
+	DetailVersionID       string                 `json:"detail_version_id"`
+	NormalizedContentHash string                 `json:"normalized_content_hash"`
+	Detail                json.RawMessage        `json:"detail"`
+}
+
 func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, state *storedState, msg actorbase.Msg) {
 	var discriminator struct {
 		ResultKind string `json:"result_kind"`
@@ -90,7 +102,7 @@ func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, s
 		return
 	}
 	if msg.Sender.Kind != actor.KindTool || msg.Sender.ID == "" {
-		_, _ = sys.Fail(msg, ErrorUnauthorizedExecutor, "listing result requires an authenticated tool actor")
+		_, _ = sys.Fail(msg, ErrorUnauthorizedExecutor, "execution result requires an authenticated tool actor")
 		return
 	}
 	switch discriminator.ResultKind {
@@ -98,9 +110,35 @@ func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, s
 		handleListingPageResult(sys, repository, msg)
 	case "listing_completion":
 		handleListingCompletionResult(sys, repository, msg)
+	case "detail":
+		handleDetailResult(sys, repository, msg)
 	default:
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "unknown execution result_kind")
 	}
+}
+
+func handleDetailResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload detailResultPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if strings.TrimSpace(payload.CommandID) == "" || payload.ResultKind != "detail" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "detail command_id and result_kind are required")
+		return
+	}
+	outcome, err := repository.AcceptDetailResult(msg.Ctx(), store.DetailResult{
+		AttemptID: payload.AttemptID, ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
+		Artifact: payload.Artifact, DetailVersionID: payload.DetailVersionID,
+		NormalizedContentHash: payload.NormalizedContentHash, DetailJSON: payload.Detail,
+		ObservedAt: time.UnixMilli(msg.TS).UTC(), CauseCommandID: payload.CommandID,
+	})
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := executionControlResponse{ContractVersion: "recruiting.execution.v1", CorrelationID: string(msg.CorrelationID),
+		RequestedBy: string(msg.Sender.ID), Detail: &outcome}
+	_, _ = sys.Reply(msg, response)
 }
 
 func handleListingPageResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
@@ -184,7 +222,7 @@ func handleListingOffer(sys actorbase.Sys, repository *store.Repository, msg act
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "command_id, executor_incarnation, and capability are required")
 		return
 	}
-	offer, err := repository.OfferListingExecution(msg.Ctx(), store.ListingOfferRequest{
+	offer, err := repository.OfferExecution(msg.Ctx(), store.ListingOfferRequest{
 		AttemptID:           executionAttemptID(string(msg.Sender.ID), payload.CommandID),
 		ExecutorActorID:     string(msg.Sender.ID),
 		ExecutorIncarnation: payload.ExecutorIncarnation,

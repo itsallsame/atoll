@@ -9,7 +9,7 @@
 - ABI 位于 `drivers/tools/recruitingexecutor/recipeabi`，是招聘扩展内部协议，不向 Atoll core 增加字段或消息；
 - 控制面的 Recipe 领域对象强制保存与 Executor 一致的 ABI version、opaque content ref、transport 和 required capability；跨包测试阻止 ABI 字符串漂移，Recipe Repository 阻止同一 version 静默改变执行方式；
 - 固定执行输入：Target、版本化 Endpoint、Recipe Assignment/contract hash、可选 Checkpoint、不可解析的 `profile://` 引用、预算许可，以及 Work/Attempt/Company/Source/Profile 接受 fence；
-- listing 控制面现已把上述轻量执行输入作为 immutable offer 随 Attempt 持久化；相同 offer 命令在 checkpoint 后续变化或进程重启后仍返回原始快照，避免 Executor 在执行中读取漂移配置。预算许可尚未接入该 offer，因此当前仍不能宣称完整生产执行链；
+- listing 和 detail 控制面现已把上述轻量执行输入作为带 kind discriminator 的 immutable offer 随 Attempt 持久化；相同 offer 命令在配置后续变化或进程重启后仍返回原始快照，避免 Executor 在执行中读取漂移配置。详情以 Job refresh generation 而非 Listing Checkpoint 作为数据代际，列表完成推进水位不会误杀已经领取的详情。预算许可尚未接入该 offer，因此当前仍不能宣称完整生产执行链；
 - 固定 Recipe 类型 `listing|detail|discovery` 和执行 transport `http_json|http_html|browser`，但 capability 仍为可扩展字符串，不制造多种 Worker class；Extension 是候选 Recipe 捕获入口，不是日常执行 transport；
 - 声明式请求只能为 GET；timeout、响应大小和 redirect 次数有硬上限；Recipe 只能声明 Accept/Accept-Language，不能携带 Cookie、Authorization 等秘密；
 - Listing Recipe 必须声明稳定 identity、`newest_activity_desc`、update-retop、`activity_time|frontier_keys` 边界、安全重叠页数和最大页数；identity/activity 必须引用实际提取字段；
@@ -31,6 +31,7 @@
 - `RunListing` 已串联 HTTP→Artifact→离线 Recipe→`ListingScan`：每页原始响应必须先经 `ArtifactSink` 成功持久化，之后才允许解析；单页和整次扫描都有独立字节上限，next page 必须保持初始 scheme+authority 且不得携带凭据或 fragment；
 - 成功结果包含所有去重观测、逐页 Artifact 和仅供 Actor CAS 的 Checkpoint candidate；HTTP/解析/分页/质量失败返回有限类别、原始页面及额外 failure Artifact，保留当时质量证明，且不产生 Checkpoint；Artifact sink 失败直接中止执行；
 - 控制面已实现 ABI 对应的有界 `listing_page` 与 `listing_completion` 接受：只有完整 identity、pagination、ordering、frontier、同时间组和 overlap 证明可以推进 Checkpoint；Executor 的 candidate 只贡献 frontier 时间/键，其余 Checkpoint 字段不受消息控制；
+- 控制面也已实现 `detail` offer/result：同一 Executor class 按 capability、origin 和全局 Work priority 领取列表或详情；detail result 有 1 MiB 结构化上限并原子提交 response Artifact、Job/DetailVersion、Attempt/Work 及 outbox，相同 Artifact 只有输入摘要完全一致时才能重放；
 - 三页真实 `httptest` 流程验证：顶部新岗位→完整旧时间组→更旧边界→一页 overlap 后停止，保存三页 Artifact 并生成 checkpoint version+1；另覆盖畸形 JSON、跨源 next 和 Artifact 写失败。
 - JSON 稳定岗位键支持字符串和整数两种无歧义标量；整数保持任意精度并规范成十进制字符串，浮点、指数、布尔、null、对象和数组仍 fail closed。该兼容性由真实 Greenhouse 数据暴露，并只修改招聘 Recipe 执行扩展。
 - browserdriver 已固定受控 Browser Broker 边界：招聘 Executor 只发送 profile:// opaque ref，Cookie、密码、OTP 和 Authorization 不出现在 SessionRequest；秘密只允许由授权设备侧 Broker 解析；
