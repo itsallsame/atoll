@@ -52,6 +52,32 @@ func TestWorkRetryPauseResumeFailureAndAttemptTerminals(t *testing.T) {
 	}
 }
 
+func TestRetryCreatesCausalWorkWithoutReopeningTerminal(t *testing.T) {
+	previous, _ := NewWork("work-old", "source", "source-1", "repair", "manual")
+	previous, _ = previous.Start(previous.Version)
+	previous, _ = previous.Fail(previous.Version, "selector drift")
+	retry, err := NewRetryWork(previous, "work-retry", "human:alice", "message-7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry.Status != WorkOpen || retry.Version != 1 || retry.AcceptanceVersion != 1 ||
+		retry.CauseWorkID != previous.WorkID || retry.InitiatorActorID != "human:alice" || retry.CauseMessageID != "message-7" {
+		t.Fatalf("retry work = %+v", retry)
+	}
+	if previous.Status != WorkFailed || previous.Version != 3 {
+		t.Fatalf("retry mutated terminal work: %+v", previous)
+	}
+	open, _ := NewWork("work-open", "source", "source-1", "repair", "manual")
+	if _, err := NewRetryWork(open, "bad-retry", "human:alice", "message-8"); err == nil {
+		t.Fatal("non-terminal work was retried as a new lifecycle")
+	}
+	succeeded, _ := open.Start(open.Version)
+	succeeded, _ = succeeded.Complete(succeeded.Version, ResolutionSucceeded, "", "")
+	if _, err := NewRetryWork(succeeded, "bad-success-retry", "human:alice", "message-9"); err == nil {
+		t.Fatal("succeeded work was retried")
+	}
+}
+
 func TestRepairRecipeProfileAndCompanyTerminalPaths(t *testing.T) {
 	incident, _ := NewRepairIncident("repair-1", FailureOrigin, "jobs.example.com", "http_403", "policy-1", "work-1")
 	incident, err := incident.BeginValidation(incident.Version)

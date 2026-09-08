@@ -25,6 +25,8 @@ P1 契约基线：`a94d2b8d`
 - 安全重叠会追加 Observation 证据但不提升 Job generation、不创建 Detail Work；活动时间/指纹变化才各提升一次；两个等价更新并发时只产生一个新 generation 和一个 Detail Work；
 - Detail Work 写入故障会回滚同事务中的 Observation 与 Job 更新，重试不会看到半完成分页结果；
 - Work Repository 支持业务键唯一、版本 CAS，以及按 capability/origin/Profile、`not_before`、deadline 和 priority 过滤排序的 runnable 查询；EXPLAIN 验证使用招聘专用索引；
+- migration `000003` 为 Work 增加 initiator/message/work cause 列和专用索引；Work get 同时返回领域状态与 placement，人工创建、暂停、恢复、取消、结案和 retry 均采用 receipt/聚合或新 Work/outbox 单事务；失败创建不留下 receipt；
+- retry 事务锁定并重读原 Work 的版本和终态，验证 target/purpose/parent 因果一致后只插入新 Work；原 Work 不更新，在途结果仍由原 acceptance fence 判定；
 - Attempt 保存 Executor identity/incarnation 与全部领域 fence；状态通过预期前态 CAS，两个并发 accept 只有一个成功，状态机无循环因此不产生 ABA；
 - Recipe 使用 `(recipe_id, recipe_version)` 身份和独立 state version CAS；Source candidate→validating 单独持久化，ready Endpoint 与首个 Listing Assignment 同事务发布；
 - Recipe rollout 要求匹配 active kind/contract，并在同一事务比较 Source version 与 Assignment version；两个并发 rollout 只有一个成功，任一 CAS 冲突都会回滚另一侧，数据库不会出现 Source JSON 与 Assignment 行不一致；
@@ -67,7 +69,7 @@ make build-go
 
 ## 尚未完成
 
-- 其余修改命令的 receipt/聚合/outbox 原子编排随 P3 Actor command handler 实现；P2 已用 Company、Source 命令纵向证明事务模板，并完成全部 Resource 纵向合同；
+- 其余修改命令的 receipt/聚合/outbox 原子编排随 P3 Actor command handler 实现；P2 已用 Company、Source、Work 命令纵向证明事务模板，并完成全部 Resource 纵向合同；
 - 10,000 条基线不使用超大事务已经验证；仍需所有关键领取查询的 EXPLAIN；
 - 首次 100 轮压力运行暴露的 timeout/autocommit 竞态已修复；修复提交上的完整 100 轮与容器残留核对均已通过，不再列为未完成项。
 

@@ -13,16 +13,22 @@ import (
 )
 
 type WorkPlacement struct {
-	BusinessKey string
-	Priority    int
-	Capability  string
-	Origin      string
-	ProfileID   string
-	NotBefore   time.Time
-	DeadlineAt  *time.Time
+	BusinessKey string     `json:"business_key,omitempty"`
+	Priority    int        `json:"priority"`
+	Capability  string     `json:"capability,omitempty"`
+	Origin      string     `json:"origin,omitempty"`
+	ProfileID   string     `json:"profile_id,omitempty"`
+	NotBefore   time.Time  `json:"not_before"`
+	DeadlineAt  *time.Time `json:"deadline_at,omitempty"`
 }
 
 func (r *Repository) CreateWork(ctx context.Context, work model.Work, placement WorkPlacement, businessAt time.Time) error {
+	return insertWork(ctx, r.db, work, placement, businessAt)
+}
+
+func insertWork(ctx context.Context, executor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, work model.Work, placement WorkPlacement, businessAt time.Time) error {
 	if work.WorkID == "" || work.Version != 1 || work.Status != model.WorkOpen || placement.NotBefore.IsZero() {
 		return fmt.Errorf("new open work at version 1 and not_before are required")
 	}
@@ -30,13 +36,15 @@ func (r *Repository) CreateWork(ctx context.Context, work model.Work, placement 
 	if err != nil {
 		return fmt.Errorf("encode work: %w", err)
 	}
-	_, err = r.db.ExecContext(ctx, `
+	_, err = executor.ExecContext(ctx, `
 INSERT INTO recruiting_works(
-  work_id, parent_work_id, business_key, target_type, target_id, purpose,
-  trigger_kind, status, resolution, priority, capability, origin, profile_id,
-  not_before, deadline_at, acceptance_version, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		work.WorkID, nullableString(work.ParentWorkID), nullableString(placement.BusinessKey), work.TargetType, work.TargetID,
+	  work_id, parent_work_id, initiator_actor_id, cause_message_id, cause_work_id,
+	  business_key, target_type, target_id, purpose,
+	  trigger_kind, status, resolution, priority, capability, origin, profile_id,
+	  not_before, deadline_at, acceptance_version, version, state_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		work.WorkID, nullableString(work.ParentWorkID), nullableString(work.InitiatorActorID), nullableString(work.CauseMessageID), nullableString(work.CauseWorkID),
+		nullableString(placement.BusinessKey), work.TargetType, work.TargetID,
 		work.Purpose, work.Trigger, work.Status, nullableString(string(work.Resolution)), placement.Priority,
 		nullableString(placement.Capability), nullableString(placement.Origin), nullableString(placement.ProfileID),
 		placement.NotBefore.UTC(), nullableTimePointer(placement.DeadlineAt), work.AcceptanceVersion, work.Version,
@@ -49,6 +57,40 @@ INSERT INTO recruiting_works(
 		return fmt.Errorf("%w: work ID or business key", ErrBusinessKeyExists)
 	}
 	return fmt.Errorf("create work: %w", err)
+}
+
+type WorkRecord struct {
+	Work      model.Work    `json:"work"`
+	Placement WorkPlacement `json:"placement"`
+}
+
+func (r *Repository) GetWorkRecord(ctx context.Context, workID string) (WorkRecord, error) {
+	var state []byte
+	var businessKey, capability, origin, profileID sql.NullString
+	var deadline sql.NullTime
+	var record WorkRecord
+	err := r.db.QueryRowContext(ctx, `
+SELECT state_json, business_key, priority, capability, origin, profile_id, not_before, deadline_at
+FROM recruiting_works WHERE work_id = ?`, workID).Scan(
+		&state, &businessKey, &record.Placement.Priority, &capability, &origin, &profileID,
+		&record.Placement.NotBefore, &deadline)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkRecord{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkRecord{}, fmt.Errorf("get work record: %w", err)
+	}
+	if err := json.Unmarshal(state, &record.Work); err != nil {
+		return WorkRecord{}, fmt.Errorf("decode work record: %w", err)
+	}
+	record.Placement.BusinessKey, record.Placement.Capability = businessKey.String, capability.String
+	record.Placement.Origin, record.Placement.ProfileID = origin.String, profileID.String
+	if deadline.Valid {
+		value := deadline.Time.UTC()
+		record.Placement.DeadlineAt = &value
+	}
+	record.Placement.NotBefore = record.Placement.NotBefore.UTC()
+	return record, nil
 }
 
 func (r *Repository) GetWork(ctx context.Context, workID string) (model.Work, error) {

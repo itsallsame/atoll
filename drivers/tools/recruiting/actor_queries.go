@@ -55,7 +55,13 @@ func handleResourceQuery(sys actorbase.Sys, repository *store.Repository, msg ac
 	case TypeJobGet:
 		value, err = repository.GetJob(msg.Ctx(), payload.ID)
 	case TypeWorkGet:
-		value, err = repository.GetWork(msg.Ctx(), payload.ID)
+		var record store.WorkRecord
+		record, err = repository.GetWorkRecord(msg.Ctx(), payload.ID)
+		value = record.Work
+		if err == nil {
+			_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "entity": value, "placement": record.Placement})
+			return
+		}
 	case TypeDailyRunGet:
 		value, err = repository.GetDailyRun(msg.Ctx(), payload.ID)
 	}

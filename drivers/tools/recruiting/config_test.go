@@ -33,6 +33,7 @@ func TestManifestExposesControlAndExecutorResultWords(t *testing.T) {
 		TypeSourceAdd, TypeSourceUpdate, TypeSourceValidate, TypeSourcePause,
 		TypeSourceResume, TypeSourceArchive, TypeSourceRestore, TypeSourceGet, TypeSourceList,
 		TypeJobGet, TypeWorkGet, TypeWorkList, TypeDailyRunGet,
+		TypeWorkCreate, TypeWorkPause, TypeWorkResume, TypeWorkRetry, TypeWorkCancel, TypeWorkResolve,
 		TypeSystemReconcile,
 	} {
 		if _, ok := words[word]; !ok {

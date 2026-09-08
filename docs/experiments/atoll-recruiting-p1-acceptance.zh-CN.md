@@ -16,6 +16,7 @@
 - Recipe 中的排序/update-retop 声明只是假设，不再等同于事实。Source 发布必须携带绑定 Source、candidate Endpoint revision、Recipe/version 和 contract hash 的四维校准证据；identity、pagination、ordering、update-retop 全部为 `verified` 才能成为每日增量候选；
 - 校准结论固定为 `verified|unverified|violated`，必须带版本、时间和有界且唯一的 Artifact ID；Recipe 实现或 Endpoint revision 改变后旧证据失配，Listing Recipe 替换会自动进入 repairing 并清除旧校准；
 - Recipe、Profile、Work、Attempt、Checkpoint、SourceOccurrence、DailyRun、BudgetPermit 和 RepairIncident 均有显式状态转换与 CAS/fencing；
+- Work 明确保存 `initiator_actor_id`、`cause_message_id` 和 `cause_work_id`；终态非成功 Work 的 retry 创建版本 1 的独立新 Work，旧终态不变，非终态或已成功 Work 不能被 retry；
 - Attempt 接受结果同时核对 Work acceptance version、Executor incarnation、Company、Source、Assignment、Recipe、Checkpoint、Job refresh generation 和 Profile 版本；
 - ListingObservation 与 JobDetailVersion 保留 Recipe/Artifact 血缘，人工 Override 不覆盖底层证据；
 - 每日安全重叠中的相同岗位不会提升 `refresh_generation`；只有活动时间、列表指纹或规范详情 URL 变化才派生详情刷新；
@@ -43,7 +44,7 @@ make build-go
 drivers/tools/recruiting/model/testdata/fuzz/FuzzCanonicalHTTPURLIdempotent/8a331a9ab9cd6bd5
 ```
 
-当前 `go test -cover ./drivers/tools/recruiting/model` 的语句覆盖率为 78.8%。`make recruiting-model-test` 固化 race、四组 fuzz 和 75% 语句覆盖回退门。关键状态转换采用显式状态矩阵覆盖；语句覆盖率用于阻止整体测试质量回退，不代替矩阵断言。
+当前 `go test -cover ./drivers/tools/recruiting/model` 的语句覆盖率为 79.0%。`make recruiting-model-test` 固化 race、四组 fuzz 和 75% 语句覆盖回退门。关键状态转换采用显式状态矩阵覆盖；语句覆盖率用于阻止整体测试质量回退，不代替矩阵断言。
 
 ## 退出门结论
 

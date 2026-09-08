@@ -135,6 +135,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleCompanyMessage(sys, repository, msg)
 		case TypeSourceAdd, TypeSourceUpdate, TypeSourceValidate, TypeSourcePause, TypeSourceResume, TypeSourceArchive, TypeSourceRestore:
 			handleSourceMessage(sys, repository, msg)
+		case TypeWorkCreate, TypeWorkPause, TypeWorkResume, TypeWorkRetry, TypeWorkCancel, TypeWorkResolve:
+			handleWorkMessage(sys, repository, msg)
 		case TypeSourceGet, TypeSourceList, TypeJobGet, TypeWorkGet, TypeWorkList, TypeDailyRunGet:
 			handleResourceQuery(sys, repository, msg)
 		case TypeSystemReconcile:

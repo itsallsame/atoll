@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestRecruitingCompanyAndSourceControlUsesMySQLAcrossServerRestart(t *testing.T) {
+func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *testing.T) {
 	h := newHarnessShell(t)
 	runtimeDSN := startRecruitingMySQL(t)
 	h.env = append(h.env, "ATOLL_RECRUITING_MYSQL_DSN="+runtimeDSN)
@@ -194,6 +194,58 @@ func TestRecruitingCompanyAndSourceControlUsesMySQLAcrossServerRestart(t *testin
 	}); err == nil {
 		t.Fatal("stale source command unexpectedly succeeded")
 	}
+	workCreate := map[string]any{
+		"command_id": "e2e-work-create", "work_id": "e2e-work-repair", "target": map[string]any{"target_type": "source", "target_id": "e2e-source-a"},
+		"purpose": "repair", "capability": "http.fetch", "origin": "jobs.example.com", "priority": 90,
+		"reason": "operator requests source repair",
+	}
+	createdWork := recovered.request(homeID, "recruiting.work.create", controlID, workCreate)
+	if got := nestedNumberField(t, createdWork, "work", "version"); got != 1 {
+		t.Fatalf("created work version=%v: %v", got, createdWork)
+	}
+	if got := nestedStringField(t, createdWork, "work", "initiator_actor_id"); !strings.HasPrefix(got, "human:recruiting-operator:") {
+		t.Fatalf("work initiator did not come from envelope: %q", got)
+	}
+	replayedWork := recovered.request(homeID, "recruiting.work.create", controlID, workCreate)
+	if got := nestedNumberField(t, replayedWork, "work", "version"); got != 1 {
+		t.Fatalf("work create replay changed version=%v: %v", got, replayedWork)
+	}
+	workView := recovered.request(homeID, "recruiting.work.get", controlID, map[string]any{"id": "e2e-work-repair"})
+	placement, _ := workView["placement"].(map[string]any)
+	if got := stringField(t, placement, "capability"); got != "http.fetch" {
+		t.Fatalf("work placement capability=%q: %v", got, workView)
+	}
+	pausedWork := recovered.request(homeID, "recruiting.work.pause", controlID, map[string]any{
+		"command_id": "e2e-work-pause", "target": map[string]any{"target_type": "work", "target_id": "e2e-work-repair"},
+		"expected_version": 1, "reason": "operator pauses repair",
+	})
+	if got := nestedNumberField(t, pausedWork, "work", "acceptance_version"); got != 2 {
+		t.Fatalf("pause did not fence attempts: %v", pausedWork)
+	}
+	recovered.request(homeID, "recruiting.work.resume", controlID, map[string]any{
+		"command_id": "e2e-work-resume", "target": map[string]any{"target_type": "work", "target_id": "e2e-work-repair"},
+		"expected_version": 2, "reason": "operator resumes repair",
+	})
+	canceledWork := recovered.request(homeID, "recruiting.work.cancel", controlID, map[string]any{
+		"command_id": "e2e-work-cancel", "target": map[string]any{"target_type": "work", "target_id": "e2e-work-repair"},
+		"expected_version": 3, "reason": "replace with clean retry",
+	})
+	if got := nestedStringField(t, canceledWork, "work", "work_status"); got != "canceled" {
+		t.Fatalf("canceled work status=%q: %v", got, canceledWork)
+	}
+	retryWork := recovered.request(homeID, "recruiting.work.retry", controlID, map[string]any{
+		"command_id": "e2e-work-retry", "target": map[string]any{"target_type": "work", "target_id": "e2e-work-repair"},
+		"expected_version": 4, "reason": "retry after operator correction", "new_work_id": "e2e-work-repair-retry",
+	})
+	if got := nestedStringField(t, retryWork, "work", "cause_work_id"); got != "e2e-work-repair" {
+		t.Fatalf("retry lost causal work: %v", retryWork)
+	}
+	if _, _, err := recovered.tryRequest(homeID, "recruiting.work.retry", controlID, map[string]any{
+		"command_id": "e2e-work-retry-open", "target": map[string]any{"target_type": "work", "target_id": "e2e-work-repair-retry"},
+		"expected_version": 1, "reason": "must not reopen non-terminal work", "new_work_id": "e2e-work-invalid-retry",
+	}); err == nil {
+		t.Fatal("non-terminal work accepted retry")
+	}
 	recovered.request(homeID, "recruiting.company.archive", controlID, map[string]any{
 		"command_id": "e2e-company-archive", "target": map[string]any{"target_type": "company", "target_id": "e2e-company-1"},
 		"expected_version": 4, "reason": "verify source replay after parent state changes",
@@ -228,8 +280,12 @@ func TestRecruitingCompanyAndSourceControlUsesMySQLAcrossServerRestart(t *testin
 		"due_at": "2099-01-01T00:00:00Z", "capability": "http.fetch", "limit": 10,
 	})
 	works, _ := runnable["works"].([]any)
-	if len(works) != 0 {
-		t.Fatalf("unexpected runnable works: %v", runnable)
+	if len(works) != 1 {
+		t.Fatalf("runnable retry work missing: %v", runnable)
+	}
+	runnableWork, _ := works[0].(map[string]any)
+	if got := stringField(t, runnableWork, "work_id"); got != "e2e-work-repair-retry" {
+		t.Fatalf("runnable work=%q: %v", got, runnable)
 	}
 	if _, _, err := recovered.tryRequest(homeID, "recruiting.source.get", controlID, map[string]any{"id": "missing-source"}); err == nil {
 		t.Fatal("missing Source query unexpectedly succeeded")

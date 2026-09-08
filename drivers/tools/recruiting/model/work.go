@@ -30,6 +30,9 @@ const (
 type Work struct {
 	WorkID            string         `json:"work_id"`
 	ParentWorkID      string         `json:"parent_work_id,omitempty"`
+	InitiatorActorID  string         `json:"initiator_actor_id,omitempty"`
+	CauseMessageID    string         `json:"cause_message_id,omitempty"`
+	CauseWorkID       string         `json:"cause_work_id,omitempty"`
 	TargetType        string         `json:"target_type"`
 	TargetID          string         `json:"target_id"`
 	Purpose           string         `json:"purpose"`
@@ -63,6 +66,39 @@ func NewWork(workID, targetType, targetID, purpose, trigger string) (Work, error
 		return Work{}, fmt.Errorf("work identity, target, purpose, and trigger are required")
 	}
 	return Work{WorkID: workID, TargetType: targetType, TargetID: targetID, Purpose: purpose, Trigger: trigger, Status: WorkOpen, AcceptanceVersion: 1, Version: 1}, nil
+}
+
+// WithCausality binds the identity that initiated a Work and its optional
+// message/work causes. It is separate from NewWork so scheduler-created work
+// and older callers can migrate without inventing a human identity.
+func (w Work) WithCausality(initiatorActorID, causeMessageID, causeWorkID string) (Work, error) {
+	if w.Version != 1 || w.Status != WorkOpen || strings.TrimSpace(initiatorActorID) == "" {
+		return Work{}, fmt.Errorf("new open work and initiator identity are required")
+	}
+	w.InitiatorActorID = strings.TrimSpace(initiatorActorID)
+	w.CauseMessageID = strings.TrimSpace(causeMessageID)
+	w.CauseWorkID = strings.TrimSpace(causeWorkID)
+	if w.CauseWorkID == w.WorkID {
+		return Work{}, fmt.Errorf("work cannot cause itself")
+	}
+	return w, nil
+}
+
+// NewRetryWork preserves the original business target while creating a new
+// lifecycle and acceptance fence. Terminal facts are never reopened.
+func NewRetryWork(previous Work, workID, initiatorActorID, causeMessageID string) (Work, error) {
+	if !previous.Terminal() {
+		return Work{}, fmt.Errorf("retry requires a terminal previous work")
+	}
+	if previous.Status == WorkCompleted && previous.Resolution == ResolutionSucceeded {
+		return Work{}, fmt.Errorf("succeeded work cannot be retried")
+	}
+	retry, err := NewWork(workID, previous.TargetType, previous.TargetID, previous.Purpose, "manual")
+	if err != nil {
+		return Work{}, err
+	}
+	retry.ParentWorkID = previous.ParentWorkID
+	return retry.WithCausality(initiatorActorID, causeMessageID, previous.WorkID)
 }
 
 func (w Work) Start(expected uint64) (Work, error) {
