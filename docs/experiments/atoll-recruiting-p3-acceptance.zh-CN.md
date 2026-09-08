@@ -46,6 +46,7 @@
 - opt-in 真实网站进程验收 `scripts/recruiting-live-e2e.sh` 使用普通 `recruiting-live-operator` 的 Home Channel、真实 server/daemon、Recipe KV、Artifact File 和非 root MySQL。测试先让 daily timer 原子提交 occurrence/Work/pending dispatch，在首次投递前强杀 server；重启、重新登录并确认 daemon Executor 恢复 present 后，同一 Recruiting Actor 从 MySQL 找回 dispatch，完成 HTTP Executor→Greenhouse 公共 Job Board API→分类结果→authenticated completion。2026-09-08 实测 Work=`waiting_human`、Attempt=`failed`、failure=`quality_rejected`、delivered dispatch=1；真实列表未满足活动倒序契约，因此证据落盘但 Checkpoint 未推进。随后注入“completion checkpoint 丢失”，同一 dispatch 以第二个 delivery 重投；Executor 得到当前 idle 并重新确认，delivery attempts=2 而该 Work 的 Attempt 总数仍为 1；
 - 同一黑盒旅程继续完成 repair Work 的 create→replay→get placement→pause/fence→resume→cancel→retry，并验证 retry Work 是唯一 runnable 项、保留 authenticated initiator 和 cause Work，非终态 Work 不能再次 retry；MySQL 控制面合同进一步证明人工重试已失败/取消的每日 `listing_sync` Work 时，会在创建新因果 Work 和 dispatch 的同一事务重绑未终结 occurrence，因此新 Work 可进入真实 listing Offer，而旧 Work/Attempt 只保留为历史；通用 `work.create` 已拒绝直接创建缺少运行模式和执行快照的 listing/detail Work，专用 `run.diagnostic|join_occurrence|production` 在实现前不会产生“命令成功但执行必然找不到 occurrence”的假任务；
 - 黑盒旅程还通过真实 Portal 验证新 Source 的空 Job list、调度尚未启动时的空 DailyRun list、不存在日报 summary 和畸形 Source cursor 的失败响应；有数据的分页与摘要事实由真实 MySQL Repository contract 验证；
+- `recruiting.system.status` 和 `recruiting.capacity.status` 已进入公开 manifest；前者返回 Work/Attempt/DailyRun/Repair 与 event/dispatch backlog 的一致性快照，后者合并活动预算、runnable capability/origin/Profile 分组、配置上限和 fleet 配置数。普通用户 Portal 黑盒在 timer 与人工 join 各创建一个 listing Work 后看到同一 running DailyRun、两个 runnable Work 和 `http.fetch` backlog；查询不领取 Work，也不把配置 fleet 冒充在线状态；
 - 同一黑盒旅程由普通用户再创建启用日程的 Recruiting Actor，以未来 15 秒 UTC 截点验证真实 durable timer→Actor→非 root MySQL 路径；测试准备的两个 verified Source 进入策略版本 11 的 DailyRun，archived/candidate/validating Source 均未错误进入分母；其中早到期 Source 的确定性 due time 到达后，第二条 durable timer 自动创建 `http.fetch`、正确 origin 和 Source Target 的唯一 listing Work；
 - 上述普通用户黑盒日程现使用两个 verified Source：一个由 durable due timer 物化，另一个在较晚 due time 前通过 `recruiting.run.join_occurrence` 按 occurrence version 提前加入。命令与重放返回同一 Work，最终两个 Source 各有且仅有一个 runnable listing Work，证明人工参与复用日报快照、Atoll 权限和统一执行队列，而不是数据库旁路或独立 Worker；
 - P0 probe Actor→Executor、持久 timer 和重启路径保留，Company 控制面没有替换 Atoll 的 actor、message、ledger 或 scheduler。
@@ -66,7 +67,7 @@ go test -race ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/
 
 ## 尚未完成
 
-- System/Capacity 查询、Work correct 和 DailyRun 修改控制词；Work resolve 的真实 `waiting_human` 旅程依赖后续 Attempt/repair 切片；Source validate 当前只进入 `validating`，验证 Attempt 的接受、契约证明和原子发布仍属于后续纵向切片；
+- Work correct 和 DailyRun 修改控制词；Work resolve 的真实 `waiting_human` 旅程依赖后续 Attempt/repair 切片；Source validate 当前只进入 `validating`，验证 Attempt 的接受、契约证明和原子发布仍属于后续纵向切片；
 - 日报关闭后的 recovered 补偿记录仍待实现；
 - 分类失败已有版本化、有界退避并能转 `waiting_human`；按 origin/Recipe/Profile 故障域创建单飞 RepairIncident、站点级覆盖参数和修复后分批唤醒仍待实现。主动 incarnation 失效信号当前仅按无进展超时恢复；正常 dispatch→Executor→result→ack、“Work/dispatch 已提交、首次投递前 server 退出”及 completion acknowledgement 丢失均已通过真实进程与真实网站，仍需 Executor 处理中退出和业务结果 acknowledgement 丢失等切点；execution offer 和高频 page 是否写 ledger/outbox 的审计分层仍待按容量测试确定（accept/start/fail/result 的数据库 receipt 已完成）；
 - 批量导入 preview/confirm 和逐项 outcome；

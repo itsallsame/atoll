@@ -945,6 +945,8 @@ Review Queue 是 `waiting_human` Work 的视图；Capacity 是 Executor 和预�
 
 业务指标包括 Target 健康、职位变化、Recipe 覆盖与修复率；调度指标包括可运行量、等待原因、最老年龄、deadline、Attempt 结果、站点预算和能力利用率；可靠性指标包括跨 ledger/Resource 未完成意图、状态差异、陈旧结果拒绝和恢复时间。
 
+`recruiting.system.status` 从一个只读一致性快照返回 Work/Attempt/DailyRun/Repair 状态计数、当前 runnable 与最老等待、deadline miss、领域事件和 execution dispatch 的 pending/due/exhausted；`recruiting.capacity.status` 返回全局、capability、origin、company、Profile 的活动 BudgetPermit 用量，以及按 capability/origin/Profile 有界聚合的 runnable 数和最老等待，同时展示配置的预算上限与 Executor fleet 数。容量分组不能用“限制返回行数”的无界 `GROUP BY` 扫描全部积压；首版分别从 `open`/`waiting_retry` 的 runnable 索引最老端最多读取 5,000 条，并显式返回 scan limit、实际扫描数和 `runnable_counts_exact`，截断结果只是容量压力下界。二者是现有事实的投影，不领取 Work、不创建容量 Actor，也不能把配置实例数冒充在线心跳。
+
 必须贯穿 `command_id`、`correlation_id`、`target_id`、`work_id`、`attempt_id`、Recipe 版本和 `artifact_id`。只有真正引入 Batch 等实体后才增加对应 ID。
 
 ## 14. 实施阶段

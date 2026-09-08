@@ -68,6 +68,7 @@ P1 契约基线：`a94d2b8d`
 - `EXPLAIN FORMAT=JSON` 验证 Company seek 和按 Company 的 Source seek 查询使用专用索引；
 - Job list 固定按 Source seek pagination，DailyRun list 按 schedule date/ID seek，Occurrence drill-down 按 DailyRun/ID seek；游标绑定父 selector 且严格拒绝未知字段、尾随 JSON 和跨父对象复用，三个查询均有专用索引的 `EXPLAIN FORMAT=JSON` 证据；
 - DailyRun 实时摘要以单条 LEFT JOIN/GROUP BY 快照同时读取运行状态与各 Occurrence 状态计数，避免分两次查询时物化或闭账并发导致自相矛盾；显式返回 expected/materialized/missing/planned/queued/running/completed/exceptions/excluded；
+- migration `000012` 增加 Work `(status, deadline_at, work_id)` 运维索引。System/Capacity Repository 在 Repeatable Read 只读事务中形成同一时点快照，分别返回状态计数、runnable/最老等待/deadline miss、双 outbox backlog，以及最多 100 个活动预算和每类最多 100 个 capability/origin/Profile runnable 分组；分组输入按 `open`/`waiting_retry` 各最多扫描 5,000 条最老 runnable，并返回 exact/truncated 证明，避免有限输出背后的无界 GROUP BY。合同用 `EXPLAIN FORMAT=JSON` 证明 deadline 与 capacity scan 各命中专用索引；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
 ## 当前验证

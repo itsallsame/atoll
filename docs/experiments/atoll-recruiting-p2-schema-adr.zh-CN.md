@@ -69,7 +69,7 @@ Executor 先上传外部对象，再返回不可变引用。接受事务验证 A
 
 ## 领取与索引
 
-每日到期领取使用 `source_occurrences(status, due_at, occurrence_id)`；Work 使用 `(status, not_before, priority, deadline_at, work_id)`，并辅以 `(capability, status, not_before)`、`(origin, status, not_before)`、`(profile_id, status, not_before)`；execution dispatch 使用 `(delivery_status, next_attempt_at, dispatch_id)`。实现可使用 `SELECT ... FOR UPDATE SKIP LOCKED`，但对外仍表达 execution offer/accept，不暴露数据库 lease 语义。
+每日到期领取使用 `source_occurrences(status, due_at, occurrence_id)`；Work 使用 `(status, not_before, priority, deadline_at, work_id)`，并辅以 `(capability, status, not_before)`、`(origin, status, not_before)`、`(profile_id, status, not_before)`；migration 12 增加 `(status, deadline_at, work_id)`，供运维快照统计未终态 deadline miss；execution dispatch 使用 `(delivery_status, next_attempt_at, dispatch_id)`。实现可使用 `SELECT ... FOR UPDATE SKIP LOCKED`，但对外仍表达 execution offer/accept，不暴露数据库 lease 语义。
 
 活动 Attempt 的普通无进展扫描使用 `(attempt_status, updated_at, attempt_id)`；较短 Permit 独立使用 `(permit_status, expires_at, attempt_id)` 找到期项。两条有界索引扫描在应用层去重，避免带跨表 `OR` 的全量扫描；二者都复用同一个 reconcile timer。
 

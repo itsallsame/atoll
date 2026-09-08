@@ -36,7 +36,11 @@ type dailyRunSummaryPayload struct {
 	PageRequest
 }
 
-func handleResourceQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+type operationalStatusPayload struct {
+	Limit int `json:"limit,omitempty"`
+}
+
+func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	if repository == nil {
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
 		return
@@ -59,6 +63,10 @@ func handleResourceQuery(sys actorbase.Sys, repository *store.Repository, msg ac
 	}
 	if msg.Type == TypeDailyRunSummary {
 		handleDailyRunSummaryQuery(sys, repository, msg)
+		return
+	}
+	if msg.Type == TypeSystemStatus || msg.Type == TypeCapacityStatus {
+		handleOperationalStatusQuery(sys, cfg, repository, msg)
 		return
 	}
 	var payload entityGetPayload
@@ -93,6 +101,51 @@ func handleResourceQuery(sys actorbase.Sys, repository *store.Repository, msg ac
 		return
 	}
 	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "entity": value})
+}
+
+func handleOperationalStatusQuery(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
+	var payload operationalStatusPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if payload.Limit < 0 || payload.Limit > 100 {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "limit must be in [0,100]")
+		return
+	}
+	if payload.Limit == 0 {
+		payload.Limit = 20
+	}
+	asOf := time.UnixMilli(msg.TS).UTC()
+	if msg.Type == TypeSystemStatus {
+		status, err := repository.GetOperationalStatus(msg.Ctx(), asOf)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+		_, _ = sys.Reply(msg, map[string]any{
+			"contract_version": ContractVersion, "correlation_id": string(msg.CorrelationID), "system_status": status,
+		})
+		return
+	}
+	snapshot, err := repository.GetCapacitySnapshot(msg.Ctx(), asOf, payload.Limit)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	fleet := map[string]int{}
+	for _, executor := range cfg.Executors {
+		fleet[executor.Capability]++
+	}
+	policy := cfg.executionBudgetPolicy()
+	_, _ = sys.Reply(msg, map[string]any{
+		"contract_version": ContractVersion, "correlation_id": string(msg.CorrelationID),
+		"capacity": snapshot, "executor_fleet_by_capability": fleet,
+		"budget_policy": map[string]any{
+			"version": policy.Version, "max_active": policy.MaxActive, "max_per_capability": policy.MaxPerCapability,
+			"max_per_origin": policy.MaxPerOrigin, "max_per_company": policy.MaxPerCompany,
+			"max_per_profile": policy.MaxPerProfile, "permit_ttl_ms": policy.PermitTTL.Milliseconds(),
+		},
+	})
 }
 
 func handleJobListQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

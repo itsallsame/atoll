@@ -286,9 +286,15 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 		t.Fatal("archived company accepted a new source")
 	}
 	time.Sleep(1500 * time.Millisecond)
-	emptyReconcile := recovered.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
+	var emptyReconcile map[string]any
+	for attempt := 0; attempt < 5; attempt++ {
+		emptyReconcile = recovered.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 100})
+		if numberField(t, emptyReconcile, "scanned") == 0 {
+			break
+		}
+	}
 	if got := numberField(t, emptyReconcile, "scanned"); got != 0 {
-		t.Fatalf("delivered outbox replayed after restart: %v", emptyReconcile)
+		t.Fatalf("outbox did not drain without replaying delivered events: %v", emptyReconcile)
 	}
 	if _, _, err := recovered.tryRequest(homeID, "recruiting.company.update", controlID, map[string]any{
 		"command_id": "e2e-company-stale", "target": map[string]any{"target_type": "company", "target_id": "e2e-company-1"},
@@ -407,6 +413,26 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	}
 	if !targets[dailySourceID] || !targets[manualDailySourceID] {
 		t.Fatalf("daily Work targets=%v want timer=%q manual=%q: %v", targets, dailySourceID, manualDailySourceID, scheduledWorks)
+	}
+	systemStatus := recovered.request(homeID, "recruiting.system.status", dailyActorID, map[string]any{})
+	status, _ := systemStatus["system_status"].(map[string]any)
+	workCounts, _ := status["work_counts"].(map[string]any)
+	dailyCounts, _ := status["daily_run_counts"].(map[string]any)
+	if numberField(t, status, "runnable_works") < 2 || numberField(t, workCounts, "open") < 2 || numberField(t, dailyCounts, "running") != 1 {
+		t.Fatalf("operational status omitted live daily work: %v", systemStatus)
+	}
+	capacityStatus := recovered.request(homeID, "recruiting.capacity.status", dailyActorID, map[string]any{"limit": 10})
+	capacity, _ := capacityStatus["capacity"].(map[string]any)
+	dimensions, _ := capacity["dimensions"].([]any)
+	var httpRunnable bool
+	for _, raw := range dimensions {
+		dimension, _ := raw.(map[string]any)
+		if stringField(t, dimension, "dimension_type") == "capability" && stringField(t, dimension, "dimension_key") == "http.fetch" && numberField(t, dimension, "runnable") >= 2 {
+			httpRunnable = true
+		}
+	}
+	if !httpRunnable {
+		t.Fatalf("capacity status omitted http.fetch backlog: %v", capacityStatus)
 	}
 }
 
