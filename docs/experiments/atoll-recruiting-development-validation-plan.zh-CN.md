@@ -263,7 +263,7 @@ requested_by（来自 Atoll envelope 上下文，不是客户端可填写字段�
 
 ## 8. P3：Recruiting Actor 控制面
 
-执行状态：进行中。Company、Source、Work 的首批人工运维词，以及 Job/DailyRun/Occurrence 查询已通过真实 Portal 或隔离 MySQL 纵向验收；Atoll durable timer 已接入可信的每日原子截点名单、按最早 `due_at` 驱动的 Work 渐进物化，以及窗口末自动闭账。统一 Attempt 生命周期已按 capability/origin/priority 领取 listing 或 detail Work，具备单活动执行权、不可变 offer、Executor incarnation 和领域 fence；有界 listing page、terminal checkpoint result 及 detail result 的原子事务已通过 MySQL 合同测试。Listing Page Progress 已按 Attempt 隔离，并验证部分页面后崩溃的新 Attempt 可从第 1 页重跑且 completion 不混入旧页；Driver 的分类失败与 Failure Artifact metadata 也可随 Attempt/Work/Permit 在同一事务落库。无进展 Attempt 已复用 reconcile timer 做有界、并发安全的 expire/retry 恢复。主动 incarnation 失效和真实 Executor 消息 e2e 尚未接通；日报关闭后的 recovered 补偿也仍待实现。其余 System/Capacity/批量控制词、Work correct 和 Source 验证结果发布仍待实现。证据记录于 `docs/experiments/atoll-recruiting-p3-acceptance.zh-CN.md`。
+执行状态：进行中。Company、Source、Work 的首批人工运维词，以及 Job/DailyRun/Occurrence 查询已通过真实 Portal 或隔离 MySQL 纵向验收；Atoll durable timer 已接入可信的每日原子截点名单、按最早 `due_at` 驱动的 Work 渐进物化，以及窗口末自动闭账。统一 Attempt 生命周期已按 capability/origin/priority 领取 listing 或 detail Work，具备单活动执行权、不可变 offer、Executor incarnation 和领域 fence；有界 listing page、terminal checkpoint result 及 detail result 的原子事务已通过 MySQL 合同测试。Listing Page Progress 已按 Attempt 隔离，并验证部分页面后崩溃的新 Attempt 可从第 1 页重跑且 completion 不混入旧页；Driver 的分类失败与 Failure Artifact metadata 也可随 Attempt/Work/Permit 在同一事务落库。不含轮询/调度策略的单次 Offer 编排已串起 accept/start、Recipe Resource、HTTP Driver 和结果/失败控制消息，但尚未挂到 Actor 唤醒入口。无进展 Attempt 已复用 reconcile timer 做有界、并发安全的 expire/retry 恢复。主动 incarnation 失效和真实 Executor 消息 e2e 尚未接通；日报关闭后的 recovered 补偿也仍待实现。其余 System/Capacity/批量控制词、Work correct 和 Source 验证结果发布仍待实现。证据记录于 `docs/experiments/atoll-recruiting-p3-acceptance.zh-CN.md`。
 
 ### 开发顺序
 

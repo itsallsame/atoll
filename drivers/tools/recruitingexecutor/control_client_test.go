@@ -100,6 +100,26 @@ func TestTransitionExecutionChecksReturnedAttempt(t *testing.T) {
 	}
 }
 
+func TestMessageExecutionControlCarriesFailureEvidence(t *testing.T) {
+	attempt := model.Attempt{AttemptID: "attempt-failed", WorkID: "work-1", Status: model.AttemptFailed,
+		ExecutorActorID: "executor-1", ExecutorIncarnation: "boot-1"}
+	response := executioncontract.TransitionResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-failed", RequestedBy: "executor-1", Attempt: &attempt}
+	caller := &callerStub{pending: &pendingStub{response: controlResponse(t, executioncontract.TypeFailed, response)}}
+	control := messageExecutionControl{caller: caller, cause: message.Root(), controlActor: "control-1", executorActorID: "executor-1", wait: time.Second}
+	artifact, _ := model.NewArtifactMetadata("failure-artifact", model.ArtifactFailure, "sha256:failure", "artifact://failure",
+		"work-1", attempt.AttemptID, "operators", "30d", true)
+	report := executioncontract.FailureReport{Class: "transport_timeout", Retryable: true, Artifact: artifact}
+	offer := executioncontract.Offer{Attempt: model.Attempt{AttemptID: attempt.AttemptID, ExecutorIncarnation: "boot-1"}}
+	if err := control.Failed(context.Background(), offer, report); err != nil {
+		t.Fatal(err)
+	}
+	request, ok := caller.payload.(executioncontract.TransitionRequest)
+	if !ok || request.Reason != report.Class || request.Failure == nil || *request.Failure != report {
+		t.Fatalf("failed transition payload = %#v", caller.payload)
+	}
+}
+
 func TestExecutionControlFailureAndWaitCancellationAreExplicit(t *testing.T) {
 	failure := map[string]any{"status": message.StatusFailed, "error_code": "budget_blocked", "detail": "origin capacity reached"}
 	caller := &callerStub{pending: &pendingStub{response: controlResponse(t, executioncontract.TypeOffer, failure)}}

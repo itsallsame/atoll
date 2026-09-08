@@ -20,6 +20,40 @@ type executionCallFace interface {
 	Call(message.Cause, actor.ActorID, string, any) (actorbase.Pending, error)
 }
 
+type messageExecutionControl struct {
+	caller          executionCallFace
+	cause           message.Cause
+	controlActor    actor.ActorID
+	executorActorID string
+	wait            time.Duration
+}
+
+func (c messageExecutionControl) Accept(ctx context.Context, offer executioncontract.Offer) error {
+	return c.transition(ctx, executioncontract.TypeAccept, "accept-"+offer.Attempt.AttemptID, offer, "")
+}
+
+func (c messageExecutionControl) Started(ctx context.Context, offer executioncontract.Offer) error {
+	return c.transition(ctx, executioncontract.TypeStarted, "started-"+offer.Attempt.AttemptID, offer, "")
+}
+
+func (c messageExecutionControl) Failed(ctx context.Context, offer executioncontract.Offer, report executioncontract.FailureReport) error {
+	return c.transition(ctx, executioncontract.TypeFailed, "failed-"+offer.Attempt.AttemptID, offer, report.Class, &report)
+}
+
+func (c messageExecutionControl) Submit(ctx context.Context, kind string, payload any) error {
+	return submitExecutionResult(ctx, c.caller, c.cause, c.controlActor, c.executorActorID, kind, payload, c.wait)
+}
+
+func (c messageExecutionControl) transition(ctx context.Context, operation, commandID string, offer executioncontract.Offer,
+	reason string, reports ...*executioncontract.FailureReport) error {
+	request := executioncontract.TransitionRequest{CommandID: commandID, AttemptID: offer.Attempt.AttemptID,
+		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Reason: reason}
+	if len(reports) != 0 {
+		request.Failure = reports[0]
+	}
+	return transitionExecution(ctx, c.caller, c.cause, c.controlActor, c.executorActorID, operation, request, c.wait)
+}
+
 type controlFailure struct {
 	Operation string
 	Code      string
