@@ -18,6 +18,8 @@ const (
 	TypeCompanyArchive      = "recruiting.company.archive"
 	TypeCompanyDelete       = "recruiting.company.delete"
 	TypeCompanyImport       = "recruiting.company.import"
+	TypeCompanyImportGet    = "recruiting.company.import.get"
+	TypeCompanyImportItems  = "recruiting.company.import.items"
 	TypeCompanyMergePreview = "recruiting.company.merge.preview"
 	TypeCompanyMergeConfirm = "recruiting.company.merge.confirm"
 	TypeCompanyRestore      = "recruiting.company.restore"

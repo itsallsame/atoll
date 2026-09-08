@@ -550,7 +550,7 @@ Web / 飞书 Gateway         → 只提交公开消息
 
 ```text
 recruiting.company.add / update / pause / resume / archive / delete
-recruiting.company.import / merge.preview / merge.confirm / restore
+recruiting.company.import / import.get / import.items / merge.preview / merge.confirm / restore
 recruiting.company.get / list
 recruiting.source.add / update / validate / pause / resume / archive / restore
 recruiting.source.discover / get / list
@@ -569,6 +569,8 @@ recruiting.capacity.status
 `offer/accept` 可映射为推送、拉取或其他机制；公开词不暴露数据库领取语义。
 
 所有修改命令至少携带 `command_id`、Target、`expected_version` 和原因；批量命令再携带输入 Artifact 哈希、schema/policy 版本，并产生逐项结果。`command_id` 只处理传输重放，业务重复还要使用各场景稳定键。高风险批量变更采用 `preview_hash + expected_versions` 确认，审批后选择范围变化则必须重新预览。
+
+公司导入的第一阶段采用 `company-import.v1` CSV Resource（`company_id,name,website`），`recruiting.company.import` 只在控制面原子创建父 Work、导入聚合、receipt、event 和定向 dispatch，不把文件正文放进 Message、Actor State 或 MySQL。仍是同一个 `recruiting-executor` Actor class 的 `company.import` capability 读取 File Resource、复核原始字节 SHA-256、解析并以最多 500 项的结果 envelope 提交；控制面以 `batch_version + chunk_sequence` 原子保存分片，最终从已落库项重新计算 `preview_hash`。Executor 重启按持久 `item_count` 继续，分片大小改变也不重传已确认项。预览 Attempt 成功后父 Work 进入 `waiting_human(preview_ready)`，不能提前冒充整批完成；用户通过 `import.get/import.items` 分页审阅后，后续 confirm 才能创建逐项执行边界。
 
 ## 9. 最小领域模型
 
@@ -820,6 +822,8 @@ Recruiting Actor 只做短时、确定性的校验与领域事务，不在 Actor
 ### 10.4 Batch 只是优化
 
 多个 Work 可形成 Execution Batch 以减少往返，但 Batch 不改变单个 Work 的状态、取消、优先级和幂等边界；不要求用户可见、永久表、固定大小或独立 Channel；只有基准测试证明收益后才实现。
+
+这里的 Execution Batch 与用户发起的“公司批量导入”不是同一个概念：后者是必须可审阅、确认、取消和逐项追踪的业务聚合，因此可以有持久 `CompanyImport`/父 Work；前者只是把多个既有执行单元合包传输的性能优化，仍不预设实体或 Worker 类型。
 
 用户级命令、决策和终态逐条进入 ledger；高频 offer、进度和结果可以使用引用 Resource 的紧凑 batch envelope，同时保留每个 Work/Attempt 的身份、幂等和可恢复性。
 

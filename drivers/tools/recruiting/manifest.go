@@ -17,6 +17,9 @@ func manifest() introspect.Manifest {
 	return introspect.Manifest{
 		Class: Class, Interfaces: []string{"actor", "recruiting-control"},
 		Words: map[string]introspect.WordSpec{
+			TypeCompanyImport:          {Description: "start a Resource-backed company import preview with immutable hash fencing"},
+			TypeCompanyImportGet:       {Description: "get one durable company import aggregate"},
+			TypeCompanyImportItems:     {Description: "seek-page company import preview items and dispositions"},
 			TypeCompanyAdd:             {Description: "add a recruiting company with an idempotent command"},
 			TypeCompanyUpdate:          {Description: "update company identity fields with version fencing"},
 			TypeCompanyPause:           {Description: "pause a company using an explicit drain policy"},

@@ -118,7 +118,7 @@ func transitionExecution(ctx context.Context, caller executionCallFace, cause me
 func submitExecutionResult(ctx context.Context, caller executionCallFace, cause message.Cause, controlActor actor.ActorID,
 	executorActorID, resultKind string, payload any, wait time.Duration) error {
 	switch resultKind {
-	case "listing_page", "listing_completion", "diagnostic", "detail":
+	case "listing_page", "listing_completion", "diagnostic", "detail", "company_import_preview_chunk", "company_import_preview_completion":
 	default:
 		return fmt.Errorf("unsupported execution result kind %q", resultKind)
 	}
@@ -134,10 +134,15 @@ func submitExecutionResult(ctx context.Context, caller executionCallFace, cause 
 		decoded.RequestedBy != strings.TrimSpace(executorActorID) {
 		return errors.New("recruiting control returned an inconsistent execution result response")
 	}
+	expectedAcknowledgement := resultKind
+	if resultKind == "company_import_preview_chunk" || resultKind == "company_import_preview_completion" {
+		expectedAcknowledgement = "company_import"
+	}
 	present := map[string]bool{"listing_page": len(decoded.Page) != 0, "listing_completion": len(decoded.Completion) != 0,
-		"diagnostic": len(decoded.Diagnostic) != 0, "detail": len(decoded.Detail) != 0}
+		"diagnostic": len(decoded.Diagnostic) != 0, "detail": len(decoded.Detail) != 0,
+		"company_import": len(decoded.CompanyImport) != 0}
 	for kind, exists := range present {
-		if exists != (kind == resultKind) {
+		if exists != (kind == expectedAcknowledgement) {
 			return errors.New("recruiting control result acknowledgement does not match the submitted kind")
 		}
 	}

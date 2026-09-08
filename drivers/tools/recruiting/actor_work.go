@@ -543,7 +543,7 @@ func applyWorkRetryFacts(repository *store.Repository, msg actorbase.Msg, comman
 }
 
 func workCommandDispatch(cfg Config, work model.Work, placement store.WorkPlacement, commandID, causeKind string) (*store.ExecutionDispatchIntent, error) {
-	if work.Purpose != "listing_sync" && work.Purpose != "detail_sync" {
+	if work.Purpose != "listing_sync" && work.Purpose != "detail_sync" && work.Purpose != "company_import" {
 		return nil, nil
 	}
 	target, found := cfg.executionDispatchTarget(placement.Capability, commandID+"\n"+work.WorkID)

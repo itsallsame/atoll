@@ -20,16 +20,17 @@ type listingOfferPayload = executioncontract.OfferRequest
 type executionTransitionPayload = executioncontract.TransitionRequest
 
 type executionControlResponse struct {
-	ContractVersion string                          `json:"contract_version"`
-	CorrelationID   string                          `json:"correlation_id"`
-	RequestedBy     string                          `json:"requested_by"`
-	Available       bool                            `json:"available,omitempty"`
-	Offer           *store.ExecutionOffer           `json:"offer,omitempty"`
-	Attempt         *model.Attempt                  `json:"attempt,omitempty"`
-	Page            *store.ListingPageOutcome       `json:"page,omitempty"`
-	Completion      *store.ListingCompletionOutcome `json:"completion,omitempty"`
-	Diagnostic      *store.DiagnosticResultOutcome  `json:"diagnostic,omitempty"`
-	Detail          *store.DetailResultOutcome      `json:"detail,omitempty"`
+	ContractVersion string                            `json:"contract_version"`
+	CorrelationID   string                            `json:"correlation_id"`
+	RequestedBy     string                            `json:"requested_by"`
+	Available       bool                              `json:"available,omitempty"`
+	Offer           *store.ExecutionOffer             `json:"offer,omitempty"`
+	Attempt         *model.Attempt                    `json:"attempt,omitempty"`
+	Page            *store.ListingPageOutcome         `json:"page,omitempty"`
+	Completion      *store.ListingCompletionOutcome   `json:"completion,omitempty"`
+	Diagnostic      *store.DiagnosticResultOutcome    `json:"diagnostic,omitempty"`
+	Detail          *store.DetailResultOutcome        `json:"detail,omitempty"`
+	CompanyImport   *store.CompanyImportResultOutcome `json:"company_import,omitempty"`
 }
 
 type listingPageResultPayload = executioncontract.ListingPageResult
@@ -38,6 +39,8 @@ type listingQualityPayload = executioncontract.ListingQuality
 type listingCheckpointPayload = executioncontract.ListingCheckpointCandidate
 type diagnosticResultPayload = executioncontract.DiagnosticResult
 type detailResultPayload = executioncontract.DetailResult
+type companyImportPreviewChunkPayload = executioncontract.CompanyImportPreviewChunkResult
+type companyImportPreviewCompletionPayload = executioncontract.CompanyImportPreviewCompletionResult
 
 func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, state *storedState, msg actorbase.Msg) {
 	var discriminator struct {
@@ -64,9 +67,61 @@ func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, s
 		handleDiagnosticResult(sys, repository, msg)
 	case "detail":
 		handleDetailResult(sys, repository, msg)
+	case "company_import_preview_chunk":
+		handleCompanyImportPreviewChunk(sys, repository, msg)
+	case "company_import_preview_completion":
+		handleCompanyImportPreviewCompletion(sys, repository, msg)
 	default:
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "unknown execution result_kind")
 	}
+}
+
+func handleCompanyImportPreviewChunk(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload companyImportPreviewChunkPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if strings.TrimSpace(payload.CommandID) == "" || payload.ResultKind != "company_import_preview_chunk" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "company import preview chunk command_id and result_kind are required")
+		return
+	}
+	outcome, err := repository.AcceptCompanyImportPreviewChunk(msg.Ctx(), store.CompanyImportPreviewChunk{
+		CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), CorrelationID: string(msg.CorrelationID),
+		AttemptID: payload.AttemptID, ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
+		ExpectedBatchVersion: payload.ExpectedBatchVersion, ChunkSequence: payload.ChunkSequence,
+		Items: payload.Items, ReceivedAt: time.UnixMilli(msg.TS).UTC(),
+	})
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := executionControlResponse{ContractVersion: executioncontract.Version, CorrelationID: string(msg.CorrelationID),
+		RequestedBy: string(msg.Sender.ID), CompanyImport: &outcome}
+	_, _ = sys.Reply(msg, response)
+}
+
+func handleCompanyImportPreviewCompletion(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload companyImportPreviewCompletionPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if strings.TrimSpace(payload.CommandID) == "" || payload.ResultKind != "company_import_preview_completion" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "company import preview completion command_id and result_kind are required")
+		return
+	}
+	outcome, err := repository.AcceptCompanyImportPreviewCompletion(msg.Ctx(), store.CompanyImportPreviewCompletion{
+		CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), CorrelationID: string(msg.CorrelationID),
+		AttemptID: payload.AttemptID, ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
+		ExpectedBatchVersion: payload.ExpectedBatchVersion, PreviewHash: payload.PreviewHash,
+		CompletedAt: time.UnixMilli(msg.TS).UTC(),
+	})
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := executionControlResponse{ContractVersion: executioncontract.Version, CorrelationID: string(msg.CorrelationID),
+		RequestedBy: string(msg.Sender.ID), CompanyImport: &outcome}
+	_, _ = sys.Reply(msg, response)
 }
 
 func handleDiagnosticResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

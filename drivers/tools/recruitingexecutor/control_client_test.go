@@ -167,3 +167,21 @@ func TestSubmitExecutionResultRequiresMatchingAcknowledgement(t *testing.T) {
 		t.Fatal("expected cross-kind acknowledgement rejection")
 	}
 }
+
+func TestSubmitCompanyImportResultAcceptsOnlyCompanyImportAcknowledgement(t *testing.T) {
+	response := executioncontract.ResultResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-import", RequestedBy: "executor-1", CompanyImport: json.RawMessage(`{"accepted_items":2}`)}
+	caller := &callerStub{pending: &pendingStub{response: controlResponse(t, executioncontract.TypeResult, response)}}
+	payload := executioncontract.CompanyImportPreviewChunkResult{CommandID: "chunk-1", ResultKind: "company_import_preview_chunk",
+		AttemptID: "attempt-1", Items: []model.CompanyImportItem{{ItemKey: "row-1", CompanyID: "company-1", Name: "One"}}}
+	if err := submitExecutionResult(context.Background(), caller, message.Root(), "control-1", "executor-1",
+		payload.ResultKind, payload, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	response.CompanyImport, response.Page = nil, json.RawMessage(`{"accepted_items":2}`)
+	caller.pending.response = controlResponse(t, executioncontract.TypeResult, response)
+	if err := submitExecutionResult(context.Background(), caller, message.Root(), "control-1", "executor-1",
+		payload.ResultKind, payload, time.Second); err == nil {
+		t.Fatal("company import result accepted a listing acknowledgement")
+	}
+}

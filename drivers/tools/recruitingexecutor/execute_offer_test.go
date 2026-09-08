@@ -1,28 +1,39 @@
 package recruitingexecutor
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/httpdriver"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
+	"github.com/wanpengxie/atoll/protocol/access"
 	"github.com/wanpengxie/atoll/protocol/resource"
 	"github.com/wanpengxie/atoll/runtime/accessdoor"
 )
 
 type executeResourceStub struct {
 	artifactCreatorStub
-	recipe []byte
+	recipe   []byte
+	inputRef resource.ResourceID
 }
 
 func (s *executeResourceStub) Read(resource.ResourceID) (accessdoor.Outcome, error) {
 	return accessdoor.Outcome{Found: true, Value: append([]byte(nil), s.recipe...)}, nil
+}
+
+func (s *executeResourceStub) Open(id resource.ResourceID, mode access.Operation) (accessdoor.FileAccess, accessdoor.Outcome, error) {
+	if s.inputRef != "" && id == s.inputRef && mode == access.OpRead {
+		return accessdoor.FileAccess{Remote: &accessdoor.RemoteFile{Read: io.NopCloser(bytes.NewReader(s.recipe))}}, accessdoor.Outcome{}, nil
+	}
+	return s.artifactCreatorStub.Open(id, mode)
 }
 
 type executeDriverStub struct {
@@ -45,9 +56,10 @@ func (d executeDriverStub) RunDetail(context.Context, recipeabi.Spec, recipeabi.
 }
 
 type executeControlStub struct {
-	calls  []string
-	kind   string
-	failed executioncontract.FailureReport
+	calls       []string
+	kind        string
+	failed      executioncontract.FailureReport
+	submissions []any
 }
 
 func (c *executeControlStub) Accept(context.Context, executioncontract.Offer) error {
@@ -62,8 +74,9 @@ func (c *executeControlStub) Failed(_ context.Context, _ executioncontract.Offer
 	c.calls, c.failed = append(c.calls, "failed"), report
 	return nil
 }
-func (c *executeControlStub) Submit(_ context.Context, kind string, _ any) error {
+func (c *executeControlStub) Submit(_ context.Context, kind string, submission any) error {
 	c.calls, c.kind = append(c.calls, "submit:"+kind), kind
+	c.submissions = append(c.submissions, submission)
 	return nil
 }
 

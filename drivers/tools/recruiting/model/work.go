@@ -297,6 +297,7 @@ type Attempt struct {
 	RefreshGeneration   uint64        `json:"refresh_generation,omitempty"`
 	ProfileID           string        `json:"profile_id,omitempty"`
 	ProfileVersion      uint64        `json:"profile_version,omitempty"`
+	BatchVersion        uint64        `json:"batch_version,omitempty"`
 }
 
 type AttemptFence struct {
@@ -309,6 +310,19 @@ type AttemptFence struct {
 	RefreshGeneration uint64
 	ProfileID         string
 	ProfileVersion    uint64
+	BatchVersion      uint64
+}
+
+// WithBatchFence binds an Attempt to a version of an extension-owned batch
+// aggregate. Batch execution has no website, Recipe, profile, or origin fence,
+// and therefore must not invent fake source-domain identities.
+func (a Attempt) WithBatchFence(batchVersion uint64) (Attempt, error) {
+	if a.Status != AttemptOffered || batchVersion == 0 || a.CompanyVersion != 0 || a.SourceVersion != 0 ||
+		a.AssignmentVersion != 0 || a.RecipeID != "" || a.RecipeVersion != 0 || a.ProfileID != "" || a.ProfileVersion != 0 {
+		return Attempt{}, fmt.Errorf("offered unfenced attempt and batch version are required")
+	}
+	a.BatchVersion = batchVersion
+	return a, nil
 }
 
 func NewAttempt(id string, work Work) (Attempt, error) {

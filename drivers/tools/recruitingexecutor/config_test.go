@@ -49,6 +49,23 @@ func TestParseConfigRequiresExplicitProductionSafetyInputs(t *testing.T) {
 	}
 }
 
+func TestParseConfigEnablesCompanyImportInSameExecutorClassWithoutHTTPPolicy(t *testing.T) {
+	raw := json.RawMessage(`{
+		"capability":"company.import","execution_enabled":true,"control_actor_id":"tool:control",
+		"artifact_device_name":"worker-a","artifact_channel_name":"recruiting","artifact_directory":"artifacts",
+		"artifact_access_scope":"operators","artifact_retention":"30d","artifact_redaction":"redacted",
+		"batch_max_bytes":1048576,"batch_chunk_size":200
+	}`)
+	cfg, err := parseConfig(raw)
+	if err != nil || cfg.Capability != "company.import" || cfg.BatchChunkSize != 200 || cfg.TermsPolicyVersion != 0 {
+		t.Fatalf("company import config = %+v err=%v", cfg, err)
+	}
+	runtime, err := newProductionRuntime(cfg)
+	if err != nil || runtime.driver != nil || runtime.batchOptions.ChunkSize != 200 {
+		t.Fatalf("company import runtime = %+v err=%v", runtime, err)
+	}
+}
+
 func TestManifestHasOneExecutorClass(t *testing.T) {
 	m := manifest()
 	if m.Class != Class {

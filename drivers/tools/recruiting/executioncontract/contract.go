@@ -137,6 +137,7 @@ type Offer struct {
 	Work                model.Work                   `json:"work"`
 	Occurrence          *model.SourceOccurrence      `json:"occurrence,omitempty"`
 	ListingRun          *model.ListingRun            `json:"listing_run,omitempty"`
+	CompanyImport       *model.CompanyImport         `json:"company_import,omitempty"`
 	Checkpoint          *model.IncrementalCheckpoint `json:"checkpoint,omitempty"`
 	Detail              *DetailInput                 `json:"detail,omitempty"`
 	Budget              model.BudgetPermit           `json:"budget"`
@@ -221,6 +222,25 @@ type DiagnosticResult struct {
 	Quality             ListingQuality           `json:"quality"`
 }
 
+type CompanyImportPreviewChunkResult struct {
+	CommandID            string                    `json:"command_id"`
+	ResultKind           string                    `json:"result_kind"`
+	AttemptID            string                    `json:"attempt_id"`
+	ExecutorIncarnation  string                    `json:"executor_incarnation"`
+	ExpectedBatchVersion uint64                    `json:"expected_batch_version"`
+	ChunkSequence        uint64                    `json:"chunk_sequence"`
+	Items                []model.CompanyImportItem `json:"items"`
+}
+
+type CompanyImportPreviewCompletionResult struct {
+	CommandID            string `json:"command_id"`
+	ResultKind           string `json:"result_kind"`
+	AttemptID            string `json:"attempt_id"`
+	ExecutorIncarnation  string `json:"executor_incarnation"`
+	ExpectedBatchVersion uint64 `json:"expected_batch_version"`
+	PreviewHash          string `json:"preview_hash"`
+}
+
 type DetailResult struct {
 	CommandID             string                 `json:"command_id"`
 	ResultKind            string                 `json:"result_kind"`
@@ -242,4 +262,5 @@ type ResultResponse struct {
 	Completion      json.RawMessage `json:"completion,omitempty"`
 	Diagnostic      json.RawMessage `json:"diagnostic,omitempty"`
 	Detail          json.RawMessage `json:"detail,omitempty"`
+	CompanyImport   json.RawMessage `json:"company_import,omitempty"`
 }

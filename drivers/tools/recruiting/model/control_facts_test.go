@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +92,71 @@ func TestBatchAggregationAndCancellationKeepChildBoundaries(t *testing.T) {
 	}
 	if _, err := AggregateBatch([]BatchItemResult{{ItemKey: "same", Status: BatchItemSucceeded}, {ItemKey: "same", Status: BatchItemFailed}}); err == nil {
 		t.Fatal("duplicate item result was accepted")
+	}
+}
+
+func TestCompanyImportBindsPreviewAndLifecycleToImmutableArtifact(t *testing.T) {
+	artifactHash := "sha256:" + strings.Repeat("a", 64)
+	batch, err := NewCompanyImport("import-1", "parent-1", "artifact://imports/companies.csv", artifactHash, "company-import.v1", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := []CompanyImportItem{
+		{ItemKey: "row-2", CompanyID: "company-2", Name: "Two", Website: "HTTPS://TWO.EXAMPLE:443/"},
+		{ItemKey: "row-1", CompanyID: "company-1", Name: "One", Website: "https://one.example"},
+	}
+	previewed, err := batch.RecordPreview(batch.Version, items)
+	if err != nil || previewed.Status != CompanyImportPreviewed || previewed.ItemCount != 2 || !strings.HasPrefix(previewed.PreviewHash, "sha256:") {
+		t.Fatalf("preview = %+v %v", previewed, err)
+	}
+	reordered := []CompanyImportItem{items[1], items[0]}
+	digest, err := CompanyImportPreviewHash(batch, reordered)
+	if err != nil || digest != previewed.PreviewHash {
+		t.Fatalf("preview hash is not stable: %q %v", digest, err)
+	}
+	if _, err := previewed.Confirm(previewed.Version, "sha256:"+strings.Repeat("b", 64)); err == nil {
+		t.Fatal("changed preview was confirmed")
+	}
+	confirmed, err := previewed.Confirm(previewed.Version, previewed.PreviewHash)
+	if err != nil || confirmed.Status != CompanyImportConfirmed {
+		t.Fatalf("confirm = %+v %v", confirmed, err)
+	}
+	running, err := confirmed.Start(confirmed.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := running.Complete(running.Version, []BatchItemResult{
+		{ItemKey: "row-1", Status: BatchItemSucceeded},
+		{ItemKey: "row-2", Status: BatchItemWaitingHuman, Detail: "website conflict"},
+	})
+	if err != nil || completed.Status != CompanyImportCompleted || completed.Outcome.Succeeded != 1 || completed.Outcome.WaitingHuman != 1 {
+		t.Fatalf("completion = %+v %v", completed, err)
+	}
+}
+
+func TestCompanyImportRejectsInlineOrUnhashedInputAndDuplicatePreviewRows(t *testing.T) {
+	validHash := "sha256:" + strings.Repeat("c", 64)
+	for _, fixture := range []struct{ ref, hash string }{
+		{"[{\"name\":\"inline\"}]", validHash},
+		{"artifact://imports/input", "sha256:short"},
+	} {
+		if _, err := NewCompanyImport("import-1", "work-1", fixture.ref, fixture.hash, "company-import.v1", 1); err == nil {
+			t.Fatalf("unsafe input accepted: %+v", fixture)
+		}
+	}
+	batch, _ := NewCompanyImport("import-1", "work-1", "artifact://imports/input", validHash, "company-import.v1", 1)
+	_, err := batch.RecordPreview(batch.Version, []CompanyImportItem{
+		{ItemKey: "row-1", CompanyID: "company-1", Name: "One"},
+		{ItemKey: "row-1", CompanyID: "company-2", Name: "Two"},
+	})
+	if err == nil {
+		t.Fatal("duplicate preview item key was accepted")
+	}
+	if _, err := batch.AppendPreviewChunk(batch.Version, 1, 1); err == nil {
+		t.Fatal("out-of-order preview chunk was accepted")
+	}
+	if _, err := batch.AppendPreviewChunk(batch.Version, 0, 501); err == nil {
+		t.Fatal("oversized preview chunk was accepted")
 	}
 }
 

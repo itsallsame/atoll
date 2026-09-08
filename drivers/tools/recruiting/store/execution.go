@@ -95,6 +95,9 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	  ))) OR (w.purpose = 'detail_sync' AND EXISTS (
 	    SELECT 1 FROM recruiting_source_jobs j
 	    WHERE j.job_id = w.target_id AND j.job_status IN ('detail_pending', 'update_pending')
+	  )) OR (w.purpose = 'company_import' AND EXISTS (
+	    SELECT 1 FROM recruiting_company_imports ci
+	    WHERE ci.parent_work_id = w.work_id AND ci.import_status = 'previewing'
 	  )))
   AND NOT EXISTS (
     SELECT 1 FROM recruiting_attempts a
@@ -166,6 +169,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	var listingRun model.ListingRun
 	var checkpoint *model.IncrementalCheckpoint
 	var detail *DetailExecutionInput
+	var companyImport model.CompanyImport
 	var fence model.AttemptFence
 	switch work.Purpose {
 	case "listing_sync":
@@ -180,6 +184,11 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		}
 	case "detail_sync":
 		detail, fence, err = loadDetailOfferFence(ctx, tx, work, placement)
+	case "company_import":
+		companyImport, err = getCompanyImportByWorkWith(ctx, tx, work.WorkID, true)
+		if err == nil {
+			fence.BatchVersion = companyImport.Version
+		}
 	default:
 		err = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)
 	}
@@ -194,29 +203,42 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		sourceID = detail.Job.SourceID
 	}
 	var companyID string
-	if err := tx.QueryRowContext(ctx, "SELECT company_id FROM recruiting_sources WHERE source_id = ?", sourceID).Scan(&companyID); err != nil {
-		return ExecutionOffer{}, fmt.Errorf("load execution company: %w", err)
+	if work.Purpose != "company_import" {
+		if err := tx.QueryRowContext(ctx, "SELECT company_id FROM recruiting_sources WHERE source_id = ?", sourceID).Scan(&companyID); err != nil {
+			return ExecutionOffer{}, fmt.Errorf("load execution company: %w", err)
+		}
 	}
 	attempt, err := model.NewAttempt(request.AttemptID, work)
 	if err == nil {
 		attempt, err = attempt.BindExecutor(strings.TrimSpace(request.ExecutorActorID), strings.TrimSpace(request.ExecutorIncarnation), request.Capability)
 	}
 	if err == nil {
-		attempt, err = attempt.WithFence(fence)
+		if work.Purpose == "company_import" {
+			attempt, err = attempt.WithBatchFence(fence.BatchVersion)
+		} else {
+			attempt, err = attempt.WithFence(fence)
+		}
 	}
 	if err != nil {
 		return ExecutionOffer{}, err
 	}
-	permit, permitExpiresAt, err := acquireBudgetPermitTx(ctx, tx, attempt.AttemptID, placement.Origin, placement.ProfileID,
-		placement.Capability, companyID, request.BudgetPolicy, request.OfferedAt)
-	if err != nil {
-		return ExecutionOffer{}, err
+	var permit model.BudgetPermit
+	var permitExpiresAt time.Time
+	if work.Purpose != "company_import" {
+		permit, permitExpiresAt, err = acquireBudgetPermitTx(ctx, tx, attempt.AttemptID, placement.Origin, placement.ProfileID,
+			placement.Capability, companyID, request.BudgetPolicy, request.OfferedAt)
+		if err != nil {
+			return ExecutionOffer{}, err
+		}
 	}
 	offer := ExecutionOffer{
 		Kind: strings.TrimSuffix(work.Purpose, "_sync"), Attempt: attempt, Work: work, Checkpoint: checkpoint,
-		Detail: detail, Budget: permit, BudgetExpiresAt: permitExpiresAt.Format(time.RFC3339Nano),
+		Detail: detail, Budget: permit,
 		RequestedCapability: strings.TrimSpace(request.Capability), RequestedOrigin: strings.TrimSpace(request.Origin),
 		RequestedProfileID: strings.TrimSpace(request.ProfileID),
+	}
+	if !permitExpiresAt.IsZero() {
+		offer.BudgetExpiresAt = permitExpiresAt.Format(time.RFC3339Nano)
 	}
 	if work.Purpose == "listing_sync" {
 		if listingRun.ListingRunID != "" {
@@ -224,6 +246,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		} else {
 			offer.Occurrence = &occurrence
 		}
+	} else if work.Purpose == "company_import" {
+		offer.CompanyImport = &companyImport
 	}
 	offerState, err := json.Marshal(offer)
 	if err != nil {
@@ -668,7 +692,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			return model.Attempt{}, nil
 		}
 	}
-	if action != "fail" {
+	if action != "fail" && work.Purpose != "company_import" {
 		if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, businessAt); err != nil {
 			return model.Attempt{}, err
 		}
@@ -699,6 +723,12 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 				fenceErr = placementErr
 			} else {
 				_, currentFence, fenceErr = loadDetailOfferFence(ctx, tx, work, placement)
+			}
+		case "company_import":
+			var batch model.CompanyImport
+			batch, fenceErr = getCompanyImportByWorkWith(ctx, tx, work.WorkID, true)
+			if fenceErr == nil {
+				currentFence.BatchVersion = batch.Version
 			}
 		default:
 			fenceErr = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)
@@ -757,7 +787,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 				}
 			}
 		}
-		if err == nil {
+		if err == nil && work.Purpose != "company_import" {
 			err = releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitReleased, businessAt)
 		}
 		if err == nil && report != nil {
@@ -851,7 +881,7 @@ func sameAttemptFence(attempt model.Attempt, current model.AttemptFence) bool {
 		attempt.AssignmentVersion == current.AssignmentVersion && attempt.RecipeID == current.RecipeID &&
 		attempt.RecipeVersion == current.RecipeVersion && attempt.CheckpointVersion == current.CheckpointVersion &&
 		attempt.RefreshGeneration == current.RefreshGeneration && attempt.ProfileID == current.ProfileID &&
-		attempt.ProfileVersion == current.ProfileVersion
+		attempt.ProfileVersion == current.ProfileVersion && attempt.BatchVersion == current.BatchVersion
 }
 
 func updateWorkTx(ctx context.Context, tx *sql.Tx, expected uint64, work model.Work, businessAt time.Time) error {

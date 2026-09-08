@@ -271,6 +271,8 @@ Work 查询现已分离面向人的 operational Work Center 与面向执行面�
 
 进展补充（2026-09-09，替代上一段关于 diagnostic/production 尚未接通的陈述）：`run.diagnostic` 与独立 `run.production` 均已接通 ListingRun、统一 Work/Attempt/Permit/dispatch 和 HTTP Executor。diagnostic 使用 evidence-only 结果事务，不进入 DailyRun，也不写 Job、Observation、Detail Work 或 Checkpoint；production 只接受具备已验证增量契约和已有基线 Checkpoint 的 Source，复用有界 page ingestion，并在 completion 以冻结版本 CAS 当前 Checkpoint。MySQL 合同已覆盖 production 成功发布和并发日常运行先推进水位后的 fence；真实 server/daemon、Greenhouse 公共 API、Recipe KV、Artifact File 与非 root MySQL 旅程中，两种独立运行均如实进入 `waiting_human/quality_rejected`，Checkpoint 保持不变。Artifact 采用每 Attempt 独立同层目录，以适配不支持重复/递归建目录的真实设备驱动，同时不修改 Atoll Resource 语义。
 
+进展补充（2026-09-09，公司导入预览）：`recruiting.company.import` 已建立 Resource-backed 预览纵向切片。命令原子创建父 Work、`CompanyImport`、receipt/event/dispatch；同一 `recruiting-executor` class 以 `company.import` capability 读取 File Resource、校验原始 SHA-256 和 `company-import.v1` CSV，并以最多 500 项的 envelope 提交。控制面用 batch version、连续 chunk sequence、Attempt incarnation 和 Work acceptance 联合 fence，每个分片独立提交，最终不信任 Executor 自报摘要而从已存项目重算 preview hash。中断后按 item count/sequence 续传；预览成功只让父 Work 进入 `waiting_human(preview_ready)`，逐项审阅可用稳定游标分页。普通用户 Portal、真实 server/daemon、daemon File Resource、非 root MySQL 的 E2E 已通过，并证明 preview 不创建 Company；尚未实现 confirm 后的逐公司创建、部分失败和取消续跑。
+
 ### 开发顺序
 
 1. 查询：company/source/job/work/daily run/system/capacity；

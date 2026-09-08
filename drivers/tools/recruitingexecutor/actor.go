@@ -45,8 +45,9 @@ type resultPayload struct {
 type wakePayload = executioncontract.WakeRequest
 
 type productionRuntime struct {
-	driver  *httpdriver.Driver
-	options executeOfferOptions
+	driver       *httpdriver.Driver
+	options      executeOfferOptions
+	batchOptions companyImportOptions
 }
 
 func manifest() introspect.Manifest {
@@ -117,6 +118,17 @@ func run(sys actorbase.Sys, cfg Config) error {
 }
 
 func newProductionRuntime(cfg Config) (*productionRuntime, error) {
+	options := executeOfferOptions{
+		Artifact: artifactSinkConfig{DeviceName: cfg.ArtifactDeviceName, ChannelName: cfg.ArtifactChannelName,
+			Directory: cfg.ArtifactDirectory, AccessScope: cfg.ArtifactAccessScope, Retention: cfg.ArtifactRetention,
+			Redacted: cfg.ArtifactRedaction == "redacted", MaxBytes: cfg.ArtifactMaxBytes},
+		Now: time.Now,
+	}
+	if cfg.Capability == "company.import" {
+		return &productionRuntime{options: options, batchOptions: companyImportOptions{
+			Artifact: options.Artifact, MaxBytes: cfg.BatchMaxBytes, ChunkSize: cfg.BatchChunkSize,
+		}}, nil
+	}
 	robots, err := httpdriver.NewRobotsTxtChecker(httpdriver.RobotsPolicy{Timeout: time.Duration(cfg.RobotsTimeoutMS) * time.Millisecond,
 		MaxBytes: cfg.RobotsMaxBytes, CacheTTL: time.Duration(cfg.RobotsCacheTTLMS) * time.Millisecond})
 	if err != nil {
@@ -128,13 +140,8 @@ func newProductionRuntime(cfg Config) (*productionRuntime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("prepare HTTP driver: %w", err)
 	}
-	return &productionRuntime{driver: driver, options: executeOfferOptions{
-		Artifact: artifactSinkConfig{DeviceName: cfg.ArtifactDeviceName, ChannelName: cfg.ArtifactChannelName,
-			Directory: cfg.ArtifactDirectory, AccessScope: cfg.ArtifactAccessScope, Retention: cfg.ArtifactRetention,
-			Redacted: cfg.ArtifactRedaction == "redacted", MaxBytes: cfg.ArtifactMaxBytes},
-		Compliance: httpdriver.ComplianceEvidence{TermsPolicyVersion: cfg.TermsPolicyVersion, TermsReviewedAt: cfg.TermsReviewedAt},
-		Now:        time.Now,
-	}}, nil
+	options.Compliance = httpdriver.ComplianceEvidence{TermsPolicyVersion: cfg.TermsPolicyVersion, TermsReviewedAt: cfg.TermsReviewedAt}
+	return &productionRuntime{driver: driver, options: options}, nil
 }
 
 func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, incarnation string, msg actorbase.Msg) {
@@ -173,7 +180,12 @@ func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, in
 	}
 	control := messageExecutionControl{caller: sys, cause: msg.Cause(), controlActor: cfg.ControlActorID,
 		executorActorID: string(sys.Self()), wait: time.Duration(cfg.ControlWaitMS) * time.Millisecond}
-	if err := executeOffer(msg.Ctx(), control, sys.Resource(), production.driver, *offer, production.options); err != nil {
+	if offer.Kind == "company_import" {
+		err = executeCompanyImportOffer(msg.Ctx(), control, sys.Resource(), *offer, production.batchOptions)
+	} else {
+		err = executeOffer(msg.Ctx(), control, sys.Resource(), production.driver, *offer, production.options)
+	}
+	if err != nil {
 		_, _ = sys.Fail(msg, "runtime_failed", err.Error(), map[string]any{"attempt_id": offer.Attempt.AttemptID, "work_id": offer.Work.WorkID})
 		return
 	}
