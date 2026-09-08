@@ -1,0 +1,50 @@
+{
+  "schema_version": "recruiting.live-evidence.v1",
+  "test_kind": "diagnostic_live_smoke",
+  "executed_at": "2026-09-08T05:05:50Z",
+  "command": "RECRUITING_LIVE_RUN_DIR=/tmp/atoll-recruiting-live-smoke-20260908-v2 make recruiting-live-smoke",
+  "source": {
+    "url": "https://boards-api.greenhouse.io/v1/boards/mongodb/jobs",
+    "public_api_documentation": "https://docs.greenhouse.io/job-board.html",
+    "public_get_requires_authentication": false
+  },
+  "recipe": {
+    "id": "greenhouse-public-list-v1",
+    "version": 1,
+    "content_hash": "sha256:103bfa8d73eddfa298610cfb4fe8525766cc41e07a393f3bba58a941c9c1ff84",
+    "method": "GET",
+    "max_requests": 1,
+    "max_response_bytes": 2097152,
+    "max_redirects": 0
+  },
+  "robots": {
+    "url": "https://boards-api.greenhouse.io/robots.txt",
+    "content_hash": "sha256:0bc35a3bc59e53b4932c848ba1f33890320d2de73fa0c1357555dd79c5629be9",
+    "allowed": true,
+    "checked_at": "2026-09-08T05:05:50Z"
+  },
+  "response_artifact": {
+    "content_hash": "sha256:29be60ed9e417ae7b36413daf1436f4610c4b6d00cda8938ca751755bcd4f7cc",
+    "bytes": 876426,
+    "runtime_object_ref": "file:///tmp/atoll-recruiting-live-smoke-20260908-v2/artifacts/001-page-29be60ed9e41.bin",
+    "committed_to_repository": false,
+    "retention_note": "The third-party payload stays outside git; this compact evidence records its hash and execution facts."
+  },
+  "observation": {
+    "item_count": 407,
+    "identity_complete": true,
+    "ordering_contract_held": false,
+    "pagination_stable": true
+  },
+  "decision": {
+    "status": "diagnostic_pass",
+    "failure_class": "quality_rejected",
+    "checkpoint_candidate_generated": false,
+    "checkpoint_committed": false,
+    "production_incremental_eligible": false,
+    "reasons": [
+      "The observed list violated newest_activity_desc.",
+      "No historical-update sample proves update-retop behavior."
+    ]
+  }
+}

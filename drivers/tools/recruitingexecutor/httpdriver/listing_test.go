@@ -81,7 +81,8 @@ func TestRunListingPersistsEveryPageBeforeSafeCheckpoint(t *testing.T) {
 		t.Fatalf("raw page artifacts=%d output refs=%d", len(sink.writes), len(result.Output.Artifacts))
 	}
 	for index, write := range sink.writes {
-		if write.Kind != "page" || write.PageSequence != index+1 || len(write.Body) == 0 {
+		if write.Kind != "page" || write.PageSequence != index+1 || len(write.Body) == 0 || !write.Robots.Allowed ||
+			write.Compliance.TermsPolicyVersion != compliance.TermsPolicyVersion {
 			t.Fatalf("artifact %d was not saved before parsing: %+v", index, write)
 		}
 	}

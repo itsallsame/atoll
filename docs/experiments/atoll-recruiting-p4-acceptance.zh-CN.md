@@ -29,20 +29,31 @@
 - `RunListing` 已串联 HTTP→Artifact→离线 Recipe→`ListingScan`：每页原始响应必须先经 `ArtifactSink` 成功持久化，之后才允许解析；单页和整次扫描都有独立字节上限，next page 必须保持初始 scheme+authority 且不得携带凭据或 fragment；
 - 成功结果包含所有去重观测、逐页 Artifact 和仅供 Actor CAS 的 Checkpoint candidate；HTTP/解析/分页/质量失败返回有限类别、原始页面及额外 failure Artifact，保留当时质量证明，且不产生 Checkpoint；Artifact sink 失败直接中止执行；
 - 三页真实 `httptest` 流程验证：顶部新岗位→完整旧时间组→更旧边界→一页 overlap 后停止，保存三页 Artifact 并生成 checkpoint version+1；另覆盖畸形 JSON、跨源 next 和 Artifact 写失败。
+- JSON 稳定岗位键支持字符串和整数两种无歧义标量；整数保持任意精度并规范成十进制字符串，浮点、指数、布尔、null、对象和数组仍 fail closed。该兼容性由真实 Greenhouse 数据暴露，并只修改招聘 Recipe 执行扩展。
+
+## 真实站点 Live Smoke（诊断通过，增量认证拒绝）
+
+2026-09-08 运行 `make recruiting-live-smoke`，固定访问 Greenhouse 官方公开 Job Board API 的 MongoDB board。官方文档说明 Job Board 的 GET 数据公开且无需认证；工具同时读取实际 `robots.txt`，目标 API 路径判定为 allowed。工具不接受任意 URL，只允许一次只读 GET，响应上限 2 MiB、redirect 为 0、并发为 1。
+
+实际响应 876,426 bytes、407 个岗位，身份完整；原始响应先保存为 Artifact，SHA-256 为 `29be60ed9e417ae7b36413daf1436f4610c4b6d00cda8938ca751755bcd4f7cc`。离线 Recipe 随后确认当前列表违反 `newest_activity_desc`，返回非重试 `quality_rejected`，没有生成或提交 Checkpoint。即使未来某次快照恰好倒序，单次观测仍不能证明历史岗位更新后置顶，因此该 Source 保持 `production_incremental_eligible=false`。
+
+可机读的紧凑证据位于 `docs/experiments/evidence/recruiting-live-smoke-greenhouse-20260908.json`。第三方原始岗位 payload 不提交到 Git；本次运行对象保存在报告记录的本地 Artifact 路径，Git 只保存内容哈希和审计结论。
 
 ## 当前验证
 
 ```text
 go test -race ./drivers/tools/recruitingexecutor/...
+go test -race ./cmd/recruiting-live-smoke
 go vet ./drivers/tools/recruitingexecutor/...
 ./scripts/recruiting-boundary-check.sh a94d2b8d
+make recruiting-live-smoke
 ```
 
 ## 尚未完成
 
 - Browser/Profile/Extension Driver 的隔离与秘密边界；
 - 本地确定性站点的全部异常矩阵；
-- 真实公开招聘站点的 Live Smoke，以及保存 URL、Recipe 版本、trace、Artifact 和抽样结论；
+- 更多站型的 Nightly/Weekly Live 验证，以及由正式 Artifact 存储提供保留期，而不是验收机本地文件；
 - 旧 Attempt 只保存 rejected Artifact、不能提交业务结果的端到端证明。
 
 P4 仍为进行中；ABI 冻结不等于 Driver 与真实站点验收完成。

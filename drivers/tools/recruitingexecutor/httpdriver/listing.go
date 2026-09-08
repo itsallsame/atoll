@@ -15,14 +15,16 @@ import (
 )
 
 type ArtifactWrite struct {
-	Kind         string `json:"kind"`
-	AttemptID    string `json:"attempt_id"`
-	PageSequence int    `json:"page_sequence"`
-	URL          string `json:"url"`
-	StatusCode   int    `json:"status_code,omitempty"`
-	ContentType  string `json:"content_type,omitempty"`
-	ContentHash  string `json:"content_hash"`
-	Body         []byte `json:"-"`
+	Kind         string             `json:"kind"`
+	AttemptID    string             `json:"attempt_id"`
+	PageSequence int                `json:"page_sequence"`
+	URL          string             `json:"url"`
+	StatusCode   int                `json:"status_code,omitempty"`
+	ContentType  string             `json:"content_type,omitempty"`
+	ContentHash  string             `json:"content_hash"`
+	Robots       RobotsEvidence     `json:"robots,omitempty"`
+	Compliance   ComplianceEvidence `json:"compliance,omitempty"`
+	Body         []byte             `json:"-"`
 }
 
 type ArtifactSink interface {
@@ -66,7 +68,7 @@ func (d *Driver) RunListing(ctx context.Context, spec recipeabi.Spec, input reci
 		}
 		artifact, artifactErr := putArtifact(ctx, sink, ArtifactWrite{Kind: kind, AttemptID: input.Attempt.AttemptID,
 			PageSequence: pageSequence, URL: currentURL.String(), StatusCode: fetched.StatusCode, ContentType: fetched.ContentType,
-			ContentHash: fetched.ContentHash, Body: fetched.Body})
+			ContentHash: fetched.ContentHash, Robots: fetched.Robots, Compliance: fetched.Compliance, Body: fetched.Body})
 		if artifactErr != nil {
 			return ListingRunResult{}, fmt.Errorf("save page artifact before parsing: %w", artifactErr)
 		}
