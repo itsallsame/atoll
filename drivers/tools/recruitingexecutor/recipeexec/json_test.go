@@ -16,7 +16,7 @@ func listingSpec() recipeabi.Spec {
 			"job_key": "/id", "title": "/title", "activity_at": "/updated_at", "pinned": "/pinned",
 		}},
 		Listing: &recipeabi.ListingContract{IdentityField: "job_key", ActivityField: "activity_at", BoundaryMode: "activity_time",
-			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 2, MaxPages: 100, MaxItemsPerPage: 500, FrontierWidth: 20, ExcludePinnedField: "pinned"},
+			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 2, MaxPages: 100, MaxItemsPerPage: 500, MaxTotalBytes: 10 << 20, FrontierWidth: 20, ExcludePinnedField: "pinned"},
 	}
 }
 

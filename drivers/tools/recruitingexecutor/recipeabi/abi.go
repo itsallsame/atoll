@@ -162,6 +162,7 @@ type ListingContract struct {
 	OverlapPages       int    `json:"overlap_pages"`
 	MaxPages           int    `json:"max_pages"`
 	MaxItemsPerPage    int    `json:"max_items_per_page"`
+	MaxTotalBytes      int64  `json:"max_total_bytes"`
 	FrontierWidth      int    `json:"frontier_width"`
 	ExcludePinnedField string `json:"exclude_pinned_field,omitempty"`
 }
@@ -264,7 +265,7 @@ func (s Spec) Validate() error {
 func (c *ListingContract) Validate() error {
 	if c == nil || strings.TrimSpace(c.IdentityField) == "" || c.Ordering != "newest_activity_desc" || !c.UpdateRetop ||
 		c.OverlapPages < 1 || c.OverlapPages > 20 || c.MaxPages < c.OverlapPages || c.MaxPages > 1000 ||
-		c.MaxItemsPerPage < 1 || c.MaxItemsPerPage > 5000 {
+		c.MaxItemsPerPage < 1 || c.MaxItemsPerPage > 5000 || c.MaxTotalBytes < 1 || c.MaxTotalBytes > 1<<30 {
 		return fmt.Errorf("listing recipe requires identity, descending activity/update-retop contract, and bounded overlap/pages")
 	}
 	if c.FrontierWidth < 1 || c.FrontierWidth > 100 {

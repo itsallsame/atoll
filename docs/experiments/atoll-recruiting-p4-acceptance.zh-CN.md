@@ -26,6 +26,9 @@
 - `httptest` 验证 GET/UA、robots 先决条件、响应截断、超时、同源与跨源 redirect、429 熔断及生产 Dialer 的私网拒绝。测试专用私网开关只存在于未导出的构造函数，生产 `New` 无法开启。
 - `RobotsTxtChecker` 使用同一生产级安全 Dialer 获取每个 origin 的 `/robots.txt`，限制 1 MiB/30s 上限，按实际 Recipe User-Agent 解析 allow/disallow 与 crawl-delay，并保存 policy URL、内容 SHA-256、检查时间；
 - robots cache 按 origin 带 TTL，单 origin lock 合并并发首次加载；401/403/429、超量、解析或网络失败均 fail closed，跨 origin redirect 被拒绝；crawl-delay 会延长 HTTP Driver 后续请求的 origin 间隔。
+- `RunListing` 已串联 HTTP→Artifact→离线 Recipe→`ListingScan`：每页原始响应必须先经 `ArtifactSink` 成功持久化，之后才允许解析；单页和整次扫描都有独立字节上限，next page 必须保持初始 scheme+authority 且不得携带凭据或 fragment；
+- 成功结果包含所有去重观测、逐页 Artifact 和仅供 Actor CAS 的 Checkpoint candidate；HTTP/解析/分页/质量失败返回有限类别、原始页面及额外 failure Artifact，保留当时质量证明，且不产生 Checkpoint；Artifact sink 失败直接中止执行；
+- 三页真实 `httptest` 流程验证：顶部新岗位→完整旧时间组→更旧边界→一页 overlap 后停止，保存三页 Artifact 并生成 checkpoint version+1；另覆盖畸形 JSON、跨源 next 和 Artifact 写失败。
 
 ## 当前验证
 
@@ -37,8 +40,6 @@ go vet ./drivers/tools/recruitingexecutor/...
 
 ## 尚未完成
 
-- 跨页 fetch loop，把每页原始响应先保存为 Artifact，再交给离线执行器和 `ListingScan`；
-- HTTP Driver 的 DNS/IP 安全、redirect 同源策略、robots/条款证据、响应限额、origin 限流、429/403 熔断；
 - Browser/Profile/Extension Driver 的隔离与秘密边界；
 - 本地确定性站点的全部异常矩阵；
 - 真实公开招聘站点的 Live Smoke，以及保存 URL、Recipe 版本、trace、Artifact 和抽样结论；
