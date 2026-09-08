@@ -55,6 +55,13 @@ func TestSourceEndpointAndAssignmentPublishAtomically(t *testing.T) {
 	if err := repository.CreateRecipe(ctx, listingRecipe, now); err != nil {
 		t.Fatal(err)
 	}
+	forgedRecipe := listingRecipe
+	forgedRecipe.Status = model.RecipeQuarantined
+	forgedRecipe.StateVersion++
+	forgedRecipe.Execution.RequiredCapability = "browser.public"
+	if err := repository.UpdateRecipeCAS(ctx, listingRecipe.StateVersion, forgedRecipe, now); err == nil {
+		t.Fatal("recipe version accepted a changed execution capability")
+	}
 	listingAssignment, _ := model.NewSourceRecipeAssignment(source.SourceID, model.RecipeListing, listingRecipe.RecipeID, listingRecipe.Version, listingRecipe.ContractHash, now.Format(time.RFC3339))
 	ready, _ := validating.PublishValidated(validating.Version, listingAssignment, verifiedStoreAssessment(validating, listingAssignment, now))
 	forgedReady := ready
@@ -137,7 +144,10 @@ func TestSourceEndpointAndAssignmentPublishAtomically(t *testing.T) {
 
 func activeRecipe(t *testing.T, id string, kind model.RecipeKind, scope string, version uint64, contract string) model.Recipe {
 	t.Helper()
-	recipe, err := model.NewRecipe(id, kind, scope, version, "content-"+id, contract)
+	recipe, err := model.NewRecipe(id, kind, scope, version, "content-"+id, contract, model.RecipeExecution{
+		ABIVersion: model.RecipeABIVersion, ContentRef: "recipe://" + id,
+		RequiredCapability: "http.fetch", Transport: model.RecipeTransportHTTPJSON,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

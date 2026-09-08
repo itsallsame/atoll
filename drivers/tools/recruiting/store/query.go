@@ -223,6 +223,7 @@ type DailyRunProgress struct {
 	Materialized    int `json:"materialized"`
 	Missing         int `json:"missing"`
 	Planned         int `json:"planned"`
+	Queued          int `json:"queued"`
 	Running         int `json:"running"`
 	Completed       int `json:"completed"`
 	Exceptions      int `json:"completed_with_exceptions"`
@@ -237,14 +238,14 @@ func (r *Repository) GetDailyRunProgress(ctx context.Context, dailyRunID string)
 	var progress DailyRunProgress
 	err := r.db.QueryRowContext(ctx, `
 SELECT d.state_json, d.expected_sources, COUNT(o.occurrence_id),
-       COALESCE(SUM(o.status = 'planned'), 0), COALESCE(SUM(o.status = 'running'), 0),
+       COALESCE(SUM(o.status = 'planned'), 0), COALESCE(SUM(o.status = 'queued'), 0), COALESCE(SUM(o.status = 'running'), 0),
        COALESCE(SUM(o.status = 'completed'), 0), COALESCE(SUM(o.status = 'completed_with_exceptions'), 0),
        COALESCE(SUM(o.status = 'excluded'), 0)
 FROM recruiting_daily_runs d
 LEFT JOIN recruiting_source_occurrences o ON o.daily_run_id = d.daily_run_id
 WHERE d.daily_run_id = ?
 GROUP BY d.daily_run_id, d.state_json, d.expected_sources`, dailyRunID).Scan(
-		&state, &storedExpected, &progress.Materialized, &progress.Planned, &progress.Running,
+		&state, &storedExpected, &progress.Materialized, &progress.Planned, &progress.Queued, &progress.Running,
 		&progress.Completed, &progress.Exceptions, &progress.Excluded)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.DailyRun{}, DailyRunProgress{}, ErrNotFound

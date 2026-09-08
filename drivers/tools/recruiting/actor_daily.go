@@ -95,6 +95,11 @@ func handleDailyCutoffDue(sys actorbase.Sys, cfg Config, state *storedState, rep
 	if err != nil {
 		return fmt.Errorf("plan recruiting daily cutoff: %w", err)
 	}
+	if state.DailyWorkTimerID == "" {
+		if err := armNextDailyWorkTimer(sys, cfg, state, repository, time.Now().UTC()); err != nil {
+			return err
+		}
+	}
 	return armDailyTimer(sys, cfg, state, time.Now().UTC())
 }
 

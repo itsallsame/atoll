@@ -7,6 +7,7 @@
 ## 已完成：Recipe ABI v1
 
 - ABI 位于 `drivers/tools/recruitingexecutor/recipeabi`，是招聘扩展内部协议，不向 Atoll core 增加字段或消息；
+- 控制面的 Recipe 领域对象强制保存与 Executor 一致的 ABI version、opaque content ref、transport 和 required capability；跨包测试阻止 ABI 字符串漂移，Recipe Repository 阻止同一 version 静默改变执行方式；
 - 固定执行输入：Target、版本化 Endpoint、Recipe Assignment/contract hash、可选 Checkpoint、不可解析的 `profile://` 引用、预算许可，以及 Work/Attempt/Company/Source/Profile 接受 fence；
 - 固定 Recipe 类型 `listing|detail|discovery` 和执行 transport `http_json|http_html|browser`，但 capability 仍为可扩展字符串，不制造多种 Worker class；Extension 是候选 Recipe 捕获入口，不是日常执行 transport；
 - 声明式请求只能为 GET；timeout、响应大小和 redirect 次数有硬上限；Recipe 只能声明 Accept/Accept-Language，不能携带 Cookie、Authorization 等秘密；

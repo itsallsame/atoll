@@ -82,8 +82,8 @@ func TestDailyCoverageRepositoryContract(t *testing.T) {
 
 	firstDue := now.Add(2 * time.Hour)
 	secondDue := now.Add(4 * time.Hour)
-	first, _ := model.NewSourceOccurrence("daily-occurrence-1", run.DailyRunID, "daily-source-1", run.ScheduleDate, 1, 1, 1, firstDue.Format(time.RFC3339Nano))
-	second, _ := model.NewSourceOccurrence("daily-occurrence-2", run.DailyRunID, "daily-source-2", run.ScheduleDate, 1, 1, 1, secondDue.Format(time.RFC3339Nano))
+	first, _ := model.NewSourceOccurrence("daily-occurrence-1", run.DailyRunID, "daily-source-1", run.ScheduleDate, 1, 1, 1, firstDue.Format(time.RFC3339Nano), testListingExecutionSnapshot("daily-source-1"))
+	second, _ := model.NewSourceOccurrence("daily-occurrence-2", run.DailyRunID, "daily-source-2", run.ScheduleDate, 1, 1, 1, secondDue.Format(time.RFC3339Nano), testListingExecutionSnapshot("daily-source-2"))
 	scheduled := []ScheduledOccurrence{
 		{Occurrence: first, DueAt: firstDue},
 		{Occurrence: second, DueAt: secondDue},
@@ -105,7 +105,7 @@ func TestDailyCoverageRepositoryContract(t *testing.T) {
 		t.Fatalf("changed replay snapshot = %v", err)
 	}
 	overCapacityDue := now.Add(5 * time.Hour)
-	overCapacity, _ := model.NewSourceOccurrence("daily-occurrence-3", run.DailyRunID, "daily-source-1", run.ScheduleDate, 2, 1, 1, overCapacityDue.Format(time.RFC3339Nano))
+	overCapacity, _ := model.NewSourceOccurrence("daily-occurrence-3", run.DailyRunID, "daily-source-1", run.ScheduleDate, 2, 1, 1, overCapacityDue.Format(time.RFC3339Nano), testListingExecutionSnapshot("daily-source-1"))
 	if _, err := repository.MaterializeOccurrences(ctx, []ScheduledOccurrence{{Occurrence: overCapacity, DueAt: overCapacityDue}}, now); err == nil {
 		t.Fatal("daily run materialized more occurrences than its cutoff count")
 	}
@@ -128,6 +128,22 @@ ORDER BY due_at, occurrence_id LIMIT 500`, now.Add(3*time.Hour)).Scan(&explain);
 		t.Fatalf("due query did not use intended index: %s", explain)
 	}
 
+	materialized, err := repository.MaterializeDueOccurrenceWorks(ctx, now.Add(3*time.Hour), 100, "recruiting", "timer:daily-work", now.Add(3*time.Hour))
+	if err != nil || materialized.Queued != 1 || materialized.Expired != 0 {
+		t.Fatalf("due work materialization = %+v err=%v", materialized, err)
+	}
+	first, err = repository.GetOccurrence(ctx, first.OccurrenceID)
+	if err != nil || first.Status != model.OccurrenceQueued || first.WorkID == "" {
+		t.Fatalf("queued occurrence = %+v err=%v", first, err)
+	}
+	workRecord, err := repository.GetWorkRecord(ctx, first.WorkID)
+	if err != nil || workRecord.Work.CauseMessageID != "timer:daily-work" || workRecord.Placement.Capability != "http.fetch" ||
+		workRecord.Placement.Origin != "https://jobs.example.com" || !workRecord.Placement.NotBefore.Equal(firstDue) {
+		t.Fatalf("daily listing work = %+v err=%v", workRecord, err)
+	}
+	if replay, err := repository.MaterializeDueOccurrenceWorks(ctx, now.Add(3*time.Hour), 100, "recruiting", "timer:daily-work-replay", now.Add(3*time.Hour)); err != nil || replay.Selected != 0 {
+		t.Fatalf("due work replay = %+v err=%v", replay, err)
+	}
 	startedOccurrence, _ := first.Start(first.Version)
 	if err := repository.UpdateOccurrenceCAS(ctx, first.Version, startedOccurrence, now.Add(3*time.Hour)); err != nil {
 		t.Fatal(err)
@@ -178,5 +194,18 @@ func testDailySchedule(date string) model.DailySchedule {
 		CutoffAt:      date + "T00:00:00Z",
 		WindowStartAt: date + "T00:00:00Z",
 		WindowEndAt:   date + "T06:00:00Z",
+	}
+}
+
+func testListingExecutionSnapshot(sourceID string) model.ListingExecutionSnapshot {
+	return model.ListingExecutionSnapshot{
+		Endpoint: model.SourceEndpoint{URL: "https://jobs.example.com/" + sourceID, CanonicalKey: "https://jobs.example.com/" + sourceID + "|all", Revision: 1},
+		Assignment: model.SourceRecipeAssignment{SourceID: sourceID, Kind: model.RecipeListing, RecipeID: "listing-" + sourceID,
+			RecipeVersion: 1, ContractHash: "contract-" + sourceID, EffectiveAt: "2026-09-07T00:00:00Z", AssignmentVersion: 1},
+		RecipeID: "listing-" + sourceID, RecipeVersion: 1, ContentHash: "content-" + sourceID,
+		ContractHash: "contract-" + sourceID,
+		Execution: model.RecipeExecution{ABIVersion: model.RecipeABIVersion, ContentRef: "recipe://listing-" + sourceID,
+			RequiredCapability: "http.fetch", Transport: model.RecipeTransportHTTPJSON},
+		Origin: "https://jobs.example.com",
 	}
 }

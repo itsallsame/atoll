@@ -41,3 +41,14 @@ func TestOnlyPersistedDailyTimerCanCreateOrGrowTheChain(t *testing.T) {
 		}
 	}
 }
+
+func TestOnlyPersistedDailyWorkTimerCanMaterializeOrGrowTheChain(t *testing.T) {
+	if !isCurrentDurableTimer(message.ID("timer:work-current"), "work-current") {
+		t.Fatal("persisted daily work timer fire was rejected")
+	}
+	for _, id := range []message.ID{"work-current", "timer:work-orphan", "timer:"} {
+		if isCurrentDurableTimer(id, "work-current") {
+			t.Fatalf("stale daily work timer %q was accepted", id)
+		}
+	}
+}

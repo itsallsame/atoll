@@ -1,6 +1,9 @@
 package e2e
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 )
 
 func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *testing.T) {
@@ -311,6 +317,8 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	}
 
 	cutoff := time.Now().UTC().Add(15 * time.Second).Truncate(time.Second)
+	dailySourceID := sourceIDWithEarlyDailyDue(cutoff.Format("2006-01-02"), 11, time.Minute)
+	seedReadyRecruitingSource(t, runtimeDSN, dailySourceID, cutoff.Add(-time.Minute))
 	const dailyDecl = "e2e-recruiting-daily-schedule"
 	registrarRequest(t, recovered, homeID, systemActor, "system.actor.template.create", map[string]any{
 		"id": dailyDecl, "name": dailyDecl, "class": "recruiting",
@@ -318,7 +326,7 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 		"config": map[string]any{
 			"executor_id": "unused-e2e-executor", "reconcile_interval_ms": 200,
 			"daily_schedule_enabled": true, "daily_schedule_timezone": "UTC",
-			"daily_cutoff_local": cutoff.Format("15:04:05"), "daily_window_duration_minutes": 480,
+			"daily_cutoff_local": cutoff.Format("15:04:05"), "daily_window_duration_minutes": 1,
 			"daily_schedule_policy_version": 11,
 		},
 		"visibility": "private",
@@ -342,8 +350,107 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	if got := nestedNumberField(t, dailyRun, "entity", "schedule_policy_version"); got != 11 {
 		t.Fatalf("daily timer lost schedule policy: %v", dailyRun)
 	}
-	if got := nestedNumberField(t, dailyRun, "entity", "expected_sources"); got != 0 {
-		t.Fatalf("ineligible archived/candidate sources entered daily cutoff: %v", dailyRun)
+	if got := nestedNumberField(t, dailyRun, "entity", "expected_sources"); got != 1 {
+		t.Fatalf("daily cutoff did not isolate the one eligible source: %v", dailyRun)
+	}
+	var scheduledWorks map[string]any
+	var workErr error
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
+		_, scheduledWorks, workErr = recovered.tryRequest(homeID, "recruiting.work.list", dailyActorID, map[string]any{
+			"due_at": time.Now().UTC().Format(time.RFC3339Nano), "capability": "http.fetch",
+			"origin": "https://e2e-daily.example.test", "limit": 10,
+		})
+		if workErr == nil {
+			works, _ := scheduledWorks["works"].([]any)
+			if len(works) == 1 {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	scheduledWorkItems, _ := scheduledWorks["works"].([]any)
+	if workErr != nil || len(scheduledWorkItems) != 1 {
+		t.Fatalf("durable occurrence timer did not create listing Work: %v err=%v\n%s", scheduledWorks, workErr, tailLog(h.server.logPath, 100))
+	}
+	scheduledWork, _ := scheduledWorkItems[0].(map[string]any)
+	if got := stringField(t, scheduledWork, "target_id"); got != dailySourceID {
+		t.Fatalf("daily Work target=%q want=%q: %v", got, dailySourceID, scheduledWorks)
+	}
+}
+
+func sourceIDWithEarlyDailyDue(scheduleDate string, policyVersion uint64, window time.Duration) string {
+	for index := 0; ; index++ {
+		id := fmt.Sprintf("e2e-daily-source-%d", index)
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%d", id, scheduleDate, policyVersion)))
+		offset := time.Duration(binary.BigEndian.Uint64(sum[16:24])%uint64(window.Microseconds())) * time.Microsecond
+		if offset >= time.Second && offset <= 3*time.Second {
+			return id
+		}
+	}
+}
+
+func seedReadyRecruitingSource(t *testing.T, dsn, sourceID string, now time.Time) {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repository, _ := store.NewRepository(db)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	company, _ := model.NewCompany("e2e-daily-company", "E2E Daily Company", "https://e2e-daily.example.test")
+	if err := repository.CreateCompany(ctx, company, now); err != nil {
+		t.Fatal(err)
+	}
+	next, _ := company.StartDiscovery(company.Version)
+	if err := repository.UpdateCompanyCAS(ctx, company.Version, next, now); err != nil {
+		t.Fatal(err)
+	}
+	company = next
+	next, _ = company.StartInitialization(company.Version)
+	if err := repository.UpdateCompanyCAS(ctx, company.Version, next, now); err != nil {
+		t.Fatal(err)
+	}
+	company = next
+	next, _ = company.MarkReady(company.Version)
+	if err := repository.UpdateCompanyCAS(ctx, company.Version, next, now); err != nil {
+		t.Fatal(err)
+	}
+	company = next
+
+	source, _ := model.NewRecruitmentSource(sourceID, company.CompanyID, "https://e2e-daily.example.test/jobs", "all", 1)
+	if err := repository.CreateSource(ctx, source, now); err != nil {
+		t.Fatal(err)
+	}
+	validating, _ := source.BeginValidation(source.Version)
+	if err := repository.UpdateSourceCAS(ctx, source.Version, validating, now); err != nil {
+		t.Fatal(err)
+	}
+	execution := model.RecipeExecution{ABIVersion: model.RecipeABIVersion, ContentRef: "recipe://e2e-daily-listing",
+		RequiredCapability: "http.fetch", Transport: model.RecipeTransportHTTPJSON}
+	recipe, _ := model.NewRecipe("e2e-daily-listing", model.RecipeListing, "e2e-daily.example.test", 1,
+		"sha256:e2e-daily-content", "sha256:e2e-daily-contract", execution)
+	recipe, _ = recipe.BeginValidation(recipe.StateVersion)
+	recipe, _ = recipe.Publish(recipe.StateVersion)
+	if err := repository.CreateRecipe(ctx, recipe, now); err != nil {
+		t.Fatal(err)
+	}
+	assignment, _ := model.NewSourceRecipeAssignment(sourceID, model.RecipeListing, recipe.RecipeID, recipe.Version,
+		recipe.ContractHash, now.Format(time.RFC3339))
+	assessment := model.SourceContractAssessment{
+		SourceID: sourceID, EndpointRevision: validating.CandidateEndpoint.Revision,
+		RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, ContractHash: recipe.ContractHash,
+		Identity: model.ContractVerified, Pagination: model.ContractVerified, Ordering: model.ContractVerified, UpdateRetop: model.ContractVerified,
+		EvidenceArtifactIDs: []string{"e2e-daily-calibration-a", "e2e-daily-calibration-b"},
+		AssessedAt:          now.Format(time.RFC3339), Version: 1,
+	}
+	ready, err := validating.PublishValidated(validating.Version, assignment, assessment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.PublishSourceAssignment(ctx, validating.Version, 0, ready, assignment, now); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -222,9 +222,13 @@ func TestOccurrenceSnapshotAndCoverageOutcome(t *testing.T) {
 	if key1 != key2 {
 		t.Fatalf("occurrence key is unstable: %q %q", key1, key2)
 	}
-	o, err := NewSourceOccurrence("occ-1", "daily-1", "source-1", "2026-09-07", 3, 8, 13, "2026-09-07T01:00:00Z")
+	o, err := NewSourceOccurrence("occ-1", "daily-1", "source-1", "2026-09-07", 3, 8, 13, "2026-09-07T01:00:00Z", testListingExecution("source-1"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	o, err = o.Queue(o.Version, "work-occ-1")
+	if err != nil || o.Status != OccurrenceQueued || o.WorkID != "work-occ-1" {
+		t.Fatalf("queued occurrence = %+v, %v", o, err)
 	}
 	o, _ = o.Start(o.Version)
 	o, err = o.Finish(o.Version, false, "boundary_missing")
@@ -237,7 +241,7 @@ func TestOccurrenceSnapshotAndCoverageOutcome(t *testing.T) {
 }
 
 func TestPlannedOccurrenceCanBeExplicitlyExcluded(t *testing.T) {
-	o, err := NewSourceOccurrence("occ-excluded", "daily-1", "source-1", "2026-09-07", 3, 8, 13, "2026-09-07T01:00:00Z")
+	o, err := NewSourceOccurrence("occ-excluded", "daily-1", "source-1", "2026-09-07", 3, 8, 13, "2026-09-07T01:00:00Z", testListingExecution("source-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +282,7 @@ func TestDailyScheduleAndOccurrenceDueTimeAreNormalizedAndBounded(t *testing.T) 
 	if err != nil || run.CutoffAt != "2026-09-07T00:00:00.123456Z" || run.WindowStartAt != "2026-09-07T00:30:00.123456Z" {
 		t.Fatalf("normalized daily schedule = %+v err=%v", run, err)
 	}
-	occurrence, err := NewSourceOccurrence("occ-normalized", run.DailyRunID, "source-1", run.ScheduleDate, 4, 1, 1, "2026-09-07T08:45:00.123456789+08:00")
+	occurrence, err := NewSourceOccurrence("occ-normalized", run.DailyRunID, "source-1", run.ScheduleDate, 4, 1, 1, "2026-09-07T08:45:00.123456789+08:00", testListingExecution("source-1"))
 	if err != nil || occurrence.DueAt != "2026-09-07T00:45:00.123456Z" {
 		t.Fatalf("normalized occurrence due time = %+v err=%v", occurrence, err)
 	}
@@ -307,7 +311,7 @@ func TestProfileRepairRotatesOnlyOpaqueReference(t *testing.T) {
 }
 
 func TestRecipeQuarantineRequiresValidationBeforeRepublish(t *testing.T) {
-	r, err := NewRecipe("recipe-1", RecipeListing, "moka", 1, "content", "contract")
+	r, err := NewRecipe("recipe-1", RecipeListing, "moka", 1, "content", "contract", testRecipeExecution("recipe-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,6 +328,30 @@ func TestRecipeQuarantineRequiresValidationBeforeRepublish(t *testing.T) {
 	r, err = r.Publish(r.StateVersion)
 	if err != nil || r.Status != RecipeActive {
 		t.Fatalf("validated recovery = %+v, %v", r, err)
+	}
+	forged := r
+	forged.Status = RecipeValidating
+	forged.Execution.RequiredCapability = ""
+	if _, err := forged.Publish(forged.StateVersion); err == nil {
+		t.Fatal("recipe without an executable capability was published")
+	}
+}
+
+func testRecipeExecution(id string) RecipeExecution {
+	return RecipeExecution{
+		ABIVersion: RecipeABIVersion, ContentRef: "recipe://" + id,
+		RequiredCapability: "http.fetch", Transport: RecipeTransportHTTPJSON,
+	}
+}
+
+func testListingExecution(sourceID string) ListingExecutionSnapshot {
+	execution := testRecipeExecution("listing-" + sourceID)
+	return ListingExecutionSnapshot{
+		Endpoint: SourceEndpoint{URL: "https://jobs.example.com/" + sourceID, CanonicalKey: "https://jobs.example.com/" + sourceID + "|all", Revision: 1},
+		Assignment: SourceRecipeAssignment{SourceID: sourceID, Kind: RecipeListing, RecipeID: "listing-" + sourceID,
+			RecipeVersion: 1, ContractHash: "contract-" + sourceID, EffectiveAt: "2026-09-07T00:00:00Z", AssignmentVersion: 1},
+		RecipeID: "listing-" + sourceID, RecipeVersion: 1, ContentHash: "content-" + sourceID,
+		ContractHash: "contract-" + sourceID, Execution: execution, Origin: "https://jobs.example.com",
 	}
 }
 

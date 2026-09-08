@@ -1,0 +1,196 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+)
+
+type DueWorkMaterializationResult struct {
+	Selected int `json:"selected"`
+	Queued   int `json:"queued"`
+	Expired  int `json:"expired"`
+}
+
+func (r *Repository) NextPlannedOccurrenceDueAt(ctx context.Context) (time.Time, bool, error) {
+	var dueAt sql.NullTime
+	if err := r.db.QueryRowContext(ctx, `
+SELECT MIN(o.due_at)
+FROM recruiting_source_occurrences o
+JOIN recruiting_daily_runs d ON d.daily_run_id = o.daily_run_id
+WHERE o.status = 'planned' AND d.status = 'running'`).Scan(&dueAt); err != nil {
+		return time.Time{}, false, fmt.Errorf("read next planned occurrence due time: %w", err)
+	}
+	if !dueAt.Valid {
+		return time.Time{}, false, nil
+	}
+	return dueAt.Time.UTC(), true, nil
+}
+
+// MaterializeDueOccurrenceWorks converts a bounded set of lightweight daily
+// occurrences into ordinary capability-routed Work. SKIP LOCKED allows many
+// Recruiting Actor instances to cooperate without a new scheduler or worker
+// type. Each Work, occurrence transition, and outbox intent is atomic.
+func (r *Repository) MaterializeDueOccurrenceWorks(ctx context.Context, dueAt time.Time, limit int, initiatorActorID, causeMessageID string, businessAt time.Time) (DueWorkMaterializationResult, error) {
+	if dueAt.IsZero() || businessAt.IsZero() || limit < 1 || limit > 500 ||
+		strings.TrimSpace(initiatorActorID) == "" || strings.TrimSpace(causeMessageID) == "" {
+		return DueWorkMaterializationResult{}, fmt.Errorf("due work materialization requires time, limit in [1,500], initiator, and cause")
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return DueWorkMaterializationResult{}, fmt.Errorf("begin due work materialization: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// Lock only occurrence rows. Locking through a JOIN would also lock the
+	// shared DailyRun parent and accidentally serialize all workers for a day.
+	rows, err := tx.QueryContext(ctx, `
+SELECT state_json
+FROM recruiting_source_occurrences
+WHERE status = 'planned' AND due_at <= ?
+ORDER BY due_at, occurrence_id
+LIMIT ? FOR UPDATE SKIP LOCKED`, dueAt.UTC(), limit)
+	if err != nil {
+		return DueWorkMaterializationResult{}, fmt.Errorf("lock due occurrences: %w", err)
+	}
+	type selectedOccurrence struct {
+		Occurrence model.SourceOccurrence
+		WindowEnd  time.Time
+	}
+	selected := make([]selectedOccurrence, 0, limit)
+	for rows.Next() {
+		var state []byte
+		var item selectedOccurrence
+		if err := rows.Scan(&state); err != nil {
+			_ = rows.Close()
+			return DueWorkMaterializationResult{}, fmt.Errorf("scan due occurrence: %w", err)
+		}
+		if err := json.Unmarshal(state, &item.Occurrence); err != nil {
+			_ = rows.Close()
+			return DueWorkMaterializationResult{}, fmt.Errorf("decode due occurrence: %w", err)
+		}
+		selected = append(selected, item)
+	}
+	if err := rows.Close(); err != nil {
+		return DueWorkMaterializationResult{}, fmt.Errorf("close due occurrence rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return DueWorkMaterializationResult{}, fmt.Errorf("iterate due occurrences: %w", err)
+	}
+	for index := range selected {
+		var runStatus model.DailyRunStatus
+		if err := tx.QueryRowContext(ctx, `
+SELECT status, window_end_at FROM recruiting_daily_runs WHERE daily_run_id = ?`, selected[index].Occurrence.DailyRunID).
+			Scan(&runStatus, &selected[index].WindowEnd); err != nil {
+			return DueWorkMaterializationResult{}, fmt.Errorf("read due occurrence daily run: %w", err)
+		}
+		if runStatus != model.DailyRunRunning {
+			return DueWorkMaterializationResult{}, fmt.Errorf("due occurrence belongs to non-running daily run %s", selected[index].Occurrence.DailyRunID)
+		}
+	}
+
+	result := DueWorkMaterializationResult{Selected: len(selected)}
+	for _, item := range selected {
+		occurrence := item.Occurrence
+		if err := occurrence.ListingExecution.Validate(occurrence.SourceID); err != nil {
+			return DueWorkMaterializationResult{}, fmt.Errorf("invalid due occurrence %s: %w", occurrence.OccurrenceID, err)
+		}
+		if !businessAt.Before(item.WindowEnd) {
+			expired, err := occurrence.ExpireBeforeQueue(occurrence.Version, "window_expired_before_work_materialization")
+			if err != nil {
+				return DueWorkMaterializationResult{}, err
+			}
+			if err := updateOccurrenceInTx(ctx, tx, occurrence.Version, expired, businessAt); err != nil {
+				return DueWorkMaterializationResult{}, err
+			}
+			payload, _ := json.Marshal(map[string]any{"occurrence_id": expired.OccurrenceID, "outcome": expired.Outcome})
+			event, err := model.NewEventIntent("occurrence-expired-"+expired.OccurrenceID, "source_occurrence.expired",
+				"source_occurrence", expired.OccurrenceID, expired.Version, businessAt.UTC().Format(time.RFC3339Nano), causeMessageID, payload)
+			if err != nil {
+				return DueWorkMaterializationResult{}, err
+			}
+			if err := appendEventIntent(ctx, tx, event, businessAt, businessAt); err != nil {
+				return DueWorkMaterializationResult{}, err
+			}
+			result.Expired++
+			continue
+		}
+
+		workID := "work-listing-" + occurrence.OccurrenceID
+		work, err := model.NewWork(workID, "source", occurrence.SourceID, "listing_sync", "timer")
+		if err != nil {
+			return DueWorkMaterializationResult{}, err
+		}
+		work, err = work.WithCausality(initiatorActorID, causeMessageID, "")
+		if err != nil {
+			return DueWorkMaterializationResult{}, err
+		}
+		deadline := item.WindowEnd.UTC()
+		placement := WorkPlacement{
+			BusinessKey: "daily-listing|" + occurrence.OccurrenceID, Priority: 100,
+			Capability: occurrence.ListingExecution.Execution.RequiredCapability,
+			Origin:     occurrence.ListingExecution.Origin, NotBefore: dueAtForOccurrence(occurrence), DeadlineAt: &deadline,
+		}
+		if err := insertWork(ctx, tx, work, placement, businessAt); err != nil {
+			return DueWorkMaterializationResult{}, err
+		}
+		queued, err := occurrence.Queue(occurrence.Version, work.WorkID)
+		if err != nil {
+			return DueWorkMaterializationResult{}, err
+		}
+		if err := updateOccurrenceInTx(ctx, tx, occurrence.Version, queued, businessAt); err != nil {
+			return DueWorkMaterializationResult{}, err
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"work_id": work.WorkID, "occurrence_id": occurrence.OccurrenceID, "source_id": occurrence.SourceID,
+			"recipe_id": occurrence.ListingExecution.RecipeID, "recipe_version": occurrence.ListingExecution.RecipeVersion,
+			"capability": placement.Capability,
+		})
+		event, err := model.NewEventIntent("work-created-"+occurrence.OccurrenceID, "work.created", "work", work.WorkID,
+			work.Version, businessAt.UTC().Format(time.RFC3339Nano), causeMessageID, payload)
+		if err != nil {
+			return DueWorkMaterializationResult{}, err
+		}
+		if err := appendEventIntent(ctx, tx, event, businessAt, businessAt); err != nil {
+			return DueWorkMaterializationResult{}, err
+		}
+		result.Queued++
+	}
+	if err := tx.Commit(); err != nil {
+		return DueWorkMaterializationResult{}, fmt.Errorf("commit due work materialization: %w", err)
+	}
+	return result, nil
+}
+
+func dueAtForOccurrence(occurrence model.SourceOccurrence) time.Time {
+	dueAt, _ := time.Parse(time.RFC3339, occurrence.DueAt)
+	return dueAt.UTC()
+}
+
+func updateOccurrenceInTx(ctx context.Context, tx *sql.Tx, expected uint64, occurrence model.SourceOccurrence, businessAt time.Time) error {
+	state, err := json.Marshal(occurrence)
+	if err != nil {
+		return fmt.Errorf("encode occurrence update: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `
+UPDATE recruiting_source_occurrences
+SET listing_work_id = ?, status = ?, version = ?, state_json = ?, updated_at = ?
+WHERE occurrence_id = ? AND version = ?`, nullableString(occurrence.WorkID), occurrence.Status, occurrence.Version,
+		state, businessAt.UTC(), occurrence.OccurrenceID, expected)
+	if err != nil {
+		return fmt.Errorf("update occurrence in due materialization: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return errors.New("occurrence changed while locked for due materialization")
+	}
+	return nil
+}

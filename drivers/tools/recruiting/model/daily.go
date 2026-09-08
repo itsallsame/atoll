@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -10,6 +11,7 @@ type OccurrenceStatus string
 
 const (
 	OccurrencePlanned   OccurrenceStatus = "planned"
+	OccurrenceQueued    OccurrenceStatus = "queued"
 	OccurrenceRunning   OccurrenceStatus = "running"
 	OccurrenceCompleted OccurrenceStatus = "completed"
 	OccurrenceException OccurrenceStatus = "completed_with_exceptions"
@@ -17,17 +19,60 @@ const (
 )
 
 type SourceOccurrence struct {
-	OccurrenceID          string           `json:"occurrence_id"`
-	DailyRunID            string           `json:"daily_run_id"`
-	SourceID              string           `json:"source_id"`
-	ScheduleDate          string           `json:"schedule_date"`
-	SchedulePolicyVersion uint64           `json:"schedule_policy_version"`
-	CompanyVersion        uint64           `json:"company_version"`
-	SourceVersion         uint64           `json:"source_version"`
-	DueAt                 string           `json:"due_at"`
-	Status                OccurrenceStatus `json:"occurrence_status"`
-	Outcome               string           `json:"outcome,omitempty"`
-	Version               uint64           `json:"version"`
+	OccurrenceID          string                   `json:"occurrence_id"`
+	DailyRunID            string                   `json:"daily_run_id"`
+	SourceID              string                   `json:"source_id"`
+	ScheduleDate          string                   `json:"schedule_date"`
+	SchedulePolicyVersion uint64                   `json:"schedule_policy_version"`
+	CompanyVersion        uint64                   `json:"company_version"`
+	SourceVersion         uint64                   `json:"source_version"`
+	DueAt                 string                   `json:"due_at"`
+	ListingExecution      ListingExecutionSnapshot `json:"listing_execution"`
+	WorkID                string                   `json:"work_id,omitempty"`
+	Status                OccurrenceStatus         `json:"occurrence_status"`
+	Outcome               string                   `json:"outcome,omitempty"`
+	Version               uint64                   `json:"version"`
+}
+
+type ListingExecutionSnapshot struct {
+	Endpoint      SourceEndpoint         `json:"endpoint"`
+	Assignment    SourceRecipeAssignment `json:"assignment"`
+	RecipeID      string                 `json:"recipe_id"`
+	RecipeVersion uint64                 `json:"recipe_version"`
+	ContentHash   string                 `json:"content_hash"`
+	ContractHash  string                 `json:"contract_hash"`
+	Execution     RecipeExecution        `json:"execution"`
+	Origin        string                 `json:"origin"`
+}
+
+func NewListingExecutionSnapshot(source RecruitmentSource, recipe Recipe) (ListingExecutionSnapshot, error) {
+	if source.ActiveEndpoint == nil || source.ListingAssignment == nil || recipe.Status != RecipeActive || recipe.Kind != RecipeListing ||
+		recipe.RecipeID != source.ListingAssignment.RecipeID || recipe.Version != source.ListingAssignment.RecipeVersion ||
+		recipe.ContractHash != source.ListingAssignment.ContractHash {
+		return ListingExecutionSnapshot{}, fmt.Errorf("listing snapshot requires matching active endpoint, assignment, and recipe")
+	}
+	endpoint, err := url.Parse(source.ActiveEndpoint.URL)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return ListingExecutionSnapshot{}, fmt.Errorf("listing snapshot endpoint is invalid")
+	}
+	return ListingExecutionSnapshot{
+		Endpoint: *source.ActiveEndpoint, Assignment: *source.ListingAssignment,
+		RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, ContentHash: recipe.ContentHash,
+		ContractHash: recipe.ContractHash, Execution: recipe.Execution,
+		Origin: endpoint.Scheme + "://" + endpoint.Host,
+	}, nil
+}
+
+func (s ListingExecutionSnapshot) Validate(sourceID string) error {
+	endpoint, err := url.Parse(s.Endpoint.URL)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" || s.Endpoint.Revision == 0 ||
+		s.Origin != endpoint.Scheme+"://"+endpoint.Host || s.Assignment.SourceID != sourceID ||
+		s.Assignment.Kind != RecipeListing || s.Assignment.AssignmentVersion == 0 ||
+		s.RecipeID != s.Assignment.RecipeID || s.RecipeVersion != s.Assignment.RecipeVersion ||
+		s.ContractHash != s.Assignment.ContractHash || strings.TrimSpace(s.ContentHash) == "" {
+		return fmt.Errorf("listing execution snapshot is incomplete or inconsistent")
+	}
+	return s.Execution.Validate()
 }
 
 func OccurrenceKey(sourceID, scheduleDate string, policyVersion uint64) (string, error) {
@@ -145,7 +190,7 @@ func (d DailyRun) Close(expected uint64, summary CoverageSummary) (DailyRun, err
 	return d, nil
 }
 
-func NewSourceOccurrence(id, dailyRunID, sourceID, scheduleDate string, policyVersion, companyVersion, sourceVersion uint64, dueAt string) (SourceOccurrence, error) {
+func NewSourceOccurrence(id, dailyRunID, sourceID, scheduleDate string, policyVersion, companyVersion, sourceVersion uint64, dueAt string, listingExecution ListingExecutionSnapshot) (SourceOccurrence, error) {
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(dailyRunID) == "" || companyVersion == 0 || sourceVersion == 0 {
 		return SourceOccurrence{}, fmt.Errorf("occurrence identity and snapshot versions are required")
 	}
@@ -156,10 +201,13 @@ func NewSourceOccurrence(id, dailyRunID, sourceID, scheduleDate string, policyVe
 	if err != nil {
 		return SourceOccurrence{}, fmt.Errorf("occurrence due_at must be RFC3339")
 	}
+	if err := listingExecution.Validate(sourceID); err != nil {
+		return SourceOccurrence{}, err
+	}
 	return SourceOccurrence{
 		OccurrenceID: id, DailyRunID: dailyRunID, SourceID: sourceID, ScheduleDate: scheduleDate,
 		SchedulePolicyVersion: policyVersion, CompanyVersion: companyVersion, SourceVersion: sourceVersion,
-		DueAt:  due.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano),
+		DueAt: due.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano), ListingExecution: listingExecution,
 		Status: OccurrencePlanned, Version: 1,
 	}, nil
 }
@@ -168,10 +216,32 @@ func (o SourceOccurrence) Start(expected uint64) (SourceOccurrence, error) {
 	if err := requireVersion(expected, o.Version); err != nil {
 		return SourceOccurrence{}, err
 	}
-	if o.Status != OccurrencePlanned {
+	if o.Status != OccurrenceQueued || strings.TrimSpace(o.WorkID) == "" {
 		return SourceOccurrence{}, &InvalidTransitionError{Entity: "source occurrence", From: string(o.Status), Action: "start"}
 	}
 	o.Status, o.Version = OccurrenceRunning, o.Version+1
+	return o, nil
+}
+
+func (o SourceOccurrence) Queue(expected uint64, workID string) (SourceOccurrence, error) {
+	if err := requireVersion(expected, o.Version); err != nil {
+		return SourceOccurrence{}, err
+	}
+	if o.Status != OccurrencePlanned || o.WorkID != "" || strings.TrimSpace(workID) == "" {
+		return SourceOccurrence{}, &InvalidTransitionError{Entity: "source occurrence", From: string(o.Status), Action: "queue"}
+	}
+	o.Status, o.WorkID, o.Version = OccurrenceQueued, strings.TrimSpace(workID), o.Version+1
+	return o, nil
+}
+
+func (o SourceOccurrence) ExpireBeforeQueue(expected uint64, reason string) (SourceOccurrence, error) {
+	if err := requireVersion(expected, o.Version); err != nil {
+		return SourceOccurrence{}, err
+	}
+	if o.Status != OccurrencePlanned || o.WorkID != "" || strings.TrimSpace(reason) == "" {
+		return SourceOccurrence{}, &InvalidTransitionError{Entity: "source occurrence", From: string(o.Status), Action: "expire before queue"}
+	}
+	o.Status, o.Outcome, o.Version = OccurrenceException, strings.TrimSpace(reason), o.Version+1
 	return o, nil
 }
 
@@ -195,7 +265,7 @@ func (o SourceOccurrence) Exclude(expected uint64, reason string) (SourceOccurre
 	if err := requireVersion(expected, o.Version); err != nil {
 		return SourceOccurrence{}, err
 	}
-	if o.Status != OccurrencePlanned || strings.TrimSpace(reason) == "" {
+	if o.Status != OccurrencePlanned || o.WorkID != "" || strings.TrimSpace(reason) == "" {
 		return SourceOccurrence{}, &InvalidTransitionError{Entity: "source occurrence", From: string(o.Status), Action: "exclude"}
 	}
 	o.Status, o.Outcome, o.Version = OccurrenceExcluded, strings.TrimSpace(reason), o.Version+1

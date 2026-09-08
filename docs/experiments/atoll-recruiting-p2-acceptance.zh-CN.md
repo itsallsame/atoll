@@ -28,7 +28,7 @@ P1 契约基线：`a94d2b8d`
 - migration `000003` 为 Work 增加 initiator/message/work cause 列和专用索引；Work get 同时返回领域状态与 placement，人工创建、暂停、恢复、取消、结案和 retry 均采用 receipt/聚合或新 Work/outbox 单事务；失败创建不留下 receipt；
 - retry 事务锁定并重读原 Work 的版本和终态，验证 target/purpose/parent 因果一致后只插入新 Work；原 Work 不更新，在途结果仍由原 acceptance fence 判定；
 - Attempt 保存 Executor identity/incarnation 与全部领域 fence；状态通过预期前态 CAS，两个并发 accept 只有一个成功，状态机无循环因此不产生 ABA；
-- Recipe 使用 `(recipe_id, recipe_version)` 身份和独立 state version CAS；Source candidate→validating 单独持久化，ready Endpoint 与首个 Listing Assignment 同事务发布；
+- Recipe 使用 `(recipe_id, recipe_version)` 身份和独立 state version CAS；ABI、opaque content ref、transport、required capability、内容与 contract 在同一 Recipe version 内不可变，Repository 只接受领域状态机产生的状态转换；Source candidate→validating 单独持久化，ready Endpoint 与首个 Listing Assignment 同事务发布；
 - Recipe rollout 要求匹配 active kind/contract，并在同一事务比较 Source version 与 Assignment version；两个并发 rollout 只有一个成功，任一 CAS 冲突都会回滚另一侧，数据库不会出现 Source JSON 与 Assignment 行不一致；
 - Detail result 接受会从数据库重读 Company、Source、Detail Assignment/Recipe、Checkpoint、Job refresh generation、Profile（如有）、Work acceptance version 和 Attempt Executor incarnation；不信任结果消息声明的“当前版本”；
 - 合法详情结果在一个事务内提交 Artifact、SourceJob、append-only JobDetailVersion、Attempt succeeded 和 Work completed；同 Artifact/Attempt 重放返回既有 Job，不增加详情版本；
@@ -40,7 +40,9 @@ P1 契约基线：`a94d2b8d`
 - 可信日切路径在一个 Repeatable Read 事务中读取 Company/Source/Listing Assignment/active Recipe，使用领域 `EligibleForDailyRun` 再验证四维增量契约，并原子写入 running DailyRun、全部轻量 SourceOccurrence 和 `daily_run.started` outbox；`expected_sources` 直接取该快照行数，不接受外部调用方声明；
 - SourceOccurrence 以 `(source_id, schedule_date, schedule_policy_version)` 唯一，ID 与 due time 由 Source ID、日期和策略版本确定性生成并均匀散列到执行窗口；同日同配置重放返回原名单，改变 ID、策略或窗口被拒绝；两个并发日切调用实测为一次创建、一次重放且只有一个 outbox；
 - 旧的分块 `MaterializeOccurrences` 仅保留给显式非日切组装路径，并已加强为校验 DailyRun 策略、窗口、Occurrence JSON due time、数据库 due time 和全部不可变快照；不得将外部部分集合通过该 API 冒充可信每日截点；
-- 每个 SourceOccurrence 冻结 Company/Source/调度策略版本与 due time，后续 Source 更新不会改写当日执行口径；planned occurrence 可由操作员显式排除并记录原因；
+- 每个 SourceOccurrence 冻结 Company/Source/调度策略版本、Endpoint、Assignment、Recipe/内容哈希、ABI/transport/capability/origin 与 due time，后续 Source 更新不会改写当日执行输入；planned occurrence 可由操作员显式排除并记录原因，绑定 Work 后不能绕过 Work fencing 直接排除；
+- migration `000005` 建立 occurrence→listing Work 的唯一外键。到期物化每批最多 500 条，以 `FOR UPDATE SKIP LOCKED` 只锁 occurrence 行，并在同一事务创建 capability/origin 路由的 Work、推进 occurrence 为 queued、写入 outbox；窗口已经结束的 planned occurrence 直接形成明确异常，不创建 deadline 已失效的 Work；
+- 并发实测曾发现把 DailyRun JOIN 进 locking read 会锁住所有 occurrence 共享的父行、令多实例串行；修正为只锁 occurrence、随后只读校验 DailyRun 后，两个实例连续三轮都各自领取不同项，最终 Work 无重复；
 - 到期 occurrence 查询有界为 500 条，`EXPLAIN FORMAT=JSON` 验证使用 `(status, due_at, occurrence_id)` 索引；
 - DailyRun 只能用数据库内不可变 occurrence 终态事实闭账：总数必须等于 cutoff 时 expected sources，成功、异常、排除统计必须逐项一致，未完成项或伪造 summary 都不能关闭日批次；物化和闭账锁定同一 DailyRun 行，避免关闭后晚插任务的竞态；
 - CuratedOverride 每次人工创建、替换或撤销都先追加不可变 version，再在同一事务用精确旧 head 做 CAS；两个并发替换只有一个成为当前值，失败候选不会残留孤立 version；
@@ -57,7 +59,7 @@ P1 契约基线：`a94d2b8d`
 - 完整 100 轮的四份 runtime log 各含 25 个成功结果和最终 schema/identity 标记；紧凑证据及日志 SHA-256 保存在 `docs/experiments/evidence/recruiting-mysql-stress-0af563b3.json`，原始日志留在 ignored `.cache`，不把一次性数据库输出提交到 Git；
 - `EXPLAIN FORMAT=JSON` 验证 Company seek 和按 Company 的 Source seek 查询使用专用索引；
 - Job list 固定按 Source seek pagination，DailyRun list 按 schedule date/ID seek，Occurrence drill-down 按 DailyRun/ID seek；游标绑定父 selector 且严格拒绝未知字段、尾随 JSON 和跨父对象复用，三个查询均有专用索引的 `EXPLAIN FORMAT=JSON` 证据；
-- DailyRun 实时摘要以单条 LEFT JOIN/GROUP BY 快照同时读取运行状态与各 Occurrence 状态计数，避免分两次查询时物化或闭账并发导致自相矛盾；显式返回 expected/materialized/missing/planned/running/completed/exceptions/excluded；
+- DailyRun 实时摘要以单条 LEFT JOIN/GROUP BY 快照同时读取运行状态与各 Occurrence 状态计数，避免分两次查询时物化或闭账并发导致自相矛盾；显式返回 expected/materialized/missing/planned/queued/running/completed/exceptions/excluded；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
 ## 当前验证

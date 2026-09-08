@@ -4,7 +4,15 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
+
+func TestControlPlaneAndExecutorUseTheSameRecipeABIVersion(t *testing.T) {
+	if Version != model.RecipeABIVersion {
+		t.Fatalf("executor ABI %q != control-plane ABI %q", Version, model.RecipeABIVersion)
+	}
+}
 
 func validListingSpec() Spec {
 	return Spec{

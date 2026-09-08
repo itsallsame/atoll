@@ -600,7 +600,7 @@ draft → validating → active → superseded
   └─────────┘ validation_failed
 ```
 
-Recipe 至少保存 `recipe_id`、`kind=list|detail|discovery`、适用 scope、代码/Resource 引用、输入输出契约、所需 capability、版本、内容哈希、验证证据和状态。Listing Recipe 还必须保存活动倒序、稳定身份、边界、重叠窗口和异常终止契约。同一 scope/kind 可以有一个默认 active 版本，但生产执行由版本化 `SourceRecipeAssignment` 决定，从而支持逐 Source 灰度和回滚。
+Recipe 至少保存 `recipe_id`、`kind=list|detail|discovery`、适用 scope、ABI 版本、不可解析的代码/Resource 引用、transport、所需 capability、输入输出契约、版本、内容哈希、验证证据和状态。上述执行契约属于 Recipe version 的不可变内容，不能在原版本上把 HTTP 静默换成 Browser 或改变 capability；变化必须创建新版本并重新验证。Listing Recipe 还必须保存活动倒序、稳定身份、边界、重叠窗口和异常终止契约。同一 scope/kind 可以有一个默认 active 版本，但生产执行由版本化 `SourceRecipeAssignment` 决定，从而支持逐 Source 灰度和回滚。
 
 Assignment 固定 `source_id + kind + recipe_version + contract_hash + effective_at/version`。`contract_hash` 覆盖岗位身份、排序、分页和边界语义；变化时必须证明 Checkpoint 兼容，或者重新校准。Recipe 共享故障时先进入 `quarantined`，停止使用该版本创建新 Attempt，不影响未使用该版本的 Source。
 
@@ -773,7 +773,7 @@ Atoll timer 只负责可靠地产生到期命令，不直接修改状态；Execu
 
 保存 Source 的刷新策略、下次到期时间、最近成功 Incremental Checkpoint 和幂等周期键。每日运行不依赖进程内 cron 和记忆。第一阶段由 Recruiting Actor 使用 Atoll durable one-shot timer 保存下一截点；招聘 extension 只保存权威 timer ID 和已冻结的本次日程 payload。重启或重复 fire 由 timer ID 栅栏、schedule date 唯一键和日切事务共同收敛，不复制 Atoll scheduler。
 
-每个每日 `SourceOccurrence` 是持久事实，使用稳定业务键 `source_id + schedule_date + schedule_policy_version`，并保存 Daily Run、截点时 Company/Source 版本、调度策略版本、确定性 `due_at`、当前状态、关联 Work 和最终结果。Daily Run 与截点时全部 occurrence 必须在一个 Repeatable Read 事务内原子生成；事务失败时两者都不存在，成功时 `expected_sources` 必须精确等于 occurrence 数，不能接受调用方提供的部分集合来冒充每日名单。昂贵 Work 按 `due_at` 在窗口内渐进物化；窗口末只需核对已冻结 occurrence 的执行结果，不在历史截点后补猜名单。
+每个每日 `SourceOccurrence` 是持久事实，使用稳定业务键 `source_id + schedule_date + schedule_policy_version`，并保存 Daily Run、截点时 Company/Source 版本、Endpoint、Assignment、Recipe/内容哈希、ABI/transport/capability/origin、调度策略版本、确定性 `due_at`、当前状态、关联 Work 和最终结果。仅保存当前聚合版本号不足以支持延迟执行，因为 Source 在窗口内改变后可能已无法重建旧输入；因此 occurrence 必须自带最小且无秘密的执行快照。Daily Run 与截点时全部 occurrence 必须在一个 Repeatable Read 事务内原子生成；事务失败时两者都不存在，成功时 `expected_sources` 必须精确等于 occurrence 数，不能接受调用方提供的部分集合来冒充每日名单。昂贵 Work 按 `due_at` 在窗口内渐进物化；窗口末只需核对已冻结 occurrence 的执行结果，不在历史截点后补猜名单。
 
 临时手工运行不得复用一个含糊的“手动执行”语义：`diagnostic` 只保存证据，不写 Job、不派生详情、不推进 Checkpoint；`join_occurrence` 收敛到当日 SourceOccurrence；`production` 是独立运行，可以推进 Checkpoint，但必须通过 Checkpoint CAS 与并发定时运行竞争。
 

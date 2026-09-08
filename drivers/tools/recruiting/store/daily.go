@@ -88,7 +88,8 @@ func (r *Repository) MaterializeOccurrences(ctx context.Context, scheduled []Sch
 	for _, item := range scheduled {
 		dueAt, dueErr := time.Parse(time.RFC3339, item.Occurrence.DueAt)
 		if item.Occurrence.Version != 1 || item.Occurrence.Status != model.OccurrencePlanned || item.DueAt.IsZero() ||
-			dueErr != nil || !dueAt.Equal(item.DueAt.UTC().Truncate(time.Microsecond)) {
+			dueErr != nil || !dueAt.Equal(item.DueAt.UTC().Truncate(time.Microsecond)) ||
+			item.Occurrence.ListingExecution.Validate(item.Occurrence.SourceID) != nil || item.Occurrence.WorkID != "" {
 			return 0, fmt.Errorf("new occurrence must be planned at version 1 with due time")
 		}
 		if dailyRunID == "" {
@@ -152,12 +153,13 @@ ON DUPLICATE KEY UPDATE occurrence_id = occurrence_id`, item.Occurrence.Occurren
 			var existingID, existingDailyRunID string
 			var existingDueAt time.Time
 			var existingCompanyVersion, existingSourceVersion uint64
+			var existingState []byte
 			if err := tx.QueryRowContext(ctx, `
-SELECT occurrence_id, daily_run_id, due_at, company_version, source_version
+SELECT occurrence_id, daily_run_id, due_at, company_version, source_version, state_json
 FROM recruiting_source_occurrences
 WHERE source_id = ? AND schedule_date = ? AND schedule_policy_version = ?`,
 				item.Occurrence.SourceID, item.Occurrence.ScheduleDate, item.Occurrence.SchedulePolicyVersion).
-				Scan(&existingID, &existingDailyRunID, &existingDueAt, &existingCompanyVersion, &existingSourceVersion); err != nil {
+				Scan(&existingID, &existingDailyRunID, &existingDueAt, &existingCompanyVersion, &existingSourceVersion, &existingState); err != nil {
 				_ = tx.Rollback()
 				if errors.Is(err, sql.ErrNoRows) {
 					return chunks, fmt.Errorf("%w: occurrence ID belongs to another business key", ErrBusinessKeyExists)
@@ -168,8 +170,14 @@ WHERE source_id = ? AND schedule_date = ? AND schedule_policy_version = ?`,
 				_ = tx.Rollback()
 				return chunks, fmt.Errorf("%w: occurrence business key belongs to %s", ErrBusinessKeyExists, existingID)
 			}
+			var existingOccurrence model.SourceOccurrence
+			if err := json.Unmarshal(existingState, &existingOccurrence); err != nil {
+				_ = tx.Rollback()
+				return chunks, fmt.Errorf("decode materialized occurrence replay: %w", err)
+			}
 			if existingDailyRunID != item.Occurrence.DailyRunID || !existingDueAt.Equal(item.DueAt.UTC()) ||
-				existingCompanyVersion != item.Occurrence.CompanyVersion || existingSourceVersion != item.Occurrence.SourceVersion {
+				existingCompanyVersion != item.Occurrence.CompanyVersion || existingSourceVersion != item.Occurrence.SourceVersion ||
+				existingOccurrence.ListingExecution != item.Occurrence.ListingExecution {
 				_ = tx.Rollback()
 				return chunks, fmt.Errorf("%w: occurrence replay changed an immutable snapshot", ErrBusinessKeyExists)
 			}
@@ -244,15 +252,19 @@ func (r *Repository) UpdateOccurrenceCAS(ctx context.Context, expected uint64, o
 		return err
 	}
 	if current.DailyRunID != occurrence.DailyRunID || current.SourceID != occurrence.SourceID || current.DueAt != occurrence.DueAt ||
+		current.ListingExecution != occurrence.ListingExecution ||
 		current.ScheduleDate != occurrence.ScheduleDate || current.SchedulePolicyVersion != occurrence.SchedulePolicyVersion ||
 		current.CompanyVersion != occurrence.CompanyVersion || current.SourceVersion != occurrence.SourceVersion {
 		return fmt.Errorf("occurrence schedule and source snapshots are immutable")
 	}
+	if err := validateOccurrenceTransition(current, occurrence); err != nil {
+		return err
+	}
 	state, _ := json.Marshal(occurrence)
 	result, err := r.db.ExecContext(ctx, `
 UPDATE recruiting_source_occurrences
-SET status = ?, version = ?, state_json = ?, updated_at = ?
-WHERE occurrence_id = ? AND version = ?`, occurrence.Status, occurrence.Version, state,
+SET listing_work_id = ?, status = ?, version = ?, state_json = ?, updated_at = ?
+WHERE occurrence_id = ? AND version = ?`, nullableString(occurrence.WorkID), occurrence.Status, occurrence.Version, state,
 		businessAt.UTC(), occurrence.OccurrenceID, expected)
 	if err != nil {
 		return fmt.Errorf("update occurrence: %w", err)
@@ -269,6 +281,32 @@ WHERE occurrence_id = ? AND version = ?`, occurrence.Status, occurrence.Version,
 		return readErr
 	}
 	return &model.VersionConflictError{Expected: expected, Actual: actual.Version}
+}
+
+func validateOccurrenceTransition(current, next model.SourceOccurrence) error {
+	var expected model.SourceOccurrence
+	var err error
+	switch {
+	case current.Status == model.OccurrencePlanned && next.Status == model.OccurrenceQueued:
+		expected, err = current.Queue(current.Version, next.WorkID)
+	case current.Status == model.OccurrenceQueued && next.Status == model.OccurrenceRunning:
+		expected, err = current.Start(current.Version)
+	case current.Status == model.OccurrenceRunning && (next.Status == model.OccurrenceCompleted || next.Status == model.OccurrenceException):
+		expected, err = current.Finish(current.Version, next.Status == model.OccurrenceCompleted, next.Outcome)
+	case current.Status == model.OccurrencePlanned && next.Status == model.OccurrenceExcluded:
+		expected, err = current.Exclude(current.Version, next.Outcome)
+	case current.Status == model.OccurrencePlanned && next.Status == model.OccurrenceException:
+		expected, err = current.ExpireBeforeQueue(current.Version, next.Outcome)
+	default:
+		return &model.InvalidTransitionError{Entity: "source occurrence", From: string(current.Status), Action: "update"}
+	}
+	if err != nil {
+		return err
+	}
+	if expected != next {
+		return fmt.Errorf("occurrence update changed fields outside its state transition")
+	}
+	return nil
 }
 
 func (r *Repository) CloseDailyRunCAS(ctx context.Context, expected uint64, run model.DailyRun, businessAt time.Time) error {

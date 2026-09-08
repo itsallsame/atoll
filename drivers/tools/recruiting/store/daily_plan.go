@@ -106,9 +106,13 @@ INSERT INTO recruiting_source_occurrences(
 	defer statement.Close()
 	for _, snapshot := range snapshots {
 		occurrenceID, dueAt := deterministicOccurrencePlan(run, snapshot.Source.SourceID, windowStart, windowEnd)
+		listingExecution, err := model.NewListingExecutionSnapshot(snapshot.Source, snapshot.Recipe)
+		if err != nil {
+			return DailyPlanResult{}, err
+		}
 		occurrence, err := model.NewSourceOccurrence(occurrenceID, run.DailyRunID, snapshot.Source.SourceID,
 			run.ScheduleDate, run.SchedulePolicyVersion, snapshot.Company.Version, snapshot.Source.Version,
-			dueAt.Format(time.RFC3339Nano))
+			dueAt.Format(time.RFC3339Nano), listingExecution)
 		if err != nil {
 			return DailyPlanResult{}, err
 		}
@@ -147,6 +151,7 @@ INSERT INTO recruiting_source_occurrences(
 type eligibleSourceSnapshot struct {
 	Company model.Company
 	Source  model.RecruitmentSource
+	Recipe  model.Recipe
 }
 
 func readEligibleSourceSnapshots(ctx context.Context, tx *sql.Tx) ([]eligibleSourceSnapshot, error) {
@@ -197,7 +202,7 @@ ORDER BY s.source_id`)
 			recipe.ContractHash != assignment.ContractHash {
 			return nil, fmt.Errorf("eligible source %s listing assignment invariant failed", source.SourceID)
 		}
-		result = append(result, eligibleSourceSnapshot{Company: company, Source: source})
+		result = append(result, eligibleSourceSnapshot{Company: company, Source: source, Recipe: recipe})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate cutoff source roster: %w", err)

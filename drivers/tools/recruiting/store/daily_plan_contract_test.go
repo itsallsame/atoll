@@ -117,6 +117,52 @@ func TestDailyCutoffPlanFreezesEligibleRosterAtomically(t *testing.T) {
 	if err != nil || after.Items[0].SourceVersion != page.Items[0].SourceVersion || after.Items[1].SourceVersion != page.Items[1].SourceVersion {
 		t.Fatalf("cutoff snapshot changed after source pause: %+v err=%v", after, err)
 	}
+	materializations := make(chan DueWorkMaterializationResult, 2)
+	materializationErrors := make(chan error, 2)
+	group = sync.WaitGroup{}
+	for index := range 2 {
+		group.Add(1)
+		go func(worker int) {
+			defer group.Done()
+			result, materializeErr := repository.MaterializeDueOccurrenceWorks(ctx, windowEnd, 1, "recruiting",
+				"timer:due-worker-"+string(rune('0'+worker)), windowStart.Add(time.Minute))
+			materializations <- result
+			materializationErrors <- materializeErr
+		}(index)
+	}
+	group.Wait()
+	close(materializations)
+	close(materializationErrors)
+	for materializeErr := range materializationErrors {
+		if materializeErr != nil {
+			t.Fatal(materializeErr)
+		}
+	}
+	queued := 0
+	selectedCount := 0
+	for result := range materializations {
+		queued += result.Queued
+		selectedCount += result.Selected
+	}
+	if queued != 2 {
+		t.Fatalf("concurrent due materialization selected=%d queued=%d", selectedCount, queued)
+	}
+	queuedPage, err := repository.ListOccurrences(ctx, planned.Run.DailyRunID, "", 10)
+	if err != nil || len(queuedPage.Items) != 2 {
+		t.Fatalf("queued occurrence page = %+v err=%v", queuedPage, err)
+	}
+	seenWorks := map[string]bool{}
+	for _, occurrence := range queuedPage.Items {
+		if occurrence.Status != model.OccurrenceQueued || occurrence.WorkID == "" || seenWorks[occurrence.WorkID] {
+			t.Fatalf("non-unique queued occurrence = %+v", occurrence)
+		}
+		seenWorks[occurrence.WorkID] = true
+		record, workErr := repository.GetWorkRecord(ctx, occurrence.WorkID)
+		if workErr != nil || record.Placement.Capability != occurrence.ListingExecution.Execution.RequiredCapability ||
+			record.Placement.Origin != occurrence.ListingExecution.Origin || record.Work.TargetID != occurrence.SourceID {
+			t.Fatalf("snapshot-routed listing work = %+v err=%v", record, workErr)
+		}
+	}
 
 	changed := request
 	changed.Schedule.PolicyVersion++
@@ -135,6 +181,31 @@ func TestDailyCutoffPlanFreezesEligibleRosterAtomically(t *testing.T) {
 	}
 	if events != 1 {
 		t.Fatalf("daily started outbox events = %d", events)
+	}
+
+	expiredDate := "2090-01-03"
+	expiredRun, _ := model.NewDailyRun("daily-run-expired-2090-01-03", expiredDate, 1, testDailySchedule(expiredDate))
+	if err := repository.CreateDailyRun(ctx, expiredRun, now); err != nil {
+		t.Fatal(err)
+	}
+	expiredRunning, _ := expiredRun.Start(expiredRun.Version)
+	if err := repository.StartDailyRunCAS(ctx, expiredRun.Version, expiredRunning, now); err != nil {
+		t.Fatal(err)
+	}
+	expiredDue := time.Date(2090, 1, 3, 1, 0, 0, 0, time.UTC)
+	expiredOccurrence, _ := model.NewSourceOccurrence("occ-expired-before-queue", expiredRun.DailyRunID, first.SourceID,
+		expiredDate, 1, company.Version, first.Version, expiredDue.Format(time.RFC3339Nano), testListingExecutionSnapshot(first.SourceID))
+	if _, err := repository.MaterializeOccurrences(ctx, []ScheduledOccurrence{{Occurrence: expiredOccurrence, DueAt: expiredDue}}, now); err != nil {
+		t.Fatal(err)
+	}
+	expiredResult, err := repository.MaterializeDueOccurrenceWorks(ctx, expiredDue, 10, "recruiting", "timer:expired",
+		time.Date(2090, 1, 3, 7, 0, 0, 0, time.UTC))
+	if err != nil || expiredResult.Expired != 1 || expiredResult.Queued != 0 {
+		t.Fatalf("expired occurrence materialization = %+v err=%v", expiredResult, err)
+	}
+	storedExpired, err := repository.GetOccurrence(ctx, expiredOccurrence.OccurrenceID)
+	if err != nil || storedExpired.Status != model.OccurrenceException || storedExpired.WorkID != "" {
+		t.Fatalf("expired occurrence = %+v err=%v", storedExpired, err)
 	}
 }
 

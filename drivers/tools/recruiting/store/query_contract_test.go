@@ -87,7 +87,7 @@ ORDER BY updated_at, job_id LIMIT 2`, "query-source-a", now, now, "query-job-a")
 			t.Fatal(err)
 		}
 		dueAt := time.Date(2091, 9, 8+index, 1, 0, 0, 0, time.UTC)
-		occurrence, _ := model.NewSourceOccurrence("query-occurrence-"+date, run.DailyRunID, "query-source-a", date, 1, 1, 1, dueAt.Format(time.RFC3339Nano))
+		occurrence, _ := model.NewSourceOccurrence("query-occurrence-"+date, run.DailyRunID, "query-source-a", date, 1, 1, 1, dueAt.Format(time.RFC3339Nano), testListingExecutionSnapshot("query-source-a"))
 		if _, err := repository.MaterializeOccurrences(ctx, []ScheduledOccurrence{{Occurrence: occurrence, DueAt: dueAt}}, now); err != nil {
 			t.Fatal(err)
 		}

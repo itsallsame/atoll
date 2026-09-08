@@ -24,6 +24,7 @@ type Config struct {
 	DailyWindowStartDelayMinutes int           `json:"daily_window_start_delay_minutes"`
 	DailyWindowDurationMinutes   int           `json:"daily_window_duration_minutes"`
 	DailySchedulePolicyVersion   uint64        `json:"daily_schedule_policy_version"`
+	DailyWorkMaterializeLimit    int           `json:"daily_work_materialize_limit"`
 }
 
 func DefaultConfig() json.RawMessage {
@@ -47,6 +48,9 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 	if cfg.ExecutorID == "" || cfg.DatabaseDSNEnv == "" || cfg.ReconcileIntervalMS < 100 || cfg.ReconcileIntervalMS > 3_600_000 {
 		return Config{}, fmt.Errorf("recruiting config: executor_id, database_dsn_env, and reconcile_interval_ms in [100,3600000] are required")
 	}
+	if cfg.DailyWorkMaterializeLimit < 1 || cfg.DailyWorkMaterializeLimit > 500 {
+		return Config{}, fmt.Errorf("recruiting config: daily_work_materialize_limit must be in [1,500]")
+	}
 	if cfg.DailyScheduleEnabled {
 		if _, err := time.LoadLocation(cfg.DailyScheduleTimezone); err != nil {
 			return Config{}, fmt.Errorf("recruiting config: invalid daily_schedule_timezone: %w", err)
@@ -67,6 +71,7 @@ func defaultConfig() Config {
 		ExecutorID: "recruiting-executor", DatabaseDSNEnv: "ATOLL_RECRUITING_MYSQL_DSN", ReconcileIntervalMS: 30_000,
 		DailyScheduleEnabled: true, DailyScheduleTimezone: "UTC", DailyCutoffLocal: "00:00:00",
 		DailyWindowStartDelayMinutes: 0, DailyWindowDurationMinutes: 480, DailySchedulePolicyVersion: 1,
+		DailyWorkMaterializeLimit: 100,
 	}
 }
 
@@ -82,6 +87,7 @@ const ConfigSchema = `{
     "daily_cutoff_local":{"type":"string","pattern":"^[0-9]{2}:[0-9]{2}:[0-9]{2}$"},
     "daily_window_start_delay_minutes":{"type":"integer","minimum":0,"maximum":1440},
     "daily_window_duration_minutes":{"type":"integer","minimum":1,"maximum":2880},
-    "daily_schedule_policy_version":{"type":"integer","minimum":1}
+    "daily_schedule_policy_version":{"type":"integer","minimum":1},
+    "daily_work_materialize_limit":{"type":"integer","minimum":1,"maximum":500}
   }
 }`

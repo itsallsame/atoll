@@ -13,8 +13,8 @@ import (
 )
 
 func (r *Repository) CreateRecipe(ctx context.Context, recipe model.Recipe, businessAt time.Time) error {
-	if recipe.RecipeID == "" || recipe.Version == 0 || recipe.StateVersion == 0 {
-		return fmt.Errorf("recipe identity and versions are required")
+	if err := recipe.Validate(); err != nil {
+		return fmt.Errorf("invalid recipe: %w", err)
 	}
 	state, _ := json.Marshal(recipe)
 	_, err := r.db.ExecContext(ctx, `
@@ -56,12 +56,26 @@ func (r *Repository) UpdateRecipeCAS(ctx context.Context, expectedStateVersion u
 	if recipe.RecipeID == "" || recipe.StateVersion != expectedStateVersion+1 {
 		return fmt.Errorf("recipe update must advance exactly one state version")
 	}
+	if err := recipe.Validate(); err != nil {
+		return fmt.Errorf("invalid recipe: %w", err)
+	}
+	current, err := r.GetRecipe(ctx, recipe.RecipeID, recipe.Version)
+	if err != nil {
+		return err
+	}
+	if current.Kind != recipe.Kind || current.Scope != recipe.Scope || current.ContentHash != recipe.ContentHash ||
+		current.ContractHash != recipe.ContractHash || current.Execution != recipe.Execution {
+		return fmt.Errorf("published recipe identity, content, contract, and execution are immutable within a version")
+	}
+	if err := validateRecipeTransition(current, recipe); err != nil {
+		return err
+	}
 	state, _ := json.Marshal(recipe)
 	result, err := r.db.ExecContext(ctx, `
 UPDATE recruiting_recipes
-SET status = ?, content_hash = ?, contract_hash = ?, state_version = ?, state_json = ?, updated_at = ?
+SET status = ?, state_version = ?, state_json = ?, updated_at = ?
 WHERE recipe_id = ? AND recipe_version = ? AND state_version = ?`,
-		recipe.Status, recipe.ContentHash, recipe.ContractHash, recipe.StateVersion, state, businessAt.UTC(),
+		recipe.Status, recipe.StateVersion, state, businessAt.UTC(),
 		recipe.RecipeID, recipe.Version, expectedStateVersion)
 	if err != nil {
 		return fmt.Errorf("update recipe: %w", err)
@@ -78,6 +92,34 @@ WHERE recipe_id = ? AND recipe_version = ? AND state_version = ?`,
 		return readErr
 	}
 	return &model.VersionConflictError{Expected: expectedStateVersion, Actual: actual.StateVersion}
+}
+
+func validateRecipeTransition(current, next model.Recipe) error {
+	var expected model.Recipe
+	var err error
+	switch {
+	case (current.Status == model.RecipeDraft || current.Status == model.RecipeQuarantined) && next.Status == model.RecipeValidating:
+		expected, err = current.BeginValidation(current.StateVersion)
+	case current.Status == model.RecipeValidating && next.Status == model.RecipeActive:
+		expected, err = current.Publish(current.StateVersion)
+	case current.Status == model.RecipeValidating && next.Status == model.RecipeDraft:
+		expected, err = current.ValidationFailed(current.StateVersion)
+	case current.Status == model.RecipeActive && next.Status == model.RecipeQuarantined:
+		expected, err = current.Quarantine(current.StateVersion)
+	case current.Status == model.RecipeActive && next.Status == model.RecipeSuperseded:
+		expected, err = current.Supersede(current.StateVersion)
+	case (current.Status == model.RecipeActive || current.Status == model.RecipeQuarantined) && next.Status == model.RecipeDisabled:
+		expected, err = current.Disable(current.StateVersion)
+	default:
+		return &model.InvalidTransitionError{Entity: "recipe", From: string(current.Status), Action: "update"}
+	}
+	if err != nil {
+		return err
+	}
+	if expected != next {
+		return fmt.Errorf("recipe update changed fields outside its state transition")
+	}
+	return nil
 }
 
 func (r *Repository) GetAssignment(ctx context.Context, sourceID string, kind model.RecipeKind) (model.SourceRecipeAssignment, error) {

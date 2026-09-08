@@ -89,7 +89,7 @@ func TestRepairRecipeProfileAndCompanyTerminalPaths(t *testing.T) {
 		t.Fatalf("repair resolve = %+v %v", incident, err)
 	}
 
-	recipe, _ := NewRecipe("recipe-1", RecipeDetail, "jobs.example.com", 1, "content", "contract")
+	recipe, _ := NewRecipe("recipe-1", RecipeDetail, "jobs.example.com", 1, "content", "contract", testRecipeExecution("recipe-1"))
 	recipe, _ = recipe.BeginValidation(recipe.StateVersion)
 	recipe, err = recipe.ValidationFailed(recipe.StateVersion)
 	if err != nil || recipe.Status != RecipeDraft {
@@ -101,7 +101,7 @@ func TestRepairRecipeProfileAndCompanyTerminalPaths(t *testing.T) {
 	if err != nil || recipe.Status != RecipeSuperseded {
 		t.Fatalf("supersede = %+v %v", recipe, err)
 	}
-	disabled, _ := NewRecipe("recipe-2", RecipeDetail, "jobs.example.com", 2, "content-2", "contract")
+	disabled, _ := NewRecipe("recipe-2", RecipeDetail, "jobs.example.com", 2, "content-2", "contract", testRecipeExecution("recipe-2"))
 	disabled, _ = disabled.BeginValidation(disabled.StateVersion)
 	disabled, _ = disabled.Publish(disabled.StateVersion)
 	disabled, err = disabled.Disable(disabled.StateVersion)
@@ -264,10 +264,10 @@ func TestDailyRunAndOccurrenceTransitionMatrix(t *testing.T) {
 			t.Fatalf("daily close from %q: %v", status, closeErr)
 		}
 	}
-	for _, status := range []OccurrenceStatus{OccurrencePlanned, OccurrenceRunning, OccurrenceCompleted, OccurrenceException, OccurrenceExcluded} {
-		occurrence := SourceOccurrence{OccurrenceID: "occurrence-1", Status: status, Version: 1}
+	for _, status := range []OccurrenceStatus{OccurrencePlanned, OccurrenceQueued, OccurrenceRunning, OccurrenceCompleted, OccurrenceException, OccurrenceExcluded} {
+		occurrence := SourceOccurrence{OccurrenceID: "occurrence-1", Status: status, Version: 1, WorkID: "work-occurrence-1"}
 		_, startErr := occurrence.Start(occurrence.Version)
-		if (status == OccurrencePlanned) != (startErr == nil) {
+		if (status == OccurrenceQueued) != (startErr == nil) {
 			t.Fatalf("occurrence start from %q: %v", status, startErr)
 		}
 		_, finishErr := occurrence.Finish(occurrence.Version, true, "complete")
@@ -275,6 +275,11 @@ func TestDailyRunAndOccurrenceTransitionMatrix(t *testing.T) {
 			t.Fatalf("occurrence finish from %q: %v", status, finishErr)
 		}
 		_, excludeErr := occurrence.Exclude(occurrence.Version, "operator exclusion")
+		if excludeErr == nil {
+			t.Fatalf("occurrence with a work was excluded from %q", status)
+		}
+		occurrence.WorkID = ""
+		_, excludeErr = occurrence.Exclude(occurrence.Version, "operator exclusion")
 		if (status == OccurrencePlanned) != (excludeErr == nil) {
 			t.Fatalf("occurrence exclusion from %q: %v", status, excludeErr)
 		}
