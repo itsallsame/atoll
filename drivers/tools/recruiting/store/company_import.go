@@ -85,6 +85,93 @@ func (r *Repository) ApplyCreateCompanyImportCommand(ctx context.Context, parent
 	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
 }
 
+// ApplyConfirmCompanyImportCommand binds an operator's confirmation to the
+// exact persisted preview and creates the first bounded apply coordinator in
+// the same transaction. No company rows are changed by confirmation itself.
+func (r *Repository) ApplyConfirmCompanyImportCommand(ctx context.Context, expectedBatchVersion, expectedParentVersion uint64,
+	nextBatch model.CompanyImport, nextParent, applyWork model.Work, placement WorkPlacement,
+	receipt model.CommandReceipt, event model.EventIntent, dispatch *ExecutionDispatchIntent,
+	businessAt time.Time) (CommandResult, error) {
+	if expectedBatchVersion == 0 || expectedParentVersion == 0 || receipt.CommandID == "" ||
+		nextBatch.Version != expectedBatchVersion+2 || nextBatch.Status != model.CompanyImportRunning ||
+		nextParent.WorkID != nextBatch.ParentWorkID || nextParent.Version != expectedParentVersion+1 ||
+		nextParent.Status != model.WorkRunning || applyWork.ParentWorkID != nextParent.WorkID ||
+		applyWork.TargetType != "company_import" || applyWork.TargetID != nextBatch.ImportID ||
+		applyWork.Purpose != "company_import_apply" || applyWork.Status != model.WorkOpen || applyWork.Version != 1 ||
+		event.AggregateType != "work" || event.AggregateID != nextParent.WorkID ||
+		event.AggregateVersion != nextParent.Version || event.CauseCommandID != receipt.CommandID {
+		return CommandResult{}, fmt.Errorf("company import confirmation facts are inconsistent")
+	}
+	eventAt, err := time.Parse(time.RFC3339, event.BusinessAt)
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("company import confirmation event business time: %w", err)
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("begin company import confirmation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if replay, found, err := readCommandReceipt(ctx, tx, receipt.CommandID, receipt.RequestHash); err != nil {
+		return CommandResult{}, err
+	} else if found {
+		return CommandResult{Response: replay, Replayed: true}, nil
+	}
+	currentParent, err := getWorkWith(ctx, tx, nextParent.WorkID, true)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	currentBatch, err := getCompanyImportWith(ctx, tx, nextBatch.ImportID, true)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	if currentParent.Version != expectedParentVersion {
+		return CommandResult{}, &model.VersionConflictError{Expected: expectedParentVersion, Actual: currentParent.Version}
+	}
+	if currentBatch.Version != expectedBatchVersion {
+		return CommandResult{}, &model.VersionConflictError{Expected: expectedBatchVersion, Actual: currentBatch.Version}
+	}
+	confirmed, err := currentBatch.Confirm(currentBatch.Version, nextBatch.PreviewHash)
+	if err == nil {
+		confirmed, err = confirmed.Start(confirmed.Version)
+	}
+	startedParent := currentParent
+	if err == nil {
+		startedParent, err = startedParent.Start(startedParent.Version)
+	}
+	if err != nil {
+		return CommandResult{}, err
+	}
+	if confirmed != nextBatch || startedParent != nextParent {
+		return CommandResult{}, fmt.Errorf("company import confirmation does not match persisted aggregates")
+	}
+	if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {
+		if errors.Is(err, ErrCommandConflict) {
+			_ = tx.Rollback()
+			return r.replayCommittedCommand(ctx, receipt.CommandID, receipt.RequestHash)
+		}
+		return CommandResult{}, err
+	}
+	if err := updateWorkTx(ctx, tx, currentParent.Version, nextParent, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := updateCompanyImportCAS(ctx, tx, currentBatch.Version, nextBatch, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := insertWork(ctx, tx, applyWork, placement, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := appendWorkCommandDispatch(ctx, tx, dispatch, placement, receipt.CommandID, "company_import_confirmed", businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CommandResult{}, fmt.Errorf("commit company import confirmation: %w", err)
+	}
+	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
+}
+
 func insertCompanyImport(ctx context.Context, executor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }, batch model.CompanyImport, businessAt time.Time) error {

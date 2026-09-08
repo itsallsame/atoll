@@ -86,7 +86,7 @@ func TestManifestExposesControlAndExecutorResultWords(t *testing.T) {
 	words := manifest().Words
 	for _, word := range []string{
 		TypeProbeStart, TypeProbeSchedule, TypeProbeStatus, TypeExecutionResult,
-		TypeCompanyImport, TypeCompanyImportGet, TypeCompanyImportItems,
+		TypeCompanyImport, TypeCompanyImportGet, TypeCompanyImportItems, TypeCompanyImportConfirm,
 		TypeCompanyAdd, TypeCompanyUpdate, TypeCompanyPause, TypeCompanyResume,
 		TypeCompanyArchive, TypeCompanyRestore, TypeCompanyGet, TypeCompanyList,
 		TypeSourceAdd, TypeSourceUpdate, TypeSourceValidate, TypeSourcePause,

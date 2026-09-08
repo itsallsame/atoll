@@ -134,6 +134,45 @@ func TestCompanyImportPreviewPersistsBoundedChunksAndVerifiesHash(t *testing.T) 
 	if err != nil || storedParent.WorkID != parent.WorkID {
 		t.Fatalf("parent Work = %+v err=%v", storedParent, err)
 	}
+	nextBatch, err := completed.Import.Confirm(completed.Import.Version, digest)
+	if err == nil {
+		nextBatch, err = nextBatch.Start(nextBatch.Version)
+	}
+	nextParent, parentErr := storedParent.Start(storedParent.Version)
+	applyWork, childErr := model.NewChildWork(nextParent, "company-import-apply-1", "company_import", batch.ImportID,
+		"company_import_apply", "parent")
+	if childErr == nil {
+		applyWork, childErr = applyWork.WithCausality("human:operator:1", "message-company-import-confirm-1", nextParent.WorkID)
+	}
+	if err != nil || parentErr != nil || childErr != nil {
+		t.Fatalf("build company import confirmation: batch=%v parent=%v child=%v", err, parentErr, childErr)
+	}
+	confirmReceipt, _ := model.NewCommandReceipt("company-import-confirm-1", "recruiting.company.import.confirm",
+		"sha256:company-import-confirm-1", json.RawMessage(`{"status":"running"}`))
+	confirmEvent, _ := model.NewEventIntent("company-import-confirm-event-1", "company.import.confirmed", "work",
+		nextParent.WorkID, nextParent.Version, now.Add(5*time.Second).Format(time.RFC3339Nano), confirmReceipt.CommandID,
+		json.RawMessage(`{}`))
+	applyPlacement := WorkPlacement{BusinessKey: "company-import-apply|1|0", Priority: 200,
+		Capability: "company.import", NotBefore: now.Add(5 * time.Second)}
+	confirmed, err := repository.ApplyConfirmCompanyImportCommand(ctx, completed.Import.Version, storedParent.Version,
+		nextBatch, nextParent, applyWork, applyPlacement, confirmReceipt, confirmEvent, nil, now.Add(5*time.Second))
+	if err != nil || confirmed.Replayed || string(confirmed.Response) != `{"status":"running"}` {
+		t.Fatalf("confirm company import = %+v err=%v", confirmed, err)
+	}
+	confirmedReplay, err := repository.ApplyConfirmCompanyImportCommand(ctx, completed.Import.Version, storedParent.Version,
+		nextBatch, nextParent, applyWork, applyPlacement, confirmReceipt, confirmEvent, nil, now.Add(5*time.Second))
+	if err != nil || !confirmedReplay.Replayed {
+		t.Fatalf("confirm company import replay = %+v err=%v", confirmedReplay, err)
+	}
+	storedBatch, err := repository.GetCompanyImport(ctx, batch.ImportID)
+	storedParent, parentErr = repository.GetWork(ctx, parent.WorkID)
+	storedApply, applyErr := repository.GetWork(ctx, applyWork.WorkID)
+	if err != nil || parentErr != nil || applyErr != nil || storedBatch.Status != model.CompanyImportRunning ||
+		storedBatch.Version != completed.Import.Version+2 || storedParent.Status != model.WorkRunning ||
+		storedApply.Status != model.WorkOpen || storedApply.ParentWorkID != storedParent.WorkID {
+		t.Fatalf("confirmed state: batch=%+v parent=%+v apply=%+v errors=%v/%v/%v", storedBatch, storedParent,
+			storedApply, err, parentErr, applyErr)
+	}
 }
 
 func TestCompanyImportChunkCASRejectsConcurrentWriter(t *testing.T) {
