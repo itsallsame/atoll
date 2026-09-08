@@ -1,0 +1,43 @@
+CREATE TABLE recruiting_source_discoveries (
+  discovery_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  work_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  company_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  discovery_generation BIGINT UNSIGNED NOT NULL,
+  company_version BIGINT UNSIGNED NOT NULL,
+  seed_url VARCHAR(2048) NOT NULL,
+  recipe_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  recipe_version BIGINT UNSIGNED NOT NULL,
+  discovery_status VARCHAR(32) CHARACTER SET ascii NOT NULL,
+  candidate_count INT UNSIGNED NOT NULL,
+  next_chunk_sequence BIGINT UNSIGNED NOT NULL,
+  version BIGINT UNSIGNED NOT NULL,
+  state_json JSON NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  PRIMARY KEY (discovery_id),
+  UNIQUE KEY uq_recruiting_source_discovery_work (work_id),
+  UNIQUE KEY uq_recruiting_source_discovery_generation (company_id, discovery_generation),
+  KEY ix_recruiting_source_discovery_status (discovery_status, updated_at, discovery_id),
+  CONSTRAINT fk_recruiting_source_discovery_work FOREIGN KEY (work_id) REFERENCES recruiting_works(work_id),
+  CONSTRAINT fk_recruiting_source_discovery_company FOREIGN KEY (company_id) REFERENCES recruiting_companies(company_id),
+  CONSTRAINT fk_recruiting_source_discovery_recipe FOREIGN KEY (recipe_id, recipe_version) REFERENCES recruiting_recipes(recipe_id, recipe_version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE recruiting_source_discovery_candidates (
+  discovery_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  candidate_id CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  candidate_ordinal INT UNSIGNED NOT NULL,
+  canonical_source_key VARCHAR(2048) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  disposition VARCHAR(32) CHARACTER SET ascii NOT NULL,
+  source_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  evidence_artifact_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  version BIGINT UNSIGNED NOT NULL,
+  state_json JSON NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  PRIMARY KEY (discovery_id, candidate_id),
+  UNIQUE KEY uq_recruiting_source_discovery_candidate_ordinal (discovery_id, candidate_ordinal),
+  KEY ix_recruiting_source_candidate_decision (discovery_id, disposition, candidate_ordinal),
+  KEY ix_recruiting_source_candidate_key (canonical_source_key(768)),
+  CONSTRAINT fk_recruiting_source_candidate_discovery FOREIGN KEY (discovery_id) REFERENCES recruiting_source_discoveries(discovery_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

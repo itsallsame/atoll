@@ -73,6 +73,8 @@ DROP TABLE IF EXISTS
   recruiting_event_outbox,
   recruiting_command_receipts,
   recruiting_repair_incidents,
+  recruiting_source_discovery_candidates,
+  recruiting_source_discoveries,
   recruiting_company_import_items,
   recruiting_company_imports,
   recruiting_budget_permits,
