@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -210,13 +209,12 @@ func handleExecutionTransition(sys actorbase.Sys, repository *store.Repository, 
 		return
 	}
 	businessAt := time.UnixMilli(msg.TS).UTC()
-	var attempt model.Attempt
-	var err error
+	action := ""
 	switch msg.Type {
 	case TypeExecutionAccept:
-		attempt, err = repository.AcceptListingExecution(msg.Ctx(), payload.AttemptID, string(msg.Sender.ID), payload.ExecutorIncarnation, businessAt)
+		action = "accept"
 	case TypeExecutionStarted:
-		attempt, err = repository.StartListingExecution(msg.Ctx(), payload.AttemptID, string(msg.Sender.ID), payload.ExecutorIncarnation, businessAt)
+		action = "start"
 	case TypeExecutionFailed:
 		if strings.TrimSpace(payload.Reason) == "" {
 			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "reason is required for execution.failed")
@@ -228,24 +226,38 @@ func handleExecutionTransition(sys actorbase.Sys, repository *store.Repository, 
 				return
 			}
 		}
-		if payload.Failure == nil {
-			attempt, err = repository.FailListingExecution(msg.Ctx(), payload.AttemptID, string(msg.Sender.ID), payload.ExecutorIncarnation, payload.Reason, businessAt)
-		} else {
-			attempt, err = repository.FailExecutionWithReport(msg.Ctx(), payload.AttemptID, string(msg.Sender.ID), payload.ExecutorIncarnation,
-				payload.Reason, *payload.Failure, businessAt)
-		}
+		action = "fail"
 	default:
-		err = fmt.Errorf("unsupported execution transition")
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "unsupported execution transition")
+		return
 	}
+	result, err := repository.ApplyExecutionTransitionCommand(msg.Ctx(), store.ExecutionTransitionCommand{
+		CommandID: payload.CommandID, Word: msg.Type, RequestHash: executionCommandRequestHash(msg), CorrelationID: string(msg.CorrelationID),
+		RequestedBy: string(msg.Sender.ID), AttemptID: payload.AttemptID, ExecutorIncarnation: payload.ExecutorIncarnation,
+		Action: action, Reason: payload.Reason, Failure: payload.Failure,
+	}, businessAt)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
 	}
-	response := executionControlResponse{
-		ContractVersion: executioncontract.Version, CorrelationID: string(msg.CorrelationID),
-		RequestedBy: string(msg.Sender.ID), Attempt: &attempt,
+	var response executionControlResponse
+	if err := json.Unmarshal(result.Response, &response); err != nil || response.Attempt == nil ||
+		response.ContractVersion != executioncontract.Version || response.RequestedBy != string(msg.Sender.ID) ||
+		response.Attempt.AttemptID != payload.AttemptID || response.Attempt.ExecutorActorID != string(msg.Sender.ID) ||
+		response.Attempt.ExecutorIncarnation != payload.ExecutorIncarnation {
+		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "stored execution response is invalid")
+		return
 	}
+	// Correlation belongs to this Atoll delivery, not to the durable business
+	// receipt. A replay keeps the same domain response while reflecting the
+	// current request's correlation.
+	response.CorrelationID = string(msg.CorrelationID)
 	_, _ = sys.Reply(msg, response)
+}
+
+func executionCommandRequestHash(msg actorbase.Msg) string {
+	sum := sha256.Sum256([]byte(msg.Type + "\n" + string(msg.Sender.ID) + "\n" + string(msg.Payload)))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func executionAttemptID(executorActorID, commandID string) string {

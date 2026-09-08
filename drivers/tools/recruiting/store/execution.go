@@ -416,21 +416,21 @@ WHERE s.source_id = ?`, job.SourceID).Scan(&companyState, &sourceState, &assignm
 // The name is retained for API compatibility; it accepts both executable
 // purposes selected by OfferExecution.
 func (r *Repository) AcceptListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation string, businessAt time.Time) (model.Attempt, error) {
-	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "accept", "", nil, businessAt)
+	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "accept", "", nil, businessAt, nil)
 }
 
 // StartListingExecution atomically starts Attempt, Work, and the first
 // occurrence execution. A retry starts a new Attempt while retaining the
 // already-running occurrence lifecycle.
 func (r *Repository) StartListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation string, businessAt time.Time) (model.Attempt, error) {
-	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "start", "", nil, businessAt)
+	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "start", "", nil, businessAt, nil)
 }
 
 // FailListingExecution releases the active Attempt slot and moves Work to a
 // retryable state. Retry policy and repair classification are a later control
 // decision; the repository never loops automatically.
 func (r *Repository) FailListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation, reason string, businessAt time.Time) (model.Attempt, error) {
-	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "fail", reason, nil, businessAt)
+	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "fail", reason, nil, businessAt, nil)
 }
 
 func (r *Repository) FailExecutionWithReport(ctx context.Context, attemptID, executorActorID, executorIncarnation, reason string,
@@ -441,11 +441,101 @@ func (r *Repository) FailExecutionWithReport(ctx context.Context, attemptID, exe
 	if strings.TrimSpace(reason) != report.Class {
 		return model.Attempt{}, fmt.Errorf("execution failure reason must match its classified report")
 	}
-	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "fail", reason, &report, businessAt)
+	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "fail", reason, &report, businessAt, nil)
+}
+
+type ExecutionTransitionCommand struct {
+	CommandID           string
+	Word                string
+	RequestHash         string
+	CorrelationID       string
+	RequestedBy         string
+	AttemptID           string
+	ExecutorIncarnation string
+	Action              string
+	Reason              string
+	Failure             *executioncontract.FailureReport
+}
+
+type executionTransitionHooks struct {
+	before func(*sql.Tx) (bool, error)
+	after  func(*sql.Tx, model.Attempt) error
+}
+
+// ApplyExecutionTransitionCommand makes the executor's command receipt and
+// Attempt/Work/Permit transition one transaction. The stored response is the
+// original application response, so a lost Atoll reply can be retried without
+// re-running the state transition.
+func (r *Repository) ApplyExecutionTransitionCommand(ctx context.Context, command ExecutionTransitionCommand,
+	businessAt time.Time) (CommandResult, error) {
+	if strings.TrimSpace(command.CommandID) == "" || strings.TrimSpace(command.Word) == "" ||
+		strings.TrimSpace(command.RequestHash) == "" || strings.TrimSpace(command.CorrelationID) == "" ||
+		strings.TrimSpace(command.RequestedBy) == "" || command.RequestedBy != strings.TrimSpace(command.RequestedBy) {
+		return CommandResult{}, fmt.Errorf("execution transition command identity, hash, correlation, and requester are required")
+	}
+	switch command.Action {
+	case "accept":
+		if command.Word != executioncontract.TypeAccept || command.Failure != nil || strings.TrimSpace(command.Reason) != "" {
+			return CommandResult{}, fmt.Errorf("accept execution command shape is invalid")
+		}
+	case "start":
+		if command.Word != executioncontract.TypeStarted || command.Failure != nil || strings.TrimSpace(command.Reason) != "" {
+			return CommandResult{}, fmt.Errorf("start execution command shape is invalid")
+		}
+	case "fail":
+		if command.Word != executioncontract.TypeFailed || strings.TrimSpace(command.Reason) == "" {
+			return CommandResult{}, fmt.Errorf("failed execution command shape is invalid")
+		}
+		if command.Failure != nil {
+			if err := command.Failure.Validate(command.AttemptID); err != nil || command.Failure.Class != strings.TrimSpace(command.Reason) {
+				return CommandResult{}, fmt.Errorf("failed execution command report is invalid")
+			}
+		}
+	default:
+		return CommandResult{}, fmt.Errorf("unsupported execution transition action %q", command.Action)
+	}
+	var response json.RawMessage
+	replayed := false
+	hooks := &executionTransitionHooks{
+		before: func(tx *sql.Tx) (bool, error) {
+			stored, found, err := readCommandReceipt(ctx, tx, command.CommandID, command.RequestHash)
+			if err != nil || !found {
+				return false, err
+			}
+			response, replayed = stored, true
+			return true, nil
+		},
+		after: func(tx *sql.Tx, attempt model.Attempt) error {
+			var err error
+			response, err = json.Marshal(struct {
+				ContractVersion string         `json:"contract_version"`
+				CorrelationID   string         `json:"correlation_id"`
+				RequestedBy     string         `json:"requested_by"`
+				Attempt         *model.Attempt `json:"attempt,omitempty"`
+			}{executioncontract.Version, command.CorrelationID, command.RequestedBy, &attempt})
+			if err != nil {
+				return err
+			}
+			receipt, err := model.NewCommandReceipt(command.CommandID, command.Word, command.RequestHash, response)
+			if err != nil {
+				return err
+			}
+			return reserveCommandReceipt(ctx, tx, receipt, businessAt)
+		},
+	}
+	_, err := r.transitionListingExecution(ctx, command.AttemptID, command.RequestedBy, command.ExecutorIncarnation,
+		command.Action, command.Reason, command.Failure, businessAt, hooks)
+	if errors.Is(err, ErrCommandConflict) {
+		return r.replayCommittedCommand(ctx, command.CommandID, command.RequestHash)
+	}
+	if err != nil {
+		return CommandResult{}, err
+	}
+	return CommandResult{Response: append(json.RawMessage(nil), response...), Replayed: replayed}, nil
 }
 
 func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation, action, reason string,
-	report *executioncontract.FailureReport, businessAt time.Time) (model.Attempt, error) {
+	report *executioncontract.FailureReport, businessAt time.Time, hooks *executionTransitionHooks) (model.Attempt, error) {
 	if strings.TrimSpace(attemptID) == "" || strings.TrimSpace(executorActorID) == "" || strings.TrimSpace(executorIncarnation) == "" || businessAt.IsZero() ||
 		(action == "fail" && strings.TrimSpace(reason) == "") {
 		return model.Attempt{}, fmt.Errorf("execution transition requires attempt, executor identity, incarnation, time, and failure reason when applicable")
@@ -468,6 +558,18 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 	}
 	if report != nil && report.Artifact.WorkID != work.WorkID {
 		return model.Attempt{}, fmt.Errorf("execution failure Artifact belongs to another Work")
+	}
+	// Read the receipt only after locking the Attempt. Concurrent delivery of
+	// the same command then observes the winner's receipt instead of applying
+	// the transition against its already-advanced state.
+	if hooks != nil && hooks.before != nil {
+		stop, err := hooks.before(tx)
+		if err != nil {
+			return model.Attempt{}, err
+		}
+		if stop {
+			return model.Attempt{}, nil
+		}
 	}
 	if action != "fail" {
 		if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, businessAt); err != nil {
@@ -555,6 +657,11 @@ WHERE attempt_id = ? AND attempt_status = ?`, attempt.Status, state, businessAt.
 	changed, _ := result.RowsAffected()
 	if changed != 1 {
 		return model.Attempt{}, ErrAttemptConflict
+	}
+	if hooks != nil && hooks.after != nil {
+		if err := hooks.after(tx, attempt); err != nil {
+			return model.Attempt{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return model.Attempt{}, fmt.Errorf("commit execution transition: %w", err)

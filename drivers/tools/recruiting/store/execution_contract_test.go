@@ -150,6 +150,88 @@ func TestListingExecutionOfferAndLifecycleAreFenced(t *testing.T) {
 	}
 }
 
+func TestExecutionTransitionCommandsReplayAtomically(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	offerAt, _ := prepareListingExecutionWork(t, ctx, repository, "execution-command", 1)
+	offer, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
+		AttemptID: "execution-command-attempt", ExecutorActorID: "execution-command-executor", ExecutorIncarnation: "execution-command-boot",
+		Capability: "http.fetch", Origin: "https://execution-command.example.com", OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := ExecutionTransitionCommand{CommandID: "execution-command-accept", Word: executioncontract.TypeAccept,
+		RequestHash: "sha256:accept", CorrelationID: "correlation-accept", RequestedBy: offer.Attempt.ExecutorActorID,
+		AttemptID: offer.Attempt.AttemptID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Action: "accept"}
+	results := make(chan CommandResult, 2)
+	errorsFound := make(chan error, 2)
+	for range 2 {
+		go func() {
+			result, applyErr := repository.ApplyExecutionTransitionCommand(ctx, command, offerAt)
+			results <- result
+			errorsFound <- applyErr
+		}()
+	}
+	accepted := <-results
+	second := <-results
+	for range 2 {
+		if applyErr := <-errorsFound; applyErr != nil {
+			t.Fatal(applyErr)
+		}
+	}
+	if !json.Valid(accepted.Response) || !json.Valid(second.Response) || !reflect.DeepEqual(accepted.Response, second.Response) || accepted.Replayed == second.Replayed {
+		t.Fatalf("concurrent accept commands = %+v / %+v", accepted, second)
+	}
+	replay, err := repository.ApplyExecutionTransitionCommand(ctx, command, offerAt.Add(time.Second))
+	if err != nil || !replay.Replayed || !reflect.DeepEqual(replay.Response, accepted.Response) {
+		t.Fatalf("accept command replay = %+v err=%v", replay, err)
+	}
+	conflict := command
+	conflict.RequestHash = "sha256:different"
+	if _, err := repository.ApplyExecutionTransitionCommand(ctx, conflict, offerAt); !errors.Is(err, ErrCommandConflict) {
+		t.Fatalf("changed execution command replay = %v", err)
+	}
+	command = ExecutionTransitionCommand{CommandID: "execution-command-start", Word: executioncontract.TypeStarted,
+		RequestHash: "sha256:start", CorrelationID: "correlation-start", RequestedBy: offer.Attempt.ExecutorActorID,
+		AttemptID: offer.Attempt.AttemptID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Action: "start"}
+	if _, err := repository.ApplyExecutionTransitionCommand(ctx, command, offerAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	failureArtifact := mustResultArtifact(t, "execution-command-failure", model.ArtifactFailure, offer.Work.WorkID, offer.Attempt.AttemptID)
+	report := executioncontract.FailureReport{Class: "transport_timeout", Retryable: true, Artifact: failureArtifact}
+	command = ExecutionTransitionCommand{CommandID: "execution-command-fail", Word: executioncontract.TypeFailed,
+		RequestHash: "sha256:fail", CorrelationID: "correlation-fail", RequestedBy: offer.Attempt.ExecutorActorID,
+		AttemptID: offer.Attempt.AttemptID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Action: "fail",
+		Reason: report.Class, Failure: &report}
+	if _, err := repository.ApplyExecutionTransitionCommand(ctx, command, offerAt.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var receipts, artifacts int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id LIKE 'execution-command-%'").Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_artifacts WHERE artifact_id = ?", failureArtifact.ArtifactID).Scan(&artifacts); err != nil {
+		t.Fatal(err)
+	}
+	storedAttempt, _ := repository.GetAttempt(ctx, offer.Attempt.AttemptID)
+	work, _ := repository.GetWork(ctx, offer.Work.WorkID)
+	if receipts != 3 || artifacts != 1 || storedAttempt.Status != model.AttemptFailed || work.Status != model.WorkWaitingRetry {
+		t.Fatalf("execution command facts receipts=%d artifacts=%d attempt=%s work=%s", receipts, artifacts, storedAttempt.Status, work.Status)
+	}
+}
+
 func TestConcurrentListingOffersClaimDistinctWorks(t *testing.T) {
 	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
 	if dsn == "" {
