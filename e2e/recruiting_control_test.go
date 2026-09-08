@@ -317,8 +317,10 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	}
 
 	cutoff := time.Now().UTC().Add(15 * time.Second).Truncate(time.Second)
-	dailySourceID := sourceIDWithEarlyDailyDue(cutoff.Format("2006-01-02"), 11, time.Minute)
+	dailySourceID := sourceIDWithDailyDue(cutoff.Format("2006-01-02"), 11, time.Minute, time.Second, 3*time.Second, "timer")
+	manualDailySourceID := sourceIDWithDailyDue(cutoff.Format("2006-01-02"), 11, time.Minute, 30*time.Second, 40*time.Second, "manual")
 	seedReadyRecruitingSource(t, runtimeDSN, dailySourceID, cutoff.Add(-time.Minute))
+	seedReadyRecruitingSource(t, runtimeDSN, manualDailySourceID, cutoff.Add(-time.Minute))
 	const dailyDecl = "e2e-recruiting-daily-schedule"
 	registrarRequest(t, recovered, homeID, systemActor, "system.actor.template.create", map[string]any{
 		"id": dailyDecl, "name": dailyDecl, "class": "recruiting",
@@ -350,8 +352,34 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	if got := nestedNumberField(t, dailyRun, "entity", "schedule_policy_version"); got != 11 {
 		t.Fatalf("daily timer lost schedule policy: %v", dailyRun)
 	}
-	if got := nestedNumberField(t, dailyRun, "entity", "expected_sources"); got != 1 {
-		t.Fatalf("daily cutoff did not isolate the one eligible source: %v", dailyRun)
+	if got := nestedNumberField(t, dailyRun, "entity", "expected_sources"); got != 2 {
+		t.Fatalf("daily cutoff did not isolate the two eligible sources: %v", dailyRun)
+	}
+	dailySummary := recovered.request(homeID, "recruiting.daily_run.summary", dailyActorID, map[string]any{"id": dailyRunID, "limit": 10})
+	occurrenceItems, _ := dailySummary["occurrences"].([]any)
+	var manualOccurrence map[string]any
+	for _, raw := range occurrenceItems {
+		occurrence, _ := raw.(map[string]any)
+		if stringField(t, occurrence, "source_id") == manualDailySourceID {
+			manualOccurrence = occurrence
+			break
+		}
+	}
+	if manualOccurrence == nil {
+		t.Fatalf("manual daily occurrence missing: %v", dailySummary)
+	}
+	joinCommand := map[string]any{
+		"command_id":       "e2e-run-join-occurrence",
+		"target":           map[string]any{"target_type": "source_occurrence", "target_id": stringField(t, manualOccurrence, "occurrence_id")},
+		"expected_version": numberField(t, manualOccurrence, "version"), "reason": "operator requests an early daily run",
+	}
+	joined := recovered.request(homeID, "recruiting.run.join_occurrence", dailyActorID, joinCommand)
+	if stringField(t, joined, "run_mode") != "join_occurrence" || stringField(t, joined, "occurrence_id") != stringField(t, manualOccurrence, "occurrence_id") {
+		t.Fatalf("manual occurrence join response = %v", joined)
+	}
+	joinedReplay := recovered.request(homeID, "recruiting.run.join_occurrence", dailyActorID, joinCommand)
+	if nestedStringField(t, joinedReplay, "work", "work_id") != nestedStringField(t, joined, "work", "work_id") {
+		t.Fatalf("manual occurrence join replay changed Work: first=%v replay=%v", joined, joinedReplay)
 	}
 	var scheduledWorks map[string]any
 	var workErr error
@@ -362,31 +390,39 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 		})
 		if workErr == nil {
 			works, _ := scheduledWorks["works"].([]any)
-			if len(works) == 1 {
+			if len(works) == 2 {
 				break
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	scheduledWorkItems, _ := scheduledWorks["works"].([]any)
-	if workErr != nil || len(scheduledWorkItems) != 1 {
-		t.Fatalf("durable occurrence timer did not create listing Work: %v err=%v\n%s", scheduledWorks, workErr, tailLog(h.server.logPath, 100))
+	if workErr != nil || len(scheduledWorkItems) != 2 {
+		t.Fatalf("timer and manual occurrence paths did not create two listing Works: %v err=%v\n%s", scheduledWorks, workErr, tailLog(h.server.logPath, 100))
 	}
-	scheduledWork, _ := scheduledWorkItems[0].(map[string]any)
-	if got := stringField(t, scheduledWork, "target_id"); got != dailySourceID {
-		t.Fatalf("daily Work target=%q want=%q: %v", got, dailySourceID, scheduledWorks)
+	targets := map[string]bool{}
+	for _, raw := range scheduledWorkItems {
+		work, _ := raw.(map[string]any)
+		targets[stringField(t, work, "target_id")] = true
+	}
+	if !targets[dailySourceID] || !targets[manualDailySourceID] {
+		t.Fatalf("daily Work targets=%v want timer=%q manual=%q: %v", targets, dailySourceID, manualDailySourceID, scheduledWorks)
+	}
+}
+
+func sourceIDWithDailyDue(scheduleDate string, policyVersion uint64, window, minimum, maximum time.Duration, label string) string {
+	for index := 0; ; index++ {
+		id := fmt.Sprintf("e2e-daily-source-%s-%d", label, index)
+		sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%d", id, scheduleDate, policyVersion)))
+		offset := time.Duration(binary.BigEndian.Uint64(sum[16:24])%uint64(window.Microseconds())) * time.Microsecond
+		if offset >= minimum && offset <= maximum {
+			return id
+		}
 	}
 }
 
 func sourceIDWithEarlyDailyDue(scheduleDate string, policyVersion uint64, window time.Duration) string {
-	for index := 0; ; index++ {
-		id := fmt.Sprintf("e2e-daily-source-%d", index)
-		sum := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%d", id, scheduleDate, policyVersion)))
-		offset := time.Duration(binary.BigEndian.Uint64(sum[16:24])%uint64(window.Microseconds())) * time.Microsecond
-		if offset >= time.Second && offset <= 3*time.Second {
-			return id
-		}
-	}
+	return sourceIDWithDailyDue(scheduleDate, policyVersion, window, time.Second, 3*time.Second, "early")
 }
 
 func seedReadyRecruitingSource(t *testing.T, dsn, sourceID string, now time.Time) {
@@ -399,7 +435,7 @@ func seedReadyRecruitingSource(t *testing.T, dsn, sourceID string, now time.Time
 	repository, _ := store.NewRepository(db)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	company, _ := model.NewCompany("e2e-daily-company", "E2E Daily Company", "https://e2e-daily.example.test")
+	company, _ := model.NewCompany("company-"+sourceID, "E2E Daily Company "+sourceID, "https://company-"+sourceID+".example.test")
 	if err := repository.CreateCompany(ctx, company, now); err != nil {
 		t.Fatal(err)
 	}
@@ -427,9 +463,10 @@ func seedReadyRecruitingSource(t *testing.T, dsn, sourceID string, now time.Time
 	if err := repository.UpdateSourceCAS(ctx, source.Version, validating, now); err != nil {
 		t.Fatal(err)
 	}
-	execution := model.RecipeExecution{ABIVersion: model.RecipeABIVersion, ContentRef: "recipe://e2e-daily-listing",
+	recipeID := "recipe-" + sourceID
+	execution := model.RecipeExecution{ABIVersion: model.RecipeABIVersion, ContentRef: "recipe://" + recipeID,
 		RequiredCapability: "http.fetch", Transport: model.RecipeTransportHTTPJSON}
-	recipe, _ := model.NewRecipe("e2e-daily-listing", model.RecipeListing, "e2e-daily.example.test", 1,
+	recipe, _ := model.NewRecipe(recipeID, model.RecipeListing, "e2e-daily.example.test", 1,
 		"sha256:e2e-daily-content", "sha256:e2e-daily-contract", execution)
 	recipe, _ = recipe.BeginValidation(recipe.StateVersion)
 	recipe, _ = recipe.Publish(recipe.StateVersion)
@@ -479,7 +516,7 @@ func startRecruitingMySQL(t *testing.T) string {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("start recruiting MySQL: %v\n%s", err, output)
 	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", containerName).Run() })
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", "-v", containerName).Run() })
 	var port string
 	ready := false
 	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); {

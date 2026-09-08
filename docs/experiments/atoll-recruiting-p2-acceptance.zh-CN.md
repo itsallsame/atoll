@@ -47,6 +47,7 @@ P1 契约基线：`a94d2b8d`
 - 旧的分块 `MaterializeOccurrences` 仅保留给显式非日切组装路径，并已加强为校验 DailyRun 策略、窗口、Occurrence JSON due time、数据库 due time 和全部不可变快照；不得将外部部分集合通过该 API 冒充可信每日截点；
 - 每个 SourceOccurrence 冻结 Company/Source/调度策略版本、Endpoint、Assignment、Recipe/内容哈希、ABI/transport/capability/origin 与 due time，后续 Source 更新不会改写当日执行输入；planned occurrence 可由操作员显式排除并记录原因，绑定 Work 后不能绕过 Work fencing 直接排除；
 - migration `000005` 建立 occurrence→listing Work 的唯一外键。到期物化每批最多 500 条，以 `FOR UPDATE SKIP LOCKED` 只锁 occurrence 行，并在同一事务创建 capability/origin 路由的 Work、推进 occurrence 为 queued、写入 outbox；窗口已经结束的 planned occurrence 直接形成明确异常，不创建 deadline 已失效的 Work；
+- `run.join_occurrence` Repository 合同以 occurrence expected version 锁定一个 planned 项，验证所属 DailyRun 仍 running、业务时间早于冻结窗口末且 Work placement 完全来自 occurrence 快照；Work、queued occurrence、稳定 receipt、业务 event 和定向 execution dispatch 同事务提交。重放返回原响应，陈旧版本不留下 receipt，新 Work 可被统一 Listing Offer 领取；
 - 并发实测曾发现把 DailyRun JOIN 进 locking read 会锁住所有 occurrence 共享的父行、令多实例串行；修正为只锁 occurrence、随后只读校验 DailyRun 后，两个实例连续三轮都各自领取不同项，最终 Work 无重复；
 - 到期 occurrence 查询有界为 500 条，`EXPLAIN FORMAT=JSON` 验证使用 `(status, due_at, occurrence_id)` 索引；
 - DailyRun 只能用数据库内不可变 occurrence 终态事实闭账：总数必须等于 cutoff 时 expected sources，成功、异常、排除统计必须逐项一致，未完成项或伪造 summary 都不能关闭日批次；物化和闭账锁定同一 DailyRun 行，避免关闭后晚插任务的竞态；

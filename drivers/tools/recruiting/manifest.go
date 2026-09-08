@@ -44,6 +44,7 @@ func manifest() introspect.Manifest {
 			TypeWorkRetry:              {Description: "create a new causal work lifecycle from terminal non-success work"},
 			TypeWorkCancel:             {Description: "cancel non-terminal work and fence existing attempts"},
 			TypeWorkResolve:            {Description: "record an explicit human non-success resolution"},
+			TypeRunJoinOccurrence:      {Description: "materialize one planned daily source occurrence for immediate manual execution"},
 			TypeExecutionOffer:         {Description: "offer one capability-matched listing or detail execution to an authenticated executor"},
 			TypeExecutionAccept:        {Description: "accept a bound execution attempt using executor incarnation fencing"},
 			TypeExecutionStarted:       {Description: "atomically start an attempt, its work, and an associated listing occurrence when present"},

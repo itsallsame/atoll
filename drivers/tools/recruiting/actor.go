@@ -167,6 +167,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleSourceMessage(sys, repository, msg)
 		case TypeWorkCreate, TypeWorkPause, TypeWorkResume, TypeWorkRetry, TypeWorkCancel, TypeWorkResolve:
 			handleWorkMessage(sys, cfg, repository, msg)
+		case TypeRunJoinOccurrence:
+			handleRunJoinOccurrence(sys, cfg, repository, msg)
 		case TypeExecutionOffer, TypeExecutionAccept, TypeExecutionStarted, TypeExecutionFailed, TypeExecutionWakeCompleted:
 			handleExecutionControlMessage(sys, cfg, repository, msg)
 		case TypeSourceGet, TypeSourceList, TypeJobGet, TypeJobList, TypeWorkGet, TypeWorkList,

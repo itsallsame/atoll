@@ -78,7 +78,7 @@ func TestWorkControlWordsAndEventsAreExposed(t *testing.T) {
 			t.Fatalf("event for %s = %s", word, actual)
 		}
 	}
-	for _, word := range []string{TypeWorkCreate, TypeWorkPause, TypeWorkResume, TypeWorkRetry, TypeWorkCancel, TypeWorkResolve} {
+	for _, word := range []string{TypeWorkCreate, TypeWorkPause, TypeWorkResume, TypeWorkRetry, TypeWorkCancel, TypeWorkResolve, TypeRunJoinOccurrence} {
 		if _, exists := actorManifest.Words[word]; !exists {
 			t.Fatalf("work control word %s is absent from manifest", word)
 		}

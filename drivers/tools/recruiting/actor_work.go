@@ -45,6 +45,8 @@ type workCommandResponse struct {
 	Work            model.Work `json:"work"`
 	Target          Target     `json:"target"`
 	NextAction      string     `json:"next_action"`
+	RunMode         RunMode    `json:"run_mode,omitempty"`
+	OccurrenceID    string     `json:"occurrence_id,omitempty"`
 }
 
 func handleWorkMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -60,6 +62,86 @@ func handleWorkMessage(sys actorbase.Sys, cfg Config, repository *store.Reposito
 	default:
 		handleWorkMutation(sys, repository, msg)
 	}
+}
+
+func handleRunJoinOccurrence(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
+	if repository == nil {
+		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
+		return
+	}
+	var command MutationCommand
+	if !decode(sys, msg, &command) {
+		return
+	}
+	context, err := NewCommandContext(command, string(msg.Sender.ID))
+	if err != nil || command.Target.Type != "source_occurrence" {
+		if err == nil {
+			err = fmt.Errorf("target_type must be source_occurrence")
+		}
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	if replay, found, lookupErr := repository.LookupCommand(msg.Ctx(), command.CommandID, commandRequestHash(msg)); lookupErr != nil {
+		failStoreError(sys, msg, lookupErr)
+		return
+	} else if found {
+		_, _ = sys.Reply(msg, json.RawMessage(replay.Response))
+		return
+	}
+	occurrence, err := repository.GetOccurrence(msg.Ctx(), command.Target.ID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	if occurrence.Version != command.ExpectedVersion {
+		failStoreError(sys, msg, &model.VersionConflictError{Expected: command.ExpectedVersion, Actual: occurrence.Version})
+		return
+	}
+	run, err := repository.GetDailyRun(msg.Ctx(), occurrence.DailyRunID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	windowEnd, err := time.Parse(time.RFC3339, run.WindowEndAt)
+	if err != nil {
+		failStoreError(sys, msg, fmt.Errorf("daily run has invalid window end: %w", err))
+		return
+	}
+	businessAt := time.UnixMilli(msg.TS).UTC()
+	work, err := model.NewWork("work-listing-"+occurrence.OccurrenceID, "source", occurrence.SourceID, "listing_sync", "manual")
+	if err == nil {
+		work, err = work.WithCausality(context.RequestedBy, string(msg.ID), "")
+	}
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	placement := store.WorkPlacement{
+		BusinessKey: "daily-listing|" + occurrence.OccurrenceID,
+		Priority:    200,
+		Capability:  occurrence.ListingExecution.Execution.RequiredCapability,
+		Origin:      occurrence.ListingExecution.Origin,
+		NotBefore:   businessAt,
+		DeadlineAt:  &windowEnd,
+	}
+	response := makeWorkResponse(msg, work)
+	response.RunMode, response.OccurrenceID = RunJoinOccurrence, occurrence.OccurrenceID
+	dispatch, err := workCommandDispatch(cfg, work, placement, command.CommandID, "run_join_occurrence")
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	receipt, event, _, err := workCommandFacts(msg, command.CommandID, command.Reason, response, "work.created")
+	var result store.CommandResult
+	if err == nil {
+		result, err = repository.ApplyJoinOccurrenceCommand(msg.Ctx(), command.ExpectedVersion, occurrence.OccurrenceID,
+			work, placement, receipt, event, dispatch, businessAt)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
 }
 
 func handleWorkCreate(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
