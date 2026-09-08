@@ -4,12 +4,17 @@
 package recruitingexecutor
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/httpdriver"
 	"github.com/wanpengxie/atoll/lib/actorbase"
 	"github.com/wanpengxie/atoll/lib/behavior"
 	"github.com/wanpengxie/atoll/lib/introspect"
@@ -17,7 +22,10 @@ import (
 	"github.com/wanpengxie/atoll/protocol/message"
 )
 
-const TypeProbe = "recruiting.execution.probe"
+const (
+	TypeProbe = "recruiting.execution.probe"
+	TypeWake  = "recruiting.execution.wake"
+)
 
 type probePayload struct {
 	WorkID              string        `json:"work_id"`
@@ -34,11 +42,23 @@ type resultPayload struct {
 	Result              string `json:"result"`
 }
 
+type wakePayload struct {
+	CommandID string `json:"command_id"`
+	Origin    string `json:"origin,omitempty"`
+	ProfileID string `json:"profile_id,omitempty"`
+}
+
+type productionRuntime struct {
+	driver  *httpdriver.Driver
+	options executeOfferOptions
+}
+
 func manifest() introspect.Manifest {
 	return introspect.Manifest{
 		Class: Class, Interfaces: []string{"actor", "recruiting-executor"},
 		Words: map[string]introspect.WordSpec{
 			TypeProbe: {Description: "execute the deterministic recruiting P0 fixture"},
+			TypeWake:  {Description: "claim and execute at most one available recruiting Work after an explicit control-plane wake"},
 		},
 	}
 }
@@ -50,10 +70,23 @@ func Def(cfg Config) actorbase.Def {
 }
 
 func run(sys actorbase.Sys, cfg Config) error {
+	incarnation := "executor-" + uuid.NewString()
+	var production *productionRuntime
+	if cfg.ExecutionEnabled {
+		var err error
+		production, err = newProductionRuntime(cfg)
+		if err != nil {
+			return err
+		}
+	}
 	for {
 		msg, err := sys.Recv()
 		if err != nil {
 			return err
+		}
+		if msg.Type == TypeWake {
+			handleWake(sys, cfg, production, incarnation, msg)
+			continue
 		}
 		if msg.Type != TypeProbe {
 			_, _ = sys.Fail(msg, "type_unsupported", fmt.Sprintf("recruiting executor does not answer %q", msg.Type))
@@ -85,6 +118,72 @@ func run(sys actorbase.Sys, cfg Config) error {
 		}
 		_, _ = sys.Reply(msg, map[string]any{"attempt_id": p.AttemptID, "status": "submitted"})
 	}
+}
+
+func newProductionRuntime(cfg Config) (*productionRuntime, error) {
+	robots, err := httpdriver.NewRobotsTxtChecker(httpdriver.RobotsPolicy{Timeout: time.Duration(cfg.RobotsTimeoutMS) * time.Millisecond,
+		MaxBytes: cfg.RobotsMaxBytes, CacheTTL: time.Duration(cfg.RobotsCacheTTLMS) * time.Millisecond})
+	if err != nil {
+		return nil, fmt.Errorf("prepare robots checker: %w", err)
+	}
+	driver, err := httpdriver.New(httpdriver.Policy{MaxConcurrency: cfg.HTTPMaxConcurrency,
+		MinOriginInterval: time.Duration(cfg.HTTPMinOriginIntervalMS) * time.Millisecond, CircuitThreshold: cfg.HTTPCircuitThreshold,
+		CircuitCooldown: time.Duration(cfg.HTTPCircuitCooldownMS) * time.Millisecond}, robots)
+	if err != nil {
+		return nil, fmt.Errorf("prepare HTTP driver: %w", err)
+	}
+	return &productionRuntime{driver: driver, options: executeOfferOptions{
+		Artifact: artifactSinkConfig{DeviceName: cfg.ArtifactDeviceName, ChannelName: cfg.ArtifactChannelName,
+			Directory: cfg.ArtifactDirectory, AccessScope: cfg.ArtifactAccessScope, Retention: cfg.ArtifactRetention,
+			Redacted: cfg.ArtifactRedaction == "redacted", MaxBytes: cfg.ArtifactMaxBytes},
+		Compliance: httpdriver.ComplianceEvidence{TermsPolicyVersion: cfg.TermsPolicyVersion, TermsReviewedAt: cfg.TermsReviewedAt},
+		Now:        time.Now,
+	}}, nil
+}
+
+func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, incarnation string, msg actorbase.Msg) {
+	if !cfg.ExecutionEnabled || production == nil {
+		_, _ = sys.Fail(msg, "execution_disabled", "production recruiting execution is not enabled")
+		return
+	}
+	if msg.Sender.Kind != actor.KindTool || msg.Sender.ID != cfg.ControlActorID {
+		_, _ = sys.Fail(msg, "permission_denied", "only the configured recruiting control actor may wake this executor")
+		return
+	}
+	var payload wakePayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.CommandID, payload.Origin, payload.ProfileID = strings.TrimSpace(payload.CommandID), strings.TrimSpace(payload.Origin), strings.TrimSpace(payload.ProfileID)
+	if payload.CommandID == "" || len(payload.CommandID) > 191 {
+		_, _ = sys.Fail(msg, "payload_invalid", "command_id is required and must be at most 191 bytes")
+		return
+	}
+	offer, err := requestExecutionOffer(msg.Ctx(), sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()), executioncontract.OfferRequest{
+		CommandID: wakeOfferCommandID(incarnation, payload.CommandID), ExecutorIncarnation: incarnation,
+		Capability: cfg.Capability, Origin: payload.Origin, ProfileID: payload.ProfileID,
+	}, time.Duration(cfg.ControlWaitMS)*time.Millisecond)
+	if err != nil {
+		_, _ = sys.Fail(msg, "control_unavailable", err.Error())
+		return
+	}
+	if offer == nil {
+		_, _ = sys.Reply(msg, map[string]any{"status": "idle", "executor_incarnation": incarnation})
+		return
+	}
+	control := messageExecutionControl{caller: sys, cause: msg.Cause(), controlActor: cfg.ControlActorID,
+		executorActorID: string(sys.Self()), wait: time.Duration(cfg.ControlWaitMS) * time.Millisecond}
+	if err := executeOffer(msg.Ctx(), control, sys.Resource(), production.driver, *offer, production.options); err != nil {
+		_, _ = sys.Fail(msg, "execution_incomplete", err.Error(), map[string]any{"attempt_id": offer.Attempt.AttemptID, "work_id": offer.Work.WorkID})
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{"status": "handled", "attempt_id": offer.Attempt.AttemptID,
+		"work_id": offer.Work.WorkID, "kind": offer.Kind, "executor_incarnation": incarnation})
+}
+
+func wakeOfferCommandID(incarnation, commandID string) string {
+	sum := sha256.Sum256([]byte("recruiting.execution.wake.v1\n" + incarnation + "\n" + commandID))
+	return fmt.Sprintf("wake-offer-%x", sum[:16])
 }
 
 func decode(sys actorbase.Sys, msg actorbase.Msg, dst any) bool {
