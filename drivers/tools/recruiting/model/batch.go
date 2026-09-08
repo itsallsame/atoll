@@ -17,6 +17,7 @@ const (
 	CompanyImportPreviewed  CompanyImportStatus = "previewed"
 	CompanyImportConfirmed  CompanyImportStatus = "confirmed"
 	CompanyImportRunning    CompanyImportStatus = "running"
+	CompanyImportCanceling  CompanyImportStatus = "canceling"
 	CompanyImportCompleted  CompanyImportStatus = "completed"
 	CompanyImportCanceled   CompanyImportStatus = "canceled"
 )
@@ -177,6 +178,37 @@ func (b CompanyImport) Cancel(expected uint64) (CompanyImport, error) {
 		return CompanyImport{}, &InvalidTransitionError{Entity: "company_import", From: string(b.Status), Action: "cancel"}
 	}
 	b.Status = CompanyImportCanceled
+	b.Version++
+	return b, nil
+}
+
+func (b CompanyImport) RequestCancel(expected uint64) (CompanyImport, error) {
+	if err := requireVersion(expected, b.Version); err != nil {
+		return CompanyImport{}, err
+	}
+	if b.Status == CompanyImportCompleted || b.Status == CompanyImportCanceled || b.Status == CompanyImportCanceling {
+		return CompanyImport{}, &InvalidTransitionError{Entity: "company_import", From: string(b.Status), Action: "request cancel"}
+	}
+	b.Status = CompanyImportCanceling
+	b.Version++
+	return b, nil
+}
+
+func (b CompanyImport) FinishCancel(expected uint64, results []BatchItemResult) (CompanyImport, error) {
+	if err := requireVersion(expected, b.Version); err != nil {
+		return CompanyImport{}, err
+	}
+	if b.Status != CompanyImportCanceling {
+		return CompanyImport{}, &InvalidTransitionError{Entity: "company_import", From: string(b.Status), Action: "finish cancel"}
+	}
+	outcome, err := AggregateBatch(results)
+	if err != nil {
+		return CompanyImport{}, err
+	}
+	if outcome.Total != b.ItemCount {
+		return CompanyImport{}, fmt.Errorf("company import cancellation result count %d does not match preview count %d", outcome.Total, b.ItemCount)
+	}
+	b.Outcome, b.Status = outcome, CompanyImportCanceled
 	b.Version++
 	return b, nil
 }

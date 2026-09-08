@@ -21,6 +21,7 @@ func manifest() introspect.Manifest {
 			TypeCompanyImportGet:       {Description: "get one durable company import aggregate"},
 			TypeCompanyImportItems:     {Description: "seek-page company import preview items and dispositions"},
 			TypeCompanyImportConfirm:   {Description: "confirm an exact company import preview and start bounded item application"},
+			TypeCompanyImportCancel:    {Description: "cancel a company import and fence in-flight application"},
 			TypeCompanyAdd:             {Description: "add a recruiting company with an idempotent command"},
 			TypeCompanyUpdate:          {Description: "update company identity fields with version fencing"},
 			TypeCompanyPause:           {Description: "pause a company using an explicit drain policy"},

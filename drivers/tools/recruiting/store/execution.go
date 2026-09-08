@@ -105,7 +105,7 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	    WHERE ci.parent_work_id = w.work_id AND ci.import_status = 'previewing'
 	  )) OR (w.purpose = 'company_import_apply' AND EXISTS (
 	    SELECT 1 FROM recruiting_company_imports ci
-	    WHERE ci.import_id = w.target_id AND ci.import_status = 'running'
+	    WHERE ci.import_id = w.target_id AND ci.import_status IN ('running', 'canceling')
 	  )))
   AND NOT EXISTS (
     SELECT 1 FROM recruiting_attempts a

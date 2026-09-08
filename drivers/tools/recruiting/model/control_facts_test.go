@@ -160,6 +160,22 @@ func TestCompanyImportRejectsInlineOrUnhashedInputAndDuplicatePreviewRows(t *tes
 	}
 }
 
+func TestCompanyImportCancellationAggregatesTerminalItems(t *testing.T) {
+	batch, _ := NewCompanyImport("cancel-import", "cancel-parent", "artifact://imports/cancel.csv",
+		"sha256:"+strings.Repeat("a", 64), "company-import.v1", 1)
+	batch, _ = batch.AppendPreviewChunk(batch.Version, 0, 2)
+	canceling, err := batch.RequestCancel(batch.Version)
+	if err != nil || canceling.Status != CompanyImportCanceling {
+		t.Fatalf("request cancel=%+v err=%v", canceling, err)
+	}
+	canceled, err := canceling.FinishCancel(canceling.Version, []BatchItemResult{
+		{ItemKey: "row-1", Status: BatchItemSucceeded}, {ItemKey: "row-2", Status: BatchItemCanceled},
+	})
+	if err != nil || canceled.Status != CompanyImportCanceled || canceled.Outcome.Succeeded != 1 || canceled.Outcome.Canceled != 1 {
+		t.Fatalf("finish cancel=%+v err=%v", canceled, err)
+	}
+}
+
 func TestArtifactAndListingObservationRequireStableReferences(t *testing.T) {
 	artifact, err := NewArtifactMetadata("artifact-1", ArtifactPage, "sha256:page", "object://bucket/page", "work-1", "attempt-1", "operators", "30d", true)
 	if err != nil || artifact.Kind != ArtifactPage {

@@ -173,6 +173,118 @@ func (r *Repository) ApplyConfirmCompanyImportCommand(ctx context.Context, expec
 	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
 }
 
+// ApplyCancelCompanyImportCommand changes the batch fence before it creates a
+// high-priority cancellation coordinator. Existing apply Works are canceled
+// in the same transaction, which invalidates every in-flight Attempt without
+// requiring cooperation from the executor that is being stopped.
+func (r *Repository) ApplyCancelCompanyImportCommand(ctx context.Context, expectedBatchVersion, expectedParentVersion uint64,
+	nextBatch model.CompanyImport, cancelWork model.Work, placement WorkPlacement, receipt model.CommandReceipt,
+	event model.EventIntent, dispatch *ExecutionDispatchIntent, businessAt time.Time) (CommandResult, error) {
+	if expectedBatchVersion == 0 || expectedParentVersion == 0 || nextBatch.Version != expectedBatchVersion+1 ||
+		nextBatch.Status != model.CompanyImportCanceling || cancelWork.ParentWorkID != nextBatch.ParentWorkID ||
+		cancelWork.TargetType != "company_import" || cancelWork.TargetID != nextBatch.ImportID ||
+		cancelWork.Purpose != "company_import_apply" || cancelWork.Status != model.WorkOpen || cancelWork.Version != 1 ||
+		receipt.CommandID == "" || event.AggregateType != "work" || event.AggregateID != nextBatch.ParentWorkID ||
+		event.AggregateVersion != expectedParentVersion || event.CauseCommandID != receipt.CommandID {
+		return CommandResult{}, fmt.Errorf("company import cancellation facts are inconsistent")
+	}
+	eventAt, err := time.Parse(time.RFC3339, event.BusinessAt)
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("company import cancellation event business time: %w", err)
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("begin company import cancellation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if replay, found, err := readCommandReceipt(ctx, tx, receipt.CommandID, receipt.RequestHash); err != nil {
+		return CommandResult{}, err
+	} else if found {
+		return CommandResult{Response: replay, Replayed: true}, nil
+	}
+	parent, err := getWorkWith(ctx, tx, nextBatch.ParentWorkID, true)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	if parent.Version != expectedParentVersion || parent.Terminal() {
+		return CommandResult{}, &model.VersionConflictError{Expected: expectedParentVersion, Actual: parent.Version}
+	}
+	currentBatch, err := getCompanyImportWith(ctx, tx, nextBatch.ImportID, true)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	if currentBatch.Version != expectedBatchVersion {
+		return CommandResult{}, &model.VersionConflictError{Expected: expectedBatchVersion, Actual: currentBatch.Version}
+	}
+	recomputed, err := currentBatch.RequestCancel(currentBatch.Version)
+	if err != nil || recomputed != nextBatch {
+		if err != nil {
+			return CommandResult{}, err
+		}
+		return CommandResult{}, fmt.Errorf("company import cancellation does not match persisted aggregate")
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT state_json FROM recruiting_works
+WHERE parent_work_id = ? AND purpose = 'company_import_apply'
+  AND status NOT IN ('completed', 'canceled')
+ORDER BY work_id FOR UPDATE`, parent.WorkID)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	var active []model.Work
+	for rows.Next() {
+		var state []byte
+		if err := rows.Scan(&state); err != nil {
+			_ = rows.Close()
+			return CommandResult{}, err
+		}
+		var work model.Work
+		if err := json.Unmarshal(state, &work); err != nil {
+			_ = rows.Close()
+			return CommandResult{}, err
+		}
+		active = append(active, work)
+	}
+	if err := rows.Close(); err != nil {
+		return CommandResult{}, err
+	}
+	if err := rows.Err(); err != nil {
+		return CommandResult{}, err
+	}
+	if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {
+		if errors.Is(err, ErrCommandConflict) {
+			_ = tx.Rollback()
+			return r.replayCommittedCommand(ctx, receipt.CommandID, receipt.RequestHash)
+		}
+		return CommandResult{}, err
+	}
+	for _, work := range active {
+		canceled, err := work.Cancel(work.Version)
+		if err != nil {
+			return CommandResult{}, err
+		}
+		if err := updateWorkTx(ctx, tx, work.Version, canceled, businessAt); err != nil {
+			return CommandResult{}, err
+		}
+	}
+	if err := updateCompanyImportCAS(ctx, tx, currentBatch.Version, nextBatch, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := insertWork(ctx, tx, cancelWork, placement, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := appendWorkCommandDispatch(ctx, tx, dispatch, placement, receipt.CommandID, "company_import_cancel_requested", businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CommandResult{}, fmt.Errorf("commit company import cancellation: %w", err)
+	}
+	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
+}
+
 func insertCompanyImport(ctx context.Context, executor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }, batch model.CompanyImport, businessAt time.Time) error {

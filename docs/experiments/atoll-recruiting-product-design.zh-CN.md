@@ -550,7 +550,7 @@ Web / 飞书 Gateway         → 只提交公开消息
 
 ```text
 recruiting.company.add / update / pause / resume / archive / delete
-recruiting.company.import / import.get / import.items / import.confirm / merge.preview / merge.confirm / restore
+recruiting.company.import / import.get / import.items / import.confirm / import.cancel / merge.preview / merge.confirm / restore
 recruiting.company.get / list
 recruiting.source.add / update / validate / pause / resume / archive / restore
 recruiting.source.discover / get / list
@@ -572,7 +572,9 @@ recruiting.capacity.status
 
 公司导入的第一阶段采用 `company-import.v1` CSV Resource（`company_id,name,website`），`recruiting.company.import` 只在控制面原子创建父 Work、导入聚合、receipt、event 和定向 dispatch，不把文件正文放进 Message、Actor State 或 MySQL。仍是同一个 `recruiting-executor` Actor class 的 `company.import` capability 读取 File Resource、复核原始字节 SHA-256、解析并以最多 500 项的结果 envelope 提交；控制面以 `batch_version + chunk_sequence` 原子保存分片，最终从已落库项重新计算 `preview_hash`。Executor 重启按持久 `item_count` 继续，分片大小改变也不重传已确认项。预览 Attempt 成功后父 Work 进入 `waiting_human(preview_ready)`，不能提前冒充整批完成；用户通过 `import.get/import.items` 分页审阅，并以 `preview_hash + expected_version` 执行 `import.confirm`，从而把批准严格绑定到所见内容。
 
-确认事务本身不修改 Company，而是原子启动一个 `company_import_apply` 协调 Work。它仍由同一 Executor class 和 `company.import` capability 领取，每次 immutable offer 最多携带配置的 500 个待处理项；Executor 只确认这一有界 envelope，Company 的权威写入留在控制面。每个预览项各用一个独立事务创建自己的 `company_import_item` 子 Work、Company（适用时）、逐项 outcome 和 event：单项业务冲突进入 `waiting_human`，输入内重复项为 `skipped`，不会回滚其他成功项。进程在中途退出后，已存在 outcome 的项被幂等跳过；仍有待处理项时同一协调 Work 进入 `waiting_retry` 并产生下一次持久 dispatch。全部项终结后，`CompanyImport` 保存结构化汇总；无异常时父 Work 成功，有失败或等待人工时父 Work 保持 `waiting_human`，不得把部分成功冒充整批成功。
+确认事务本身不修改 Company，而是原子启动一个 `company_import_apply` 协调 Work。它仍由同一 Executor class 和 `company.import` capability 领取，每次 immutable offer 最多携带配置的 500 个待处理项；Executor 只确认这一有界 envelope，Company 的权威写入留在控制面。每个预览项各用一个独立事务创建自己的 `company_import_item` 子 Work、Company（适用时）、逐项 outcome 和 event：单项业务冲突进入 `waiting_human`，输入内重复项为 `skipped`，不会回滚其他成功项。进程在中途退出后，已存在 outcome 的项被幂等跳过；仍有待处理项时同一协调 Work 进入 `waiting_retry` 并产生下一次持久 dispatch；若最后一个 item 已提交但页级回执丢失，恢复后的空 finalizer offer 负责完成汇总，不会留下无 pending item 的悬挂批次。全部项终结后，`CompanyImport` 保存结构化汇总；无异常时父 Work 成功，有失败或等待人工时父 Work 保持 `waiting_human`，不得把部分成功冒充整批成功。
+
+`recruiting.company.import.cancel` 适用于预览或应用中的批次。请求事务先把批次推进到 `canceling`，取消已有协调 Work 并提升 acceptance fence，使旧 Executor 结果立即失效，再创建同一 capability 的高优先级取消协调 Work。已经成功、跳过或等待人工的逐项事实保持不变；尚未开始的项目仍按有界页和独立事务创建 canceled 子 Work/outcome，不能以一次大范围 UPDATE 伪造逐项控制边界。全部未开始项终结后批次和父 Work 才进入 `canceled`。
 
 ## 9. 最小领域模型
 

@@ -21,6 +21,7 @@ const (
 	TypeCompanyImportGet     = "recruiting.company.import.get"
 	TypeCompanyImportItems   = "recruiting.company.import.items"
 	TypeCompanyImportConfirm = "recruiting.company.import.confirm"
+	TypeCompanyImportCancel  = "recruiting.company.import.cancel"
 	TypeCompanyMergePreview  = "recruiting.company.merge.preview"
 	TypeCompanyMergeConfirm  = "recruiting.company.merge.confirm"
 	TypeCompanyRestore       = "recruiting.company.restore"

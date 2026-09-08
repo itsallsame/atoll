@@ -26,6 +26,10 @@ type CompanyImportApply struct {
 	ReceivedAt           time.Time
 }
 
+func companyImportCanApply(status model.CompanyImportStatus) bool {
+	return status == model.CompanyImportRunning || status == model.CompanyImportCanceling
+}
+
 func (r *Repository) AcceptCompanyImportApply(ctx context.Context, input CompanyImportApply) (CompanyImportResultOutcome, error) {
 	if strings.TrimSpace(input.CommandID) == "" || strings.TrimSpace(input.RequestHash) == "" ||
 		strings.TrimSpace(input.CorrelationID) == "" || strings.TrimSpace(input.AttemptID) == "" ||
@@ -75,7 +79,7 @@ func (r *Repository) loadCompanyImportApplyOffer(ctx context.Context, input Comp
 		return executioncontract.Offer{}, CompanyImportResultOutcome{}, false, ErrResultFenced
 	}
 	batch, err := getCompanyImportWith(ctx, tx, work.TargetID, true)
-	if err != nil || batch.Status != model.CompanyImportRunning || batch.Version != attempt.BatchVersion {
+	if err != nil || !companyImportCanApply(batch.Status) || batch.Version != attempt.BatchVersion {
 		return executioncontract.Offer{}, CompanyImportResultOutcome{}, false, ErrResultFenced
 	}
 	var offerState []byte
@@ -100,7 +104,7 @@ func (r *Repository) applyCompanyImportItem(ctx context.Context, offer execution
 	}
 	defer func() { _ = tx.Rollback() }()
 	batch, err := getCompanyImportWith(ctx, tx, offer.CompanyImport.ImportID, true)
-	if err != nil || batch.Status != model.CompanyImportRunning || batch.Version != offer.CompanyImport.Version {
+	if err != nil || !companyImportCanApply(batch.Status) || batch.Version != offer.CompanyImport.Version {
 		return ErrResultFenced
 	}
 	var ordinal, version uint64
@@ -149,9 +153,14 @@ WHERE import_id = ? AND item_key = ? FOR UPDATE`, batch.ImportID, input.Item.Ite
 		return err
 	}
 	previousChildVersion := child.Version
-	child, err = child.Start(child.Version)
-	resultStatus, detail := model.BatchItemSucceeded, ""
-	if err == nil {
+	resultStatus, detail := model.BatchItemCanceled, "company import canceled before item application"
+	if batch.Status == model.CompanyImportCanceling {
+		child, err = child.Cancel(child.Version)
+	} else {
+		child, err = child.Start(child.Version)
+	}
+	if err == nil && batch.Status == model.CompanyImportRunning {
+		resultStatus, detail = model.BatchItemSucceeded, ""
 		switch item.PreviewDisposition {
 		case model.CompanyImportReady:
 			var company model.Company
@@ -170,7 +179,7 @@ WHERE import_id = ? AND item_key = ? FOR UPDATE`, batch.ImportID, input.Item.Ite
 			err = fmt.Errorf("unsupported company import preview disposition %q", item.PreviewDisposition)
 		}
 	}
-	if err == nil {
+	if err == nil && batch.Status == model.CompanyImportRunning {
 		switch resultStatus {
 		case model.BatchItemSucceeded:
 			child, err = child.Complete(child.Version, model.ResolutionSucceeded, "", "")
@@ -236,7 +245,7 @@ func (r *Repository) finishCompanyImportApplyPage(ctx context.Context, input Com
 	}
 	batch, err := getCompanyImportWith(ctx, tx, offer.CompanyImport.ImportID, true)
 	if err != nil || attempt.Status != model.AttemptRunning || attempt.CanSubmit(work) != nil ||
-		batch.Status != model.CompanyImportRunning || batch.Version != input.ExpectedBatchVersion {
+		!companyImportCanApply(batch.Status) || batch.Version != input.ExpectedBatchVersion {
 		return CompanyImportResultOutcome{}, ErrResultFenced
 	}
 	var pending int
@@ -263,7 +272,12 @@ func (r *Repository) finishCompanyImportApplyPage(ctx context.Context, input Com
 		for _, record := range records {
 			results = append(results, model.BatchItemResult{ItemKey: record.Item.ItemKey, Status: record.Outcome, Detail: record.OutcomeDetail})
 		}
-		nextBatch, err := batch.Complete(batch.Version, results)
+		var nextBatch model.CompanyImport
+		if batch.Status == model.CompanyImportCanceling {
+			nextBatch, err = batch.FinishCancel(batch.Version, results)
+		} else {
+			nextBatch, err = batch.Complete(batch.Version, results)
+		}
 		if err != nil {
 			return CompanyImportResultOutcome{}, err
 		}
@@ -272,7 +286,9 @@ func (r *Repository) finishCompanyImportApplyPage(ctx context.Context, input Com
 			return CompanyImportResultOutcome{}, err
 		}
 		previousParentVersion := parentWork.Version
-		if nextBatch.Outcome.WaitingHuman > 0 || nextBatch.Outcome.Failed > 0 {
+		if nextBatch.Status == model.CompanyImportCanceled {
+			parentWork, err = parentWork.Cancel(parentWork.Version)
+		} else if nextBatch.Outcome.WaitingHuman > 0 || nextBatch.Outcome.Failed > 0 {
 			parentWork, err = parentWork.WaitHuman(parentWork.Version, "company_import_items_waiting_human")
 		} else {
 			parentWork, err = parentWork.Complete(parentWork.Version, model.ResolutionSucceeded, "", "")

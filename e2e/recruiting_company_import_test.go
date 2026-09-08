@@ -186,4 +186,68 @@ func TestRecruitingCompanyImportPreviewThroughResourceAndExecutor(t *testing.T) 
 	if stored, err := os.ReadFile(physical); err != nil || !bytes.Equal(stored, content) {
 		t.Fatalf("confirmed import changed immutable input File Resource: bytes=%d err=%v", len(stored), err)
 	}
+
+	// A second import proves that an operator can cancel after preview without
+	// applying any company. Cancellation itself is also bounded and dispatched
+	// through the same executor class.
+	cancelImportID := "e2e-company-import-cancel"
+	cancelStarted := ws.request(homeID, "recruiting.company.import", controlID, map[string]any{
+		"command_id": "e2e-company-import-cancel-create", "import_id": cancelImportID,
+		"input_artifact_ref": address, "input_artifact_hash": "sha256:" + hex.EncodeToString(sum[:]),
+		"schema_version": "company-import.v1", "policy_version": 1, "reason": "preview import to cancel",
+	})
+	cancelParentID := nestedStringField(t, cancelStarted, "work", "work_id")
+	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
+	var cancelPreview map[string]any
+	deadline = time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		_, current, err := ws.tryRequest(homeID, "recruiting.company.import.get", controlID, map[string]any{"import_id": cancelImportID})
+		if err == nil && nestedStringField(t, current, "company_import", "status") == "previewed" {
+			cancelPreview = current
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if cancelPreview == nil {
+		t.Fatalf("second company import did not become previewed\nserver:\n%s\ndaemon:\n%s", tailLog(h.server.logPath, 100), tailLog(daemonLog, 100))
+	}
+	cancelResponse := ws.request(homeID, "recruiting.company.import.cancel", controlID, map[string]any{
+		"command_id": "e2e-company-import-cancel-command", "import_id": cancelImportID,
+		"expected_version": nestedNumberField(t, cancelPreview, "company_import", "version"),
+		"reason":           "operator cancels reviewed import",
+	})
+	cancelWorkID := nestedStringField(t, cancelResponse, "cancel_work", "work_id")
+	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
+	var canceledImport map[string]any
+	deadline = time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		_, current, err := ws.tryRequest(homeID, "recruiting.company.import.get", controlID, map[string]any{"import_id": cancelImportID})
+		if err == nil && nestedStringField(t, current, "company_import", "status") == "canceled" {
+			canceledImport = current
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if canceledImport == nil || nestedNumberField(t, canceledImport, "company_import", "item_count") != 4 {
+		t.Fatalf("company import cancellation did not finish: %v\nserver:\n%s\ndaemon:\n%s", canceledImport,
+			tailLog(h.server.logPath, 100), tailLog(daemonLog, 100))
+	}
+	cancelParent := ws.request(homeID, "recruiting.work.get", controlID, map[string]any{"id": cancelParentID})
+	cancelCoordinator := ws.request(homeID, "recruiting.work.get", controlID, map[string]any{"id": cancelWorkID})
+	if nestedStringField(t, cancelParent, "entity", "work_status") != "canceled" ||
+		nestedStringField(t, cancelCoordinator, "entity", "work_status") != "completed" {
+		t.Fatalf("cancellation Works parent=%v coordinator=%v", cancelParent, cancelCoordinator)
+	}
+	canceledItems := ws.request(homeID, "recruiting.company.import.items", controlID,
+		map[string]any{"import_id": cancelImportID, "limit": 10})
+	canceledValues, _ := canceledItems["items"].([]any)
+	if len(canceledValues) != 4 {
+		t.Fatalf("canceled item count=%v", canceledItems)
+	}
+	for index, value := range canceledValues {
+		item, _ := value.(map[string]any)
+		if stringField(t, item, "outcome") != "canceled" || stringField(t, item, "child_work_id") == "" {
+			t.Fatalf("canceled item %d=%v", index, item)
+		}
+	}
 }

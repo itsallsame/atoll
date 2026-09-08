@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -316,5 +317,126 @@ func TestCompanyImportChunkCASRejectsConcurrentWriter(t *testing.T) {
 	var conflict *model.VersionConflictError
 	if !errors.As(err, &conflict) {
 		t.Fatalf("stale preview writer was not fenced: %v", err)
+	}
+}
+
+func TestCompanyImportCancellationFencesInFlightApplyAndCancelsOnlyPendingItems(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	now := time.Date(2094, 9, 9, 12, 0, 0, 0, time.UTC)
+	parent, _ := model.NewWork("cancel-parent-1", "company_set", "cancel-import-1", "company_import", "human")
+	batch, _ := model.NewCompanyImport("cancel-import-1", parent.WorkID, "artifact://imports/cancel.csv",
+		"sha256:"+strings.Repeat("d", 64), "company-import.v1", 1)
+	if err := repository.CreateCompanyImportPreview(ctx, parent, WorkPlacement{BusinessKey: "company-import|cancel",
+		Priority: 10, Capability: "company.import", NotBefore: now}, batch, now); err != nil {
+		t.Fatal(err)
+	}
+	previewItems := []model.CompanyImportItem{
+		{ItemKey: "row-1", CompanyID: "cancel-company-1", Name: "One"},
+		{ItemKey: "row-2", CompanyID: "cancel-company-2", Name: "Two"},
+		{ItemKey: "row-3", CompanyID: "cancel-company-3", Name: "Three"},
+	}
+	batch, err = repository.AppendCompanyImportPreviewChunk(ctx, batch.ImportID, batch.Version, 0, previewItems, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, _ := model.CompanyImportPreviewHash(batch, previewItems)
+	batch, err = repository.FinishCompanyImportPreview(ctx, batch.ImportID, batch.Version, digest, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextBatch, _ := batch.Confirm(batch.Version, digest)
+	nextBatch, _ = nextBatch.Start(nextBatch.Version)
+	nextParent, _ := parent.Start(parent.Version)
+	applyWork, _ := model.NewChildWork(nextParent, "cancel-original-apply", "company_import", batch.ImportID,
+		"company_import_apply", "parent")
+	confirmReceipt, _ := model.NewCommandReceipt("cancel-confirm", "recruiting.company.import.confirm", "sha256:cancel-confirm", json.RawMessage(`{}`))
+	confirmEvent, _ := model.NewEventIntent("cancel-confirm-event", "company.import.confirmed", "work", parent.WorkID,
+		nextParent.Version, now.Format(time.RFC3339Nano), confirmReceipt.CommandID, json.RawMessage(`{}`))
+	applyPlacement := WorkPlacement{BusinessKey: "company-import-apply|cancel|0", Priority: 10,
+		Capability: "company.import", NotBefore: now}
+	if _, err := repository.ApplyConfirmCompanyImportCommand(ctx, batch.Version, parent.Version, nextBatch, nextParent,
+		applyWork, applyPlacement, confirmReceipt, confirmEvent, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	oldOffer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "cancel-old-attempt",
+		ExecutorActorID: "tool:company-import-executor:1", ExecutorIncarnation: "boot-old", Capability: "company.import",
+		OfferedAt: now.Add(time.Second), BudgetPolicy: testExecutionBudgetPolicy(), CompanyImportLimit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, oldOffer.Attempt.AttemptID, oldOffer.Attempt.ExecutorActorID,
+		oldOffer.Attempt.ExecutorIncarnation, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, oldOffer.Attempt.AttemptID, oldOffer.Attempt.ExecutorActorID,
+		oldOffer.Attempt.ExecutorIncarnation, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	canceling, _ := nextBatch.RequestCancel(nextBatch.Version)
+	cancelWork, _ := model.NewChildWork(nextParent, "cancel-apply-work", "company_import", batch.ImportID,
+		"company_import_apply", "human")
+	cancelReceipt, _ := model.NewCommandReceipt("cancel-command", "recruiting.company.import.cancel", "sha256:cancel-command", json.RawMessage(`{}`))
+	cancelEvent, _ := model.NewEventIntent("cancel-event", "company.import.cancel.requested", "work", parent.WorkID,
+		nextParent.Version, now.Add(2*time.Second).Format(time.RFC3339Nano), cancelReceipt.CommandID, json.RawMessage(`{}`))
+	cancelPlacement := WorkPlacement{BusinessKey: "company-import-cancel|cancel", Priority: 1000,
+		Capability: "company.import", NotBefore: now.Add(2 * time.Second)}
+	if _, err := repository.ApplyCancelCompanyImportCommand(ctx, nextBatch.Version, nextParent.Version, canceling,
+		cancelWork, cancelPlacement, cancelReceipt, cancelEvent, nil, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	oldResult := CompanyImportApply{CommandID: "cancel-old-result", RequestHash: "sha256:cancel-old-result", CorrelationID: "old",
+		AttemptID: oldOffer.Attempt.AttemptID, ExecutorActorID: oldOffer.Attempt.ExecutorActorID,
+		ExecutorIncarnation: oldOffer.Attempt.ExecutorIncarnation, ExpectedBatchVersion: oldOffer.CompanyImport.Version,
+		ReceivedAt: now.Add(3 * time.Second)}
+	if _, err := repository.AcceptCompanyImportApply(ctx, oldResult); !errors.Is(err, ErrResultFenced) {
+		t.Fatalf("in-flight apply result was not fenced by cancellation: %v", err)
+	}
+	for page := 0; page < 2; page++ {
+		offer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: fmt.Sprintf("cancel-attempt-%d", page),
+			ExecutorActorID: "tool:company-import-executor:1", ExecutorIncarnation: "boot-cancel", Capability: "company.import",
+			OfferedAt: now.Add(time.Duration(4+page*2) * time.Second), BudgetPolicy: testExecutionBudgetPolicy(), CompanyImportLimit: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repository.AcceptListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+			offer.Attempt.ExecutorIncarnation, now.Add(time.Duration(4+page*2)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repository.StartListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+			offer.Attempt.ExecutorIncarnation, now.Add(time.Duration(4+page*2)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		outcome, err := repository.AcceptCompanyImportApply(ctx, CompanyImportApply{CommandID: fmt.Sprintf("cancel-result-%d", page),
+			RequestHash: fmt.Sprintf("sha256:cancel-result-%d", page), CorrelationID: fmt.Sprintf("cancel-%d", page),
+			AttemptID: offer.Attempt.AttemptID, ExecutorActorID: offer.Attempt.ExecutorActorID,
+			ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, ExpectedBatchVersion: offer.CompanyImport.Version,
+			ReceivedAt: now.Add(time.Duration(5+page*2) * time.Second)})
+		if err != nil || outcome.HasMore != (page == 0) {
+			t.Fatalf("cancel page %d = %+v err=%v", page, outcome, err)
+		}
+	}
+	storedBatch, err := repository.GetCompanyImport(ctx, batch.ImportID)
+	storedParent, parentErr := repository.GetWork(ctx, parent.WorkID)
+	oldWork, oldWorkErr := repository.GetWork(ctx, applyWork.WorkID)
+	if err != nil || parentErr != nil || oldWorkErr != nil || storedBatch.Status != model.CompanyImportCanceled ||
+		storedBatch.Outcome.Canceled != 3 || storedParent.Status != model.WorkCanceled || oldWork.Status != model.WorkCanceled {
+		t.Fatalf("canceled import state batch=%+v parent=%+v old=%+v errors=%v/%v/%v", storedBatch, storedParent,
+			oldWork, err, parentErr, oldWorkErr)
+	}
+	var companies int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_companies WHERE company_id LIKE 'cancel-company-%'").Scan(&companies); err != nil || companies != 0 {
+		t.Fatalf("cancellation created companies=%d err=%v", companies, err)
 	}
 }

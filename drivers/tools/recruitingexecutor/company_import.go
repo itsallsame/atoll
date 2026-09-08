@@ -91,7 +91,8 @@ func executeCompanyImportOffer(ctx context.Context, control executionControl, re
 func executeCompanyImportApplyOffer(ctx context.Context, control executionControl, offer executioncontract.Offer) error {
 	if ctx == nil || control == nil || offer.Kind != "company_import_apply" || offer.CompanyImport == nil ||
 		offer.Work.Purpose != "company_import_apply" || offer.Work.TargetID != offer.CompanyImport.ImportID ||
-		offer.CompanyImport.Status != model.CompanyImportRunning || offer.Attempt.BatchVersion != offer.CompanyImport.Version ||
+		(offer.CompanyImport.Status != model.CompanyImportRunning && offer.CompanyImport.Status != model.CompanyImportCanceling) ||
+		offer.Attempt.BatchVersion != offer.CompanyImport.Version ||
 		len(offer.CompanyImportItems) > 500 {
 		return fmt.Errorf("company import apply requires a bounded, running, version-fenced offer")
 	}

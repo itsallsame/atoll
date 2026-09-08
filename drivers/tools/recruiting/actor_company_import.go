@@ -51,6 +51,23 @@ type companyImportConfirmResponse struct {
 	NextAction      string              `json:"next_action"`
 }
 
+type companyImportCancelPayload struct {
+	CommandID       string `json:"command_id"`
+	ImportID        string `json:"import_id"`
+	ExpectedVersion uint64 `json:"expected_version"`
+	Reason          string `json:"reason"`
+}
+
+type companyImportCancelResponse struct {
+	ContractVersion string              `json:"contract_version"`
+	CorrelationID   string              `json:"correlation_id"`
+	RequestedBy     string              `json:"requested_by"`
+	Import          model.CompanyImport `json:"company_import"`
+	Work            model.Work          `json:"work"`
+	CancelWork      model.Work          `json:"cancel_work"`
+	NextAction      string              `json:"next_action"`
+}
+
 type companyImportQueryPayload struct {
 	ImportID string `json:"import_id"`
 	Cursor   string `json:"cursor,omitempty"`
@@ -68,6 +85,10 @@ func handleCompanyImport(sys actorbase.Sys, cfg Config, repository *store.Reposi
 	}
 	if msg.Type == TypeCompanyImportConfirm {
 		handleCompanyImportConfirm(sys, cfg, repository, msg)
+		return
+	}
+	if msg.Type == TypeCompanyImportCancel {
+		handleCompanyImportCancel(sys, cfg, repository, msg)
 		return
 	}
 	var payload companyImportPayload
@@ -127,6 +148,84 @@ func handleCompanyImport(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		return
 	}
 	result, err := repository.ApplyCreateCompanyImportCommand(msg.Ctx(), work, placement, batch, receipt, event, dispatch, businessAt)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
+}
+
+func handleCompanyImportCancel(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
+	var payload companyImportCancelPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.CommandID, payload.ImportID = strings.TrimSpace(payload.CommandID), strings.TrimSpace(payload.ImportID)
+	payload.Reason = strings.TrimSpace(payload.Reason)
+	if payload.CommandID == "" || payload.ImportID == "" || payload.ExpectedVersion == 0 || payload.Reason == "" ||
+		strings.TrimSpace(string(msg.Sender.ID)) == "" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "command_id, import_id, expected_version, reason, and authenticated sender are required")
+		return
+	}
+	if replay, found, err := repository.LookupCommand(msg.Ctx(), payload.CommandID, commandRequestHash(msg)); err != nil {
+		failStoreError(sys, msg, err)
+		return
+	} else if found {
+		_, _ = sys.Reply(msg, json.RawMessage(replay.Response))
+		return
+	}
+	batch, err := repository.GetCompanyImport(msg.Ctx(), payload.ImportID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	parentRecord, err := repository.GetWorkRecord(msg.Ctx(), batch.ParentWorkID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	nextBatch, err := batch.RequestCancel(payload.ExpectedVersion)
+	cancelWorkID := "work-company-import-cancel-" + stableDigest(payload.ImportID)
+	var cancelWork model.Work
+	if err == nil {
+		cancelWork, err = model.NewChildWork(parentRecord.Work, cancelWorkID, "company_import", payload.ImportID,
+			"company_import_apply", "human")
+	}
+	if err == nil {
+		cancelWork, err = cancelWork.WithCausality(string(msg.Sender.ID), string(msg.ID), parentRecord.Work.WorkID)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	businessAt := time.UnixMilli(msg.TS).UTC()
+	placement := store.WorkPlacement{BusinessKey: "company-import-cancel|" + batch.ImportID,
+		Priority: 1000, Capability: companyImportCapability, NotBefore: businessAt}
+	dispatch, err := workCommandDispatch(cfg, cancelWork, placement, payload.CommandID, "company_import_cancel_requested")
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	response := companyImportCancelResponse{ContractVersion: ContractVersion, CorrelationID: string(msg.CorrelationID),
+		RequestedBy: string(msg.Sender.ID), Import: nextBatch, Work: parentRecord.Work, CancelWork: cancelWork,
+		NextAction: "await_cancellation"}
+	responseBytes, _ := json.Marshal(response)
+	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, commandRequestHash(msg), responseBytes)
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	audit, _ := json.Marshal(map[string]any{"requested_by": string(msg.Sender.ID), "reason": payload.Reason,
+		"import_id": batch.ImportID})
+	event, err := model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|company.import.cancel.requested"),
+		"company.import.cancel.requested", "work", parentRecord.Work.WorkID, parentRecord.Work.Version,
+		businessAt.Format(time.RFC3339Nano), payload.CommandID, audit)
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	result, err := repository.ApplyCancelCompanyImportCommand(msg.Ctx(), batch.Version, parentRecord.Work.Version,
+		nextBatch, cancelWork, placement, receipt, event, dispatch, businessAt)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
