@@ -9,7 +9,9 @@
 - ABI 位于 `drivers/tools/recruitingexecutor/recipeabi`，是招聘扩展内部协议，不向 Atoll core 增加字段或消息；
 - 控制面的 Recipe 领域对象强制保存与 Executor 一致的 ABI version、opaque content ref、transport 和 required capability；跨包测试阻止 ABI 字符串漂移，Recipe Repository 阻止同一 version 静默改变执行方式；
 - 固定执行输入：Target、版本化 Endpoint、Recipe Assignment/contract hash、可选 Checkpoint、不可解析的 `profile://` 引用、预算许可，以及 Work/Attempt/Company/Source/Profile 接受 fence；
-- listing 和 detail 控制面现已把上述轻量执行输入作为带 kind discriminator 的 immutable offer 随 Attempt 持久化；相同 offer 命令在配置后续变化或进程重启后仍返回原始快照，避免 Executor 在执行中读取漂移配置。详情以 Job refresh generation 而非 Listing Checkpoint 作为数据代际，列表完成推进水位不会误杀已经领取的详情。offer 已携带与 Attempt 原子取得的版本化 BudgetPermit 及到期时间；正式 Artifact Resource resolver 和进程级 Executor 自动运行仍未接通，因此当前仍不能宣称完整生产执行链；
+- listing 和 detail 控制面现已把上述轻量执行输入作为带 kind discriminator 的 immutable offer 随 Attempt 持久化；相同 offer 命令在配置后续变化或进程重启后仍返回原始快照，避免 Executor 在执行中读取漂移配置。详情以 Job refresh generation 而非 Listing Checkpoint 作为数据代际，列表完成推进水位不会误杀已经领取的详情。offer 已携带与 Attempt 原子取得的版本化 BudgetPermit 及到期时间；进程级 Executor 自动运行仍未接通，因此当前仍不能宣称完整生产执行链；
+- Executor 已增加只依赖 Atoll 公开 `Actor Resource` face 的 Recipe/Artifact 适配边界，没有修改 core。Recipe 正文从与 opaque content ref 同名的 KV Resource 读取，限制 256 KiB，严格拒绝未知字段和尾随 JSON，并同时复核规范内容 SHA-256、ABI、kind、transport 与 capability；外部 HTTP URL 不能充当 Recipe Resource；
+- Artifact 通过 Atoll File Resource 的 `CreateFile`/`FileAccess` 流式写入，写入期间计算 SHA-256，超出调用方预算会 Abort，成功 Commit 后才形成只含 ResourceID/hash/access scope/retention 的领域元数据。元数据在创建文件前验证，Resource 拒绝或写入失败不会提交业务结果；Actor Message、Actor State 和 MySQL 不承载原始网站正文；
 - 固定 Recipe 类型 `listing|detail|discovery` 和执行 transport `http_json|http_html|browser`，但 capability 仍为可扩展字符串，不制造多种 Worker class；Extension 是候选 Recipe 捕获入口，不是日常执行 transport；
 - 声明式请求只能为 GET；timeout、响应大小和 redirect 次数有硬上限；Recipe 只能声明 Accept/Accept-Language，不能携带 Cookie、Authorization 等秘密；
 - Listing Recipe 必须声明稳定 identity、`newest_activity_desc`、update-retop、`activity_time|frontier_keys` 边界、安全重叠页数和最大页数；identity/activity 必须引用实际提取字段；
@@ -64,6 +66,7 @@ make recruiting-live-smoke
 - Browser Broker 的 Chromium/CDP 实现、OS/container 级隔离，以及 Extension 候选 Proposal 接入 Recruiting Actor 的持久 Draft/人工审批链；
 - 本地确定性站点的全部异常矩阵；
 - 更多站型的 Nightly/Weekly Live 验证，以及由正式 Artifact 存储提供保留期，而不是验收机本地文件；
+- Resource 适配器已经过内存 capability 合同测试，但仍缺真实 Atoll daemon 上 Recipe KV 与 Artifact File 的跨进程读写、权限拒绝和重启保持 e2e；
 - 已有 Repository 合同证明旧 listing Attempt 只保存 rejected Artifact、不能提交业务结果；仍缺真实 Executor Actor 经 Atoll Message 提交该迟到结果的进程级端到端证明。
 
 P4 仍为进行中；ABI 冻结不等于 Driver 与真实站点验收完成。

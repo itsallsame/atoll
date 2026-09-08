@@ -305,6 +305,8 @@ Recipe 分 `listing|detail|discovery`。v1 优先使用可验证的声明式 HTT
 - Extension：只负责捕获和人工修复，输出候选 Recipe/Artifact，不直接修改领域数据；
 - Artifact：内容哈希、脱敏、大小限制、访问权限、保留期。
 
+Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接入，不新增或修改 core Resource 语义：Recipe 正文是受 Channel 权限保护的小型 KV Resource，offer 只携带 `recipe://`/`artifact://` 不透明引用和预期 SHA-256；Executor 读取后严格解码，并复核 ABI、kind、transport、capability 与内容哈希。原始响应、页面和截图是 File Resource，Executor 在字节上限内流式写入并提交，领域消息和 MySQL 只保存 ResourceID、内容哈希、访问范围与保留策略。Resource 拒绝、缺失、超量或哈希不符均 fail closed，不能降级为把正文塞进 Message、State 或数据库。
+
 ### 9.3 本地确定性站点
 
 建立可编程测试服务器，至少模拟：
