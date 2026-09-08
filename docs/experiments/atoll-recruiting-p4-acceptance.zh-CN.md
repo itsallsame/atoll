@@ -16,9 +16,11 @@
 - 公共 execution offer 已从 MySQL `store` 提取到招聘扩展内部的 `executioncontract` 包，控制面和 Executor 共享同一个 JSON 合同；`store` 只保留兼容别名，Executor 不依赖 Repository/DAO。控制面的响应版本也引用同一合同常量，避免两端字符串漂移；
 - Executor ingress 已把 listing/detail offer 映射为 Recipe ABI RunInput，并在 Resource 解析及网络 I/O 前重检 Work/Attempt acceptance、Company/Source/Assignment/Recipe/Profile fence、BudgetPermit 与到期时间、origin、Recipe hash/capability/transport，以及 discriminator 与 Occurrence/Checkpoint/Detail payload 的互斥关系。Listing 输入保留版本化 Source Endpoint 和旧 Checkpoint，Detail 输入固定 Job URL/version 与 profile opaque ref；过期 permit、跨 origin、Recipe 串版和混合 payload 的测试均 fail closed；
 - `execution.offer/accept/started/failed` 的消息类型、请求和成功响应也已收进同一共享合同。Executor 协议客户端只调用 Atoll 公开 `Sys.Call`/`Pending.Wait`，检查 response kind/type、core terminal status、合同版本、correlation、requested_by、Attempt/Executor/incarnation 绑定；远端失败保留结构化 error code，等待失败会主动 Cancel 当前 call，completed 响应的未知字段 fail closed。尚未加入唤醒/循环，因此不会产生空轮询；
+- `listing_page/listing_completion/detail` 结果 payload 也已归入共享 execution contract。Listing 成功转换会严格核对页面顺序、Artifact 顺序、末页标记、游标和唯一条目总数；把相对详情 URL 按实际页面 URL 解析并规范化，支持无精度损失的整数岗位 ID，为每条 Observation 和 listing fingerprint 生成稳定 SHA-256，并额外保存绑定 Work/Attempt 的 ListingDelta Artifact 后才形成 completion。原始 Artifact 的 `redacted` 不再被虚假固定为 true，而由实际 sink 策略声明；
 - 固定 Recipe 类型 `listing|detail|discovery` 和执行 transport `http_json|http_html|browser`，但 capability 仍为可扩展字符串，不制造多种 Worker class；Extension 是候选 Recipe 捕获入口，不是日常执行 transport；
 - 声明式请求只能为 GET；timeout、响应大小和 redirect 次数有硬上限；Recipe 只能声明 Accept/Accept-Language，不能携带 Cookie、Authorization 等秘密；
 - Listing Recipe 必须声明稳定 identity、`newest_activity_desc`、update-retop、`activity_time|frontier_keys` 边界、安全重叠页数和最大页数；identity/activity 必须引用实际提取字段；
+- Listing Recipe 现已显式声明 `detail_url_field` 并把它纳入内容哈希，Executor 不再靠字段名猜测岗位详情 URL。Recipe 单页上限从与控制面不一致的 5,000 收敛到 500；Driver 为每个成功页面保留 sequence、页面 URL、resume cursor、terminal、Artifact 和该页首次出现的唯一 items，跨页重复不会导致 completion item_count 与已接受页面总数不一致；
 - Checkpoint 只有在 identity 完整、分页稳定、倒序契约、旧 frontier 到达、同时间组完整消费和 overlap 完成全部证明都成立时才能推进；
 - 成功输出必须包含 Artifact 证据和结构化 JSON；失败必须包含 Artifact 并使用有限分类，不能把原始错误文本当错误类别；
 - Recipe 内容哈希覆盖完整 ABI，并由确定性 JSON 编码产生稳定 SHA-256；输入、请求边界、输出与 hash 均已有 race 测试。

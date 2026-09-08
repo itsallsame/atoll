@@ -1,12 +1,15 @@
 package recruiting
 
-import "github.com/wanpengxie/atoll/lib/introspect"
+import (
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
+	"github.com/wanpengxie/atoll/lib/introspect"
+)
 
 const (
 	TypeProbeStart      = "recruiting.probe.start"
 	TypeProbeSchedule   = "recruiting.probe.schedule"
 	TypeProbeStatus     = "recruiting.probe.status"
-	TypeExecutionResult = "recruiting.execution.result"
+	TypeExecutionResult = executioncontract.TypeResult
 	typeProbeDue        = "recruiting.probe.due"
 )
 

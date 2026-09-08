@@ -39,9 +39,9 @@ func browserSpec() recipeabi.Spec {
 		Request: recipeabi.ReadRequest{Method: "GET", Headers: map[string]string{"Accept-Language": "en"}, TimeoutMS: 2_000,
 			MaxResponseBytes: 4096, MaxRedirects: 0, UserAgent: "Atoll-Recruiting-Browser-Test/1"},
 		Extraction: recipeabi.Extraction{Collection: ".job", Fields: map[string]string{
-			"job_key": ".key", "title": ".title", "activity_at": "time",
-		}, Attributes: map[string]string{"job_key": "data-id", "activity_at": "datetime"}},
-		Listing: &recipeabi.ListingContract{IdentityField: "job_key", ActivityField: "activity_at", BoundaryMode: "activity_time",
+			"job_key": ".key", "title": ".title", "activity_at": "time", "detail_url": "a.role",
+		}, Attributes: map[string]string{"job_key": "data-id", "activity_at": "datetime", "detail_url": "href"}},
+		Listing: &recipeabi.ListingContract{IdentityField: "job_key", DetailURLField: "detail_url", ActivityField: "activity_at", BoundaryMode: "activity_time",
 			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 1, MaxPages: 5,
 			MaxItemsPerPage: 100, MaxTotalBytes: 1 << 20, FrontierWidth: 10},
 	}
@@ -66,7 +66,7 @@ var browserPolicy = PolicyEvidence{TermsPolicyVersion: 1, TermsReviewedAt: "2026
 
 func TestExecutePageKeepsProfileOpaqueAndSavesBeforeParsing(t *testing.T) {
 	broker := &fakeBroker{result: SessionResult{FinalURL: "https://jobs.example.com/openings", ContentType: "text/html",
-		DOM: []byte(`<div class="job"><span class="key" data-id="42"></span><span class="title">Engineer</span><time datetime="2026-09-08T10:00:00Z"></time></div>`),
+		DOM: []byte(`<div class="job"><span class="key" data-id="42"></span><a class="role" href="/jobs/42">Engineer</a><span class="title">Engineer</span><time datetime="2026-09-08T10:00:00Z"></time></div>`),
 		Attestation: Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET", "HEAD"}, PublicEndpoint: true,
 			RobotsAllowed: true, TermsPolicyVersion: 1, ProfileLeaseAuthorized: true}}}
 	driver, _ := New(broker)
@@ -103,7 +103,7 @@ func TestExecutePagePreservesEvidenceWhenBrokerViolatesPolicyOrDOMIsMalformed(t 
 	} {
 		t.Run(name, func(t *testing.T) {
 			session := SessionResult{FinalURL: "https://jobs.example.com/openings", ContentType: "text/html",
-				DOM: []byte(`<div class="job"><span class="key" data-id="42"></span><span class="title">Engineer</span><time datetime="2026-09-08T10:00:00Z"></time></div>`),
+				DOM: []byte(`<div class="job"><span class="key" data-id="42"></span><a class="role" href="/jobs/42">Engineer</a><span class="title">Engineer</span><time datetime="2026-09-08T10:00:00Z"></time></div>`),
 				Attestation: Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET"}, PublicEndpoint: true,
 					RobotsAllowed: true, TermsPolicyVersion: 1, ProfileLeaseAuthorized: true}}
 			testCase.mutate(&session)

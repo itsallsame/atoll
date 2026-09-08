@@ -166,11 +166,23 @@ func (s *ListingScan) StopReason() string { return s.stopReason }
 
 func (s *ListingScan) Quality() recipeabi.QualityProof { return s.quality }
 
-func (s *ListingScan) Items() []map[string]json.RawMessage {
-	out := make([]map[string]json.RawMessage, 0, len(s.items))
-	for _, item := range s.items {
+func (s *ListingScan) ItemCount() int { return len(s.items) }
+
+// ItemsFrom returns newly accepted unique items without copying the full scan
+// prefix on every page. The caller records these against that page's Artifact.
+func (s *ListingScan) ItemsFrom(index int) ([]map[string]json.RawMessage, error) {
+	if index < 0 || index > len(s.items) {
+		return nil, fmt.Errorf("listing item offset %d is outside [0,%d]", index, len(s.items))
+	}
+	out := make([]map[string]json.RawMessage, 0, len(s.items)-index)
+	for _, item := range s.items[index:] {
 		out = append(out, cloneItem(item))
 	}
+	return out, nil
+}
+
+func (s *ListingScan) Items() []map[string]json.RawMessage {
+	out, _ := s.ItemsFrom(0)
 	return out
 }
 

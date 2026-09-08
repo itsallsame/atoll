@@ -3,7 +3,11 @@
 // without knowing or changing any recruiting semantics.
 package executioncontract
 
-import "github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+import (
+	"encoding/json"
+
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+)
 
 const Version = "recruiting.execution.v1"
 
@@ -12,6 +16,7 @@ const (
 	TypeAccept  = "recruiting.execution.accept"
 	TypeStarted = "recruiting.execution.started"
 	TypeFailed  = "recruiting.execution.failed"
+	TypeResult  = "recruiting.execution.result"
 )
 
 type OfferRequest struct {
@@ -72,4 +77,51 @@ type TransitionResponse struct {
 	CorrelationID   string         `json:"correlation_id"`
 	RequestedBy     string         `json:"requested_by"`
 	Attempt         *model.Attempt `json:"attempt,omitempty"`
+}
+
+type ListingPageResult struct {
+	CommandID           string                     `json:"command_id"`
+	ResultKind          string                     `json:"result_kind"`
+	AttemptID           string                     `json:"attempt_id"`
+	ExecutorIncarnation string                     `json:"executor_incarnation"`
+	PageSequence        uint64                     `json:"page_sequence"`
+	ResumeCursor        string                     `json:"resume_cursor,omitempty"`
+	Terminal            bool                       `json:"terminal"`
+	Artifact            model.ArtifactMetadata     `json:"artifact"`
+	Observations        []model.ListingObservation `json:"observations"`
+}
+
+type ListingCompletionResult struct {
+	CommandID           string                     `json:"command_id"`
+	ResultKind          string                     `json:"result_kind"`
+	AttemptID           string                     `json:"attempt_id"`
+	ExecutorIncarnation string                     `json:"executor_incarnation"`
+	Artifact            model.ArtifactMetadata     `json:"artifact"`
+	Quality             ListingQuality             `json:"quality"`
+	Checkpoint          ListingCheckpointCandidate `json:"checkpoint_candidate"`
+}
+
+type ListingQuality struct {
+	IdentityComplete        bool `json:"identity_complete"`
+	OrderingContractHeld    bool `json:"ordering_contract_held"`
+	PaginationStable        bool `json:"pagination_stable"`
+	PreviousFrontierReached bool `json:"previous_frontier_reached"`
+	OverlapCompleted        bool `json:"overlap_completed"`
+	ItemCount               int  `json:"item_count"`
+}
+
+type ListingCheckpointCandidate struct {
+	FrontierActivityAt string   `json:"frontier_activity_at,omitempty"`
+	FrontierJobKeys    []string `json:"frontier_job_keys,omitempty"`
+}
+
+type DetailResult struct {
+	CommandID             string                 `json:"command_id"`
+	ResultKind            string                 `json:"result_kind"`
+	AttemptID             string                 `json:"attempt_id"`
+	ExecutorIncarnation   string                 `json:"executor_incarnation"`
+	Artifact              model.ArtifactMetadata `json:"artifact"`
+	DetailVersionID       string                 `json:"detail_version_id"`
+	NormalizedContentHash string                 `json:"normalized_content_hash"`
+	Detail                json.RawMessage        `json:"detail"`
 }

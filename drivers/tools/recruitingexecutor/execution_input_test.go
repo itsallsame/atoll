@@ -16,11 +16,11 @@ func executionSpec(t *testing.T, kind recipeabi.Kind) (recipeabi.Spec, []byte, s
 	spec := recipeabi.Spec{
 		ABIVersion: recipeabi.Version, Kind: kind, RequiredCapability: "http.public", Transport: recipeabi.TransportHTTPJSON,
 		Request:    recipeabi.ReadRequest{Method: "GET", TimeoutMS: 1000, MaxResponseBytes: 1024, MaxRedirects: 1, UserAgent: "atoll-test"},
-		Extraction: recipeabi.Extraction{Fields: map[string]string{"id": "/id"}},
+		Extraction: recipeabi.Extraction{Fields: map[string]string{"id": "/id", "detail_url": "/url"}},
 	}
 	if kind == recipeabi.KindListing {
 		spec.Extraction.Collection = "/jobs"
-		spec.Listing = &recipeabi.ListingContract{IdentityField: "id", BoundaryMode: "frontier_keys", Ordering: "newest_activity_desc",
+		spec.Listing = &recipeabi.ListingContract{IdentityField: "id", DetailURLField: "detail_url", BoundaryMode: "frontier_keys", Ordering: "newest_activity_desc",
 			UpdateRetop: true, OverlapPages: 1, MaxPages: 10, MaxItemsPerPage: 100, MaxTotalBytes: 1 << 20, FrontierWidth: 3}
 	}
 	raw, err := json.Marshal(spec)

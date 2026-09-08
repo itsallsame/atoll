@@ -13,9 +13,9 @@ func listingSpec() recipeabi.Spec {
 		ABIVersion: recipeabi.Version, Kind: recipeabi.KindListing, RequiredCapability: "http.fetch", Transport: recipeabi.TransportHTTPJSON,
 		Request: recipeabi.ReadRequest{Method: "GET", TimeoutMS: 2_000, MaxResponseBytes: 1 << 20, MaxRedirects: 1, UserAgent: "Atoll-Recruiting/1"},
 		Extraction: recipeabi.Extraction{Collection: "/data/jobs", Next: "/data/next", Fields: map[string]string{
-			"job_key": "/id", "title": "/title", "activity_at": "/updated_at", "pinned": "/pinned",
+			"job_key": "/id", "title": "/title", "activity_at": "/updated_at", "detail_url": "/url", "pinned": "/pinned",
 		}},
-		Listing: &recipeabi.ListingContract{IdentityField: "job_key", ActivityField: "activity_at", BoundaryMode: "activity_time",
+		Listing: &recipeabi.ListingContract{IdentityField: "job_key", DetailURLField: "detail_url", ActivityField: "activity_at", BoundaryMode: "activity_time",
 			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 2, MaxPages: 100, MaxItemsPerPage: 500, MaxTotalBytes: 10 << 20, FrontierWidth: 20, ExcludePinnedField: "pinned"},
 	}
 }
@@ -23,8 +23,8 @@ func listingSpec() recipeabi.Spec {
 func TestExecuteJSONExtractsCanonicalRowsAndExcludesPinned(t *testing.T) {
 	document := []byte(`{"data":{"jobs":[
 		  {"pinned":true},
-      {"title":"Backend","id":"job-2","pinned":false,"updated_at":"2026-09-08T10:00:00Z"},
-      {"id":"job-1","title":"Frontend","updated_at":"2026-09-08T09:00:00Z","pinned":false}
+      {"title":"Backend","id":"job-2","url":"https://jobs.example/2","pinned":false,"updated_at":"2026-09-08T10:00:00Z"},
+      {"id":"job-1","title":"Frontend","url":"https://jobs.example/1","updated_at":"2026-09-08T09:00:00Z","pinned":false}
     ],"next":"cursor-2"}}`)
 	first, err := ExecuteJSON(listingSpec(), document)
 	if err != nil {
@@ -49,8 +49,8 @@ func TestExecuteJSONExtractsCanonicalRowsAndExcludesPinned(t *testing.T) {
 
 func TestExecuteJSONReportsOrderingAndIdentityContractViolations(t *testing.T) {
 	document := []byte(`{"data":{"jobs":[
-      {"id":"job-1","title":"Old","updated_at":"2026-09-08T09:00:00Z","pinned":false},
-      {"id":"","title":"New","updated_at":"2026-09-08T10:00:00Z","pinned":false}
+      {"id":"job-1","title":"Old","url":"https://jobs.example/1","updated_at":"2026-09-08T09:00:00Z","pinned":false},
+      {"id":"","title":"New","url":"https://jobs.example/new","updated_at":"2026-09-08T10:00:00Z","pinned":false}
     ],"next":null}}`)
 	result, err := ExecuteJSON(listingSpec(), document)
 	if err != nil {
@@ -63,7 +63,7 @@ func TestExecuteJSONReportsOrderingAndIdentityContractViolations(t *testing.T) {
 
 func TestExecuteJSONAcceptsIntegerIdentityWithoutLosingPrecision(t *testing.T) {
 	document := []byte(`{"data":{"jobs":[
-      {"id":80720940000000000001,"title":"Backend","updated_at":"2026-09-08T10:00:00Z","pinned":false}
+      {"id":80720940000000000001,"title":"Backend","url":"https://jobs.example/large","updated_at":"2026-09-08T10:00:00Z","pinned":false}
     ],"next":null}}`)
 	result, err := ExecuteJSON(listingSpec(), document)
 	if err != nil {

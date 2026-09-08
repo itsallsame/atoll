@@ -22,7 +22,7 @@ func validListingSpec() Spec {
 		Extraction: Extraction{Collection: "/jobs", Fields: map[string]string{
 			"job_key": "/id", "detail_url": "/url", "activity_at": "/updated_at",
 		}, Next: "/next"},
-		Listing: &ListingContract{IdentityField: "job_key", ActivityField: "activity_at", BoundaryMode: "activity_time",
+		Listing: &ListingContract{IdentityField: "job_key", DetailURLField: "detail_url", ActivityField: "activity_at", BoundaryMode: "activity_time",
 			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 2, MaxPages: 100, MaxItemsPerPage: 500, MaxTotalBytes: 10 << 20, FrontierWidth: 20},
 	}
 }
@@ -38,7 +38,7 @@ func TestRecipeSpecHashIsStableAndBindsContract(t *testing.T) {
 		t.Fatalf("content hash is unstable: %s != %s", first, second)
 	}
 	changed := spec
-	changed.Listing = &ListingContract{IdentityField: "job_key", ActivityField: "activity_at", BoundaryMode: "activity_time",
+	changed.Listing = &ListingContract{IdentityField: "job_key", DetailURLField: "detail_url", ActivityField: "activity_at", BoundaryMode: "activity_time",
 		Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 3, MaxPages: 100, MaxItemsPerPage: 500, MaxTotalBytes: 10 << 20, FrontierWidth: 20}
 	third, err := changed.ContentHash()
 	if err != nil || third == first {
@@ -48,11 +48,13 @@ func TestRecipeSpecHashIsStableAndBindsContract(t *testing.T) {
 
 func TestRecipeSpecRejectsWritesSecretsAndWeakIncrementalClaims(t *testing.T) {
 	for name, mutate := range map[string]func(*Spec){
-		"write method":       func(s *Spec) { s.Request.Method = "POST" },
-		"secret header":      func(s *Spec) { s.Request.Headers["Authorization"] = "secret" },
-		"unbounded response": func(s *Spec) { s.Request.MaxResponseBytes = 21 << 20 },
-		"no update retop":    func(s *Spec) { s.Listing.UpdateRetop = false },
-		"no activity field":  func(s *Spec) { s.Listing.ActivityField = "" },
+		"write method":        func(s *Spec) { s.Request.Method = "POST" },
+		"secret header":       func(s *Spec) { s.Request.Headers["Authorization"] = "secret" },
+		"unbounded response":  func(s *Spec) { s.Request.MaxResponseBytes = 21 << 20 },
+		"oversized page":      func(s *Spec) { s.Listing.MaxItemsPerPage = 501 },
+		"no update retop":     func(s *Spec) { s.Listing.UpdateRetop = false },
+		"no detail URL field": func(s *Spec) { s.Listing.DetailURLField = "" },
+		"no activity field":   func(s *Spec) { s.Listing.ActivityField = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			spec := validListingSpec()

@@ -35,9 +35,9 @@ func runnerSpec() recipeabi.Spec {
 		Request: recipeabi.ReadRequest{Method: "GET", Headers: map[string]string{"Accept": "application/json"}, TimeoutMS: 1_000,
 			MaxResponseBytes: 4096, MaxRedirects: 1, UserAgent: "Atoll-Recruiting-Test/1"},
 		Extraction: recipeabi.Extraction{Collection: "/jobs", Next: "/next", Fields: map[string]string{
-			"job_key": "/id", "activity_at": "/activity_at", "title": "/title",
+			"job_key": "/id", "activity_at": "/activity_at", "detail_url": "/url", "title": "/title",
 		}},
-		Listing: &recipeabi.ListingContract{IdentityField: "job_key", ActivityField: "activity_at", BoundaryMode: "activity_time",
+		Listing: &recipeabi.ListingContract{IdentityField: "job_key", DetailURLField: "detail_url", ActivityField: "activity_at", BoundaryMode: "activity_time",
 			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 1, MaxPages: 10, MaxItemsPerPage: 100,
 			MaxTotalBytes: 1 << 20, FrontierWidth: 10},
 	}
@@ -58,11 +58,11 @@ func TestRunListingPersistsEveryPageBeforeSafeCheckpoint(t *testing.T) {
 		}
 		switch request.URL.Query().Get("page") {
 		case "2":
-			_, _ = response.Write([]byte(`{"jobs":[{"id":"old-1","activity_at":"2026-09-08T09:00:00Z","title":"old"}],"next":"/jobs?page=3"}`))
+			_, _ = response.Write([]byte(`{"jobs":[{"id":"old-1","url":"/roles/old-1","activity_at":"2026-09-08T09:00:00Z","title":"old"}],"next":"/jobs?page=3"}`))
 		case "3":
-			_, _ = response.Write([]byte(`{"jobs":[{"id":"overlap","activity_at":"2026-09-08T08:00:00Z","title":"overlap"}],"next":"/jobs?page=4"}`))
+			_, _ = response.Write([]byte(`{"jobs":[{"id":"overlap","url":"/roles/overlap","activity_at":"2026-09-08T08:00:00Z","title":"overlap"}],"next":"/jobs?page=4"}`))
 		default:
-			_, _ = response.Write([]byte(`{"jobs":[{"id":"new","activity_at":"2026-09-08T11:00:00Z","title":"new"},{"id":"same","activity_at":"2026-09-08T10:00:00Z","title":"same"}],"next":"/jobs?page=2"}`))
+			_, _ = response.Write([]byte(`{"jobs":[{"id":"new","url":"/roles/new","activity_at":"2026-09-08T11:00:00Z","title":"new"},{"id":"same","url":"/roles/same","activity_at":"2026-09-08T10:00:00Z","title":"same"}],"next":"/jobs?page=2"}`))
 		}
 	}))
 	defer server.Close()
@@ -77,8 +77,9 @@ func TestRunListingPersistsEveryPageBeforeSafeCheckpoint(t *testing.T) {
 		result.CheckpointCandidate.LastActivityAt != "2026-09-08T11:00:00Z" || !result.Output.Quality.MayAdvanceCheckpoint() {
 		t.Fatalf("listing result=%+v", result)
 	}
-	if len(sink.writes) != 3 || len(result.Output.Artifacts) != 3 {
-		t.Fatalf("raw page artifacts=%d output refs=%d", len(sink.writes), len(result.Output.Artifacts))
+	if len(sink.writes) != 3 || len(result.Output.Artifacts) != 3 || len(result.Pages) != 3 ||
+		result.Pages[0].Terminal || result.Pages[0].ResumeCursor == "" || !result.Pages[2].Terminal || result.Pages[2].ResumeCursor != "" {
+		t.Fatalf("raw page artifacts=%d output refs=%d pages=%+v", len(sink.writes), len(result.Output.Artifacts), result.Pages)
 	}
 	for index, write := range sink.writes {
 		if write.Kind != "page" || write.PageSequence != index+1 || len(write.Body) == 0 || !write.Robots.Allowed ||
@@ -91,7 +92,7 @@ func TestRunListingPersistsEveryPageBeforeSafeCheckpoint(t *testing.T) {
 func TestRunListingReturnsEvidenceForParseAndPaginationFailures(t *testing.T) {
 	for name, payload := range map[string]string{
 		"parse":      `{"jobs":[`,
-		"cross_next": `{"jobs":[{"id":"new","activity_at":"2026-09-08T11:00:00Z","title":"new"}],"next":"https://other.example/jobs"}`,
+		"cross_next": `{"jobs":[{"id":"new","url":"/roles/new","activity_at":"2026-09-08T11:00:00Z","title":"new"}],"next":"https://other.example/jobs"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

@@ -14,10 +14,10 @@ func htmlListingSpec() recipeabi.Spec {
 		Request: recipeabi.ReadRequest{Method: "GET", TimeoutMS: 2_000, MaxResponseBytes: 1 << 20, MaxRedirects: 1, UserAgent: "Atoll-Recruiting/1"},
 		Extraction: recipeabi.Extraction{
 			Collection: ".job", Next: "a.next", NextAttribute: "href",
-			Fields:     map[string]string{"job_key": "a.role", "title": ".title", "activity_at": "time", "pinned": ".pin"},
-			Attributes: map[string]string{"job_key": "data-job-id", "activity_at": "datetime", "pinned": "data-pinned"},
+			Fields:     map[string]string{"job_key": "a.role", "title": ".title", "activity_at": "time", "detail_url": "a.role", "pinned": ".pin"},
+			Attributes: map[string]string{"job_key": "data-job-id", "activity_at": "datetime", "detail_url": "href", "pinned": "data-pinned"},
 		},
-		Listing: &recipeabi.ListingContract{IdentityField: "job_key", ActivityField: "activity_at", BoundaryMode: "activity_time",
+		Listing: &recipeabi.ListingContract{IdentityField: "job_key", DetailURLField: "detail_url", ActivityField: "activity_at", BoundaryMode: "activity_time",
 			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 2, MaxPages: 100, MaxItemsPerPage: 100, MaxTotalBytes: 10 << 20, FrontierWidth: 20, ExcludePinnedField: "pinned"},
 	}
 }
@@ -25,8 +25,8 @@ func htmlListingSpec() recipeabi.Spec {
 func TestExecuteHTMLUsesScopedSelectorsAttributesAndText(t *testing.T) {
 	document := []byte(`<!doctype html><html><body>
 		  <article class="job"><i class="pin" data-pinned="true"></i></article>
-      <article class="job"><a class="role" data-job-id="job-2"><span class="title"> Backend   Engineer </span></a><time datetime="2026-09-08T10:00:00Z"></time><i class="pin" data-pinned="false"></i></article>
-      <article class="job"><a class="role" data-job-id="job-1"><span class="title">Frontend Engineer</span></a><time datetime="2026-09-08T09:00:00Z"></time><i class="pin" data-pinned="false"></i></article>
+      <article class="job"><a class="role" data-job-id="job-2" href="/jobs/2"><span class="title"> Backend   Engineer </span></a><time datetime="2026-09-08T10:00:00Z"></time><i class="pin" data-pinned="false"></i></article>
+      <article class="job"><a class="role" data-job-id="job-1" href="/jobs/1"><span class="title">Frontend Engineer</span></a><time datetime="2026-09-08T09:00:00Z"></time><i class="pin" data-pinned="false"></i></article>
       <a class="next" href="/jobs?page=2">Next</a><script>window.sideEffect = true</script>
     </body></html>`)
 	first, err := ExecuteHTML(htmlListingSpec(), document)

@@ -117,8 +117,8 @@ func candidateSpec() recipeabi.Spec {
 		Extraction: recipeabi.Extraction{Collection: "/jobs", Fields: map[string]string{
 			"job_key": "/id", "title": "/title", "activity_at": "/updated_at", "detail_url": "/absolute_url",
 		}},
-		Listing: &recipeabi.ListingContract{IdentityField: "job_key", ActivityField: "activity_at", BoundaryMode: "activity_time",
-			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 1, MaxPages: 1, MaxItemsPerPage: 1_000,
+		Listing: &recipeabi.ListingContract{IdentityField: "job_key", DetailURLField: "detail_url", ActivityField: "activity_at", BoundaryMode: "activity_time",
+			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 1, MaxPages: 1, MaxItemsPerPage: 500,
 			MaxTotalBytes: 2 << 20, FrontierWidth: 20},
 	}
 }

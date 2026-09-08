@@ -13,9 +13,9 @@ func candidateSpec() recipeabi.Spec {
 	return recipeabi.Spec{
 		ABIVersion: recipeabi.Version, Kind: recipeabi.KindListing, RequiredCapability: "http.fetch", Transport: recipeabi.TransportHTTPHTML,
 		Request: recipeabi.ReadRequest{Method: "GET", TimeoutMS: 2_000, MaxResponseBytes: 1 << 20, MaxRedirects: 1, UserAgent: "Atoll-Recruiting-Extension-Test/1"},
-		Extraction: recipeabi.Extraction{Collection: ".job", Fields: map[string]string{"job_key": ".key", "title": ".title"},
-			Attributes: map[string]string{"job_key": "data-id"}},
-		Listing: &recipeabi.ListingContract{IdentityField: "job_key", BoundaryMode: "frontier_keys", Ordering: "newest_activity_desc",
+		Extraction: recipeabi.Extraction{Collection: ".job", Fields: map[string]string{"job_key": ".key", "title": ".title", "detail_url": "a.role"},
+			Attributes: map[string]string{"job_key": "data-id", "detail_url": "href"}},
+		Listing: &recipeabi.ListingContract{IdentityField: "job_key", DetailURLField: "detail_url", BoundaryMode: "frontier_keys", Ordering: "newest_activity_desc",
 			UpdateRetop: true, OverlapPages: 1, MaxPages: 10, MaxItemsPerPage: 500, MaxTotalBytes: 10 << 20, FrontierWidth: 20},
 	}
 }

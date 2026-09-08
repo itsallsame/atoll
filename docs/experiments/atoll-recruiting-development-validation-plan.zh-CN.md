@@ -299,6 +299,8 @@ Actor handler 不等待网站请求。每个响应包含 correlation、Target、
 
 Recipe 分 `listing|detail|discovery`。v1 优先使用可验证的声明式 HTTP/JSON/DOM 步骤；需要 JavaScript 或交互时进入受控 Browser/Extension driver。不得默认执行来源不明的任意宿主代码。候选 Recipe 必须经过 schema 校验、静态安全检查、真实样本验证和发布审批。
 
+Listing Recipe 必须显式声明 identity field 与 detail URL field，不能依赖 `detail_url` 等约定字段名猜测。单个外部页面最多产生 500 条唯一 Observation，与控制面单事务页面上限一致；跨页重复岗位只随首次出现的页面提交，内容冲突使分页质量证明失败。Driver 成功结果保留逐页 URL、下一游标、页面 Artifact、去重后新增 items 和 terminal 标记，再由 Executor 生成逐页提交及独立 ListingDelta completion Artifact。
+
 ### 9.2 Driver
 
 - HTTP：超时、响应上限、redirect policy、User-Agent、robots/条款记录、origin 限流、429/403 熔断；

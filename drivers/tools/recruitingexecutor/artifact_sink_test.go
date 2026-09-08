@@ -15,7 +15,7 @@ func testArtifactSink(t *testing.T, resources resourceArtifactStore) *atollArtif
 	t.Helper()
 	sink, err := newAtollArtifactSink(resources, artifactSinkConfig{DeviceName: "worker-a", ChannelName: "recruiting",
 		Directory: "recruiting-artifacts", WorkID: "work-1", AttemptID: "attempt-1", AccessScope: "operators",
-		Retention: "30d", MaxBytes: 1024})
+		Retention: "30d", Redacted: false, MaxBytes: 1024})
 	if err != nil {
 		t.Fatal(err)
 	}

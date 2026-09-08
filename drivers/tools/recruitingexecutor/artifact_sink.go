@@ -26,6 +26,7 @@ type artifactSinkConfig struct {
 	AttemptID   string
 	AccessScope string
 	Retention   string
+	Redacted    bool
 	MaxBytes    int64
 }
 
@@ -86,7 +87,7 @@ func (s *atollArtifactSink) Put(ctx context.Context, write httpdriver.ArtifactWr
 	}
 	metadata, err := storeArtifact(s.resources, artifactWrite{Address: address, ArtifactID: artifactID, Kind: kind,
 		WorkID: s.config.WorkID, AttemptID: s.config.AttemptID, AccessScope: s.config.AccessScope, Retention: s.config.Retention,
-		Redacted: true, Content: bytes.NewReader(write.Body), MaxBytes: s.config.MaxBytes})
+		Redacted: s.config.Redacted, Content: bytes.NewReader(write.Body), MaxBytes: s.config.MaxBytes})
 	if err != nil {
 		return recipeabi.ArtifactRef{}, err
 	}

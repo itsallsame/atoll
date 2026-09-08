@@ -34,6 +34,16 @@ type ArtifactSink interface {
 type ListingRunResult struct {
 	Output              recipeabi.RunOutput
 	CheckpointCandidate *recipeabi.CheckpointRef
+	Pages               []ListingPage
+}
+
+type ListingPage struct {
+	Sequence     uint64
+	URL          string
+	ResumeCursor string
+	Terminal     bool
+	Artifact     recipeabi.ArtifactRef
+	Items        []map[string]json.RawMessage
 }
 
 func (d *Driver) RunListing(ctx context.Context, spec recipeabi.Spec, input recipeabi.RunInput, compliance ComplianceEvidence, sink ArtifactSink) (ListingRunResult, error) {
@@ -56,6 +66,7 @@ func (d *Driver) RunListing(ctx context.Context, spec recipeabi.Spec, input reci
 	initialURL, _ := url.Parse(input.Endpoint.URL)
 	currentURL := initialURL
 	var artifacts []recipeabi.ArtifactRef
+	var pages []ListingPage
 	var totalBytes int64
 	for pageSequence := 1; !scan.Complete(); pageSequence++ {
 		pageInput := input
@@ -92,16 +103,26 @@ func (d *Driver) RunListing(ctx context.Context, spec recipeabi.Spec, input reci
 		if err != nil {
 			return classifiedListingFailure(ctx, sink, input, artifacts, pageSequence, currentURL.String(), "parse_error", err, scan.Quality())
 		}
+		itemOffset := scan.ItemCount()
 		if err := scan.AddPage(document); err != nil {
 			return classifiedListingFailure(ctx, sink, input, artifacts, pageSequence, currentURL.String(), "contract_violated", err, scan.Quality())
 		}
+		pageItems, err := scan.ItemsFrom(itemOffset)
+		if err != nil {
+			return ListingRunResult{}, err
+		}
+		page := ListingPage{Sequence: uint64(pageSequence), URL: currentURL.String(), Terminal: scan.Complete(), Artifact: artifact,
+			Items: pageItems}
 		if scan.Complete() {
+			pages = append(pages, page)
 			break
 		}
 		nextURL, err := resolveNextPage(initialURL, currentURL, document.Next)
 		if err != nil {
 			return classifiedListingFailure(ctx, sink, input, artifacts, pageSequence, currentURL.String(), "contract_violated", err, scan.Quality())
 		}
+		page.ResumeCursor = nextURL.String()
+		pages = append(pages, page)
 		currentURL = nextURL
 	}
 	quality := scan.Quality()
@@ -121,7 +142,7 @@ func (d *Driver) RunListing(ctx context.Context, spec recipeabi.Spec, input reci
 	if err := output.Validate(); err != nil {
 		return ListingRunResult{}, err
 	}
-	return ListingRunResult{Output: output, CheckpointCandidate: &candidate}, nil
+	return ListingRunResult{Output: output, CheckpointCandidate: &candidate, Pages: pages}, nil
 }
 
 func putArtifact(ctx context.Context, sink ArtifactSink, write ArtifactWrite) (recipeabi.ArtifactRef, error) {

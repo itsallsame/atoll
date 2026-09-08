@@ -32,52 +32,11 @@ type executionControlResponse struct {
 	Detail          *store.DetailResultOutcome      `json:"detail,omitempty"`
 }
 
-type listingPageResultPayload struct {
-	CommandID           string                     `json:"command_id"`
-	ResultKind          string                     `json:"result_kind"`
-	AttemptID           string                     `json:"attempt_id"`
-	ExecutorIncarnation string                     `json:"executor_incarnation"`
-	PageSequence        uint64                     `json:"page_sequence"`
-	ResumeCursor        string                     `json:"resume_cursor,omitempty"`
-	Terminal            bool                       `json:"terminal"`
-	Artifact            model.ArtifactMetadata     `json:"artifact"`
-	Observations        []model.ListingObservation `json:"observations"`
-}
-
-type listingCompletionResultPayload struct {
-	CommandID           string                   `json:"command_id"`
-	ResultKind          string                   `json:"result_kind"`
-	AttemptID           string                   `json:"attempt_id"`
-	ExecutorIncarnation string                   `json:"executor_incarnation"`
-	Artifact            model.ArtifactMetadata   `json:"artifact"`
-	Quality             listingQualityPayload    `json:"quality"`
-	Checkpoint          listingCheckpointPayload `json:"checkpoint_candidate"`
-}
-
-type listingQualityPayload struct {
-	IdentityComplete        bool `json:"identity_complete"`
-	OrderingContractHeld    bool `json:"ordering_contract_held"`
-	PaginationStable        bool `json:"pagination_stable"`
-	PreviousFrontierReached bool `json:"previous_frontier_reached"`
-	OverlapCompleted        bool `json:"overlap_completed"`
-	ItemCount               int  `json:"item_count"`
-}
-
-type listingCheckpointPayload struct {
-	FrontierActivityAt string   `json:"frontier_activity_at,omitempty"`
-	FrontierJobKeys    []string `json:"frontier_job_keys,omitempty"`
-}
-
-type detailResultPayload struct {
-	CommandID             string                 `json:"command_id"`
-	ResultKind            string                 `json:"result_kind"`
-	AttemptID             string                 `json:"attempt_id"`
-	ExecutorIncarnation   string                 `json:"executor_incarnation"`
-	Artifact              model.ArtifactMetadata `json:"artifact"`
-	DetailVersionID       string                 `json:"detail_version_id"`
-	NormalizedContentHash string                 `json:"normalized_content_hash"`
-	Detail                json.RawMessage        `json:"detail"`
-}
+type listingPageResultPayload = executioncontract.ListingPageResult
+type listingCompletionResultPayload = executioncontract.ListingCompletionResult
+type listingQualityPayload = executioncontract.ListingQuality
+type listingCheckpointPayload = executioncontract.ListingCheckpointCandidate
+type detailResultPayload = executioncontract.DetailResult
 
 func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, state *storedState, msg actorbase.Msg) {
 	var discriminator struct {
