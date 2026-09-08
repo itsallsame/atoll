@@ -76,6 +76,39 @@ func TestPrepareListingSubmissionsBuildsBoundedPagesAndCompletion(t *testing.T) 
 	}
 }
 
+func TestPrepareListingSubmissionsUsesStandaloneProductionRunAsProvenance(t *testing.T) {
+	now := time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC)
+	offer, spec, _ := productionExecutionOffer(t, now)
+	resources := &artifactCreatorStub{writer: &writeHandleStub{}}
+	sink, err := newAtollArtifactSink(resources, artifactSinkConfig{DeviceName: "worker-a", ChannelName: "recruiting",
+		Directory: "artifacts", WorkID: offer.Work.WorkID, AttemptID: offer.Attempt.AttemptID,
+		AccessScope: "operators", Retention: "30d", Redacted: false, MaxBytes: 4096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageRef := recipeabi.ArtifactRef{ArtifactID: "production-page", ContentHash: "sha256:" + sixtyFourZeros,
+		ObjectRef: "daemon://worker-a/recruiting/artifacts/production-page.bin"}
+	run := httpdriver.ListingRunResult{
+		Output: recipeabi.RunOutput{ABIVersion: recipeabi.Version, AttemptID: offer.Attempt.AttemptID,
+			Artifacts: []recipeabi.ArtifactRef{pageRef}, Result: json.RawMessage(`{"items":1}`),
+			Quality: recipeabi.QualityProof{IdentityComplete: true, OrderingContractHeld: true, PaginationStable: true,
+				PreviousFrontierReached: true, OverlapCompleted: true, ItemCount: 1}},
+		CheckpointCandidate: &recipeabi.CheckpointRef{Version: offer.Checkpoint.Version + 1, FrontierKeys: []string{"job-1"}},
+		Pages: []httpdriver.ListingPage{{Sequence: 1, URL: "https://jobs.example.com/openings", Terminal: true,
+			Artifact: pageRef, Items: []map[string]json.RawMessage{listingResultItem(t, "job-1", "/roles/1", "")}}},
+	}
+	submissions, err := prepareListingSubmissions(context.Background(), offer, spec, run, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(submissions.Pages) != 1 || len(submissions.Pages[0].Observations) != 1 ||
+		submissions.Pages[0].Observations[0].OccurrenceID != offer.ListingRun.ListingRunID ||
+		submissions.Pages[0].Observations[0].SourceID != offer.ListingRun.SourceID ||
+		submissions.Completion.ResultKind != "listing_completion" {
+		t.Fatalf("standalone production submissions = %+v", submissions)
+	}
+}
+
 func TestPrepareListingSubmissionsRejectsCountAndPageContractMismatch(t *testing.T) {
 	now := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
 	offer, spec, _ := listingExecutionOffer(t, now)

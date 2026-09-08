@@ -121,6 +121,9 @@ func (r *Repository) ApplyListingRunCommand(ctx context.Context, expectedSourceV
 	if current.Source.Version != expectedSourceVersion {
 		return CommandResult{}, &model.VersionConflictError{Expected: expectedSourceVersion, Actual: current.Source.Version}
 	}
+	if run.Mode == model.ListingRunProduction && (current.Checkpoint == nil || !current.Source.EligibleForDailyRun(current.Company)) {
+		return CommandResult{}, fmt.Errorf("production listing run requires a daily-eligible source with an established checkpoint")
+	}
 	expectedRun, err := current.NewRun(run.ListingRunID, run.WorkID, run.Mode)
 	if err != nil {
 		return CommandResult{}, err

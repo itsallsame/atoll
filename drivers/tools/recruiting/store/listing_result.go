@@ -33,6 +33,72 @@ type ListingPageOutcome struct {
 	Replayed bool                      `json:"replayed"`
 }
 
+// listingResultExecution is the domain provenance behind one listing Work.
+// A scheduled execution owns a SourceOccurrence; an independent production
+// run owns a ListingRun. Diagnostic ListingRuns never enter page ingestion.
+type listingResultExecution struct {
+	Occurrence *model.SourceOccurrence
+	ListingRun *model.ListingRun
+}
+
+func loadListingResultExecution(ctx context.Context, tx *sql.Tx, workID string) (listingResultExecution, error) {
+	occurrence, err := getOccurrenceByWorkWith(ctx, tx, workID, true)
+	if err == nil {
+		return listingResultExecution{Occurrence: &occurrence}, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return listingResultExecution{}, err
+	}
+	run, err := getListingRunByWorkWith(ctx, tx, workID, true)
+	if err != nil {
+		return listingResultExecution{}, err
+	}
+	if run.Mode != model.ListingRunProduction {
+		return listingResultExecution{}, fmt.Errorf("diagnostic listing run cannot publish listing pages")
+	}
+	return listingResultExecution{ListingRun: &run}, nil
+}
+
+func (e listingResultExecution) sourceID() string {
+	if e.Occurrence != nil {
+		return e.Occurrence.SourceID
+	}
+	if e.ListingRun != nil {
+		return e.ListingRun.SourceID
+	}
+	return ""
+}
+
+// evidenceID is stored in the historical occurrence_id field. That field has
+// always represented a concrete listing execution (baseline IDs included),
+// and does not imply that a SourceOccurrence row exists.
+func (e listingResultExecution) evidenceID() string {
+	if e.Occurrence != nil {
+		return e.Occurrence.OccurrenceID
+	}
+	if e.ListingRun != nil {
+		return e.ListingRun.ListingRunID
+	}
+	return ""
+}
+
+func (e listingResultExecution) acceptsResults() bool {
+	return e.Occurrence != nil && e.Occurrence.Status == model.OccurrenceRunning ||
+		e.ListingRun != nil && e.ListingRun.Status == model.ListingRunRunning
+}
+
+func (e listingResultExecution) currentFence(ctx context.Context, tx *sql.Tx, profileID string) (model.AttemptFence, error) {
+	if e.Occurrence != nil {
+		_, fence, err := loadListingOfferFence(ctx, tx, *e.Occurrence, profileID)
+		return fence, err
+	}
+	if e.ListingRun != nil {
+		_, fence, err := loadStandaloneListingOfferFence(ctx, tx, *e.ListingRun, profileID)
+		return fence, err
+	}
+	return model.AttemptFence{}, ErrNotFound
+}
+
 // AcceptListingPage authenticates one bounded page before making its
 // observations and derived detail Work visible. Checkpoint advancement is
 // deliberately reserved for AcceptListingCompletion.
@@ -80,7 +146,7 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 	if err != nil {
 		return ListingPageOutcome{}, nil, err
 	}
-	occurrence, err := getOccurrenceByWorkWith(ctx, tx, work.WorkID, true)
+	execution, err := loadListingResultExecution(ctx, tx, work.WorkID)
 	if err != nil {
 		return ListingPageOutcome{}, nil, err
 	}
@@ -104,13 +170,13 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 		}
 		return replay, nil, nil
 	}
-	if occurrence.Status != model.OccurrenceRunning {
-		return ListingPageOutcome{}, fmt.Errorf("occurrence is no longer accepting listing results"), nil
+	if !execution.acceptsResults() {
+		return ListingPageOutcome{}, fmt.Errorf("listing execution is no longer accepting results"), nil
 	}
 	if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, input.ObservedAt); err != nil {
 		return ListingPageOutcome{}, err, nil
 	}
-	_, currentFence, err := loadListingOfferFence(ctx, tx, occurrence, attempt.ProfileID)
+	currentFence, err := execution.currentFence(ctx, tx, attempt.ProfileID)
 	if err != nil {
 		return ListingPageOutcome{}, err, nil
 	}
@@ -135,7 +201,7 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 	if progress.PageSequence != input.PageSequence {
 		return ListingPageOutcome{}, nil, ErrProgressConflict
 	}
-	capability, err := loadDetailCapability(ctx, tx, occurrence.SourceID)
+	capability, err := loadDetailCapability(ctx, tx, execution.sourceID())
 	if err != nil && len(input.Observations) != 0 {
 		return ListingPageOutcome{}, err, nil
 	}
@@ -149,7 +215,7 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 			return ListingPageOutcome{}, nil, err
 		}
 		observation = validatedObservation
-		if observation.OccurrenceID != occurrence.OccurrenceID || observation.SourceID != occurrence.SourceID ||
+		if observation.OccurrenceID != execution.evidenceID() || observation.SourceID != execution.sourceID() ||
 			observation.RecipeID != attempt.RecipeID || observation.RecipeVersion != attempt.RecipeVersion ||
 			observation.ArtifactID != input.Artifact.ArtifactID {
 			return ListingPageOutcome{}, nil, fmt.Errorf("listing observation is not bound to the accepted attempt page")
@@ -207,7 +273,8 @@ type ListingCompletion struct {
 type ListingCompletionOutcome struct {
 	Checkpoint model.IncrementalCheckpoint `json:"checkpoint"`
 	Work       model.Work                  `json:"work"`
-	Occurrence model.SourceOccurrence      `json:"occurrence"`
+	Occurrence *model.SourceOccurrence     `json:"occurrence,omitempty"`
+	ListingRun *model.ListingRun           `json:"listing_run,omitempty"`
 	Replayed   bool                        `json:"replayed"`
 }
 
@@ -251,7 +318,7 @@ func (r *Repository) acceptListingCompletionOnce(ctx context.Context, input List
 	if err != nil {
 		return ListingCompletionOutcome{}, nil, err
 	}
-	occurrence, err := getOccurrenceByWorkWith(ctx, tx, work.WorkID, true)
+	execution, err := loadListingResultExecution(ctx, tx, work.WorkID)
 	if err != nil {
 		return ListingCompletionOutcome{}, nil, err
 	}
@@ -264,7 +331,7 @@ func (r *Repository) acceptListingCompletionOnce(ctx context.Context, input List
 		replay.Replayed = true
 		return replay, nil, nil
 	}
-	if replay, found, err := replayListingCompletion(ctx, tx, input, attempt, work, occurrence); err != nil {
+	if replay, found, err := replayListingCompletion(ctx, tx, input, attempt, work, execution); err != nil {
 		return ListingCompletionOutcome{}, nil, err
 	} else if found {
 		if err := reserveResultReceipt(ctx, tx, input.CauseCommandID, executioncontract.TypeResult, input.RequestHash, replay, input.CompletedAt); err != nil {
@@ -275,13 +342,13 @@ func (r *Repository) acceptListingCompletionOnce(ctx context.Context, input List
 		}
 		return replay, nil, nil
 	}
-	if occurrence.Status != model.OccurrenceRunning {
-		return ListingCompletionOutcome{}, fmt.Errorf("occurrence is no longer accepting listing results"), nil
+	if !execution.acceptsResults() {
+		return ListingCompletionOutcome{}, fmt.Errorf("listing execution is no longer accepting results"), nil
 	}
 	if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, input.CompletedAt); err != nil {
 		return ListingCompletionOutcome{}, err, nil
 	}
-	_, currentFence, err := loadListingOfferFence(ctx, tx, occurrence, attempt.ProfileID)
+	currentFence, err := execution.currentFence(ctx, tx, attempt.ProfileID)
 	if err != nil {
 		return ListingCompletionOutcome{}, err, nil
 	}
@@ -303,7 +370,7 @@ SELECT COALESCE(SUM(item_count), 0) FROM recruiting_listing_page_progress WHERE 
 	if acceptedItemCount != input.ItemCount {
 		return ListingCompletionOutcome{}, fmt.Errorf("listing quality item count does not match accepted pages"), nil
 	}
-	checkpoint, err := getCheckpointForUpdate(ctx, tx, occurrence.SourceID)
+	checkpoint, err := getCheckpointForUpdate(ctx, tx, execution.sourceID())
 	if err != nil {
 		return ListingCompletionOutcome{}, err, nil
 	}
@@ -316,7 +383,7 @@ SELECT COALESCE(SUM(item_count), 0) FROM recruiting_listing_page_progress WHERE 
 	candidate := checkpoint
 	candidate.FrontierActivityAt = input.Progress.Candidate.FrontierActivityAt
 	candidate.FrontierJobKeys = append([]string(nil), input.Progress.Candidate.FrontierJobKeys...)
-	candidate.LastOccurrenceID = occurrence.OccurrenceID
+	candidate.LastOccurrenceID = execution.evidenceID()
 	proof := input.Progress
 	proof.Candidate = candidate
 	committedCheckpoint, err := checkpoint.Commit(checkpoint.Version, proof)
@@ -331,11 +398,20 @@ SELECT COALESCE(SUM(item_count), 0) FROM recruiting_listing_page_progress WHERE 
 	if err != nil {
 		return ListingCompletionOutcome{}, err, nil
 	}
-	completedOccurrence, err := occurrence.Finish(occurrence.Version, true, "checkpoint_committed")
-	if err != nil {
-		return ListingCompletionOutcome{}, err, nil
+	outcome := ListingCompletionOutcome{Checkpoint: committedCheckpoint, Work: completedWork}
+	if execution.Occurrence != nil {
+		completed, err := execution.Occurrence.Finish(execution.Occurrence.Version, true, "checkpoint_committed")
+		if err != nil {
+			return ListingCompletionOutcome{}, err, nil
+		}
+		outcome.Occurrence = &completed
+	} else {
+		completed, err := execution.ListingRun.Complete(execution.ListingRun.Version)
+		if err != nil {
+			return ListingCompletionOutcome{}, err, nil
+		}
+		outcome.ListingRun = &completed
 	}
-	outcome := ListingCompletionOutcome{Checkpoint: committedCheckpoint, Work: completedWork, Occurrence: completedOccurrence}
 	outcomeState, err := json.Marshal(outcome)
 	if err != nil {
 		return ListingCompletionOutcome{}, nil, err
@@ -364,16 +440,19 @@ WHERE source_id = ? AND checkpoint_version = ?`, committedCheckpoint.Version, co
 	if err := updateWorkTx(ctx, tx, work.Version, completedWork, input.CompletedAt); err != nil {
 		return ListingCompletionOutcome{}, nil, err
 	}
-	if err := updateOccurrenceInTx(ctx, tx, occurrence.Version, completedOccurrence, input.CompletedAt); err != nil {
+	if outcome.Occurrence != nil {
+		if err := updateOccurrenceInTx(ctx, tx, execution.Occurrence.Version, *outcome.Occurrence, input.CompletedAt); err != nil {
+			return ListingCompletionOutcome{}, nil, err
+		}
+	} else if err := updateListingRunInTx(ctx, tx, execution.ListingRun.Version, *outcome.ListingRun, input.CompletedAt); err != nil {
 		return ListingCompletionOutcome{}, nil, err
 	}
 	if err := releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitReleased, input.CompletedAt); err != nil {
 		return ListingCompletionOutcome{}, nil, err
 	}
-	payload, _ := json.Marshal(map[string]any{
-		"attempt_id": succeededAttempt.AttemptID, "work_id": completedWork.WorkID,
-		"occurrence_id": completedOccurrence.OccurrenceID, "checkpoint_version": committedCheckpoint.Version,
-	})
+	payload, _ := json.Marshal(map[string]any{"attempt_id": succeededAttempt.AttemptID, "work_id": completedWork.WorkID,
+		"occurrence_id": nullableListingOccurrenceID(outcome.Occurrence), "listing_run_id": nullableListingRunID(outcome.ListingRun),
+		"checkpoint_version": committedCheckpoint.Version})
 	event, err := model.NewEventIntent("listing-completed-"+succeededAttempt.AttemptID, "listing.completed", "work",
 		completedWork.WorkID, completedWork.Version, input.CompletedAt.UTC().Format(time.RFC3339Nano), input.CauseCommandID, payload)
 	if err != nil {
@@ -439,13 +518,16 @@ WHERE attempt_id = ? AND page_sequence = ?`, input.AttemptID, input.PageSequence
 	return outcome, true, nil
 }
 
-func replayListingCompletion(ctx context.Context, tx *sql.Tx, input ListingCompletion, attempt model.Attempt, work model.Work, occurrence model.SourceOccurrence) (ListingCompletionOutcome, bool, error) {
+func replayListingCompletion(ctx context.Context, tx *sql.Tx, input ListingCompletion, attempt model.Attempt, work model.Work,
+	execution listingResultExecution) (ListingCompletionOutcome, bool, error) {
 	existing, rejected, found, err := getArtifactRecord(ctx, tx, input.Artifact.ArtifactID)
 	if err != nil || !found {
 		return ListingCompletionOutcome{}, false, err
 	}
+	contextCompleted := execution.Occurrence != nil && execution.Occurrence.Status == model.OccurrenceCompleted ||
+		execution.ListingRun != nil && execution.ListingRun.Status == model.ListingRunCompleted
 	if rejected || existing != input.Artifact || attempt.Status != model.AttemptSucceeded ||
-		work.Status != model.WorkCompleted || occurrence.Status != model.OccurrenceCompleted {
+		work.Status != model.WorkCompleted || !contextCompleted {
 		return ListingCompletionOutcome{}, false, fmt.Errorf("completion artifact does not identify an accepted terminal result")
 	}
 	var outcomeState []byte
@@ -458,6 +540,20 @@ func replayListingCompletion(ctx context.Context, tx *sql.Tx, input ListingCompl
 	}
 	outcome.Replayed = true
 	return outcome, true, nil
+}
+
+func nullableListingOccurrenceID(value *model.SourceOccurrence) any {
+	if value == nil {
+		return nil
+	}
+	return value.OccurrenceID
+}
+
+func nullableListingRunID(value *model.ListingRun) any {
+	if value == nil {
+		return nil
+	}
+	return value.ListingRunID
 }
 
 func getArtifactRecord(ctx context.Context, tx *sql.Tx, artifactID string) (model.ArtifactMetadata, bool, bool, error) {

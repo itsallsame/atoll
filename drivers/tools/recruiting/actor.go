@@ -170,7 +170,9 @@ func run(sys actorbase.Sys, cfg Config) error {
 		case TypeRunJoinOccurrence:
 			handleRunJoinOccurrence(sys, cfg, repository, msg)
 		case TypeRunDiagnostic:
-			handleRunDiagnostic(sys, cfg, repository, msg)
+			handleStandaloneListingRun(sys, cfg, repository, msg, RunDiagnostic)
+		case TypeRunProduction:
+			handleStandaloneListingRun(sys, cfg, repository, msg, RunProduction)
 		case TypeExecutionOffer, TypeExecutionAccept, TypeExecutionStarted, TypeExecutionFailed, TypeExecutionWakeCompleted:
 			handleExecutionControlMessage(sys, cfg, repository, msg)
 		case TypeSourceGet, TypeSourceList, TypeJobGet, TypeJobList, TypeWorkGet, TypeWorkList,

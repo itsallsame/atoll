@@ -84,6 +84,19 @@ func diagnosticExecutionOffer(t *testing.T, now time.Time) (executioncontract.Of
 	return offer, spec, raw
 }
 
+func productionExecutionOffer(t *testing.T, now time.Time) (executioncontract.Offer, recipeabi.Spec, []byte) {
+	t.Helper()
+	offer, spec, raw := listingExecutionOffer(t, now)
+	run, err := model.NewListingRun("listing-run-production-1", offer.Work.WorkID, model.ListingRunProduction,
+		offer.Occurrence.SourceID, offer.Occurrence.CompanyVersion, offer.Occurrence.SourceVersion,
+		offer.Checkpoint, offer.Occurrence.ListingExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer.Occurrence, offer.ListingRun = nil, &run
+	return offer, spec, raw
+}
+
 func detailExecutionOffer(t *testing.T, now time.Time) (executioncontract.Offer, recipeabi.Spec, []byte) {
 	t.Helper()
 	spec, raw, hash := executionSpec(t, recipeabi.KindDetail)
@@ -126,6 +139,21 @@ func TestPrepareListingExecutionBuildsFencedRunInputAndResolvesRecipe(t *testing
 		prepared.Input.Endpoint.Version != offer.Occurrence.ListingExecution.Endpoint.Revision || prepared.Input.Checkpoint == nil ||
 		prepared.Input.Checkpoint.Version != offer.Checkpoint.Version || prepared.Input.Budget.PermitID != offer.Budget.PermitID {
 		t.Fatalf("unexpected prepared listing execution: %+v", prepared)
+	}
+}
+
+func TestPrepareStandaloneProductionExecutionUsesFrozenCheckpoint(t *testing.T) {
+	now := time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC)
+	offer, spec, raw := productionExecutionOffer(t, now)
+	prepared, err := prepareExecution(recipeReaderStub{outcome: accessdoor.Outcome{Found: true, Value: raw}}, offer, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Recipe.Kind != spec.Kind || prepared.ContentRef != offer.ListingRun.ListingExecution.Execution.ContentRef ||
+		prepared.Input.Target.ID != offer.ListingRun.SourceID || prepared.Input.Checkpoint == nil ||
+		prepared.Input.Checkpoint.Version != offer.ListingRun.CheckpointVersion ||
+		prepared.Input.Attempt.WorkID != offer.ListingRun.WorkID {
+		t.Fatalf("unexpected standalone production input: %+v", prepared)
 	}
 }
 

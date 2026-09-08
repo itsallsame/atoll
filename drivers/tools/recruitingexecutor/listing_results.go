@@ -62,7 +62,9 @@ func prepareDiagnosticSubmission(ctx context.Context, offer executioncontract.Of
 
 func prepareListingSubmissions(ctx context.Context, offer executioncontract.Offer, spec recipeabi.Spec,
 	run httpdriver.ListingRunResult, sink *atollArtifactSink) (listingSubmissions, error) {
-	if ctx == nil || sink == nil || offer.Kind != "listing" || offer.Occurrence == nil || spec.Kind != recipeabi.KindListing ||
+	standaloneProduction := offer.ListingRun != nil && offer.ListingRun.Mode == model.ListingRunProduction
+	if ctx == nil || sink == nil || offer.Kind != "listing" || (offer.Occurrence == nil && !standaloneProduction) ||
+		(offer.Occurrence != nil && offer.ListingRun != nil) || spec.Kind != recipeabi.KindListing ||
 		run.Output.Failure != nil || run.CheckpointCandidate == nil || run.Output.AttemptID != offer.Attempt.AttemptID || len(run.Pages) == 0 {
 		return listingSubmissions{}, errors.New("successful listing offer, recipe, run, and artifact sink are required")
 	}
@@ -101,7 +103,7 @@ func prepareListingSubmissions(ctx context.Context, offer executioncontract.Offe
 		return listingSubmissions{}, fmt.Errorf("listing run quality count %d does not match %d unique page observations", run.Output.Quality.ItemCount, totalItems)
 	}
 	deltaRef, err := sink.Put(ctx, httpdriver.ArtifactWrite{Kind: "listing_delta", AttemptID: offer.Attempt.AttemptID,
-		PageSequence: len(run.Pages) + 1, URL: offer.Occurrence.ListingExecution.Endpoint.URL,
+		PageSequence: len(run.Pages) + 1, URL: listingOfferEndpoint(offer),
 		ContentType: "application/json", Body: run.Output.Result})
 	if err != nil {
 		return listingSubmissions{}, fmt.Errorf("save listing delta artifact: %w", err)
@@ -137,6 +139,10 @@ func (s *atollArtifactSink) metadata(ref recipeabi.ArtifactRef, kind model.Artif
 
 func listingObservation(offer executioncontract.Offer, spec recipeabi.Spec, page httpdriver.ListingPage,
 	artifactID string, item map[string]json.RawMessage, itemIndex int) (model.ListingObservation, error) {
+	executionID, sourceID := listingOfferExecutionIdentity(offer)
+	if executionID == "" || sourceID == "" {
+		return model.ListingObservation{}, errors.New("listing offer has no execution identity")
+	}
 	jobKey, err := listingIdentity(item[spec.Listing.IdentityField])
 	if err != nil {
 		return model.ListingObservation{}, err
@@ -164,11 +170,31 @@ func listingObservation(offer executioncontract.Offer, spec recipeabi.Spec, page
 	identitySum := sha256.Sum256([]byte("recruiting.observation.v1\n" + offer.Attempt.AttemptID + "\n" +
 		strconv.FormatUint(page.Sequence, 10) + "\n" + jobKey + "\n" + strconv.Itoa(itemIndex)))
 	return model.NewListingObservation(model.ListingObservation{
-		ObservationID: "observation-" + hex.EncodeToString(identitySum[:16]), OccurrenceID: offer.Occurrence.OccurrenceID,
-		SourceID: offer.Occurrence.SourceID, SourceJobKey: jobKey, DetailURL: detailURL, ActivityAt: activity,
+		ObservationID: "observation-" + hex.EncodeToString(identitySum[:16]), OccurrenceID: executionID,
+		SourceID: sourceID, SourceJobKey: jobKey, DetailURL: detailURL, ActivityAt: activity,
 		ListingFingerprint: "sha256:" + hex.EncodeToString(fingerprintSum[:]), RecipeID: offer.Attempt.RecipeID,
 		RecipeVersion: offer.Attempt.RecipeVersion, ArtifactID: artifactID,
 	})
+}
+
+func listingOfferExecutionIdentity(offer executioncontract.Offer) (string, string) {
+	if offer.Occurrence != nil && offer.ListingRun == nil {
+		return offer.Occurrence.OccurrenceID, offer.Occurrence.SourceID
+	}
+	if offer.ListingRun != nil && offer.Occurrence == nil && offer.ListingRun.Mode == model.ListingRunProduction {
+		return offer.ListingRun.ListingRunID, offer.ListingRun.SourceID
+	}
+	return "", ""
+}
+
+func listingOfferEndpoint(offer executioncontract.Offer) string {
+	if offer.Occurrence != nil && offer.ListingRun == nil {
+		return offer.Occurrence.ListingExecution.Endpoint.URL
+	}
+	if offer.ListingRun != nil && offer.Occurrence == nil {
+		return offer.ListingRun.ListingExecution.Endpoint.URL
+	}
+	return ""
 }
 
 func listingIdentity(raw json.RawMessage) (string, error) {

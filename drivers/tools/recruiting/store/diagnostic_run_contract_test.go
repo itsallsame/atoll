@@ -35,6 +35,19 @@ func TestDiagnosticRunExecutesWithEvidenceAndNoBusinessWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	rejectedProduction, _ := preparation.NewRun("diagnostic-no-baseline-production", "diagnostic-no-baseline-work", model.ListingRunProduction)
+	rejectedWork, _ := model.NewWork(rejectedProduction.WorkID, "source", source.SourceID, "listing_sync", "manual")
+	rejectedWork, _ = rejectedWork.WithCausality("human:diagnostic:1", "message-no-baseline", "")
+	rejectedPlacement := WorkPlacement{BusinessKey: "manual-listing|" + rejectedProduction.ListingRunID, Priority: 200,
+		Capability: rejectedProduction.ListingExecution.Execution.RequiredCapability, Origin: rejectedProduction.ListingExecution.Origin, NotBefore: now}
+	rejectedReceipt, _ := model.NewCommandReceipt("no-baseline-production-command", "recruiting.run.production",
+		"sha256:no-baseline-production", json.RawMessage(`{}`))
+	rejectedEvent, _ := model.NewEventIntent("no-baseline-production-event", "work.created", "work", rejectedWork.WorkID,
+		rejectedWork.Version, now.Format(time.RFC3339Nano), rejectedReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyListingRunCommand(ctx, source.Version, rejectedProduction, rejectedWork, rejectedPlacement,
+		rejectedReceipt, rejectedEvent, nil, now); err == nil {
+		t.Fatal("production run without a baseline checkpoint was accepted")
+	}
 	run, _ := preparation.NewRun("diagnostic-run-1", "diagnostic-work-1", model.ListingRunDiagnostic)
 	work, _ := model.NewWork(run.WorkID, "source", source.SourceID, "listing_sync", "manual")
 	work, _ = work.WithCausality("human:diagnostic:1", "message-diagnostic", "")

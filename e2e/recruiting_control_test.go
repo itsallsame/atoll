@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -470,6 +471,24 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	if nestedStringField(t, diagnosticReplay, "work", "work_id") != "e2e-work-diagnostic" {
 		t.Fatalf("diagnostic command replay changed Work: %v", diagnosticReplay)
 	}
+	production := recovered.request(homeID, "recruiting.run.production", dailyActorID, map[string]any{
+		"command_id": "e2e-run-production", "run_id": "e2e-listing-production", "work_id": "e2e-work-production",
+		"target":           map[string]any{"target_type": "source", "target_id": dailySourceID},
+		"expected_version": nestedNumberField(t, diagnosticSource, "entity", "version"), "reason": "operator requests an independent production run",
+	})
+	if stringField(t, production, "run_mode") != "production" ||
+		nestedStringField(t, production, "work", "work_id") != "e2e-work-production" ||
+		nestedStringField(t, production, "listing_run", "source_id") != dailySourceID {
+		t.Fatalf("production run command = %v", production)
+	}
+	productionReplay := recovered.request(homeID, "recruiting.run.production", dailyActorID, map[string]any{
+		"command_id": "e2e-run-production", "run_id": "e2e-listing-production", "work_id": "e2e-work-production",
+		"target":           map[string]any{"target_type": "source", "target_id": dailySourceID},
+		"expected_version": nestedNumberField(t, diagnosticSource, "entity", "version"), "reason": "operator requests an independent production run",
+	})
+	if nestedStringField(t, productionReplay, "work", "work_id") != "e2e-work-production" {
+		t.Fatalf("production command replay changed Work: %v", productionReplay)
+	}
 }
 
 func sourceIDWithDailyDue(scheduleDate string, policyVersion uint64, window, minimum, maximum time.Duration, label string) string {
@@ -549,6 +568,22 @@ func seedReadyRecruitingSource(t *testing.T, dsn, sourceID string, now time.Time
 		t.Fatal(err)
 	}
 	if err := repository.PublishSourceAssignment(ctx, validating.Version, 0, ready, assignment, now); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := model.EstablishCheckpoint(model.IncrementalCheckpoint{
+		SourceID: sourceID, RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, ContractHash: recipe.ContractHash,
+		Strategy: model.CheckpointActivityTime, FrontierActivityAt: now.Add(-time.Hour).Format(time.RFC3339),
+		OverlapPages: 1, LastOccurrenceID: "baseline-" + sourceID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointState, _ := json.Marshal(checkpoint)
+	if _, err := db.ExecContext(ctx, `INSERT INTO recruiting_checkpoints(
+source_id, checkpoint_version, recipe_id, recipe_version, contract_hash, frontier_activity_at,
+frontier_keys_json, last_occurrence_id, state_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+		checkpoint.SourceID, checkpoint.Version, checkpoint.RecipeID, checkpoint.RecipeVersion, checkpoint.ContractHash,
+		now.Add(-time.Hour), checkpoint.LastOccurrenceID, checkpointState, now); err != nil {
 		t.Fatal(err)
 	}
 }

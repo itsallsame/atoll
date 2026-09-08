@@ -164,6 +164,35 @@ func TestRecruitingLiveExecutionThroughAtoll(t *testing.T) {
 			jobsBefore, jobsAfter, observationsBefore, observationsAfter, checkpointBefore, checkpointAfter)
 	}
 	t.Logf("live diagnostic: work_status=%s attempt_status=%s business facts unchanged", diagnosticWork.Status, diagnosticAttempt)
+
+	productionSource := recovered.request(homeID, "recruiting.source.get", controlID, map[string]any{"id": sourceID})
+	production := recovered.request(homeID, "recruiting.run.production", controlID, map[string]any{
+		"command_id": "e2e-live-production", "run_id": "e2e-live-production-run", "work_id": "e2e-live-production-work",
+		"target":           map[string]any{"target_type": "source", "target_id": sourceID},
+		"expected_version": nestedNumberField(t, productionSource, "entity", "version"), "reason": "live independent production run",
+	})
+	if stringField(t, production, "run_mode") != "production" {
+		t.Fatalf("live production command = %v", production)
+	}
+	recovered.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
+	productionWork, productionAttempt := waitLiveWorkByID(t, runtimeDSN, "e2e-live-production-work", 45*time.Second,
+		daemonLog, h.server.logPath)
+	productionJobs, productionObservations, productionCheckpoint := liveSourceBusinessCounts(t, runtimeDSN, sourceID)
+	switch productionWork.Status {
+	case model.WorkWaitingHuman:
+		if productionJobs != jobsAfter || productionObservations != observationsAfter || productionCheckpoint != checkpointAfter {
+			t.Fatalf("rejected production changed facts jobs=%d→%d observations=%d→%d checkpoint=%d→%d",
+				jobsAfter, productionJobs, observationsAfter, productionObservations, checkpointAfter, productionCheckpoint)
+		}
+	case model.WorkCompleted:
+		if productionCheckpoint != checkpointAfter+1 {
+			t.Fatalf("successful production checkpoint=%d want %d", productionCheckpoint, checkpointAfter+1)
+		}
+	default:
+		t.Fatalf("live production status=%q attempt=%q", productionWork.Status, productionAttempt)
+	}
+	t.Logf("live production: work_status=%s attempt_status=%s checkpoint=%d→%d",
+		productionWork.Status, productionAttempt, checkpointAfter, productionCheckpoint)
 }
 
 func liveSourceBusinessCounts(t *testing.T, dsn, sourceID string) (int, int, uint64) {
@@ -336,6 +365,22 @@ func seedLiveRecruitingSource(t *testing.T, dsn, sourceID, contentRef string, sp
 		t.Fatal(err)
 	}
 	if err := repository.PublishSourceAssignment(ctx, validating.Version, 0, ready, assignment, now); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := model.EstablishCheckpoint(model.IncrementalCheckpoint{
+		SourceID: sourceID, RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, ContractHash: recipe.ContractHash,
+		Strategy: model.CheckpointActivityTime, FrontierActivityAt: now.Add(-time.Hour).Format(time.RFC3339),
+		OverlapPages: 1, LastOccurrenceID: "baseline-" + sourceID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointState, _ := json.Marshal(checkpoint)
+	if _, err := db.ExecContext(ctx, `INSERT INTO recruiting_checkpoints(
+source_id, checkpoint_version, recipe_id, recipe_version, contract_hash, frontier_activity_at,
+frontier_keys_json, last_occurrence_id, state_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+		checkpoint.SourceID, checkpoint.Version, checkpoint.RecipeID, checkpoint.RecipeVersion, checkpoint.ContractHash,
+		now.Add(-time.Hour), checkpoint.LastOccurrenceID, checkpointState, now); err != nil {
 		t.Fatal(err)
 	}
 }

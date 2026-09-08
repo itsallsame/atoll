@@ -46,6 +46,7 @@ func manifest() introspect.Manifest {
 			TypeWorkResolve:            {Description: "record an explicit human non-success resolution"},
 			TypeRunJoinOccurrence:      {Description: "materialize one planned daily source occurrence for immediate manual execution"},
 			TypeRunDiagnostic:          {Description: "run one source listing recipe and retain evidence without changing jobs or checkpoint"},
+			TypeRunProduction:          {Description: "run one independent production listing sync with checkpoint compare-and-swap"},
 			TypeExecutionOffer:         {Description: "offer one capability-matched listing or detail execution to an authenticated executor"},
 			TypeExecutionAccept:        {Description: "accept a bound execution attempt using executor incarnation fencing"},
 			TypeExecutionStarted:       {Description: "atomically start an attempt, its work, and an associated listing occurrence when present"},

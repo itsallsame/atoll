@@ -154,7 +154,7 @@ func handleRunJoinOccurrence(sys actorbase.Sys, cfg Config, repository *store.Re
 	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
 }
 
-func handleRunDiagnostic(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
+func handleStandaloneListingRun(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg, mode RunMode) {
 	if repository == nil {
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
 		return
@@ -183,7 +183,19 @@ func handleRunDiagnostic(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		failStoreError(sys, msg, err)
 		return
 	}
-	run, err := preparation.NewRun(strings.TrimSpace(payload.RunID), strings.TrimSpace(payload.WorkID), model.ListingRunDiagnostic)
+	if mode == RunProduction && (preparation.Checkpoint == nil || !preparation.Source.EligibleForDailyRun(preparation.Company)) {
+		_, _ = sys.Fail(msg, ErrorExecutionRejected, "production run requires a daily-eligible source with an established checkpoint")
+		return
+	}
+	if mode != RunDiagnostic && mode != RunProduction {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "standalone listing run mode must be diagnostic or production")
+		return
+	}
+	runMode := model.ListingRunDiagnostic
+	if mode == RunProduction {
+		runMode = model.ListingRunProduction
+	}
+	run, err := preparation.NewRun(strings.TrimSpace(payload.RunID), strings.TrimSpace(payload.WorkID), runMode)
 	if err != nil {
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
 		return
@@ -204,8 +216,8 @@ func handleRunDiagnostic(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		return
 	}
 	response := makeWorkResponse(msg, work)
-	response.RunMode, response.ListingRun = RunDiagnostic, &run
-	dispatch, err := workCommandDispatch(cfg, work, placement, payload.CommandID, "run_diagnostic")
+	response.RunMode, response.ListingRun = mode, &run
+	dispatch, err := workCommandDispatch(cfg, work, placement, payload.CommandID, "run_"+string(mode))
 	if err != nil {
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
 		return
