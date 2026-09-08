@@ -136,6 +136,7 @@ type Offer struct {
 	Attempt             model.Attempt                `json:"attempt"`
 	Work                model.Work                   `json:"work"`
 	Occurrence          *model.SourceOccurrence      `json:"occurrence,omitempty"`
+	ListingRun          *model.ListingRun            `json:"listing_run,omitempty"`
 	Checkpoint          *model.IncrementalCheckpoint `json:"checkpoint,omitempty"`
 	Detail              *DetailInput                 `json:"detail,omitempty"`
 	Budget              model.BudgetPermit           `json:"budget"`
@@ -209,6 +210,17 @@ type ListingCheckpointCandidate struct {
 	FrontierJobKeys    []string `json:"frontier_job_keys,omitempty"`
 }
 
+// DiagnosticResult closes a standalone diagnostic run with evidence only.
+// It intentionally contains no observations or checkpoint candidate.
+type DiagnosticResult struct {
+	CommandID           string                   `json:"command_id"`
+	ResultKind          string                   `json:"result_kind"`
+	AttemptID           string                   `json:"attempt_id"`
+	ExecutorIncarnation string                   `json:"executor_incarnation"`
+	Artifacts           []model.ArtifactMetadata `json:"artifacts"`
+	Quality             ListingQuality           `json:"quality"`
+}
+
 type DetailResult struct {
 	CommandID             string                 `json:"command_id"`
 	ResultKind            string                 `json:"result_kind"`
@@ -228,5 +240,6 @@ type ResultResponse struct {
 	RequestedBy     string          `json:"requested_by"`
 	Page            json.RawMessage `json:"page,omitempty"`
 	Completion      json.RawMessage `json:"completion,omitempty"`
+	Diagnostic      json.RawMessage `json:"diagnostic,omitempty"`
 	Detail          json.RawMessage `json:"detail,omitempty"`
 }

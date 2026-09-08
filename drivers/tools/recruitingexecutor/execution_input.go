@@ -77,22 +77,38 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 	var contentRef string
 	switch offer.Kind {
 	case "listing":
-		if offer.Occurrence == nil || offer.Detail != nil || work.Purpose != "listing_sync" || work.TargetType != "source" ||
-			work.TargetID != offer.Occurrence.SourceID || offer.Occurrence.WorkID != work.WorkID ||
-			(offer.Occurrence.Status != model.OccurrenceQueued && offer.Occurrence.Status != model.OccurrenceRunning) {
-			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("listing offer shape does not match its work and occurrence")
+		if offer.Detail != nil || (offer.Occurrence == nil) == (offer.ListingRun == nil) || work.Purpose != "listing_sync" || work.TargetType != "source" {
+			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("listing offer must carry exactly one execution context")
 		}
-		snapshot := offer.Occurrence.ListingExecution
-		if err := snapshot.Validate(offer.Occurrence.SourceID); err != nil {
+		var sourceID string
+		var companyVersion, sourceVersion uint64
+		var snapshot model.ListingExecutionSnapshot
+		if offer.Occurrence != nil {
+			sourceID, companyVersion, sourceVersion, snapshot = offer.Occurrence.SourceID, offer.Occurrence.CompanyVersion, offer.Occurrence.SourceVersion, offer.Occurrence.ListingExecution
+			if offer.Occurrence.WorkID != work.WorkID || (offer.Occurrence.Status != model.OccurrenceQueued && offer.Occurrence.Status != model.OccurrenceRunning) {
+				return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("listing occurrence is not executable")
+			}
+		} else {
+			run := offer.ListingRun
+			sourceID, companyVersion, sourceVersion, snapshot = run.SourceID, run.CompanyVersion, run.SourceVersion, run.ListingExecution
+			if run.WorkID != work.WorkID || (run.Status != model.ListingRunQueued && run.Status != model.ListingRunRunning) ||
+				(run.Mode != model.ListingRunDiagnostic && run.Mode != model.ListingRunProduction) {
+				return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("standalone listing run is not executable")
+			}
+		}
+		if work.TargetID != sourceID {
+			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("listing target does not match execution context")
+		}
+		if err := snapshot.Validate(sourceID); err != nil {
 			return recipeabi.RunInput{}, recipeExpectation{}, "", fmt.Errorf("validate listing snapshot: %w", err)
 		}
-		if offer.Occurrence.CompanyVersion != attempt.CompanyVersion || offer.Occurrence.SourceVersion != attempt.SourceVersion ||
+		if companyVersion != attempt.CompanyVersion || sourceVersion != attempt.SourceVersion ||
 			snapshot.Assignment.AssignmentVersion != attempt.AssignmentVersion || snapshot.RecipeID != attempt.RecipeID ||
 			snapshot.RecipeVersion != attempt.RecipeVersion || snapshot.Execution.RequiredCapability != attempt.Capability ||
 			snapshot.Origin != permit.Origin {
 			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("listing offer snapshot does not match its attempt fence or permit")
 		}
-		input.Target = recipeabi.TargetRef{Kind: "source", ID: offer.Occurrence.SourceID}
+		input.Target = recipeabi.TargetRef{Kind: "source", ID: sourceID}
 		input.Endpoint = recipeabi.EndpointRef{URL: snapshot.Endpoint.URL, Version: snapshot.Endpoint.Revision}
 		input.Assignment = assignmentRef(snapshot.Assignment)
 		if offer.Checkpoint == nil {
@@ -100,7 +116,7 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 				return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("listing baseline offer carries a checkpoint fence")
 			}
 		} else {
-			if offer.Checkpoint.SourceID != offer.Occurrence.SourceID || offer.Checkpoint.Version == 0 ||
+			if offer.Checkpoint.SourceID != sourceID || offer.Checkpoint.Version == 0 ||
 				offer.Checkpoint.Version != attempt.CheckpointVersion || offer.Checkpoint.RecipeID != attempt.RecipeID ||
 				offer.Checkpoint.RecipeVersion != attempt.RecipeVersion || offer.Checkpoint.ContractHash != snapshot.ContractHash {
 				return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("listing checkpoint does not match its immutable fence")
@@ -113,7 +129,7 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 			Capability: snapshot.Execution.RequiredCapability, Transport: recipeabi.Transport(snapshot.Execution.Transport)}
 
 	case "detail":
-		if offer.Detail == nil || offer.Occurrence != nil || offer.Checkpoint != nil || work.Purpose != "detail_sync" ||
+		if offer.Detail == nil || offer.Occurrence != nil || offer.ListingRun != nil || offer.Checkpoint != nil || work.Purpose != "detail_sync" ||
 			work.TargetType != "job" || work.TargetID != offer.Detail.Job.JobID {
 			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("detail offer shape does not match its work and job")
 		}

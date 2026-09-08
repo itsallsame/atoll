@@ -25,6 +25,41 @@ type listingSubmissions struct {
 	Completion executioncontract.ListingCompletionResult
 }
 
+func prepareDiagnosticSubmission(ctx context.Context, offer executioncontract.Offer, run httpdriver.ListingRunResult,
+	sink *atollArtifactSink) (executioncontract.DiagnosticResult, error) {
+	if ctx == nil || sink == nil || offer.ListingRun == nil || offer.ListingRun.Mode != model.ListingRunDiagnostic ||
+		offer.Occurrence != nil || run.Output.Failure != nil || run.Output.AttemptID != offer.Attempt.AttemptID || len(run.Output.Artifacts) == 0 {
+		return executioncontract.DiagnosticResult{}, errors.New("successful standalone diagnostic run and artifacts are required")
+	}
+	artifacts := make([]model.ArtifactMetadata, 0, len(run.Output.Artifacts)+1)
+	for _, ref := range run.Output.Artifacts {
+		metadata, err := sink.metadata(ref, model.ArtifactPage)
+		if err != nil {
+			return executioncontract.DiagnosticResult{}, err
+		}
+		artifacts = append(artifacts, metadata)
+	}
+	trace, err := sink.Put(ctx, httpdriver.ArtifactWrite{Kind: "trace", AttemptID: offer.Attempt.AttemptID,
+		PageSequence: len(run.Output.Artifacts) + 1, URL: offer.ListingRun.ListingExecution.Endpoint.URL,
+		ContentType: "application/json", Body: run.Output.Result})
+	if err != nil {
+		return executioncontract.DiagnosticResult{}, fmt.Errorf("save diagnostic trace: %w", err)
+	}
+	traceMetadata, err := sink.metadata(trace, model.ArtifactTrace)
+	if err != nil {
+		return executioncontract.DiagnosticResult{}, err
+	}
+	artifacts = append(artifacts, traceMetadata)
+	quality := run.Output.Quality
+	return executioncontract.DiagnosticResult{
+		CommandID: "diagnostic-result-" + offer.Attempt.AttemptID, ResultKind: "diagnostic",
+		AttemptID: offer.Attempt.AttemptID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Artifacts: artifacts,
+		Quality: executioncontract.ListingQuality{IdentityComplete: quality.IdentityComplete, OrderingContractHeld: quality.OrderingContractHeld,
+			PaginationStable: quality.PaginationStable, PreviousFrontierReached: quality.PreviousFrontierReached,
+			OverlapCompleted: quality.OverlapCompleted, ItemCount: quality.ItemCount},
+	}, nil
+}
+
 func prepareListingSubmissions(ctx context.Context, offer executioncontract.Offer, spec recipeabi.Spec,
 	run httpdriver.ListingRunResult, sink *atollArtifactSink) (listingSubmissions, error) {
 	if ctx == nil || sink == nil || offer.Kind != "listing" || offer.Occurrence == nil || spec.Kind != recipeabi.KindListing ||

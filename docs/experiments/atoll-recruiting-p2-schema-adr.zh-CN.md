@@ -77,6 +77,8 @@ Executor 先上传外部对象，再返回不可变引用。接受事务验证 A
 
 migration 13 为 Work Center 增加全局 `(updated_at, work_id)` 以及 status、purpose、trigger 分别前置的倒序分页索引；Target 与 initiator 复用 migration 3 已有复合索引。查询按最具选择性的已建索引选择固定白名单中的 `FORCE INDEX`，其余组合条件为残余过滤。`waiting_reason` 首版只允许在 `waiting_human` 状态内使用 JSON 残余过滤，避免在尚无容量证据时复制一列可变诊断枚举；若该 Review Queue 证明成为高基数热点，再以独立 migration 投影索引列。
 
+migration 14 新增 `recruiting_listing_runs`，保存独立人工列表运行的一对一 Work 关联、Source、run mode、状态、冻结 Checkpoint 版本和完整无秘密执行快照。该表不进入 DailyRun 外键或 coverage 分母；`work_id` 唯一约束防止一个 Work 获得多个运行语义，Source/创建时间索引用于后续运维下钻。诊断结果仍复用 Artifact、Attempt、Permit、receipt 和 outbox 表，不复制执行队列。
+
 ## migration 与权限
 
 - migration 从空 schema 开始，不识别、不导入也不删除 Staircase 旧表；

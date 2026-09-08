@@ -28,6 +28,7 @@ type executionControlResponse struct {
 	Attempt         *model.Attempt                  `json:"attempt,omitempty"`
 	Page            *store.ListingPageOutcome       `json:"page,omitempty"`
 	Completion      *store.ListingCompletionOutcome `json:"completion,omitempty"`
+	Diagnostic      *store.DiagnosticResultOutcome  `json:"diagnostic,omitempty"`
 	Detail          *store.DetailResultOutcome      `json:"detail,omitempty"`
 }
 
@@ -35,6 +36,7 @@ type listingPageResultPayload = executioncontract.ListingPageResult
 type listingCompletionResultPayload = executioncontract.ListingCompletionResult
 type listingQualityPayload = executioncontract.ListingQuality
 type listingCheckpointPayload = executioncontract.ListingCheckpointCandidate
+type diagnosticResultPayload = executioncontract.DiagnosticResult
 type detailResultPayload = executioncontract.DetailResult
 
 func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, state *storedState, msg actorbase.Msg) {
@@ -58,11 +60,36 @@ func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, s
 		handleListingPageResult(sys, repository, msg)
 	case "listing_completion":
 		handleListingCompletionResult(sys, repository, msg)
+	case "diagnostic":
+		handleDiagnosticResult(sys, repository, msg)
 	case "detail":
 		handleDetailResult(sys, repository, msg)
 	default:
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "unknown execution result_kind")
 	}
+}
+
+func handleDiagnosticResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload diagnosticResultPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if strings.TrimSpace(payload.CommandID) == "" || payload.ResultKind != "diagnostic" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "diagnostic command_id and result_kind are required")
+		return
+	}
+	outcome, err := repository.AcceptDiagnosticResult(msg.Ctx(), store.DiagnosticResult{
+		CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), AttemptID: payload.AttemptID,
+		ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
+		Artifacts: payload.Artifacts, Quality: payload.Quality, CompletedAt: time.UnixMilli(msg.TS).UTC(),
+	})
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := executionControlResponse{ContractVersion: executioncontract.Version, CorrelationID: string(msg.CorrelationID),
+		RequestedBy: string(msg.Sender.ID), Diagnostic: &outcome}
+	_, _ = sys.Reply(msg, response)
 }
 
 func handleDetailResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

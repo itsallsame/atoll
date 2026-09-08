@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -85,10 +86,13 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	  AND (? = '' OR w.purpose = ?)
 	  AND w.not_before <= ? AND (w.deadline_at IS NULL OR w.deadline_at > ?)
   AND (? = '' OR w.origin = ?) AND (? = '' OR w.profile_id = ?)
-	  AND ((w.purpose = 'listing_sync' AND EXISTS (
+	  AND ((w.purpose = 'listing_sync' AND (EXISTS (
 	    SELECT 1 FROM recruiting_source_occurrences o
 	    WHERE o.listing_work_id = w.work_id AND o.status IN ('queued', 'running')
-	  )) OR (w.purpose = 'detail_sync' AND EXISTS (
+	  ) OR EXISTS (
+	    SELECT 1 FROM recruiting_listing_runs lr
+	    WHERE lr.work_id = w.work_id AND lr.run_status IN ('queued', 'running')
+	  ))) OR (w.purpose = 'detail_sync' AND EXISTS (
 	    SELECT 1 FROM recruiting_source_jobs j
 	    WHERE j.job_id = w.target_id AND j.job_status IN ('detail_pending', 'update_pending')
 	  )))
@@ -159,13 +163,19 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	}
 
 	var occurrence model.SourceOccurrence
+	var listingRun model.ListingRun
 	var checkpoint *model.IncrementalCheckpoint
 	var detail *DetailExecutionInput
 	var fence model.AttemptFence
 	switch work.Purpose {
 	case "listing_sync":
 		occurrence, err = getOccurrenceByWorkWith(ctx, tx, work.WorkID, true)
-		if err == nil {
+		if errors.Is(err, ErrNotFound) {
+			listingRun, err = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
+			if err == nil {
+				checkpoint, fence, err = loadStandaloneListingOfferFence(ctx, tx, listingRun, placement.ProfileID)
+			}
+		} else if err == nil {
 			checkpoint, fence, err = loadListingOfferFence(ctx, tx, occurrence, placement.ProfileID)
 		}
 	case "detail_sync":
@@ -177,6 +187,9 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		return ExecutionOffer{}, err
 	}
 	sourceID := occurrence.SourceID
+	if listingRun.ListingRunID != "" {
+		sourceID = listingRun.SourceID
+	}
 	if detail != nil {
 		sourceID = detail.Job.SourceID
 	}
@@ -206,7 +219,11 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		RequestedProfileID: strings.TrimSpace(request.ProfileID),
 	}
 	if work.Purpose == "listing_sync" {
-		offer.Occurrence = &occurrence
+		if listingRun.ListingRunID != "" {
+			offer.ListingRun = &listingRun
+		} else {
+			offer.Occurrence = &occurrence
+		}
 	}
 	offerState, err := json.Marshal(offer)
 	if err != nil {
@@ -347,6 +364,47 @@ WHERE s.source_id = ?`, occurrence.SourceID).Scan(&companyState, &sourceState, &
 		fence.ProfileID, fence.ProfileVersion = profile.ProfileID, profile.Version
 	}
 	return checkpoint, fence, nil
+}
+
+func loadStandaloneListingOfferFence(ctx context.Context, tx *sql.Tx, run model.ListingRun, profileID string) (*model.IncrementalCheckpoint, model.AttemptFence, error) {
+	if err := run.ListingExecution.Validate(run.SourceID); err != nil ||
+		(run.Status != model.ListingRunQueued && run.Status != model.ListingRunRunning) {
+		return nil, model.AttemptFence{}, fmt.Errorf("standalone listing run is not executable")
+	}
+	current, err := readListingRunPreparation(ctx, tx, run.SourceID, true)
+	if err != nil {
+		return nil, model.AttemptFence{}, err
+	}
+	expected, err := current.NewRun(run.ListingRunID, run.WorkID, run.Mode)
+	if err != nil {
+		return nil, model.AttemptFence{}, err
+	}
+	// A diagnostic may intentionally use the checkpoint frozen when the user
+	// started it while a scheduled run advances the current checkpoint. All
+	// executable code and aggregate versions must still remain identical.
+	expected.Checkpoint, expected.CheckpointVersion = run.Checkpoint, run.CheckpointVersion
+	if expected.CompanyVersion != run.CompanyVersion || expected.SourceVersion != run.SourceVersion ||
+		!reflect.DeepEqual(expected.ListingExecution, run.ListingExecution) {
+		return nil, model.AttemptFence{}, fmt.Errorf("standalone listing run is fenced by changed source or recipe")
+	}
+	fence := model.AttemptFence{CompanyVersion: run.CompanyVersion, SourceVersion: run.SourceVersion,
+		AssignmentVersion: run.ListingExecution.Assignment.AssignmentVersion, RecipeID: run.ListingExecution.RecipeID,
+		RecipeVersion: run.ListingExecution.RecipeVersion, CheckpointVersion: run.CheckpointVersion}
+	if profileID != "" {
+		var profileState []byte
+		if err := tx.QueryRowContext(ctx, "SELECT state_json FROM recruiting_profiles WHERE profile_id = ?", profileID).Scan(&profileState); err != nil {
+			return nil, model.AttemptFence{}, fmt.Errorf("load standalone listing profile: %w", err)
+		}
+		var profile model.BrowserProfile
+		if err := json.Unmarshal(profileState, &profile); err != nil {
+			return nil, model.AttemptFence{}, err
+		}
+		if profile.AuthStatus != model.ProfileReady {
+			return nil, model.AttemptFence{}, fmt.Errorf("listing profile is not ready")
+		}
+		fence.ProfileID, fence.ProfileVersion = profile.ProfileID, profile.Version
+	}
+	return run.Checkpoint, fence, nil
 }
 
 func loadDetailOfferFence(ctx context.Context, tx *sql.Tx, work model.Work, placement WorkPlacement) (*DetailExecutionInput, model.AttemptFence, error) {
@@ -616,6 +674,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 		}
 	}
 	var occurrence model.SourceOccurrence
+	var listingRun model.ListingRun
 	var currentFence model.AttemptFence
 	// A failure closes execution authority but does not publish business data,
 	// so it remains safe to record after a domain configuration change. Accept
@@ -626,7 +685,12 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 		switch work.Purpose {
 		case "listing_sync":
 			occurrence, fenceErr = getOccurrenceByWorkWith(ctx, tx, work.WorkID, true)
-			if fenceErr == nil {
+			if errors.Is(fenceErr, ErrNotFound) {
+				listingRun, fenceErr = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
+				if fenceErr == nil {
+					_, currentFence, fenceErr = loadStandaloneListingOfferFence(ctx, tx, listingRun, attempt.ProfileID)
+				}
+			} else if fenceErr == nil {
 				_, currentFence, fenceErr = loadListingOfferFence(ctx, tx, occurrence, attempt.ProfileID)
 			}
 		case "detail_sync":
@@ -662,6 +726,13 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			occurrence, err = occurrence.Start(occurrence.Version)
 			if err == nil {
 				err = updateOccurrenceInTx(ctx, tx, previousOccurrenceVersion, occurrence, businessAt)
+			}
+		}
+		if err == nil && work.Purpose == "listing_sync" && listingRun.Status == model.ListingRunQueued {
+			previousRunVersion := listingRun.Version
+			listingRun, err = listingRun.Start(listingRun.Version)
+			if err == nil {
+				err = updateListingRunInTx(ctx, tx, previousRunVersion, listingRun, businessAt)
 			}
 		}
 	case "fail":

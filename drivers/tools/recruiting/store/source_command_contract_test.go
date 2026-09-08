@@ -100,7 +100,10 @@ ORDER BY updated_at, source_id LIMIT 2`, "source-command-company", now, now, "so
 		t.Fatalf("company source seek did not use intended index: %s", explain)
 	}
 
-	pending, err := repository.ListPendingEvents(ctx, now.Add(time.Minute), 100)
+	// The contract suite shares one ephemeral schema. Use the repository's
+	// maximum bounded page so events from other contracts cannot push this
+	// test's second event just past an arbitrary page of 100.
+	pending, err := repository.ListPendingEvents(ctx, now.Add(time.Minute), 500)
 	if err != nil {
 		t.Fatal(err)
 	}

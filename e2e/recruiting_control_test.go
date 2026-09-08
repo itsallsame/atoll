@@ -452,6 +452,24 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	if !httpRunnable {
 		t.Fatalf("capacity status omitted http.fetch backlog: %v", capacityStatus)
 	}
+	diagnosticSource := recovered.request(homeID, "recruiting.source.get", dailyActorID, map[string]any{"id": dailySourceID})
+	diagnostic := recovered.request(homeID, "recruiting.run.diagnostic", dailyActorID, map[string]any{
+		"command_id": "e2e-run-diagnostic", "run_id": "e2e-listing-diagnostic", "work_id": "e2e-work-diagnostic",
+		"target":           map[string]any{"target_type": "source", "target_id": dailySourceID},
+		"expected_version": nestedNumberField(t, diagnosticSource, "entity", "version"), "reason": "operator inspects listing evidence",
+	})
+	if stringField(t, diagnostic, "run_mode") != "diagnostic" || nestedStringField(t, diagnostic, "work", "work_id") != "e2e-work-diagnostic" ||
+		nestedStringField(t, diagnostic, "listing_run", "source_id") != dailySourceID {
+		t.Fatalf("diagnostic run command = %v", diagnostic)
+	}
+	diagnosticReplay := recovered.request(homeID, "recruiting.run.diagnostic", dailyActorID, map[string]any{
+		"command_id": "e2e-run-diagnostic", "run_id": "e2e-listing-diagnostic", "work_id": "e2e-work-diagnostic",
+		"target":           map[string]any{"target_type": "source", "target_id": dailySourceID},
+		"expected_version": nestedNumberField(t, diagnosticSource, "entity", "version"), "reason": "operator inspects listing evidence",
+	})
+	if nestedStringField(t, diagnosticReplay, "work", "work_id") != "e2e-work-diagnostic" {
+		t.Fatalf("diagnostic command replay changed Work: %v", diagnosticReplay)
+	}
 }
 
 func sourceIDWithDailyDue(scheduleDate string, policyVersion uint64, window, minimum, maximum time.Duration, label string) string {

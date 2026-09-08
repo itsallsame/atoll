@@ -191,15 +191,28 @@ func (r *Repository) applyRetryWorkCommand(ctx context.Context, expectedPrevious
 	}
 	if retry.Purpose == "listing_sync" {
 		occurrence, err := getOccurrenceByWorkWith(ctx, tx, previousID, true)
-		if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			run, runErr := getListingRunByWorkWith(ctx, tx, previousID, true)
+			if runErr != nil {
+				return CommandResult{}, fmt.Errorf("load standalone listing run for retry: %w", runErr)
+			}
+			rebound, runErr := run.RebindWork(run.Version, previousID, retry.WorkID)
+			if runErr != nil {
+				return CommandResult{}, runErr
+			}
+			if runErr := rebindListingRunInTx(ctx, tx, run.Version, rebound, businessAt); runErr != nil {
+				return CommandResult{}, runErr
+			}
+		} else if err != nil {
 			return CommandResult{}, fmt.Errorf("load listing occurrence for retry: %w", err)
-		}
-		rebound, err := occurrence.RebindWork(occurrence.Version, previousID, retry.WorkID)
-		if err != nil {
-			return CommandResult{}, err
-		}
-		if err := updateOccurrenceInTx(ctx, tx, occurrence.Version, rebound, businessAt); err != nil {
-			return CommandResult{}, fmt.Errorf("rebind listing occurrence for retry: %w", err)
+		} else {
+			rebound, err := occurrence.RebindWork(occurrence.Version, previousID, retry.WorkID)
+			if err != nil {
+				return CommandResult{}, err
+			}
+			if err := updateOccurrenceInTx(ctx, tx, occurrence.Version, rebound, businessAt); err != nil {
+				return CommandResult{}, fmt.Errorf("rebind listing occurrence for retry: %w", err)
+			}
 		}
 	}
 	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {

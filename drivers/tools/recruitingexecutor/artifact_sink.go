@@ -44,6 +44,16 @@ func newAtollArtifactSink(resources resourceArtifactStore, config artifactSinkCo
 		config.AccessScope == "" || config.Retention == "" || config.MaxBytes < 1 || config.MaxBytes > 20<<20 {
 		return nil, errors.New("artifact sink requires Resource access, location, policy metadata, and a byte limit in [1,20MiB]")
 	}
+	// A directory is an execution-owned evidence boundary, not a shared
+	// mutable bucket. Apart from avoiding cross-attempt name collisions, this
+	// means every execution creates a fresh directory: remote Resource drivers
+	// are not required to normalize an existing-directory error to
+	// access.AlreadyExists consistently across operating systems.
+	if config.AttemptID == "." || config.AttemptID == ".." || path.Base(config.AttemptID) != config.AttemptID ||
+		strings.Contains(config.AttemptID, `\`) {
+		return nil, errors.New("artifact sink attempt ID must be a safe path segment")
+	}
+	config.Directory = path.Join(path.Dir(config.Directory), path.Base(config.Directory)+"--"+config.AttemptID)
 	directory, err := accessdoor.FormatFileAddress(config.DeviceName, config.ChannelName, config.Directory)
 	if err != nil {
 		return nil, fmt.Errorf("format artifact directory: %w", err)

@@ -428,11 +428,19 @@ func prepareListingExecutionWork(t *testing.T, ctx context.Context, repository *
 		}
 	}
 	offerAt := latestDue.Add(time.Microsecond)
-	materialized, err := repository.MaterializeDueOccurrenceWorks(ctx, offerAt, len(page.Items), "recruiting", prefix+"-materialize", offerAt)
-	if err != nil || materialized.Queued != len(page.Items) {
+	// Materialization is intentionally a global due queue. The contract suite
+	// shares one schema, so drain a bounded full batch and assert this run's
+	// occurrences below instead of assuming they are the only due rows.
+	materialized, err := repository.MaterializeDueOccurrenceWorks(ctx, offerAt, 500, "recruiting", prefix+"-materialize", offerAt)
+	if err != nil {
 		t.Fatalf("materialized=%+v err=%v", materialized, err)
 	}
 	page, _ = repository.ListOccurrences(ctx, plan.Run.DailyRunID, "", 10)
+	for _, occurrence := range page.Items {
+		if occurrence.WorkID == "" {
+			t.Fatalf("target occurrence was not materialized: %+v (batch=%+v)", occurrence, materialized)
+		}
+	}
 	return offerAt, page.Items[0].WorkID
 }
 

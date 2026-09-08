@@ -80,11 +80,12 @@ func TestResolveRecipeRejectsHashMismatchAndUnknownJSON(t *testing.T) {
 }
 
 type artifactCreatorStub struct {
-	writer   *writeHandleStub
-	outcome  accessdoor.Outcome
-	created  resource.ResourceID
-	withBody bool
-	existing []byte
+	writer    *writeHandleStub
+	outcome   accessdoor.Outcome
+	created   resource.ResourceID
+	directory resource.ResourceID
+	withBody  bool
+	existing  []byte
 }
 
 func (s *artifactCreatorStub) CreateFile(id resource.ResourceID, withContent bool) (accessdoor.FileAccess, accessdoor.Outcome, error) {
@@ -92,7 +93,8 @@ func (s *artifactCreatorStub) CreateFile(id resource.ResourceID, withContent boo
 	return accessdoor.FileAccess{Local: &accessdoor.LocalFile{Write: s.writer}}, s.outcome, nil
 }
 
-func (s *artifactCreatorStub) CreateDirectory(resource.ResourceID) (accessdoor.Outcome, error) {
+func (s *artifactCreatorStub) CreateDirectory(id resource.ResourceID) (accessdoor.Outcome, error) {
+	s.directory = id
 	return accessdoor.Outcome{}, nil
 }
 

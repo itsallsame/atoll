@@ -141,6 +141,80 @@ func TestRecruitingLiveExecutionThroughAtoll(t *testing.T) {
 	recovered.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
 	deliveryAttempts := waitLiveDispatchRedelivery(t, runtimeDSN, dispatchID, work.WorkID, 30*time.Second)
 	t.Logf("lost completion recovered: dispatch_id=%s delivery_attempts=%d attempts_for_work=1", dispatchID, deliveryAttempts)
+
+	jobsBefore, observationsBefore, checkpointBefore := liveSourceBusinessCounts(t, runtimeDSN, sourceID)
+	sourceView := recovered.request(homeID, "recruiting.source.get", controlID, map[string]any{"id": sourceID})
+	diagnostic := recovered.request(homeID, "recruiting.run.diagnostic", controlID, map[string]any{
+		"command_id": "e2e-live-diagnostic", "run_id": "e2e-live-diagnostic-run", "work_id": "e2e-live-diagnostic-work",
+		"target":           map[string]any{"target_type": "source", "target_id": sourceID},
+		"expected_version": nestedNumberField(t, sourceView, "entity", "version"), "reason": "live read-only diagnostic",
+	})
+	if stringField(t, diagnostic, "run_mode") != "diagnostic" {
+		t.Fatalf("live diagnostic command = %v", diagnostic)
+	}
+	recovered.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
+	diagnosticWork, diagnosticAttempt := waitLiveWorkByID(t, runtimeDSN, "e2e-live-diagnostic-work", 45*time.Second,
+		daemonLog, h.server.logPath)
+	if diagnosticWork.Status != model.WorkWaitingHuman && diagnosticWork.Status != model.WorkCompleted {
+		t.Fatalf("live diagnostic status=%q attempt=%q", diagnosticWork.Status, diagnosticAttempt)
+	}
+	jobsAfter, observationsAfter, checkpointAfter := liveSourceBusinessCounts(t, runtimeDSN, sourceID)
+	if jobsAfter != jobsBefore || observationsAfter != observationsBefore || checkpointAfter != checkpointBefore {
+		t.Fatalf("diagnostic changed business facts jobs=%d→%d observations=%d→%d checkpoint=%d→%d",
+			jobsBefore, jobsAfter, observationsBefore, observationsAfter, checkpointBefore, checkpointAfter)
+	}
+	t.Logf("live diagnostic: work_status=%s attempt_status=%s business facts unchanged", diagnosticWork.Status, diagnosticAttempt)
+}
+
+func liveSourceBusinessCounts(t *testing.T, dsn, sourceID string) (int, int, uint64) {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var jobs, observations int
+	var checkpoint uint64
+	if err := db.QueryRow(`SELECT
+  (SELECT COUNT(*) FROM recruiting_source_jobs WHERE source_id = ?),
+  (SELECT COUNT(*) FROM recruiting_listing_observations WHERE source_id = ?),
+	  COALESCE((SELECT checkpoint_version FROM recruiting_checkpoints WHERE source_id = ?), 0)`, sourceID, sourceID, sourceID).
+		Scan(&jobs, &observations, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	return jobs, observations, checkpoint
+}
+
+func waitLiveWorkByID(t *testing.T, dsn, workID string, timeout time.Duration, logPaths ...string) (model.Work, string) {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var work model.Work
+	var attemptStatus string
+	var offerJSON string
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		var state []byte
+		err = db.QueryRow(`SELECT state_json FROM recruiting_works WHERE work_id = ?`, workID).Scan(&state)
+		if err == nil {
+			_ = json.Unmarshal(state, &work)
+			_ = db.QueryRow(`SELECT attempt_status, CAST(execution_offer_json AS CHAR) FROM recruiting_attempts WHERE work_id = ? ORDER BY created_at DESC LIMIT 1`, workID).
+				Scan(&attemptStatus, &offerJSON)
+			if work.Status == model.WorkWaitingHuman || work.Status == model.WorkCompleted {
+				return work, attemptStatus
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	logs := ""
+	for _, path := range logPaths {
+		logs += "\n" + path + ":\n" + tailLog(path, 120)
+	}
+	t.Fatalf("live Work %s did not finish: work=%+v attempt=%q offer=%s err=%v%s",
+		workID, work, attemptStatus, offerJSON, err, logs)
+	return model.Work{}, ""
 }
 
 func waitPendingLiveDispatch(t *testing.T, dsn, sourceID string, timeout time.Duration) {

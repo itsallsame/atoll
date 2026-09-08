@@ -70,6 +70,20 @@ func listingExecutionOffer(t *testing.T, now time.Time) (executioncontract.Offer
 		Budget: permit, BudgetExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano), RequestedCapability: attempt.Capability}, spec, raw
 }
 
+func diagnosticExecutionOffer(t *testing.T, now time.Time) (executioncontract.Offer, recipeabi.Spec, []byte) {
+	offer, spec, raw := listingExecutionOffer(t, now)
+	offer.Checkpoint = nil
+	offer.Attempt.CheckpointVersion = 0
+	run, err := model.NewListingRun("diagnostic-run-1", offer.Work.WorkID, model.ListingRunDiagnostic,
+		offer.Occurrence.SourceID, offer.Occurrence.CompanyVersion, offer.Occurrence.SourceVersion, nil,
+		offer.Occurrence.ListingExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer.ListingRun, offer.Occurrence = &run, nil
+	return offer, spec, raw
+}
+
 func detailExecutionOffer(t *testing.T, now time.Time) (executioncontract.Offer, recipeabi.Spec, []byte) {
 	t.Helper()
 	spec, raw, hash := executionSpec(t, recipeabi.KindDetail)

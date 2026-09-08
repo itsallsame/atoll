@@ -118,7 +118,7 @@ func transitionExecution(ctx context.Context, caller executionCallFace, cause me
 func submitExecutionResult(ctx context.Context, caller executionCallFace, cause message.Cause, controlActor actor.ActorID,
 	executorActorID, resultKind string, payload any, wait time.Duration) error {
 	switch resultKind {
-	case "listing_page", "listing_completion", "detail":
+	case "listing_page", "listing_completion", "diagnostic", "detail":
 	default:
 		return fmt.Errorf("unsupported execution result kind %q", resultKind)
 	}
@@ -134,7 +134,8 @@ func submitExecutionResult(ctx context.Context, caller executionCallFace, cause 
 		decoded.RequestedBy != strings.TrimSpace(executorActorID) {
 		return errors.New("recruiting control returned an inconsistent execution result response")
 	}
-	present := map[string]bool{"listing_page": len(decoded.Page) != 0, "listing_completion": len(decoded.Completion) != 0, "detail": len(decoded.Detail) != 0}
+	present := map[string]bool{"listing_page": len(decoded.Page) != 0, "listing_completion": len(decoded.Completion) != 0,
+		"diagnostic": len(decoded.Diagnostic) != 0, "detail": len(decoded.Detail) != 0}
 	for kind, exists := range present {
 		if exists != (kind == resultKind) {
 			return errors.New("recruiting control result acknowledgement does not match the submitted kind")

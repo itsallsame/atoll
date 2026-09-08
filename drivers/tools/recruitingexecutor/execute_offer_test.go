@@ -134,6 +134,35 @@ func TestExecuteOfferSubmitsListingPagesBeforeCompletion(t *testing.T) {
 	}
 }
 
+func TestExecuteOfferSubmitsDiagnosticEvidenceWithoutListingWrites(t *testing.T) {
+	now := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
+	offer, _, recipe := diagnosticExecutionOffer(t, now)
+	pageRef := recipeabi.ArtifactRef{ArtifactID: "diagnostic-page", ContentHash: "sha256:page", ObjectRef: "artifact://diagnostic-page"}
+	candidate := recipeabi.CheckpointRef{Version: 1, FrontierKeys: []string{"new-job"}}
+	run := httpdriver.ListingRunResult{Output: recipeabi.RunOutput{ABIVersion: recipeabi.Version, AttemptID: offer.Attempt.AttemptID,
+		Artifacts: []recipeabi.ArtifactRef{pageRef}, Result: json.RawMessage(`{"items":1}`),
+		Quality: recipeabi.QualityProof{IdentityComplete: true, OrderingContractHeld: true, PaginationStable: true,
+			PreviousFrontierReached: true, OverlapCompleted: true, ItemCount: 1}}, CheckpointCandidate: &candidate,
+		Pages: []httpdriver.ListingPage{{Sequence: 1, URL: offer.ListingRun.ListingExecution.Endpoint.URL, Terminal: true, Artifact: pageRef}}}
+	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}}, recipe: recipe}
+	control := &executeControlStub{}
+	if err := executeOffer(context.Background(), control, resources, executeDriverStub{listing: run}, offer, executeTestOptions(now)); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"accept", "started", "submit:diagnostic"}
+	if len(control.calls) != len(want) {
+		t.Fatalf("diagnostic lifecycle = %v", control.calls)
+	}
+	for index := range want {
+		if control.calls[index] != want[index] {
+			t.Fatalf("diagnostic lifecycle = %v", control.calls)
+		}
+	}
+	if control.kind != "diagnostic" {
+		t.Fatalf("diagnostic terminal submission = %q", control.kind)
+	}
+}
+
 func TestExecuteOfferTurnsRecipeResolutionFailureIntoEvidence(t *testing.T) {
 	now := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
 	offer, _, recipe := detailExecutionOffer(t, now)

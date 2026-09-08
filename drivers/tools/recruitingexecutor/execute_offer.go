@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/httpdriver"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
@@ -77,6 +78,16 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 		}
 		if run.Output.Failure != nil {
 			return failRunExecution(ctx, control, sink, offer, run.Output)
+		}
+		if offer.ListingRun != nil && offer.ListingRun.Mode == model.ListingRunDiagnostic {
+			submission, err := prepareDiagnosticSubmission(ctx, offer, run, sink)
+			if err != nil {
+				return failLocalExecution(ctx, control, sink, offer, "contract_violated", "diagnostic_result", err)
+			}
+			if err := control.Submit(ctx, "diagnostic", submission); err != nil {
+				return fmt.Errorf("submit diagnostic result: %w", err)
+			}
+			return nil
 		}
 		submissions, err := prepareListingSubmissions(ctx, offer, spec, run, sink)
 		if err != nil {
@@ -149,6 +160,9 @@ func executionTargetURL(offer executioncontract.Offer) string {
 	}
 	if offer.Detail != nil {
 		return offer.Detail.Job.DetailURL
+	}
+	if offer.ListingRun != nil {
+		return offer.ListingRun.ListingExecution.Endpoint.URL
 	}
 	return ""
 }

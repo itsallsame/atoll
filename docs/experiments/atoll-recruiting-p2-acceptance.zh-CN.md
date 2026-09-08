@@ -73,6 +73,8 @@ P1 契约基线：`a94d2b8d`
 
 - migration 13 为 Work Center 增加全局/status/purpose/trigger 的稳定倒序分页索引；Repository 支持状态、purpose、trigger、`waiting_human` 原因、Target、initiator 和更新时间区间组合筛选，游标绑定完整 selector 并返回 placement。MySQL 8.4 合同已验证跨页顺序、跨 selector 拒绝及全局/status `EXPLAIN` 命中预期索引；测试仍使用分离的非 root migrator/runtime 身份；
 
+- migration 14 新增独立 `recruiting_listing_runs`；创建命令在同一事务中重检 Source/Company/Assignment/active Recipe/Checkpoint 快照，并原子写入 ListingRun、Work、receipt、event 和可选 dispatch。合同测试证明 diagnostic 完成只写 Artifact 和执行生命周期事实，岗位、Observation 与 Checkpoint 均不变化；
+
 ## 当前验证
 
 ```text

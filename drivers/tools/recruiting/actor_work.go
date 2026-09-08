@@ -39,14 +39,24 @@ type workRetryPayload struct {
 }
 
 type workCommandResponse struct {
-	ContractVersion string     `json:"contract_version"`
-	CorrelationID   string     `json:"correlation_id"`
-	RequestedBy     string     `json:"requested_by"`
-	Work            model.Work `json:"work"`
-	Target          Target     `json:"target"`
-	NextAction      string     `json:"next_action"`
-	RunMode         RunMode    `json:"run_mode,omitempty"`
-	OccurrenceID    string     `json:"occurrence_id,omitempty"`
+	ContractVersion string            `json:"contract_version"`
+	CorrelationID   string            `json:"correlation_id"`
+	RequestedBy     string            `json:"requested_by"`
+	Work            model.Work        `json:"work"`
+	Target          Target            `json:"target"`
+	NextAction      string            `json:"next_action"`
+	RunMode         RunMode           `json:"run_mode,omitempty"`
+	OccurrenceID    string            `json:"occurrence_id,omitempty"`
+	ListingRun      *model.ListingRun `json:"listing_run,omitempty"`
+}
+
+type listingRunPayload struct {
+	MutationCommand
+	RunID      string `json:"run_id"`
+	WorkID     string `json:"work_id"`
+	ProfileID  string `json:"profile_id,omitempty"`
+	Priority   int    `json:"priority,omitempty"`
+	DeadlineAt string `json:"deadline_at,omitempty"`
 }
 
 func handleWorkMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -142,6 +152,88 @@ func handleRunJoinOccurrence(sys actorbase.Sys, cfg Config, repository *store.Re
 		return
 	}
 	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
+}
+
+func handleRunDiagnostic(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
+	if repository == nil {
+		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
+		return
+	}
+	var payload listingRunPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	context, err := NewCommandContext(payload.MutationCommand, string(msg.Sender.ID))
+	if err != nil || payload.Target.Type != "source" || strings.TrimSpace(payload.RunID) == "" || strings.TrimSpace(payload.WorkID) == "" {
+		if err == nil {
+			err = fmt.Errorf("source target, run_id, and work_id are required")
+		}
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	if replay, found, lookupErr := repository.LookupCommand(msg.Ctx(), payload.CommandID, commandRequestHash(msg)); lookupErr != nil {
+		failStoreError(sys, msg, lookupErr)
+		return
+	} else if found {
+		_, _ = sys.Reply(msg, json.RawMessage(replay.Response))
+		return
+	}
+	preparation, err := repository.PrepareListingRun(msg.Ctx(), payload.Target.ID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	run, err := preparation.NewRun(strings.TrimSpace(payload.RunID), strings.TrimSpace(payload.WorkID), model.ListingRunDiagnostic)
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	businessAt := time.UnixMilli(msg.TS).UTC()
+	placement, err := standaloneListingPlacement(run, payload.ProfileID, payload.Priority, payload.DeadlineAt, businessAt)
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	placement.BusinessKey = "manual-listing|" + run.ListingRunID
+	work, err := model.NewWork(run.WorkID, "source", run.SourceID, "listing_sync", "manual")
+	if err == nil {
+		work, err = work.WithCausality(context.RequestedBy, string(msg.ID), "")
+	}
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	response := makeWorkResponse(msg, work)
+	response.RunMode, response.ListingRun = RunDiagnostic, &run
+	dispatch, err := workCommandDispatch(cfg, work, placement, payload.CommandID, "run_diagnostic")
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	receipt, event, _, err := workCommandFacts(msg, payload.CommandID, payload.Reason, response, "work.created")
+	var result store.CommandResult
+	if err == nil {
+		result, err = repository.ApplyListingRunCommand(msg.Ctx(), payload.ExpectedVersion, run, work, placement, receipt, event, dispatch, businessAt)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
+}
+
+func standaloneListingPlacement(run model.ListingRun, profileID string, priority int, deadline string,
+	businessAt time.Time) (store.WorkPlacement, error) {
+	profileID = strings.TrimSpace(profileID)
+	if priority < -1000 || priority > 1000 || len(profileID) > 191 || strings.ContainsAny(profileID, "\r\n\t ") {
+		return store.WorkPlacement{}, fmt.Errorf("priority must be in [-1000,1000] and profile_id must be normalized")
+	}
+	notBefore, deadlineAt, err := retrySchedule("", deadline, businessAt)
+	if err != nil {
+		return store.WorkPlacement{}, err
+	}
+	return store.WorkPlacement{Priority: priority, Capability: run.ListingExecution.Execution.RequiredCapability,
+		Origin: run.ListingExecution.Origin, ProfileID: profileID, NotBefore: notBefore, DeadlineAt: deadlineAt}, nil
 }
 
 func handleWorkCreate(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
