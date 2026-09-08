@@ -54,6 +54,8 @@ WHERE id = ? AND version = ?
 
 扫描到旧边界、完成重叠、排序契约成立且同时间组完整后，独立最终事务比较旧 Checkpoint version，写入新边界和 occurrence 结论并产生 outbox。失败或崩溃只会留下可重放 Observation/Work，不会产生虚假的新 Checkpoint。
 
+Listing Page Progress 以 `(attempt_id, page_sequence)` 唯一，而不是以 Work 为分页序列边界；`work_id` 仅保留作业务查询和审计关联。旧 Attempt 已接受的页面与 Artifact 不删除，新 Attempt 必须从第 1 页建立自己的连续序列，completion 也只汇总本 Attempt 的页面。这样既允许页面事实幂等保留，也不会让执行器在页间崩溃后把旧 Attempt 的游标或条目数带入重试。
+
 ### 首次基线
 
 `baseline_generations` 保存 generation 状态和 fencing version；`baseline_staging` 按 `(source_id, generation, source_job_key)` 分块幂等写入。游标失效可从头重扫。finalize 锁定 generation、核对数据库实际 staging 数、冻结 staging、改变 generation 可见性并建立首个 Checkpoint，不搬运一万行数据；详情 Job/Work 复用上述页提交协议按主键 seek 渐进物化，避免单个超大事务。

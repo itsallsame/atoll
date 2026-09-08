@@ -33,6 +33,7 @@ P1 契约基线：`a94d2b8d`
 - Detail result 接受会从数据库重读 Company、Source、Detail Assignment/Recipe、Job refresh generation、Profile（如有）、Work acceptance version、BudgetPermit 和 Attempt Executor incarnation；不信任结果消息声明的“当前版本”。Listing Checkpoint 不标识详情代际，因此不参与 detail fence；
 - Listing page 接受同样重读 Attempt/Work/Occurrence 和全部当前 fence，每页最多 500 项；Artifact、Observation、由当前 detail Recipe 与详情 URL 派生的 detail Work、顺序恢复点在一个事务内提交。Executor 不能指定 detail capability/origin，也不能指定 Job/Work identity；这些值由控制面 Recipe、规范 URL 和稳定业务键生成；
 - Listing completion 只接受已提交 terminal page 和完整 identity/pagination/order/frontier/same-time/overlap 证明；Executor 只能提出新 frontier 时间/键，Source、Recipe、contract、策略、overlap、occurrence 和版本均由当前 Checkpoint 与冻结 occurrence 重建；Checkpoint、Attempt succeeded、Work completed、Occurrence completed 和 outbox 在一个事务内提交；
+- migration `000010` 将 Listing Page Progress 的顺序与唯一性改为 Attempt 作用域，同时保留 Work 索引用于审计。MySQL crash/retry 合同已证明：Attempt A 接受部分页面后失败，Attempt B 可从第 1 页重新开始，两个 Attempt 的证据均保留，且 B 的 completion 只汇总 B 的页面；
 - accepted completion outcome 随 Attempt 保存，后续 Checkpoint 再次推进后重放旧结果仍返回第一次接受的稳定快照；错误 incarnation、变更后的 Source 或不完整质量证明只保存 rejected Artifact，不产生 Observation、恢复点或 Checkpoint 变化；
 - stale Attempt 领取使用 `(attempt_status, updated_at, attempt_id)` 索引和最多 500 条候选；每个 Attempt 以独立短事务按主键 `SKIP LOCKED` 恢复。并发恢复同一 running Attempt 只有一次进入 expired、一次将 Work 置为 `waiting_retry`，并原子追加唯一 outbox 事件；offered/accepted 过期只释放活动槽，不伪造已开始执行；
 - 合法详情结果在一个事务内提交 Artifact、SourceJob、append-only JobDetailVersion、Attempt succeeded 和 Work completed；同 Artifact/Attempt 重放返回既有 Job，不增加详情版本；

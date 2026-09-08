@@ -21,3 +21,19 @@ func TestListingPageProgressIsSequentialAndWorkFenced(t *testing.T) {
 		t.Fatal("stale executor advanced progress after work fence changed")
 	}
 }
+
+func TestListingPageProgressIsAttemptFenced(t *testing.T) {
+	work, _ := NewWork("retry-listing-work", "source", "source-1", "daily_listing", "schedule")
+	work, _ = work.Start(work.Version)
+	first, err := AdvanceAttemptListingPageProgress(nil, work, "attempt-a", "cursor-2", "artifact-a-1", 1, false)
+	if err != nil || first.AttemptID != "attempt-a" {
+		t.Fatalf("attempt progress = %+v %v", first, err)
+	}
+	if _, err := AdvanceAttemptListingPageProgress(&first, work, "attempt-b", "", "artifact-b-1", 1, true); err == nil {
+		t.Fatal("new attempt continued an earlier attempt sequence")
+	}
+	retry, err := AdvanceAttemptListingPageProgress(nil, work, "attempt-b", "", "artifact-b-1", 1, true)
+	if err != nil || retry.PageSequence != 1 || retry.AttemptID != "attempt-b" {
+		t.Fatalf("retry attempt did not start at page one: %+v %v", retry, err)
+	}
+}

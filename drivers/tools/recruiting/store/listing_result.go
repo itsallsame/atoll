@@ -102,7 +102,7 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 	if err := attempt.CanAcceptResult(work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
 		return ListingPageOutcome{}, err, nil
 	}
-	latest, found, err := getLatestListingProgressTx(ctx, tx, work.WorkID)
+	latest, found, err := getLatestListingProgressTx(ctx, tx, work.WorkID, attempt.AttemptID)
 	if err != nil {
 		return ListingPageOutcome{}, nil, err
 	}
@@ -113,7 +113,7 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 	if found {
 		current = &latest
 	}
-	progress, err := model.AdvanceListingPageProgress(current, work, input.ResumeCursor, input.Artifact.ArtifactID, len(input.Observations), input.Terminal)
+	progress, err := model.AdvanceAttemptListingPageProgress(current, work, attempt.AttemptID, input.ResumeCursor, input.Artifact.ArtifactID, len(input.Observations), input.Terminal)
 	if err != nil {
 		return ListingPageOutcome{}, nil, err
 	}
@@ -160,9 +160,9 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 	}
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO recruiting_listing_page_progress(
-  work_id, page_sequence, resume_cursor, artifact_id, item_count, end_of_input,
+  work_id, attempt_id, page_sequence, resume_cursor, artifact_id, item_count, end_of_input,
   work_version, work_acceptance_version, state_json, outcome_json, committed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, progress.WorkID, progress.PageSequence,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, progress.WorkID, progress.AttemptID, progress.PageSequence,
 		nullableString(progress.ResumeCursor), progress.ArtifactID, progress.ItemCount, progress.EndOfInput,
 		progress.WorkVersion, progress.WorkAcceptanceVersion, state, outcomeState, input.ObservedAt.UTC())
 	if err != nil {
@@ -257,7 +257,7 @@ func (r *Repository) acceptListingCompletionOnce(ctx context.Context, input List
 	if err := attempt.CanAcceptResult(work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
 		return ListingCompletionOutcome{}, err, nil
 	}
-	latest, found, err := getLatestListingProgressTx(ctx, tx, work.WorkID)
+	latest, found, err := getLatestListingProgressTx(ctx, tx, work.WorkID, attempt.AttemptID)
 	if err != nil {
 		return ListingCompletionOutcome{}, nil, err
 	}
@@ -266,7 +266,7 @@ func (r *Repository) acceptListingCompletionOnce(ctx context.Context, input List
 	}
 	var acceptedItemCount int
 	if err := tx.QueryRowContext(ctx, `
-SELECT COALESCE(SUM(item_count), 0) FROM recruiting_listing_page_progress WHERE work_id = ?`, work.WorkID).Scan(&acceptedItemCount); err != nil {
+SELECT COALESCE(SUM(item_count), 0) FROM recruiting_listing_page_progress WHERE attempt_id = ?`, attempt.AttemptID).Scan(&acceptedItemCount); err != nil {
 		return ListingCompletionOutcome{}, nil, err
 	}
 	if acceptedItemCount != input.ItemCount {
@@ -380,7 +380,7 @@ func replayListingPage(ctx context.Context, tx *sql.Tx, input ListingPageResult)
 	var state, outcomeState []byte
 	err = tx.QueryRowContext(ctx, `
 SELECT state_json, outcome_json FROM recruiting_listing_page_progress
-WHERE work_id = ? AND page_sequence = ?`, input.Artifact.WorkID, input.PageSequence).Scan(&state, &outcomeState)
+WHERE attempt_id = ? AND page_sequence = ?`, input.AttemptID, input.PageSequence).Scan(&state, &outcomeState)
 	if err != nil {
 		return ListingPageOutcome{}, false, fmt.Errorf("accepted page artifact has no matching progress: %w", err)
 	}
@@ -388,7 +388,8 @@ WHERE work_id = ? AND page_sequence = ?`, input.Artifact.WorkID, input.PageSeque
 	if err := json.Unmarshal(state, &progress); err != nil {
 		return ListingPageOutcome{}, false, err
 	}
-	if progress.ArtifactID != input.Artifact.ArtifactID || progress.ItemCount != len(input.Observations) ||
+	if progress.WorkID != input.Artifact.WorkID || progress.AttemptID != input.AttemptID ||
+		progress.ArtifactID != input.Artifact.ArtifactID || progress.ItemCount != len(input.Observations) ||
 		progress.ResumeCursor != input.ResumeCursor || progress.EndOfInput != input.Terminal {
 		return ListingPageOutcome{}, false, ErrProgressConflict
 	}

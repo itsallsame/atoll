@@ -131,6 +131,89 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 	}
 }
 
+func TestListingRetryStartsAtPageOneAndCompletesFromCurrentAttemptOnly(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	offerAt, _ := prepareListingExecutionWork(t, ctx, repository, "listing-retry-pages", 1)
+	first := startListingAttempt(t, ctx, repository, "listing-retry-pages", offerAt)
+
+	firstArtifact := mustResultArtifact(t, "listing-retry-pages-a-page", model.ArtifactPage, first.Work.WorkID, first.Attempt.AttemptID)
+	firstPage := ListingPageResult{
+		AttemptID: first.Attempt.AttemptID, ExecutorActorID: "listing-retry-pages-executor", ExecutorIncarnation: "listing-retry-pages-boot",
+		PageSequence: 1, ResumeCursor: "page-2", Artifact: firstArtifact, ObservedAt: offerAt,
+		Observations: []model.ListingObservation{{
+			ObservationID: "listing-retry-pages-a-observation", OccurrenceID: first.Occurrence.OccurrenceID,
+			SourceID: first.Occurrence.SourceID, SourceJobKey: "old-attempt-job",
+			DetailURL: "https://listing-retry-pages.example.com/jobs/old", ActivityAt: offerAt.Format(time.RFC3339),
+			ListingFingerprint: "sha256:old-attempt", RecipeID: first.Attempt.RecipeID,
+			RecipeVersion: first.Attempt.RecipeVersion, ArtifactID: firstArtifact.ArtifactID,
+		}},
+	}
+	if page, err := repository.AcceptListingPage(ctx, firstPage); err != nil || page.Progress.PageSequence != 1 {
+		t.Fatalf("first attempt page = %+v err=%v", page, err)
+	}
+	if _, err := repository.FailListingExecution(ctx, first.Attempt.AttemptID, "listing-retry-pages-executor", "listing-retry-pages-boot", "executor_crash", offerAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
+		AttemptID: "listing-retry-pages-attempt-b", ExecutorActorID: "listing-retry-pages-executor-b", ExecutorIncarnation: "listing-retry-pages-boot-b",
+		Capability: "http.fetch", Origin: "https://listing-retry-pages.example.com", OfferedAt: offerAt.Add(2 * time.Second), BudgetPolicy: testExecutionBudgetPolicy(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, second.Attempt.AttemptID, second.Attempt.ExecutorActorID, second.Attempt.ExecutorIncarnation, offerAt.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, second.Attempt.AttemptID, second.Attempt.ExecutorActorID, second.Attempt.ExecutorIncarnation, offerAt.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	secondArtifact := mustResultArtifact(t, "listing-retry-pages-b-page", model.ArtifactPage, second.Work.WorkID, second.Attempt.AttemptID)
+	secondPage, err := repository.AcceptListingPage(ctx, ListingPageResult{
+		AttemptID: second.Attempt.AttemptID, ExecutorActorID: second.Attempt.ExecutorActorID, ExecutorIncarnation: second.Attempt.ExecutorIncarnation,
+		PageSequence: 1, Terminal: true, Artifact: secondArtifact, ObservedAt: offerAt.Add(3 * time.Second),
+	})
+	if err != nil || secondPage.Progress.PageSequence != 1 || secondPage.Progress.AttemptID != second.Attempt.AttemptID {
+		t.Fatalf("retry page one = %+v err=%v", secondPage, err)
+	}
+	candidate := *second.Checkpoint
+	candidate.FrontierActivityAt = offerAt.Format(time.RFC3339)
+	proof := model.ListingProgress{
+		IdentityComplete: true, PaginationStable: true, PreviousFrontierReached: true, OverlapCompleted: true,
+		OrderingContractHeld: true, SameTimeGroupCompleted: true, Candidate: candidate,
+	}
+	completionArtifact := mustResultArtifact(t, "listing-retry-pages-b-delta", model.ArtifactListingDelta, second.Work.WorkID, second.Attempt.AttemptID)
+	completed, err := repository.AcceptListingCompletion(ctx, ListingCompletion{
+		AttemptID: second.Attempt.AttemptID, ExecutorActorID: second.Attempt.ExecutorActorID, ExecutorIncarnation: second.Attempt.ExecutorIncarnation,
+		Artifact: completionArtifact, Progress: proof, ItemCount: 0, CompletedAt: offerAt.Add(4 * time.Second), CauseCommandID: "listing-retry-pages-complete",
+	})
+	if err != nil || completed.Work.Status != model.WorkCompleted {
+		t.Fatalf("retry completion = %+v err=%v", completed, err)
+	}
+	var firstPages, secondPages int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_listing_page_progress WHERE attempt_id = ?", first.Attempt.AttemptID).Scan(&firstPages); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_listing_page_progress WHERE attempt_id = ?", second.Attempt.AttemptID).Scan(&secondPages); err != nil {
+		t.Fatal(err)
+	}
+	if firstPages != 1 || secondPages != 1 {
+		t.Fatalf("attempt evidence was not isolated: first=%d second=%d", firstPages, secondPages)
+	}
+}
+
 func TestStaleListingResultOnlyRetainsRejectedArtifact(t *testing.T) {
 	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
 	if dsn == "" {

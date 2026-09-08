@@ -76,6 +76,6 @@ make recruiting-live-smoke
 - 更多站型的 Nightly/Weekly Live 验证，以及由正式 Artifact 存储提供保留期，而不是验收机本地文件；
 - Resource 适配器已经过内存 capability 合同测试，但仍缺真实 Atoll daemon 上 Recipe KV 与 Artifact File 的跨进程读写、权限拒绝和重启保持 e2e；
 - 已有 Repository 合同证明旧 listing Attempt 只保存 rejected Artifact、不能提交业务结果；仍缺真实 Executor Actor 经 Atoll Message 提交该迟到结果的进程级端到端证明。
-- 页面进度当前仍按 Work 而非 Attempt 建键；“部分页面已接受后 Executor 崩溃，再以新 Attempt 从第一页重跑”的恢复合同尚未闭合。自动执行循环必须等该问题改为 Attempt 作用域并通过 MySQL crash/retry 测试后再启用，不能用进程内一次成功代替恢复证明。
+- 页面进度已改为 Attempt 作用域，并通过 MySQL 8.4 的 crash/retry 合同：Attempt A 接受第一页后失败，Attempt B 可从第一页重新运行；A/B 页面证据同时保留，B 的 completion 只统计 B 的页面。该恢复阻塞项已经关闭，但进程级自动执行仍须补齐 failure Artifact、消息唤醒与真实进程崩溃切点后才能启用。
 
 P4 仍为进行中；ABI 冻结不等于 Driver 与真实站点验收完成。

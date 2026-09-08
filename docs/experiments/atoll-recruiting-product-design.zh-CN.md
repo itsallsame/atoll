@@ -450,6 +450,8 @@ Channel 不作为数据库分片或队列分区。第一版默认一个招聘业
 
 Work 是用户能理解和运维的业务工作；Attempt 是对 Work 的一次机器执行。执行可能重复，业务结果幂等生效。旧 Attempt 的延迟结果不能覆盖后来已经接受的结果。
 
+分页执行状态也属于 Attempt，而不是 Work：每个 Attempt 的页码从 1 开始，页面 Artifact 和已接受 Observation 作为历史证据保留；新 Attempt 不续用旧 Attempt 的进程内游标或页码，最终质量证明只汇总本 Attempt 的页面。Work 负责把这些执行历史聚合为同一个可运维业务工作。
+
 ### 6.6 先定义不变量，再选分发协议
 
 第一版不冻结 Pull、Push 或 Lease。任何方案必须满足：

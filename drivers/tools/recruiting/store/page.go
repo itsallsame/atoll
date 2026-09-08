@@ -74,7 +74,7 @@ func (r *Repository) applyListingPageOnce(ctx context.Context, page ListingPageC
 		return ListingPageCommitResult{}, ErrProgressConflict
 	}
 
-	latest, found, err := getLatestListingProgressTx(ctx, tx, page.Progress.WorkID)
+	latest, found, err := getLatestListingProgressTx(ctx, tx, page.Progress.WorkID, "")
 	if err != nil {
 		return ListingPageCommitResult{}, err
 	}
@@ -98,9 +98,9 @@ func (r *Repository) applyListingPageOnce(ctx context.Context, page ListingPageC
 	}
 	state, _ := json.Marshal(page.Progress)
 	_, err = tx.ExecContext(ctx, "INSERT INTO recruiting_listing_page_progress("+
-		"work_id, page_sequence, resume_cursor, artifact_id, item_count, end_of_input, "+
+		"work_id, attempt_id, page_sequence, resume_cursor, artifact_id, item_count, end_of_input, "+
 		"work_version, work_acceptance_version, state_json, committed_at"+
-		") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", page.Progress.WorkID, page.Progress.PageSequence,
+		") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", page.Progress.WorkID, nullableString(page.Progress.AttemptID), page.Progress.PageSequence,
 		nullableString(page.Progress.ResumeCursor), page.Progress.ArtifactID, page.Progress.ItemCount, page.Progress.EndOfInput,
 		page.Progress.WorkVersion, page.Progress.WorkAcceptanceVersion, state, businessAt.UTC())
 	if err != nil {
@@ -115,7 +115,7 @@ func (r *Repository) applyListingPageOnce(ctx context.Context, page ListingPageC
 func (r *Repository) GetLatestListingProgress(ctx context.Context, workID string) (model.ListingPageProgress, error) {
 	var state []byte
 	err := r.db.QueryRowContext(ctx, "SELECT state_json FROM recruiting_listing_page_progress "+
-		"WHERE work_id = ? ORDER BY page_sequence DESC LIMIT 1", workID).Scan(&state)
+		"WHERE work_id = ? ORDER BY committed_at DESC, progress_id DESC LIMIT 1", workID).Scan(&state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.ListingPageProgress{}, ErrNotFound
 	}
@@ -129,10 +129,15 @@ func (r *Repository) GetLatestListingProgress(ctx context.Context, workID string
 	return progress, nil
 }
 
-func getLatestListingProgressTx(ctx context.Context, tx *sql.Tx, workID string) (model.ListingPageProgress, bool, error) {
+func getLatestListingProgressTx(ctx context.Context, tx *sql.Tx, workID, attemptID string) (model.ListingPageProgress, bool, error) {
 	var state []byte
-	err := tx.QueryRowContext(ctx, "SELECT state_json FROM recruiting_listing_page_progress "+
-		"WHERE work_id = ? ORDER BY page_sequence DESC LIMIT 1 FOR UPDATE", workID).Scan(&state)
+	query := "SELECT state_json FROM recruiting_listing_page_progress WHERE work_id = ? AND attempt_id = ? ORDER BY page_sequence DESC LIMIT 1 FOR UPDATE"
+	args := []any{workID, attemptID}
+	if attemptID == "" {
+		query = "SELECT state_json FROM recruiting_listing_page_progress WHERE work_id = ? AND attempt_id IS NULL ORDER BY page_sequence DESC LIMIT 1 FOR UPDATE"
+		args = []any{workID}
+	}
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&state)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.ListingPageProgress{}, false, nil
 	}
