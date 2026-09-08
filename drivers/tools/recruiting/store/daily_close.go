@@ -166,48 +166,32 @@ WHERE occurrence_id = ? AND version = ?`, closed.Status, closed.Version, state, 
 		}
 	}
 
-	for _, occurrence := range occurrences {
-		if occurrence.WorkID == "" {
-			continue
-		}
-		if err := cancelWorkForDailyClose(ctx, tx, occurrence.WorkID, closedAt); err != nil {
-			return DailyCloseResult{}, err
-		}
-		detailRows, err := tx.QueryContext(ctx, `
-SELECT state_json FROM recruiting_works
-WHERE parent_work_id = ? AND purpose = 'detail_sync' ORDER BY work_id FOR UPDATE`, occurrence.WorkID)
-		if err != nil {
-			return DailyCloseResult{}, err
-		}
-		var detailWorks []model.Work
-		for detailRows.Next() {
-			var state []byte
-			if err := detailRows.Scan(&state); err != nil {
-				_ = detailRows.Close()
+	listingWorks, err := lockDailyListingWorks(ctx, tx, dailyRunID)
+	if err != nil {
+		return DailyCloseResult{}, err
+	}
+	detailWorks, err := lockDailyDetailWorks(ctx, tx, dailyRunID)
+	if err != nil {
+		return DailyCloseResult{}, err
+	}
+	for _, work := range listingWorks {
+		if !work.Terminal() {
+			if err := updateCanceledWork(ctx, tx, work, closedAt); err != nil {
 				return DailyCloseResult{}, err
 			}
-			var work model.Work
-			if err := json.Unmarshal(state, &work); err != nil {
-				_ = detailRows.Close()
-				return DailyCloseResult{}, err
-			}
-			detailWorks = append(detailWorks, work)
 		}
-		if err := detailRows.Close(); err != nil {
-			return DailyCloseResult{}, err
-		}
-		for _, work := range detailWorks {
-			summary.DetailExpected++
-			if work.Status == model.WorkCompleted && work.Resolution == model.ResolutionSucceeded {
-				summary.DetailSucceeded++
-			} else if work.Status == model.WorkCompleted && work.Resolution == model.ResolutionAcceptedGap {
-				summary.DetailAcceptedGap++
-			} else {
-				summary.DetailExceptions++
-				if !work.Terminal() {
-					if err := updateCanceledWork(ctx, tx, work, closedAt); err != nil {
-						return DailyCloseResult{}, err
-					}
+	}
+	for _, work := range detailWorks {
+		summary.DetailExpected++
+		if work.Status == model.WorkCompleted && work.Resolution == model.ResolutionSucceeded {
+			summary.DetailSucceeded++
+		} else if work.Status == model.WorkCompleted && work.Resolution == model.ResolutionAcceptedGap {
+			summary.DetailAcceptedGap++
+		} else {
+			summary.DetailExceptions++
+			if !work.Terminal() {
+				if err := updateCanceledWork(ctx, tx, work, closedAt); err != nil {
+					return DailyCloseResult{}, err
 				}
 			}
 		}
@@ -244,15 +228,44 @@ WHERE daily_run_id = ? AND version = ?`, closed.Status, closed.Version, closedSt
 	return DailyCloseResult{Run: closed}, nil
 }
 
-func cancelWorkForDailyClose(ctx context.Context, tx *sql.Tx, workID string, closedAt time.Time) error {
-	work, err := getWorkWith(ctx, tx, workID, true)
+func lockDailyListingWorks(ctx context.Context, tx *sql.Tx, dailyRunID string) ([]model.Work, error) {
+	return lockDailyWorks(ctx, tx, `
+SELECT w.state_json
+FROM recruiting_works w
+JOIN recruiting_source_occurrences o ON o.listing_work_id = w.work_id
+WHERE o.daily_run_id = ?
+ORDER BY w.work_id FOR UPDATE`, dailyRunID)
+}
+
+func lockDailyDetailWorks(ctx context.Context, tx *sql.Tx, dailyRunID string) ([]model.Work, error) {
+	return lockDailyWorks(ctx, tx, `
+SELECT d.state_json
+FROM recruiting_works d
+JOIN recruiting_works p ON p.work_id = d.parent_work_id
+JOIN recruiting_source_occurrences o ON o.listing_work_id = p.work_id
+WHERE o.daily_run_id = ? AND d.purpose = 'detail_sync'
+ORDER BY d.work_id FOR UPDATE`, dailyRunID)
+}
+
+func lockDailyWorks(ctx context.Context, tx *sql.Tx, query, dailyRunID string) ([]model.Work, error) {
+	rows, err := tx.QueryContext(ctx, query, dailyRunID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if work.Terminal() {
-		return nil
+	defer rows.Close()
+	var works []model.Work
+	for rows.Next() {
+		var state []byte
+		if err := rows.Scan(&state); err != nil {
+			return nil, err
+		}
+		var work model.Work
+		if err := json.Unmarshal(state, &work); err != nil {
+			return nil, err
+		}
+		works = append(works, work)
 	}
-	return updateCanceledWork(ctx, tx, work, closedAt)
+	return works, rows.Err()
 }
 
 func updateCanceledWork(ctx context.Context, tx *sql.Tx, work model.Work, closedAt time.Time) error {
