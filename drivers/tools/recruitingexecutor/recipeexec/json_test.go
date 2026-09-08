@@ -61,6 +61,39 @@ func TestExecuteJSONReportsOrderingAndIdentityContractViolations(t *testing.T) {
 	}
 }
 
+func TestExecuteJSONAcceptsIntegerIdentityWithoutLosingPrecision(t *testing.T) {
+	document := []byte(`{"data":{"jobs":[
+      {"id":80720940000000000001,"title":"Backend","updated_at":"2026-09-08T10:00:00Z","pinned":false}
+    ],"next":null}}`)
+	result, err := ExecuteJSON(listingSpec(), document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Quality.IdentityComplete {
+		t.Fatalf("integer identity was rejected: %+v", result.Quality)
+	}
+	scan, err := NewListingScan(listingSpec(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scan.AddPage(result); err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := scan.CheckpointCandidate()
+	if err != nil || len(candidate.FrontierKeys) != 1 || candidate.FrontierKeys[0] != "80720940000000000001" {
+		t.Fatalf("numeric identity was not canonical and lossless: candidate=%+v err=%v", candidate, err)
+	}
+}
+
+func TestRawIdentityRejectsAmbiguousJSONScalars(t *testing.T) {
+	for _, raw := range []string{"1.0", "1e3", "true", "null", `{}`, `[]`, `""`} {
+		identity, ok := rawIdentity(json.RawMessage(raw))
+		if ok && identity != "" {
+			t.Fatalf("ambiguous identity %s was accepted as %q", raw, identity)
+		}
+	}
+}
+
 func TestExecuteJSONRejectsMissingFieldsAndTrailingInput(t *testing.T) {
 	for name, document := range map[string][]byte{
 		"missing field": []byte(`{"data":{"jobs":[{"id":"job-1"}],"next":null}}`),

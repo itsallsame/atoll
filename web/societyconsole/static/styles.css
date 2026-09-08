@@ -55,9 +55,9 @@ blockquote { margin: 0 0 5px; font-size: .8rem; line-height: 1.55; }
 .ballot-column h1 { margin: 0; font-size: clamp(2.65rem, 3.45vw, 4rem); line-height: .98; letter-spacing: -.06em; }
 .standfirst { max-width: 620px; margin: 9px auto 8px; font-size: .9rem; line-height: 1.48; }
 .standfirst b { color: var(--red); }
-.ballot { position: relative; padding: 10px 12px 12px; border: 2px dashed #685f50; background: #f5ecd34f; }
-.ballot-instruction { display: flex; justify-content: space-between; align-items: center; padding-bottom: 7px; border-bottom: 2px solid var(--red); }
-.ballot-instruction strong { color: var(--red); font-size: 1.08rem; }.ballot-instruction span { font: 700 .76rem var(--sans); }
+.ballot { position: relative; padding: 10px 12px 12px; border: 4px double var(--red); background: #f4dfcf9c; box-shadow: 0 7px 0 #72221920, inset 0 0 0 2px #9e2f221f; }
+.ballot-instruction { display: flex; justify-content: space-between; align-items: center; margin: -4px -6px 8px; padding: 8px 10px; color: var(--paper-light); background: var(--red); border-bottom: 3px solid var(--red-dark); }
+.ballot-instruction strong { font-size: 1.12rem; letter-spacing: .04em; }.ballot-instruction span { padding: 3px 7px; color: var(--red-dark); background: var(--paper-light); font: 900 .76rem var(--sans); }
 .policy-grid { display: grid; grid-template-columns: repeat(3, 1fr); }
 .policy-choice { position: relative; min-height: 132px; padding: 9px 7px 10px; border: 0; border-right: 1px solid var(--rule); background: transparent; }
 .policy-choice:last-child { border-right: 0; }.policy-choice:hover { background: #bcae8f24; }
@@ -70,7 +70,8 @@ blockquote { margin: 0 0 5px; font-size: .8rem; line-height: 1.55; }
 .vote-stepper button:disabled { opacity: .28; cursor: not-allowed; }
 .vote-stepper b { white-space: nowrap; font: 900 .92rem var(--sans); }
 .token-help { margin: 10px 0 8px; color: var(--faded); font: .74rem/1.5 var(--sans); }
-.submit-vote { width: 80%; min-height: 45px; border: 4px double var(--red); color: var(--red-dark); background: transparent; font-size: 1.22rem; font-weight: 900; letter-spacing: .14em; transform: rotate(-.5deg); }
+.submit-vote { width: 86%; min-height: 48px; border: 4px double var(--red-dark); color: var(--paper-light); background: var(--red); box-shadow: 3px 3px 0 #72221938; font-size: 1.22rem; font-weight: 900; letter-spacing: .14em; transform: rotate(-.5deg); }
+.submit-vote:disabled { color: var(--red-dark); background: #d8b5a7; border-color: var(--red); opacity: .72; }
 .submit-vote:not(:disabled):hover { color: var(--paper-light); background: var(--red); }
 .post-vote { margin: 14px -4px -4px; padding: 13px 10px 10px; border-top: 3px double var(--red); background: #d8ccb13d; text-align: left; }
 .post-vote.attention { animation: post-vote-flash 1.35s ease-out both; }

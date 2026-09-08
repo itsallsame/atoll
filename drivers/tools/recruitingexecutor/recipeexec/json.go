@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
@@ -92,7 +93,7 @@ func ExecuteJSON(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 			item[field] = raw
 		}
 		if spec.Kind == recipeabi.KindListing {
-			identity, ok := rawString(item[spec.Listing.IdentityField])
+			identity, ok := rawIdentity(item[spec.Listing.IdentityField])
 			if !ok || strings.TrimSpace(identity) == "" {
 				result.Quality.IdentityComplete = false
 			}
@@ -166,6 +167,25 @@ func rawString(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+// rawIdentity accepts the two lossless scalar forms commonly used by public
+// job APIs: a JSON string or an integer. Integers are canonicalized so the
+// scanner never treats alternative spellings as different identities. Floats,
+// exponents, booleans, and null are deliberately rejected as ambiguous keys.
+func rawIdentity(raw json.RawMessage) (string, bool) {
+	if value, ok := rawString(raw); ok {
+		return value, true
+	}
+	text := strings.TrimSpace(string(raw))
+	if text == "" || strings.ContainsAny(text, ".eE") {
+		return "", false
+	}
+	integer, ok := new(big.Int).SetString(text, 10)
+	if !ok {
+		return "", false
+	}
+	return integer.String(), true
 }
 
 func rawBool(raw json.RawMessage) (bool, bool) {

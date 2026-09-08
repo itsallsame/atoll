@@ -1,0 +1,22 @@
+[Unit]
+Description=Atoll public society experiment
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu
+ExecStart=/home/ubuntu/.local/bin/atoll-society-server --home /home/ubuntu/.local/share/atoll-society/server --addr 127.0.0.1:8842
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/.local/share/atoll-society
+
+[Install]
+WantedBy=multi-user.target

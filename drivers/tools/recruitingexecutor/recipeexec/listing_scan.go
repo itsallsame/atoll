@@ -85,7 +85,7 @@ func (s *ListingScan) AddPage(page DocumentResult) error {
 	s.quality.PaginationStable = s.quality.PaginationStable && page.Quality.PaginationStable
 
 	for index, item := range page.Items {
-		identity, ok := rawString(item[s.spec.Listing.IdentityField])
+		identity, ok := rawIdentity(item[s.spec.Listing.IdentityField])
 		identity = strings.TrimSpace(identity)
 		if !ok || identity == "" {
 			s.quality.IdentityComplete = false
