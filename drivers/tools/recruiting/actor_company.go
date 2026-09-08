@@ -252,6 +252,8 @@ func commandRequestHash(msg actorbase.Msg) string {
 func failStoreError(sys actorbase.Sys, msg actorbase.Msg, err error) {
 	code := ErrorInternalUnavailable
 	switch {
+	case errors.Is(err, store.ErrInvalidCursor):
+		code = ErrorPayloadInvalid
 	case errors.Is(err, store.ErrNotFound):
 		code = ErrorNotFound
 	case errors.Is(err, store.ErrBusinessKeyExists):

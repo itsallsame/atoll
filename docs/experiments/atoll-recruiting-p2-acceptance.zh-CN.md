@@ -54,6 +54,8 @@ P1 契约基线：`a94d2b8d`
 - harness 使用进程号与随机数命名一次性 schema，支持 `RECRUITING_MYSQL_ITERATIONS=N` 和无 eval 的 `RECRUITING_MYSQL_TEST_RUN` 定向回归；stress 入口把总轮数精确分配给多个独立容器/schema/非 root 账号，并逐 shard 校验终态成功标记；commit `0af563b3f7d2` 已完成 4×25＝100 轮完整 migration+25-test contract，另完成 100 轮 timeout fault 定向回归；所有容器及其随机 schema 随后整体删除；
 - 完整 100 轮的四份 runtime log 各含 25 个成功结果和最终 schema/identity 标记；紧凑证据及日志 SHA-256 保存在 `docs/experiments/evidence/recruiting-mysql-stress-0af563b3.json`，原始日志留在 ignored `.cache`，不把一次性数据库输出提交到 Git；
 - `EXPLAIN FORMAT=JSON` 验证 Company seek 和按 Company 的 Source seek 查询使用专用索引；
+- Job list 固定按 Source seek pagination，DailyRun list 按 schedule date/ID seek，Occurrence drill-down 按 DailyRun/ID seek；游标绑定父 selector 且严格拒绝未知字段、尾随 JSON 和跨父对象复用，三个查询均有专用索引的 `EXPLAIN FORMAT=JSON` 证据；
+- DailyRun 实时摘要以单条 LEFT JOIN/GROUP BY 快照同时读取运行状态与各 Occurrence 状态计数，避免分两次查询时物化或闭账并发导致自相矛盾；显式返回 expected/materialized/missing/planned/running/completed/exceptions/excluded；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 
 ## 当前验证

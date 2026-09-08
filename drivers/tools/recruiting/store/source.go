@@ -93,11 +93,11 @@ func (r *Repository) ListSources(ctx context.Context, companyID, cursor string, 
 	if cursor != "" {
 		decoded, err := decodeSourceCursor(cursor)
 		if err != nil || decoded.CompanyID != companyID {
-			return SourcePage{}, fmt.Errorf("invalid source cursor")
+			return SourcePage{}, fmt.Errorf("%w: source selector", ErrInvalidCursor)
 		}
 		afterTime, err = time.Parse(time.RFC3339Nano, decoded.UpdatedAt)
 		if err != nil || decoded.SourceID == "" {
-			return SourcePage{}, fmt.Errorf("invalid source cursor")
+			return SourcePage{}, fmt.Errorf("%w: source", ErrInvalidCursor)
 		}
 		afterID = decoded.SourceID
 	}
@@ -167,11 +167,11 @@ func encodeSourceCursor(cursor sourceCursor) string {
 func decodeSourceCursor(value string) (sourceCursor, error) {
 	content, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(value))
 	if err != nil {
-		return sourceCursor{}, fmt.Errorf("invalid source cursor")
+		return sourceCursor{}, fmt.Errorf("%w: source", ErrInvalidCursor)
 	}
 	var cursor sourceCursor
 	if err := json.Unmarshal(content, &cursor); err != nil {
-		return sourceCursor{}, fmt.Errorf("invalid source cursor")
+		return sourceCursor{}, fmt.Errorf("%w: source", ErrInvalidCursor)
 	}
 	return cursor, nil
 }

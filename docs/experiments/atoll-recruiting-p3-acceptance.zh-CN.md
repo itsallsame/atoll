@@ -13,6 +13,7 @@
 - Work create/get/runnable-list/pause/resume/retry/cancel/resolve 已进入同一控制面；人工 create 固定 `trigger=manual` 且 initiator/cause message 取 Atoll envelope，purpose 与 Target 类型组合受白名单约束，capability、origin、priority 和时间窗口有界；
 - pause/cancel 提升 acceptance version 以 fence 在途结果；人工 resolve 只能明确记录 `accepted_gap|skipped|terminated`，不能冒充 Executor 的 `succeeded`；retry 只接受终态非成功 Work，并创建带 `cause_work_id` 的新生命周期，不重开或改写原 Work；
 - Source/Job/Work/DailyRun get 已接入对应 Repository；Source list 支持全局或按 Company 的一对多 seek pagination，游标绑定查询 Company；Work runnable 查询按 capability、可选 origin/Profile、到期时刻和最多 500 条的边界调用已有索引查询，不在 Actor 内复制调度算法；
+- Job list、DailyRun list 和 DailyRun summary 已进入 manifest；Job 按 Source 分页，summary 同时返回一致的运行覆盖计数及可分页 SourceOccurrence，空集合返回稳定数组，畸形或跨 selector 游标按 payload error 拒绝；
 - Company 和 Source 新增/修改命令均将稳定 response receipt、聚合创建/CAS 和 outbox event intent 原子提交；新增冲突不留下 receipt；Source 创建还在同一事务锁定所属 Company，拒绝向 archived Company 添加 Source，同时不妨碍历史成功命令在父对象状态改变后重放；
 - `recruiting.system.reconcile` 每次只读取最多 500 条到期 outbox，将完整 EventIntent 作为公开业务事件写入 Atoll ledger；事件 ID 与 fingerprint 稳定，覆盖 Emit 成功但 SQL checkpoint 前崩溃的重放窗口；失败采用持久 CAS 次数、有界指数退避和 exhausted 终态；
 - Actor 在招聘侧状态中持久保存唯一 reconcile timer ID，使用 Atoll 现有 durable timer 自动运行；下一 timer 在当前 fire 被确认前完成挂载与持久化，重启窗口中的孤立 timer 因 ID 不匹配只能被确认、不能继续生长，避免重复周期链；周期可配置为 100ms 至 1h，单轮仍固定最多 100 条以保护 mailbox 公平性；
@@ -22,6 +23,7 @@
 - 修改命令在运行领域状态机前先查 receipt，因此 server 重启后不会因聚合版本已经前进而错误拒绝原命令；并发首次执行仍由事务内 receipt 与聚合 CAS 收口；
 - 黑盒测试使用真实 `atoll-server`、Portal/WebSocket、隔离 MySQL 8.4；应用侧由新注册的普通 `recruiting-operator` 在自己的 Home Channel 创建并运维 Recruiting Actor，不借用 root 会话；数据库侧使用非 root migrator/runtime 身份。Company 完成 add→replay→update→pause→server restart→get/replay/resume；随后在同一真实会话完成一个 Company 下两个 Source 的 add→replay→一对多分页→endpoint/category 修正→validate→pause→archive→restore→resume→stale CAS rejection，并验证 Company 归档后旧 add 仍可重放而新 Source 被拒绝；outbox 均由 durable timer 投递到 Atoll ledger；
 - 同一黑盒旅程继续完成 repair Work 的 create→replay→get placement→pause/fence→resume→cancel→retry，并验证 retry Work 是唯一 runnable 项、保留 authenticated initiator 和 cause Work，非终态 Work 不能再次 retry；
+- 黑盒旅程还通过真实 Portal 验证新 Source 的空 Job list、调度尚未启动时的空 DailyRun list、不存在日报 summary 和畸形 Source cursor 的失败响应；有数据的分页与摘要事实由真实 MySQL Repository contract 验证；
 - P0 probe Actor→Executor、持久 timer 和重启路径保留，Company 控制面没有替换 Atoll 的 actor、message、ledger 或 scheduler。
 
 ## 当前验证
@@ -38,8 +40,9 @@ go test -race ./drivers/tools/recruiting/...
 
 ## 尚未完成
 
-- Job/DailyRun 的 list、System/Capacity 查询、Work correct 和 DailyRun 修改控制词；Work resolve 的真实 `waiting_human` 旅程依赖后续 Attempt/repair 切片；Source validate 当前只进入 `validating`，验证 Attempt 的接受、契约证明和原子发布仍属于后续纵向切片；
+- System/Capacity 查询、Work correct 和 DailyRun 修改控制词；Work resolve 的真实 `waiting_human` 旅程依赖后续 Attempt/repair 切片；Source validate 当前只进入 `validating`，验证 Attempt 的接受、契约证明和原子发布仍属于后续纵向切片；
 - timer→DailyRun→SourceOccurrence 物化和窗口末对账；
+- 现有 `MaterializeOccurrences` 只验证调用方提供的集合不超过 `expected_sources`，不能证明它等于截点时全部 eligible Source；在增加不可变截点名单或等价可恢复证明前，不把它直接接到 timer 冒充每日覆盖；
 - Attempt offer/accept/start/result/fail 与完整数据库 fence；
 - 批量导入 preview/confirm 和逐项 outcome；
 - `recruiting_recovery_test.go` 的完整重启、重复 ledger delivery 与日报恢复路径。

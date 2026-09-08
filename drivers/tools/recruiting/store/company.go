@@ -147,7 +147,7 @@ func (r *Repository) ListCompanies(ctx context.Context, cursor string, limit int
 		}
 		afterTime, err = time.Parse(time.RFC3339Nano, decoded.UpdatedAt)
 		if err != nil || decoded.CompanyID == "" {
-			return CompanyPage{}, fmt.Errorf("invalid company cursor")
+			return CompanyPage{}, fmt.Errorf("%w: company", ErrInvalidCursor)
 		}
 		afterID = decoded.CompanyID
 	}
@@ -204,11 +204,11 @@ func encodeCompanyCursor(cursor companyCursor) string {
 func decodeCompanyCursor(value string) (companyCursor, error) {
 	content, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(value))
 	if err != nil {
-		return companyCursor{}, fmt.Errorf("invalid company cursor")
+		return companyCursor{}, fmt.Errorf("%w: company", ErrInvalidCursor)
 	}
 	var cursor companyCursor
 	if err := json.Unmarshal(content, &cursor); err != nil {
-		return companyCursor{}, fmt.Errorf("invalid company cursor")
+		return companyCursor{}, fmt.Errorf("%w: company", ErrInvalidCursor)
 	}
 	return cursor, nil
 }

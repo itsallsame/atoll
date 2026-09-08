@@ -12,4 +12,5 @@ var (
 	ErrOverrideConflict   = errors.New("recruiting override head conflict")
 	ErrOutboxConflict     = errors.New("recruiting outbox delivery state changed")
 	ErrProgressConflict   = errors.New("recruiting listing progress changed")
+	ErrInvalidCursor      = errors.New("invalid recruiting page cursor")
 )

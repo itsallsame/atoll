@@ -261,7 +261,7 @@ requested_by（来自 Atoll envelope 上下文，不是客户端可填写字段�
 
 ## 8. P3：Recruiting Actor 控制面
 
-执行状态：进行中。Company、Source 以及 Work 的首批人工运维词已通过真实 Portal、隔离 MySQL 和 server restart 纵向验收；其余 Job/DailyRun/System/Attempt/批量控制词、Work correct 和 Source 验证结果发布仍待实现。证据记录于 `docs/experiments/atoll-recruiting-p3-acceptance.zh-CN.md`。
+执行状态：进行中。Company、Source、Work 的首批人工运维词，以及 Job/DailyRun/Occurrence 查询已通过真实 Portal 或隔离 MySQL 纵向验收；其余 System/Capacity/Attempt/批量控制词、Work correct、每日截点物化和 Source 验证结果发布仍待实现。证据记录于 `docs/experiments/atoll-recruiting-p3-acceptance.zh-CN.md`。
 
 ### 开发顺序
 

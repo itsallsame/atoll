@@ -1,6 +1,7 @@
 package recruiting
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -25,6 +26,16 @@ type sourceListPayload struct {
 	PageRequest
 }
 
+type jobListPayload struct {
+	SourceID string `json:"source_id"`
+	PageRequest
+}
+
+type dailyRunSummaryPayload struct {
+	ID string `json:"id"`
+	PageRequest
+}
+
 func handleResourceQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
 	if repository == nil {
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
@@ -36,6 +47,18 @@ func handleResourceQuery(sys actorbase.Sys, repository *store.Repository, msg ac
 	}
 	if msg.Type == TypeSourceList {
 		handleSourceListQuery(sys, repository, msg)
+		return
+	}
+	if msg.Type == TypeJobList {
+		handleJobListQuery(sys, repository, msg)
+		return
+	}
+	if msg.Type == TypeDailyRunList {
+		handleDailyRunListQuery(sys, repository, msg)
+		return
+	}
+	if msg.Type == TypeDailyRunSummary {
+		handleDailyRunSummaryQuery(sys, repository, msg)
 		return
 	}
 	var payload entityGetPayload
@@ -70,6 +93,82 @@ func handleResourceQuery(sys actorbase.Sys, repository *store.Repository, msg ac
 		return
 	}
 	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "entity": value})
+}
+
+func handleJobListQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload jobListPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if err := payload.PageRequest.Validate(500); err != nil || strings.TrimSpace(payload.SourceID) == "" {
+		if err == nil {
+			err = fmt.Errorf("source_id is required")
+		}
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	if payload.Limit == 0 {
+		payload.Limit = 50
+	}
+	page, err := repository.ListJobs(msg.Ctx(), payload.SourceID, payload.Cursor, payload.Limit)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "jobs": page.Items,
+		"page": PageInfo{NextCursor: page.NextCursor, HasMore: page.HasMore}})
+}
+
+func handleDailyRunListQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload PageRequest
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if err := payload.Validate(500); err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	if payload.Limit == 0 {
+		payload.Limit = 50
+	}
+	page, err := repository.ListDailyRuns(msg.Ctx(), payload.Cursor, payload.Limit)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "daily_runs": page.Items,
+		"page": PageInfo{NextCursor: page.NextCursor, HasMore: page.HasMore}})
+}
+
+func handleDailyRunSummaryQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload dailyRunSummaryPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if err := payload.PageRequest.Validate(500); err != nil || strings.TrimSpace(payload.ID) == "" {
+		if err == nil {
+			err = fmt.Errorf("id is required")
+		}
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	if payload.Limit == 0 {
+		payload.Limit = 50
+	}
+	run, progress, err := repository.GetDailyRunProgress(msg.Ctx(), payload.ID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	occurrences, err := repository.ListOccurrences(msg.Ctx(), run.DailyRunID, payload.Cursor, payload.Limit)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{
+		"contract_version": ContractVersion, "daily_run": run, "progress": progress, "occurrences": occurrences.Items,
+		"page": PageInfo{NextCursor: occurrences.NextCursor, HasMore: occurrences.HasMore},
+	})
 }
 
 func handleSourceListQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

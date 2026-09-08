@@ -194,6 +194,22 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	}); err == nil {
 		t.Fatal("stale source command unexpectedly succeeded")
 	}
+	jobs := recovered.request(homeID, "recruiting.job.list", controlID, map[string]any{"source_id": "e2e-source-a", "limit": 10})
+	jobItems, _ := jobs["jobs"].([]any)
+	if len(jobItems) != 0 {
+		t.Fatalf("new source unexpectedly had jobs: %v", jobs)
+	}
+	dailyRuns := recovered.request(homeID, "recruiting.daily_run.list", controlID, map[string]any{"limit": 10})
+	dailyItems, _ := dailyRuns["daily_runs"].([]any)
+	if len(dailyItems) != 0 {
+		t.Fatalf("daily runs existed before scheduler materialization: %v", dailyRuns)
+	}
+	if _, _, err := recovered.tryRequest(homeID, "recruiting.daily_run.summary", controlID, map[string]any{"id": "missing-daily", "limit": 10}); err == nil {
+		t.Fatal("missing daily run summary unexpectedly succeeded")
+	}
+	if _, _, err := recovered.tryRequest(homeID, "recruiting.source.list", controlID, map[string]any{"company_id": "e2e-company-1", "cursor": "not-a-cursor", "limit": 1}); err == nil {
+		t.Fatal("malformed source cursor unexpectedly succeeded")
+	}
 	workCreate := map[string]any{
 		"command_id": "e2e-work-create", "work_id": "e2e-work-repair", "target": map[string]any{"target_type": "source", "target_id": "e2e-source-a"},
 		"purpose": "repair", "capability": "http.fetch", "origin": "jobs.example.com", "priority": 90,
