@@ -3,6 +3,8 @@ package recruiting
 import (
 	"fmt"
 	"strings"
+
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 )
 
 // Public business words are application vocabulary. They intentionally live
@@ -58,10 +60,10 @@ const (
 	TypeRecipeRollout  = "recruiting.recipe.rollout"
 	TypeRecipeRollback = "recruiting.recipe.rollback"
 
-	TypeExecutionOffer   = "recruiting.execution.offer"
-	TypeExecutionAccept  = "recruiting.execution.accept"
-	TypeExecutionStarted = "recruiting.execution.started"
-	TypeExecutionFailed  = "recruiting.execution.failed"
+	TypeExecutionOffer   = executioncontract.TypeOffer
+	TypeExecutionAccept  = executioncontract.TypeAccept
+	TypeExecutionStarted = executioncontract.TypeStarted
+	TypeExecutionFailed  = executioncontract.TypeFailed
 
 	TypeDailyRunGet     = "recruiting.daily_run.get"
 	TypeDailyRunList    = "recruiting.daily_run.list"

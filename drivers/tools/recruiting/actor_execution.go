@@ -16,20 +16,9 @@ import (
 	"github.com/wanpengxie/atoll/protocol/actor"
 )
 
-type listingOfferPayload struct {
-	CommandID           string `json:"command_id"`
-	ExecutorIncarnation string `json:"executor_incarnation"`
-	Capability          string `json:"capability"`
-	Origin              string `json:"origin,omitempty"`
-	ProfileID           string `json:"profile_id,omitempty"`
-}
+type listingOfferPayload = executioncontract.OfferRequest
 
-type executionTransitionPayload struct {
-	CommandID           string `json:"command_id"`
-	AttemptID           string `json:"attempt_id"`
-	ExecutorIncarnation string `json:"executor_incarnation"`
-	Reason              string `json:"reason,omitempty"`
-}
+type executionTransitionPayload = executioncontract.TransitionRequest
 
 type executionControlResponse struct {
 	ContractVersion string                          `json:"contract_version"`
