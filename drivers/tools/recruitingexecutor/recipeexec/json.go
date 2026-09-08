@@ -67,8 +67,18 @@ func ExecuteJSON(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 	result.ResponseHash = "sha256:" + hex.EncodeToString(sum[:])
 	result.Quality.IdentityComplete = true
 	result.Quality.OrderingContractHeld = true
+	result.Quality.PaginationStable = true
 	var previousActivity time.Time
 	for index, row := range rows {
+		if spec.Kind == recipeabi.KindListing && spec.Listing.ExcludePinnedField != "" {
+			pointer := spec.Extraction.Fields[spec.Listing.ExcludePinnedField]
+			if pinnedValue, err := resolvePointer(row, pointer); err == nil {
+				pinnedRaw, _ := json.Marshal(pinnedValue)
+				if pinned, ok := rawBool(pinnedRaw); ok && pinned {
+					continue
+				}
+			}
+		}
 		item := make(map[string]json.RawMessage, len(spec.Extraction.Fields))
 		for field, pointer := range spec.Extraction.Fields {
 			value, err := resolvePointer(row, pointer)
@@ -85,11 +95,6 @@ func ExecuteJSON(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 			identity, ok := rawString(item[spec.Listing.IdentityField])
 			if !ok || strings.TrimSpace(identity) == "" {
 				result.Quality.IdentityComplete = false
-			}
-			if spec.Listing.ExcludePinnedField != "" {
-				if pinned, ok := rawBool(item[spec.Listing.ExcludePinnedField]); ok && pinned {
-					continue
-				}
 			}
 			if spec.Listing.ActivityField != "" {
 				activityRaw, ok := rawString(item[spec.Listing.ActivityField])

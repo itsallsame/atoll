@@ -15,7 +15,7 @@ func validListingSpec() Spec {
 			"job_key": "/id", "detail_url": "/url", "activity_at": "/updated_at",
 		}, Next: "/next"},
 		Listing: &ListingContract{IdentityField: "job_key", ActivityField: "activity_at", BoundaryMode: "activity_time",
-			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 2, MaxPages: 100, MaxItemsPerPage: 500},
+			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 2, MaxPages: 100, MaxItemsPerPage: 500, FrontierWidth: 20},
 	}
 }
 
@@ -31,7 +31,7 @@ func TestRecipeSpecHashIsStableAndBindsContract(t *testing.T) {
 	}
 	changed := spec
 	changed.Listing = &ListingContract{IdentityField: "job_key", ActivityField: "activity_at", BoundaryMode: "activity_time",
-		Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 3, MaxPages: 100, MaxItemsPerPage: 500}
+		Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 3, MaxPages: 100, MaxItemsPerPage: 500, FrontierWidth: 20}
 	third, err := changed.ContentHash()
 	if err != nil || third == first {
 		t.Fatalf("listing boundary contract was not hash-bound: %s %v", third, err)
@@ -82,7 +82,7 @@ func TestRunInputCarriesAcceptanceFenceAndOpaqueProfileOnly(t *testing.T) {
 }
 
 func TestCheckpointAdvanceRequiresCompleteBoundaryProof(t *testing.T) {
-	proof := QualityProof{IdentityComplete: true, OrderingContractHeld: true, PreviousFrontierReached: true, OverlapCompleted: true}
+	proof := QualityProof{IdentityComplete: true, OrderingContractHeld: true, PaginationStable: true, PreviousFrontierReached: true, OverlapCompleted: true}
 	if !proof.MayAdvanceCheckpoint() {
 		t.Fatal("complete boundary proof was rejected")
 	}

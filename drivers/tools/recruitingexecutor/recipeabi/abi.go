@@ -162,6 +162,7 @@ type ListingContract struct {
 	OverlapPages       int    `json:"overlap_pages"`
 	MaxPages           int    `json:"max_pages"`
 	MaxItemsPerPage    int    `json:"max_items_per_page"`
+	FrontierWidth      int    `json:"frontier_width"`
 	ExcludePinnedField string `json:"exclude_pinned_field,omitempty"`
 }
 
@@ -258,6 +259,9 @@ func (c *ListingContract) Validate() error {
 		c.MaxItemsPerPage < 1 || c.MaxItemsPerPage > 5000 {
 		return fmt.Errorf("listing recipe requires identity, descending activity/update-retop contract, and bounded overlap/pages")
 	}
+	if c.FrontierWidth < 1 || c.FrontierWidth > 100 {
+		return fmt.Errorf("listing frontier width must be in [1,100]")
+	}
 	switch c.BoundaryMode {
 	case "activity_time":
 		if strings.TrimSpace(c.ActivityField) == "" {
@@ -299,13 +303,14 @@ type ArtifactRef struct {
 type QualityProof struct {
 	IdentityComplete        bool `json:"identity_complete"`
 	OrderingContractHeld    bool `json:"ordering_contract_held"`
+	PaginationStable        bool `json:"pagination_stable"`
 	PreviousFrontierReached bool `json:"previous_frontier_reached"`
 	OverlapCompleted        bool `json:"overlap_completed"`
 	ItemCount               int  `json:"item_count"`
 }
 
 func (q QualityProof) MayAdvanceCheckpoint() bool {
-	return q.IdentityComplete && q.OrderingContractHeld && q.PreviousFrontierReached && q.OverlapCompleted
+	return q.IdentityComplete && q.OrderingContractHeld && q.PaginationStable && q.PreviousFrontierReached && q.OverlapCompleted
 }
 
 type Failure struct {

@@ -16,13 +16,13 @@ func listingSpec() recipeabi.Spec {
 			"job_key": "/id", "title": "/title", "activity_at": "/updated_at", "pinned": "/pinned",
 		}},
 		Listing: &recipeabi.ListingContract{IdentityField: "job_key", ActivityField: "activity_at", BoundaryMode: "activity_time",
-			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 2, MaxPages: 100, MaxItemsPerPage: 500, ExcludePinnedField: "pinned"},
+			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 2, MaxPages: 100, MaxItemsPerPage: 500, FrontierWidth: 20, ExcludePinnedField: "pinned"},
 	}
 }
 
 func TestExecuteJSONExtractsCanonicalRowsAndExcludesPinned(t *testing.T) {
 	document := []byte(`{"data":{"jobs":[
-      {"id":"ad","title":"Pinned","updated_at":"2026-09-08T11:00:00Z","pinned":true},
+		  {"pinned":true},
       {"title":"Backend","id":"job-2","pinned":false,"updated_at":"2026-09-08T10:00:00Z"},
       {"id":"job-1","title":"Frontend","updated_at":"2026-09-08T09:00:00Z","pinned":false}
     ],"next":"cursor-2"}}`)
