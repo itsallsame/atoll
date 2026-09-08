@@ -42,11 +42,12 @@ func TestDailyCoverageRepositoryContract(t *testing.T) {
 		}
 	}
 
-	run, _ := model.NewDailyRun("daily-run-2026-09-07", "2026-09-07", 2)
+	schedule := testDailySchedule("2026-09-07")
+	run, _ := model.NewDailyRun("daily-run-2026-09-07", "2026-09-07", 2, schedule)
 	if err := repository.CreateDailyRun(ctx, run, now); err != nil {
 		t.Fatal(err)
 	}
-	duplicateDate, _ := model.NewDailyRun("another-daily-run", "2026-09-07", 2)
+	duplicateDate, _ := model.NewDailyRun("another-daily-run", "2026-09-07", 2, schedule)
 	if err := repository.CreateDailyRun(ctx, duplicateDate, now); !errors.Is(err, ErrBusinessKeyExists) {
 		t.Fatalf("duplicate schedule date = %v", err)
 	}
@@ -79,11 +80,13 @@ func TestDailyCoverageRepositoryContract(t *testing.T) {
 		t.Fatalf("daily starts=%d conflicts=%d", started, conflicted)
 	}
 
-	first, _ := model.NewSourceOccurrence("daily-occurrence-1", run.DailyRunID, "daily-source-1", run.ScheduleDate, 1, 1, 1)
-	second, _ := model.NewSourceOccurrence("daily-occurrence-2", run.DailyRunID, "daily-source-2", run.ScheduleDate, 1, 1, 1)
+	firstDue := now.Add(2 * time.Hour)
+	secondDue := now.Add(4 * time.Hour)
+	first, _ := model.NewSourceOccurrence("daily-occurrence-1", run.DailyRunID, "daily-source-1", run.ScheduleDate, 1, 1, 1, firstDue.Format(time.RFC3339Nano))
+	second, _ := model.NewSourceOccurrence("daily-occurrence-2", run.DailyRunID, "daily-source-2", run.ScheduleDate, 1, 1, 1, secondDue.Format(time.RFC3339Nano))
 	scheduled := []ScheduledOccurrence{
-		{Occurrence: first, DueAt: now.Add(2 * time.Hour)},
-		{Occurrence: second, DueAt: now.Add(4 * time.Hour)},
+		{Occurrence: first, DueAt: firstDue},
+		{Occurrence: second, DueAt: secondDue},
 	}
 	if chunks, err := repository.MaterializeOccurrences(ctx, scheduled, now.Add(time.Minute)); err != nil || chunks != 1 {
 		t.Fatalf("materialize chunks=%d err=%v", chunks, err)
@@ -101,8 +104,9 @@ func TestDailyCoverageRepositoryContract(t *testing.T) {
 	if _, err := repository.MaterializeOccurrences(ctx, []ScheduledOccurrence{changedSnapshot}, now); !errors.Is(err, ErrBusinessKeyExists) {
 		t.Fatalf("changed replay snapshot = %v", err)
 	}
-	overCapacity, _ := model.NewSourceOccurrence("daily-occurrence-3", run.DailyRunID, "daily-source-1", run.ScheduleDate, 2, 1, 1)
-	if _, err := repository.MaterializeOccurrences(ctx, []ScheduledOccurrence{{Occurrence: overCapacity, DueAt: now.Add(5 * time.Hour)}}, now); err == nil {
+	overCapacityDue := now.Add(5 * time.Hour)
+	overCapacity, _ := model.NewSourceOccurrence("daily-occurrence-3", run.DailyRunID, "daily-source-1", run.ScheduleDate, 2, 1, 1, overCapacityDue.Format(time.RFC3339Nano))
+	if _, err := repository.MaterializeOccurrences(ctx, []ScheduledOccurrence{{Occurrence: overCapacity, DueAt: overCapacityDue}}, now); err == nil {
 		t.Fatal("daily run materialized more occurrences than its cutoff count")
 	}
 	if _, err := repository.GetOccurrence(ctx, overCapacity.OccurrenceID); !errors.Is(err, ErrNotFound) {
@@ -165,5 +169,14 @@ ORDER BY due_at, occurrence_id LIMIT 500`, now.Add(3*time.Hour)).Scan(&explain);
 	}
 	if _, err := repository.MaterializeOccurrences(ctx, scheduled, now.Add(6*time.Hour)); err == nil {
 		t.Fatal("closed daily run accepted occurrence materialization")
+	}
+}
+
+func testDailySchedule(date string) model.DailySchedule {
+	return model.DailySchedule{
+		PolicyVersion: 1,
+		CutoffAt:      date + "T00:00:00Z",
+		WindowStartAt: date + "T00:00:00Z",
+		WindowEndAt:   date + "T06:00:00Z",
 	}
 }

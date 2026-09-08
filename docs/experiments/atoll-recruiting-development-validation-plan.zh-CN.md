@@ -226,7 +226,7 @@ requested_by（来自 Atoll envelope 上下文，不是客户端可填写字段�
 
 ## 7. P2：MySQL Resource、migration 与恢复
 
-执行状态：进行中。Schema ADR、首版 migration/checksum runner、非 root DSN 防护和 Company create/get/seek pagination/CAS Repository 纵向切片已实现；当前证据记录于 `docs/experiments/atoll-recruiting-p2-acceptance.zh-CN.md`。尚未达到 P2 退出门。
+执行状态：进行中。Schema ADR、migration/checksum runner、非 root DSN 防护、主要 Resource Repository，以及 DailyRun/全部轻量 SourceOccurrence 的原子截点事务已实现；当前证据记录于 `docs/experiments/atoll-recruiting-p2-acceptance.zh-CN.md`。尚未达到 P2 退出门。
 
 ### 7.1 Schema 设计步骤
 
@@ -249,6 +249,8 @@ requested_by（来自 Atoll envelope 上下文，不是客户端可填写字段�
 同一套 Repository contract 至少验证：
 
 - create/get/list/CAS、分页稳定性和事务隔离；
+- Repeatable Read 截点内从持久 Company/Source/Assignment/active Recipe 事实计算完整 eligible 名单，DailyRun、全部轻量 occurrence 和 outbox 要么全部提交、要么全部回滚；
+- 两个调度实例并发处理同一日期只能生成一份名单；重放必须返回相同 Source 版本和确定性 due time，改变调度策略或窗口必须冲突；
 - 两个并发命令只能一个更新相同版本；
 - 事务在“观测、Detail Work 意图、Checkpoint”任一故障点退出后可恢复；
 - baseline staging 分块写入、游标失效重扫和 generation finalize；
@@ -261,14 +263,14 @@ requested_by（来自 Atoll envelope 上下文，不是客户端可填写字段�
 
 ## 8. P3：Recruiting Actor 控制面
 
-执行状态：进行中。Company、Source、Work 的首批人工运维词，以及 Job/DailyRun/Occurrence 查询已通过真实 Portal 或隔离 MySQL 纵向验收；其余 System/Capacity/Attempt/批量控制词、Work correct、每日截点物化和 Source 验证结果发布仍待实现。证据记录于 `docs/experiments/atoll-recruiting-p3-acceptance.zh-CN.md`。
+执行状态：进行中。Company、Source、Work 的首批人工运维词，以及 Job/DailyRun/Occurrence 查询已通过真实 Portal 或隔离 MySQL 纵向验收；Repository 已具备可信的每日原子截点名单，但 Atoll timer 入口、到期 Work 渐进物化和窗口末闭账尚未接通。其余 System/Capacity/Attempt/批量控制词、Work correct 和 Source 验证结果发布仍待实现。证据记录于 `docs/experiments/atoll-recruiting-p3-acceptance.zh-CN.md`。
 
 ### 开发顺序
 
 1. 查询：company/source/job/work/daily run/system/capacity；
 2. Company/Source 新增、更新、暂停、恢复、归档；
 3. Work 创建、重试、取消、resolve；
-4. timer→DailyRun→SourceOccurrence 的渐进物化和窗口末对账；
+4. timer→DailyRun/全部轻量 SourceOccurrence 的原子截点，随后按 due time 渐进物化 Work，并在窗口末对账；
 5. Attempt offer/accept/start/result/fail 和接受条件；
 6. 批量导入、预览/确认、逐项 outcome；
 7. reconcile handler：长期无进展、Artifact 已上传未接受、事件意图未交付、陈旧 assignment。

@@ -78,7 +78,7 @@ ORDER BY updated_at, job_id LIMIT 2`, "query-source-a", now, now, "query-job-a")
 	}
 
 	for index, date := range []string{"2091-09-08", "2091-09-09"} {
-		run, _ := model.NewDailyRun("query-daily-"+date, date, 1)
+		run, _ := model.NewDailyRun("query-daily-"+date, date, 1, testDailySchedule(date))
 		if err := repository.CreateDailyRun(ctx, run, now.Add(time.Duration(index)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
@@ -86,8 +86,9 @@ ORDER BY updated_at, job_id LIMIT 2`, "query-source-a", now, now, "query-job-a")
 		if err := repository.StartDailyRunCAS(ctx, run.Version, running, now.Add(time.Duration(index)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
-		occurrence, _ := model.NewSourceOccurrence("query-occurrence-"+date, run.DailyRunID, "query-source-a", date, 1, 1, 1)
-		if _, err := repository.MaterializeOccurrences(ctx, []ScheduledOccurrence{{Occurrence: occurrence, DueAt: now.Add(time.Hour)}}, now); err != nil {
+		dueAt := time.Date(2091, 9, 8+index, 1, 0, 0, 0, time.UTC)
+		occurrence, _ := model.NewSourceOccurrence("query-occurrence-"+date, run.DailyRunID, "query-source-a", date, 1, 1, 1, dueAt.Format(time.RFC3339Nano))
+		if _, err := repository.MaterializeOccurrences(ctx, []ScheduledOccurrence{{Occurrence: occurrence, DueAt: dueAt}}, now); err != nil {
 			t.Fatal(err)
 		}
 	}

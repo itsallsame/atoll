@@ -24,6 +24,7 @@ type SourceOccurrence struct {
 	SchedulePolicyVersion uint64           `json:"schedule_policy_version"`
 	CompanyVersion        uint64           `json:"company_version"`
 	SourceVersion         uint64           `json:"source_version"`
+	DueAt                 string           `json:"due_at"`
 	Status                OccurrenceStatus `json:"occurrence_status"`
 	Outcome               string           `json:"outcome,omitempty"`
 	Version               uint64           `json:"version"`
@@ -47,12 +48,23 @@ const (
 )
 
 type DailyRun struct {
-	DailyRunID      string          `json:"daily_run_id"`
-	ScheduleDate    string          `json:"schedule_date"`
-	ExpectedSources int             `json:"expected_sources"`
-	Status          DailyRunStatus  `json:"daily_run_status"`
-	Version         uint64          `json:"version"`
-	Summary         CoverageSummary `json:"summary"`
+	DailyRunID            string          `json:"daily_run_id"`
+	ScheduleDate          string          `json:"schedule_date"`
+	SchedulePolicyVersion uint64          `json:"schedule_policy_version"`
+	CutoffAt              string          `json:"cutoff_at"`
+	WindowStartAt         string          `json:"window_start_at"`
+	WindowEndAt           string          `json:"window_end_at"`
+	ExpectedSources       int             `json:"expected_sources"`
+	Status                DailyRunStatus  `json:"daily_run_status"`
+	Version               uint64          `json:"version"`
+	Summary               CoverageSummary `json:"summary"`
+}
+
+type DailySchedule struct {
+	PolicyVersion uint64 `json:"policy_version"`
+	CutoffAt      string `json:"cutoff_at"`
+	WindowStartAt string `json:"window_start_at"`
+	WindowEndAt   string `json:"window_end_at"`
 }
 
 type CoverageSummary struct {
@@ -65,14 +77,34 @@ type CoverageSummary struct {
 	DetailExceptions  int `json:"detail_exceptions"`
 }
 
-func NewDailyRun(id, scheduleDate string, expectedSources int) (DailyRun, error) {
-	if strings.TrimSpace(id) == "" || expectedSources < 0 {
-		return DailyRun{}, fmt.Errorf("daily run identity is required and expected sources cannot be negative")
+func NewDailyRun(id, scheduleDate string, expectedSources int, schedule DailySchedule) (DailyRun, error) {
+	if strings.TrimSpace(id) == "" || expectedSources < 0 || schedule.PolicyVersion == 0 {
+		return DailyRun{}, fmt.Errorf("daily run identity, schedule policy, and non-negative expected sources are required")
 	}
 	if _, err := time.Parse("2006-01-02", scheduleDate); err != nil {
 		return DailyRun{}, fmt.Errorf("invalid schedule date: %w", err)
 	}
-	return DailyRun{DailyRunID: id, ScheduleDate: scheduleDate, ExpectedSources: expectedSources, Status: DailyRunPlanned, Version: 1}, nil
+	cutoffAt, err := time.Parse(time.RFC3339, schedule.CutoffAt)
+	if err != nil {
+		return DailyRun{}, fmt.Errorf("daily cutoff must be RFC3339")
+	}
+	windowStart, err := time.Parse(time.RFC3339, schedule.WindowStartAt)
+	if err != nil {
+		return DailyRun{}, fmt.Errorf("daily window start must be RFC3339")
+	}
+	windowEnd, err := time.Parse(time.RFC3339, schedule.WindowEndAt)
+	if err != nil || windowStart.Before(cutoffAt) || windowEnd.Sub(windowStart) < time.Microsecond {
+		return DailyRun{}, fmt.Errorf("daily schedule requires cutoff <= window start < window end")
+	}
+	cutoffAt = cutoffAt.UTC().Truncate(time.Microsecond)
+	windowStart = windowStart.UTC().Truncate(time.Microsecond)
+	windowEnd = windowEnd.UTC().Truncate(time.Microsecond)
+	return DailyRun{
+		DailyRunID: id, ScheduleDate: scheduleDate, SchedulePolicyVersion: schedule.PolicyVersion,
+		CutoffAt: cutoffAt.Format(time.RFC3339Nano), WindowStartAt: windowStart.Format(time.RFC3339Nano),
+		WindowEndAt: windowEnd.Format(time.RFC3339Nano), ExpectedSources: expectedSources,
+		Status: DailyRunPlanned, Version: 1,
+	}, nil
 }
 
 func (d DailyRun) Start(expected uint64) (DailyRun, error) {
@@ -113,16 +145,21 @@ func (d DailyRun) Close(expected uint64, summary CoverageSummary) (DailyRun, err
 	return d, nil
 }
 
-func NewSourceOccurrence(id, dailyRunID, sourceID, scheduleDate string, policyVersion, companyVersion, sourceVersion uint64) (SourceOccurrence, error) {
+func NewSourceOccurrence(id, dailyRunID, sourceID, scheduleDate string, policyVersion, companyVersion, sourceVersion uint64, dueAt string) (SourceOccurrence, error) {
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(dailyRunID) == "" || companyVersion == 0 || sourceVersion == 0 {
 		return SourceOccurrence{}, fmt.Errorf("occurrence identity and snapshot versions are required")
 	}
 	if _, err := OccurrenceKey(sourceID, scheduleDate, policyVersion); err != nil {
 		return SourceOccurrence{}, err
 	}
+	due, err := time.Parse(time.RFC3339, dueAt)
+	if err != nil {
+		return SourceOccurrence{}, fmt.Errorf("occurrence due_at must be RFC3339")
+	}
 	return SourceOccurrence{
 		OccurrenceID: id, DailyRunID: dailyRunID, SourceID: sourceID, ScheduleDate: scheduleDate,
 		SchedulePolicyVersion: policyVersion, CompanyVersion: companyVersion, SourceVersion: sourceVersion,
+		DueAt:  due.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano),
 		Status: OccurrencePlanned, Version: 1,
 	}, nil
 }

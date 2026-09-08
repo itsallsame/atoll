@@ -222,7 +222,7 @@ func TestOccurrenceSnapshotAndCoverageOutcome(t *testing.T) {
 	if key1 != key2 {
 		t.Fatalf("occurrence key is unstable: %q %q", key1, key2)
 	}
-	o, err := NewSourceOccurrence("occ-1", "daily-1", "source-1", "2026-09-07", 3, 8, 13)
+	o, err := NewSourceOccurrence("occ-1", "daily-1", "source-1", "2026-09-07", 3, 8, 13, "2026-09-07T01:00:00Z")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,12 +237,12 @@ func TestOccurrenceSnapshotAndCoverageOutcome(t *testing.T) {
 }
 
 func TestPlannedOccurrenceCanBeExplicitlyExcluded(t *testing.T) {
-	o, err := NewSourceOccurrence("occ-excluded", "daily-1", "source-1", "2026-09-07", 3, 8, 13)
+	o, err := NewSourceOccurrence("occ-excluded", "daily-1", "source-1", "2026-09-07", 3, 8, 13, "2026-09-07T01:00:00Z")
 	if err != nil {
 		t.Fatal(err)
 	}
-	excluded, err := o.Exclude(o.Version, "paused before cutoff")
-	if err != nil || excluded.Status != OccurrenceExcluded || excluded.Outcome != "paused before cutoff" || excluded.Version != 2 {
+	excluded, err := o.Exclude(o.Version, "paused after cutoff before start")
+	if err != nil || excluded.Status != OccurrenceExcluded || excluded.Outcome != "paused after cutoff before start" || excluded.Version != 2 {
 		t.Fatalf("excluded occurrence = %+v, %v", excluded, err)
 	}
 	if _, err := excluded.Start(excluded.Version); err == nil {
@@ -251,7 +251,10 @@ func TestPlannedOccurrenceCanBeExplicitlyExcluded(t *testing.T) {
 }
 
 func TestDailyRunDoesNotHideAcceptedGaps(t *testing.T) {
-	run, err := NewDailyRun("daily-1", "2026-09-07", 2)
+	run, err := NewDailyRun("daily-1", "2026-09-07", 2, DailySchedule{
+		PolicyVersion: 3, CutoffAt: "2026-09-07T00:00:00Z",
+		WindowStartAt: "2026-09-07T00:00:00Z", WindowEndAt: "2026-09-07T06:00:00Z",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,6 +267,26 @@ func TestDailyRunDoesNotHideAcceptedGaps(t *testing.T) {
 	})
 	if err != nil || run.Status != DailyRunCompletedWithExceptions {
 		t.Fatalf("accepted gap was hidden: %+v, %v", run, err)
+	}
+}
+
+func TestDailyScheduleAndOccurrenceDueTimeAreNormalizedAndBounded(t *testing.T) {
+	run, err := NewDailyRun("daily-normalized", "2026-09-07", 1, DailySchedule{
+		PolicyVersion: 4, CutoffAt: "2026-09-07T08:00:00.123456789+08:00",
+		WindowStartAt: "2026-09-07T08:30:00.123456789+08:00", WindowEndAt: "2026-09-07T09:30:00.123456789+08:00",
+	})
+	if err != nil || run.CutoffAt != "2026-09-07T00:00:00.123456Z" || run.WindowStartAt != "2026-09-07T00:30:00.123456Z" {
+		t.Fatalf("normalized daily schedule = %+v err=%v", run, err)
+	}
+	occurrence, err := NewSourceOccurrence("occ-normalized", run.DailyRunID, "source-1", run.ScheduleDate, 4, 1, 1, "2026-09-07T08:45:00.123456789+08:00")
+	if err != nil || occurrence.DueAt != "2026-09-07T00:45:00.123456Z" {
+		t.Fatalf("normalized occurrence due time = %+v err=%v", occurrence, err)
+	}
+	if _, err := NewDailyRun("daily-invalid", "2026-09-07", 1, DailySchedule{
+		PolicyVersion: 4, CutoffAt: "2026-09-07T01:00:00Z",
+		WindowStartAt: "2026-09-07T00:00:00Z", WindowEndAt: "2026-09-07T02:00:00Z",
+	}); err == nil {
+		t.Fatal("daily schedule accepted a window before its cutoff")
 	}
 }
 

@@ -20,14 +20,28 @@ type ScheduledOccurrence struct {
 }
 
 func (r *Repository) CreateDailyRun(ctx context.Context, run model.DailyRun, businessAt time.Time) error {
-	if run.DailyRunID == "" || run.Version != 1 || run.Status != model.DailyRunPlanned {
-		return fmt.Errorf("new daily run must be planned at version 1")
+	if run.DailyRunID == "" || run.Version != 1 || run.Status != model.DailyRunPlanned || run.SchedulePolicyVersion == 0 {
+		return fmt.Errorf("new daily run must have an immutable schedule and be planned at version 1")
+	}
+	cutoffAt, err := time.Parse(time.RFC3339, run.CutoffAt)
+	if err != nil {
+		return fmt.Errorf("invalid daily cutoff: %w", err)
+	}
+	windowStart, err := time.Parse(time.RFC3339, run.WindowStartAt)
+	if err != nil {
+		return fmt.Errorf("invalid daily window start: %w", err)
+	}
+	windowEnd, err := time.Parse(time.RFC3339, run.WindowEndAt)
+	if err != nil {
+		return fmt.Errorf("invalid daily window end: %w", err)
 	}
 	state, _ := json.Marshal(run)
-	_, err := r.db.ExecContext(ctx, `
+	_, err = r.db.ExecContext(ctx, `
 INSERT INTO recruiting_daily_runs(
-  daily_run_id, schedule_date, status, expected_sources, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, run.DailyRunID, run.ScheduleDate, run.Status,
+  daily_run_id, schedule_date, schedule_policy_version, cutoff_at, window_start_at, window_end_at,
+  status, expected_sources, version, state_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, run.DailyRunID, run.ScheduleDate,
+		run.SchedulePolicyVersion, cutoffAt.UTC(), windowStart.UTC(), windowEnd.UTC(), run.Status,
 		run.ExpectedSources, run.Version, state, businessAt.UTC(), businessAt.UTC())
 	if err != nil {
 		var mysqlError *mysql.MySQLError
@@ -63,7 +77,7 @@ func (r *Repository) StartDailyRunCAS(ctx context.Context, expected uint64, run 
 	if err != nil {
 		return err
 	}
-	if current.ScheduleDate != run.ScheduleDate || current.ExpectedSources != run.ExpectedSources {
+	if !sameDailyPlan(current, run) {
 		return fmt.Errorf("daily run schedule and expected source count are immutable")
 	}
 	return r.updateDailyRunCAS(ctx, expected, run, businessAt)
@@ -72,7 +86,9 @@ func (r *Repository) StartDailyRunCAS(ctx context.Context, expected uint64, run 
 func (r *Repository) MaterializeOccurrences(ctx context.Context, scheduled []ScheduledOccurrence, businessAt time.Time) (int, error) {
 	var dailyRunID string
 	for _, item := range scheduled {
-		if item.Occurrence.Version != 1 || item.Occurrence.Status != model.OccurrencePlanned || item.DueAt.IsZero() {
+		dueAt, dueErr := time.Parse(time.RFC3339, item.Occurrence.DueAt)
+		if item.Occurrence.Version != 1 || item.Occurrence.Status != model.OccurrencePlanned || item.DueAt.IsZero() ||
+			dueErr != nil || !dueAt.Equal(item.DueAt.UTC().Truncate(time.Microsecond)) {
 			return 0, fmt.Errorf("new occurrence must be planned at version 1 with due time")
 		}
 		if dailyRunID == "" {
@@ -106,10 +122,17 @@ SELECT state_json FROM recruiting_daily_runs WHERE daily_run_id = ? FOR UPDATE`,
 			_ = tx.Rollback()
 			return chunks, fmt.Errorf("decode occurrence daily run: %w", err)
 		}
+		windowStart, startErr := time.Parse(time.RFC3339, run.WindowStartAt)
+		windowEnd, endErr := time.Parse(time.RFC3339, run.WindowEndAt)
+		if startErr != nil || endErr != nil {
+			_ = tx.Rollback()
+			return chunks, fmt.Errorf("daily run has an invalid immutable window")
+		}
 		for _, item := range scheduled[offset:end] {
-			if run.Status != model.DailyRunRunning || run.ScheduleDate != item.Occurrence.ScheduleDate {
+			if run.Status != model.DailyRunRunning || run.ScheduleDate != item.Occurrence.ScheduleDate ||
+				run.SchedulePolicyVersion != item.Occurrence.SchedulePolicyVersion || item.DueAt.Before(windowStart) || !item.DueAt.Before(windowEnd) {
 				_ = tx.Rollback()
-				return chunks, fmt.Errorf("occurrence must match a running daily run and its schedule date")
+				return chunks, fmt.Errorf("occurrence must match a running daily run and its immutable schedule window")
 			}
 			state, _ := json.Marshal(item.Occurrence)
 			_, err = tx.ExecContext(ctx, `
@@ -220,7 +243,7 @@ func (r *Repository) UpdateOccurrenceCAS(ctx context.Context, expected uint64, o
 	if err != nil {
 		return err
 	}
-	if current.DailyRunID != occurrence.DailyRunID || current.SourceID != occurrence.SourceID ||
+	if current.DailyRunID != occurrence.DailyRunID || current.SourceID != occurrence.SourceID || current.DueAt != occurrence.DueAt ||
 		current.ScheduleDate != occurrence.ScheduleDate || current.SchedulePolicyVersion != occurrence.SchedulePolicyVersion ||
 		current.CompanyVersion != occurrence.CompanyVersion || current.SourceVersion != occurrence.SourceVersion {
 		return fmt.Errorf("occurrence schedule and source snapshots are immutable")
@@ -269,7 +292,7 @@ SELECT state_json FROM recruiting_daily_runs WHERE daily_run_id = ? FOR UPDATE`,
 	if err := json.Unmarshal(currentState, &current); err != nil {
 		return fmt.Errorf("decode daily run for close: %w", err)
 	}
-	if current.ScheduleDate != run.ScheduleDate || current.ExpectedSources != run.ExpectedSources {
+	if !sameDailyPlan(current, run) {
 		return fmt.Errorf("daily run schedule and expected source count are immutable")
 	}
 	var total, succeeded, exceptions, excluded int
@@ -323,4 +346,11 @@ WHERE daily_run_id = ? AND version = ?`, run.Status, run.Version, state, busines
 		return readErr
 	}
 	return &model.VersionConflictError{Expected: expected, Actual: actual.Version}
+}
+
+func sameDailyPlan(left, right model.DailyRun) bool {
+	return left.ScheduleDate == right.ScheduleDate &&
+		left.SchedulePolicyVersion == right.SchedulePolicyVersion && left.CutoffAt == right.CutoffAt &&
+		left.WindowStartAt == right.WindowStartAt && left.WindowEndAt == right.WindowEndAt &&
+		left.ExpectedSources == right.ExpectedSources
 }

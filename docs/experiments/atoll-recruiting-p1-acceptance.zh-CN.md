@@ -16,6 +16,7 @@
 - Recipe 中的排序/update-retop 声明只是假设，不再等同于事实。Source 发布必须携带绑定 Source、candidate Endpoint revision、Recipe/version 和 contract hash 的四维校准证据；identity、pagination、ordering、update-retop 全部为 `verified` 才能成为每日增量候选；
 - 校准结论固定为 `verified|unverified|violated`，必须带版本、时间和有界且唯一的 Artifact ID；Recipe 实现或 Endpoint revision 改变后旧证据失配，Listing Recipe 替换会自动进入 repairing 并清除旧校准；
 - Recipe、Profile、Work、Attempt、Checkpoint、SourceOccurrence、DailyRun、BudgetPermit 和 RepairIncident 均有显式状态转换与 CAS/fencing；
+- DailyRun 显式冻结调度策略版本、截点和执行窗口；SourceOccurrence 显式冻结微秒精度 UTC due time，二者不从墙钟隐式推导；
 - Work 明确保存 `initiator_actor_id`、`cause_message_id` 和 `cause_work_id`；终态非成功 Work 的 retry 创建版本 1 的独立新 Work，旧终态不变，非终态或已成功 Work 不能被 retry；
 - Attempt 接受结果同时核对 Work acceptance version、Executor incarnation、Company、Source、Assignment、Recipe、Checkpoint、Job refresh generation 和 Profile 版本；
 - ListingObservation 与 JobDetailVersion 保留 Recipe/Artifact 血缘，人工 Override 不覆盖底层证据；

@@ -36,8 +36,10 @@ P1 契约基线：`a94d2b8d`
 - Profile Repository 只持久化 opaque secret reference，并以 profile version CAS 驱动 repairing/verifying；测试确认没有 Cookie、密码或 OTP 字段；
 - BudgetPermit 以 Attempt 唯一并使用版本 CAS，只能从 granted 进入一个终态；两个并发 release 只有一个成功；
 - RepairIncident 以 failure domain/signature/failing version 形成的 repair key 单飞；相同 origin 故障的多个 Work 只形成一个 incident 和多条幂等 affected-work 关联；
-- DailyRun 按 schedule date 唯一，启动使用版本 CAS；两个并发启动实测只有一个成功，计划日期和期望 Source 数在创建后不可修改；
-- SourceOccurrence 在 DailyRun 进入 running 后分块物化，并以 `(source_id, schedule_date, schedule_policy_version)` 唯一；相同输入重放保留原 ID，冲突 ID 或变化的快照被拒绝，物化总数不能超过 cutoff 时的 expected sources；
+- DailyRun 按 schedule date 唯一并冻结调度策略版本、截点、执行窗口和 expected sources；普通启动使用版本 CAS，两个并发启动实测只有一个成功，全部计划字段在创建后不可修改；
+- 可信日切路径在一个 Repeatable Read 事务中读取 Company/Source/Listing Assignment/active Recipe，使用领域 `EligibleForDailyRun` 再验证四维增量契约，并原子写入 running DailyRun、全部轻量 SourceOccurrence 和 `daily_run.started` outbox；`expected_sources` 直接取该快照行数，不接受外部调用方声明；
+- SourceOccurrence 以 `(source_id, schedule_date, schedule_policy_version)` 唯一，ID 与 due time 由 Source ID、日期和策略版本确定性生成并均匀散列到执行窗口；同日同配置重放返回原名单，改变 ID、策略或窗口被拒绝；两个并发日切调用实测为一次创建、一次重放且只有一个 outbox；
+- 旧的分块 `MaterializeOccurrences` 仅保留给显式非日切组装路径，并已加强为校验 DailyRun 策略、窗口、Occurrence JSON due time、数据库 due time 和全部不可变快照；不得将外部部分集合通过该 API 冒充可信每日截点；
 - 每个 SourceOccurrence 冻结 Company/Source/调度策略版本与 due time，后续 Source 更新不会改写当日执行口径；planned occurrence 可由操作员显式排除并记录原因；
 - 到期 occurrence 查询有界为 500 条，`EXPLAIN FORMAT=JSON` 验证使用 `(status, due_at, occurrence_id)` 索引；
 - DailyRun 只能用数据库内不可变 occurrence 终态事实闭账：总数必须等于 cutoff 时 expected sources，成功、异常、排除统计必须逐项一致，未完成项或伪造 summary 都不能关闭日批次；物化和闭账锁定同一 DailyRun 行，避免关闭后晚插任务的竞态；

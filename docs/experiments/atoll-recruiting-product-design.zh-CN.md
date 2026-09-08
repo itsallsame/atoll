@@ -226,8 +226,9 @@ Daily Run 的固定和派生集合包括：
 其中只有第一项是固定每日基线，其他项由当天新增、更新和异常派生。Source Discovery、首次全量、第二次校准和历史回填属于独立事件或人工任务，不因 Daily Run 每天重复执行。
 
 ```text
-Daily Run 打开
-  → 固化当日应运行的 active Source 范围和 schedule occurrence key
+Daily Run 截点事务
+  → 在同一个 Repeatable Read 快照中筛选全部 eligible Source
+  → 原子写入 Daily Run、全部轻量 SourceOccurrence 和启动事件意图
   → 按窗口持续创建/激活 listing_sync Work
   → 读取每个 Source 上次成功的 Incremental Checkpoint
   → 从列表顶部按 activity_at 倒序扫描
@@ -249,7 +250,7 @@ Daily Run 是面向用户和运营的统计/因果投影，不要求成为调度
 - 各站点限流、熔断和容量影响；
 - 从 Company → Source → Work → Attempt → Artifact 的追踪路径。
 
-为了避免零点洪峰，系统可以把工作均匀铺在全天或业务窗口中，但必须保证每个 Source 的 occurrence 可追踪、不可因服务重启遗漏，并在窗口结束时完成对账。
+为了避免零点洪峰，截点只冻结约 20,000 条轻量 occurrence，不同时创建或启动全部抓取 Work。每条 occurrence 的 `due_at` 由 Source 稳定身份、日期和调度策略版本确定性散列到执行窗口；服务重启或 timer 重放得到同一名单和同一到期时间。窗口结束时对账 occurrence 终态，而不是再猜测当天本应有哪些 Source。
 
 Daily Run 的口径不能用“有终态”掩盖采集缺口：
 
@@ -262,7 +263,7 @@ detail_completion
   = 已成功或有明确终止结论的当日详情 Work 数 / 当日产生的详情 Work 数
 ```
 
-只有所有应运行 Source 都成功提交新 Checkpoint，且派生的 Detail Work 均成功时，Daily Run 才是 `completed`；存在失败、等待重试、等待人工、用户接受缺口、找不到边界、排序违约或窗口超时时标记 `completed_with_exceptions`，并保留未覆盖清单。人工终止可以令详情 Work 离开未完成队列，但不能把缺口计为采集成功。因公司/Source 在当日截点前已暂停或归档而不应运行的项目计入 `excluded`，不能计为采集成功。
+只有所有应运行 Source 都成功提交新 Checkpoint，且派生的 Detail Work 均成功时，Daily Run 才是 `completed`；存在失败、等待重试、等待人工、用户接受缺口、找不到边界、排序违约或窗口超时时标记 `completed_with_exceptions`，并保留未覆盖清单。人工终止可以令详情 Work 离开未完成队列，但不能把缺口计为采集成功。公司/Source 在截点前已暂停、归档或尚未完成四维契约验证时不进入当日分母；截点后才发生的暂停、归档或人工跳过保留 occurrence 并计为 `excluded`，不能计为采集成功。
 
 Daily Run 截点固化 Source 及其当时的 Company/Source 配置版本和 occurrence key。截点后才 ready 的 Source 默认次日纳入；需要当天补跑时显式创建 catch-up occurrence。截点后暂停或归档不改写分母，而记录 `skipped_after_cutoff`、`canceled_by_archive` 等明确结果。日报关闭后不回写历史结论；后续修复以 `recovered` 补偿记录关联原 occurrence。
 
@@ -772,7 +773,7 @@ Atoll timer 只负责可靠地产生到期命令，不直接修改状态；Execu
 
 保存 Source 的刷新策略、下次到期时间、最近成功 Incremental Checkpoint 和幂等周期键。每日运行不依赖进程内 cron 和记忆。
 
-每个每日 `SourceOccurrence` 是持久事实，使用稳定业务键 `source_id + schedule_date + schedule_policy_version`，并保存 Daily Run、截点时配置版本、计划窗口、当前状态、关联 Work 和最终结果。调度可以分窗口渐进物化 Work，不能要求每天零点同时写入全部 Work；窗口结束时必须逐个核对当日应运行 Source 是否已有 occurrence，补建遗漏或生成明确异常。
+每个每日 `SourceOccurrence` 是持久事实，使用稳定业务键 `source_id + schedule_date + schedule_policy_version`，并保存 Daily Run、截点时 Company/Source 版本、调度策略版本、确定性 `due_at`、当前状态、关联 Work 和最终结果。Daily Run 与截点时全部 occurrence 必须在一个 Repeatable Read 事务内原子生成；事务失败时两者都不存在，成功时 `expected_sources` 必须精确等于 occurrence 数，不能接受调用方提供的部分集合来冒充每日名单。昂贵 Work 按 `due_at` 在窗口内渐进物化；窗口末只需核对已冻结 occurrence 的执行结果，不在历史截点后补猜名单。
 
 临时手工运行不得复用一个含糊的“手动执行”语义：`diagnostic` 只保存证据，不写 Job、不派生详情、不推进 Checkpoint；`join_occurrence` 收敛到当日 SourceOccurrence；`production` 是独立运行，可以推进 Checkpoint，但必须通过 Checkpoint CAS 与并发定时运行竞争。
 
