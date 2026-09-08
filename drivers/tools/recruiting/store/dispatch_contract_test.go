@@ -54,13 +54,13 @@ func TestExecutionDispatchOutboxIsDueIndexedIdempotentAndBounded(t *testing.T) {
 	if _, err := repository.RecordExecutionDispatchFailureCAS(ctx, intent.DispatchID, 0, now.Add(3*time.Minute), "stale"); !errors.Is(err, ErrDispatchConflict) {
 		t.Fatalf("stale dispatch failure = %v", err)
 	}
-	if err := repository.CompleteExecutionDispatch(ctx, intent.DispatchID, "tool:executor-b", now.Add(2*time.Minute)); !errors.Is(err, ErrDispatchConflict) {
+	if err := repository.CompleteExecutionDispatch(ctx, intent.DispatchID, "tool:executor-b:200", now.Add(2*time.Minute)); !errors.Is(err, ErrDispatchConflict) {
 		t.Fatalf("wrong target completed dispatch: %v", err)
 	}
-	if err := repository.CompleteExecutionDispatch(ctx, intent.DispatchID, intent.TargetActorID, now.Add(2*time.Minute)); err != nil {
+	if err := repository.CompleteExecutionDispatch(ctx, intent.DispatchID, "tool:executor-a:100", now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.CompleteExecutionDispatch(ctx, intent.DispatchID, intent.TargetActorID, now.Add(3*time.Minute)); err != nil {
+	if err := repository.CompleteExecutionDispatch(ctx, intent.DispatchID, "tool:executor-a:100", now.Add(3*time.Minute)); err != nil {
 		t.Fatalf("delivered replay = %v", err)
 	}
 	if pending, err := repository.ListPendingExecutionDispatches(ctx, now.Add(24*time.Hour), 500); err != nil || containsDispatch(pending, intent.DispatchID) {

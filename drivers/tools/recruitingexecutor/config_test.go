@@ -39,6 +39,7 @@ func TestParseConfigRequiresExplicitProductionSafetyInputs(t *testing.T) {
 	}
 	for _, invalid := range []json.RawMessage{
 		json.RawMessage(`{"capability":"http.fetch","execution_enabled":true}`),
+		json.RawMessage(`{"capability":"http.fetch","execution_enabled":true,"control_actor_id":"control"}`),
 		json.RawMessage(`{"capability":"browser.recipe","execution_enabled":true,"control_actor_id":"tool:control"}`),
 		json.RawMessage(`{"capability":"http.fetch","execution_enabled":true,"control_actor_id":"tool:control","artifact_device_name":"worker-a","artifact_channel_name":"recruiting","artifact_directory":"artifacts","artifact_access_scope":"operators","artifact_retention":"30d","artifact_redaction":"unknown","terms_policy_version":3,"terms_reviewed_at":"2026-09-08T00:00:00Z"}`),
 	} {

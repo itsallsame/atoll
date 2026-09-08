@@ -33,7 +33,7 @@ func TestWorkCommandsKeepReceiptStateOutboxAndRetryCausalityAtomic(t *testing.T)
 	createResponse := json.RawMessage(`{"work":{"work_id":"command-work","version":1}}`)
 	createReceipt, _ := model.NewCommandReceipt("work-create-command", "recruiting.work.create", "sha256:create-work", createResponse)
 	createEvent, _ := model.NewEventIntent("work-create-event", "work.created", "work", work.WorkID, 1, now.Format(time.RFC3339), createReceipt.CommandID, json.RawMessage(`{}`))
-	createDispatch, _ := NewExecutionDispatchIntent("dispatch-work-create-command", "executor-http-a", placement.Capability,
+	createDispatch, _ := NewExecutionDispatchIntent("dispatch-work-create-command", "tool:executor-http-a", placement.Capability,
 		placement.Origin, placement.ProfileID, "work_created", createReceipt.CommandID, placement.NotBefore)
 	first, err := repository.ApplyCreateWorkCommandWithDispatch(ctx, work, placement, createReceipt, createEvent, &createDispatch, now)
 	if err != nil || first.Replayed {
@@ -75,7 +75,7 @@ func TestWorkCommandsKeepReceiptStateOutboxAndRetryCausalityAtomic(t *testing.T)
 	retryPlacement.NotBefore = now.Add(4 * time.Second)
 	retryReceipt, _ := model.NewCommandReceipt("work-retry-command", "recruiting.work.retry", "sha256:retry-work", json.RawMessage(`{"work_id":"command-work-retry"}`))
 	retryEvent, _ := model.NewEventIntent("work-retry-event", "work.retry_created", "work", retry.WorkID, 1, now.Add(4*time.Second).Format(time.RFC3339), retryReceipt.CommandID, json.RawMessage(`{}`))
-	retryDispatch, _ := NewExecutionDispatchIntent("dispatch-work-retry-command", "executor-http-b", retryPlacement.Capability,
+	retryDispatch, _ := NewExecutionDispatchIntent("dispatch-work-retry-command", "tool:executor-http-b", retryPlacement.Capability,
 		retryPlacement.Origin, retryPlacement.ProfileID, "work_retry_created", retryReceipt.CommandID, retryPlacement.NotBefore)
 	retryResult, err := repository.ApplyRetryWorkCommandWithDispatch(ctx, canceled.Version, canceled.WorkID, retry, retryPlacement,
 		retryReceipt, retryEvent, &retryDispatch, now.Add(4*time.Second))
@@ -132,7 +132,7 @@ func TestWorkCommandDispatchMismatchRollsBackEveryFact(t *testing.T) {
 	receipt := mustWorkReceipt(t, "dispatch-rollback-command", "sha256:dispatch-rollback")
 	event := mustWorkEvent(t, "dispatch-rollback-event", receipt.CommandID, work, now)
 	// A dispatch for another capability must invalidate the whole transaction.
-	dispatch, _ := NewExecutionDispatchIntent("dispatch-rollback", "executor-browser", "browser.navigate", "", "",
+	dispatch, _ := NewExecutionDispatchIntent("dispatch-rollback", "tool:executor-browser", "browser.navigate", "", "",
 		"work_created", receipt.CommandID, now)
 	if _, err := repository.ApplyCreateWorkCommandWithDispatch(ctx, work, placement, receipt, event, &dispatch, now); err == nil {
 		t.Fatal("mismatched work dispatch was accepted")

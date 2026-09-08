@@ -13,6 +13,7 @@ import (
 	"time"
 
 	mysql "github.com/go-sql-driver/mysql"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 )
 
 const defaultDispatchMaxDeliveryAttempts = 8
@@ -132,17 +133,13 @@ func (r *Repository) CompleteExecutionDispatch(ctx context.Context, dispatchID, 
 	if strings.TrimSpace(dispatchID) == "" || strings.TrimSpace(targetActorID) == "" || deliveredAt.IsZero() {
 		return fmt.Errorf("dispatch identity, target, and completion time are required")
 	}
-	result, err := r.db.ExecContext(ctx, `
-UPDATE recruiting_execution_dispatch_outbox SET delivery_status = 'delivered', delivered_at = ?
-WHERE dispatch_id = ? AND target_actor_id = ? AND delivery_status <> 'delivered'`, deliveredAt.UTC(), dispatchID, targetActorID)
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return err
 	}
-	if changed, _ := result.RowsAffected(); changed == 1 {
-		return nil
-	}
+	defer func() { _ = tx.Rollback() }()
 	var storedTarget, status string
-	err = r.db.QueryRowContext(ctx, "SELECT target_actor_id, delivery_status FROM recruiting_execution_dispatch_outbox WHERE dispatch_id = ?", dispatchID).
+	err = tx.QueryRowContext(ctx, "SELECT target_actor_id, delivery_status FROM recruiting_execution_dispatch_outbox WHERE dispatch_id = ? FOR UPDATE", dispatchID).
 		Scan(&storedTarget, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
@@ -150,13 +147,18 @@ WHERE dispatch_id = ? AND target_actor_id = ? AND delivery_status <> 'delivered'
 	if err != nil {
 		return err
 	}
-	if storedTarget != targetActorID {
+	if !executioncontract.TargetMatchesAuthenticatedActor(storedTarget, targetActorID) {
 		return ErrDispatchConflict
 	}
 	if status == "delivered" {
-		return nil
+		return tx.Commit()
 	}
-	return ErrDispatchConflict
+	if _, err := tx.ExecContext(ctx, `
+UPDATE recruiting_execution_dispatch_outbox SET delivery_status = 'delivered', delivered_at = ?
+WHERE dispatch_id = ?`, deliveredAt.UTC(), dispatchID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *Repository) RecordExecutionDispatchFailureCAS(ctx context.Context, dispatchID string, expectedAttempts uint64,
@@ -219,7 +221,7 @@ func appendCapabilityDispatches(ctx context.Context, tx *sql.Tx, targets []Execu
 	seen := make(map[string]struct{}, len(targets))
 	for _, target := range targets {
 		target.ActorID, target.Capability = strings.TrimSpace(target.ActorID), strings.TrimSpace(target.Capability)
-		if target.ActorID == "" || target.Capability == "" || len(target.ActorID) > 191 || len(target.Capability) > 128 ||
+		if !executioncontract.ValidToolTarget(target.ActorID) || target.Capability == "" || len(target.Capability) > 128 ||
 			strings.ContainsAny(target.Capability, "\r\n\t ") {
 			return 0, fmt.Errorf("invalid execution dispatch target")
 		}

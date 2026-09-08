@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 	"github.com/wanpengxie/atoll/protocol/actor"
 )
@@ -73,7 +74,7 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 	for index := range cfg.Executors {
 		cfg.Executors[index].ActorID = actor.ActorID(strings.TrimSpace(string(cfg.Executors[index].ActorID)))
 		cfg.Executors[index].Capability = strings.TrimSpace(cfg.Executors[index].Capability)
-		if cfg.Executors[index].ActorID == "" || cfg.Executors[index].Capability == "" || len(cfg.Executors[index].Capability) > 128 ||
+		if !executioncontract.ValidToolTarget(string(cfg.Executors[index].ActorID)) || cfg.Executors[index].Capability == "" || len(cfg.Executors[index].Capability) > 128 ||
 			strings.ContainsAny(cfg.Executors[index].Capability, "\r\n\t ") {
 			return Config{}, fmt.Errorf("recruiting config: each executor requires actor_id and normalized capability")
 		}

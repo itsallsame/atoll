@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/protocol/actor"
 )
 
@@ -62,7 +63,7 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 		return Config{}, fmt.Errorf("recruiting executor config: capability is required")
 	}
 	if cfg.ExecutionEnabled {
-		if cfg.Capability != "http.fetch" || cfg.ControlActorID == "" || cfg.ControlWaitMS < 100 || cfg.ControlWaitMS > 300_000 ||
+		if cfg.Capability != "http.fetch" || !executioncontract.ValidToolTarget(string(cfg.ControlActorID)) || cfg.ControlWaitMS < 100 || cfg.ControlWaitMS > 300_000 ||
 			cfg.ArtifactDeviceName == "" || cfg.ArtifactChannelName == "" || cfg.ArtifactDirectory == "" ||
 			cfg.ArtifactAccessScope == "" || cfg.ArtifactRetention == "" || cfg.ArtifactMaxBytes < 1 || cfg.ArtifactMaxBytes > 20<<20 ||
 			(cfg.ArtifactRedaction != "raw" && cfg.ArtifactRedaction != "redacted") || cfg.TermsPolicyVersion == 0 {

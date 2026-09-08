@@ -142,7 +142,7 @@ func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, in
 		_, _ = sys.Fail(msg, "execution_disabled", "production recruiting execution is not enabled")
 		return
 	}
-	if msg.Sender.Kind != actor.KindTool || msg.Sender.ID != cfg.ControlActorID {
+	if msg.Sender.Kind != actor.KindTool || !executioncontract.TargetMatchesAuthenticatedActor(string(cfg.ControlActorID), string(msg.Sender.ID)) {
 		_, _ = sys.Fail(msg, "permission_denied", "only the configured recruiting control actor may wake this executor")
 		return
 	}

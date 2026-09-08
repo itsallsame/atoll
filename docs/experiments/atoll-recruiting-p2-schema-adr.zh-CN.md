@@ -32,7 +32,7 @@
 - command receipt 以 `command_id` 唯一，并保存 request hash；同 ID 不同请求拒绝；
 - Artifact 以 ID 唯一、内容哈希建普通索引；相同内容可因权限、保留策略或 Work 血缘不同而有多个元数据记录。
 - BudgetPermit 每 Attempt 唯一；`budget_usage` 为 global、capability、origin、company 和可选 profile 保存活动计数。领取按稳定维度顺序锁定计数行，容量判断、计数递增、Permit 和 Attempt 同事务提交；完成、失败或过期在原事务中递减，禁止用并发不安全的 `COUNT(*)` 后插入。
-- execution dispatch 以稳定 `dispatch_id` 唯一，绑定唯一目标 Executor Actor、capability、可选 origin/Profile、cause 和到期时间；相同 ID 改写任一字段必须冲突。状态只允许 `pending|delivered|exhausted`，投递次数以 CAS 更新，目标 Executor 的 authenticated Actor ID 才能确认完成。
+- execution dispatch 以稳定 `dispatch_id` 唯一，绑定唯一目标 Executor Actor 地址、capability、可选 origin/Profile、cause 和到期时间；相同 ID 改写任一字段必须冲突。目标可以是稳定两段地址或具体三段成员，Atoll 负责投递解析；状态只允许 `pending|delivered|exhausted`，投递次数以 CAS 更新，只有与所存目标匹配的 authenticated 三段 Executor sender 才能确认完成。
 
 所有可修改聚合执行：
 

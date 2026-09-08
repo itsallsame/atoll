@@ -28,12 +28,15 @@ func TestParseConfigDefaultsAndRejectsUnknownFields(t *testing.T) {
 	if _, err := parseConfig(json.RawMessage(`{"reconcile_interval_ms":99}`)); err == nil {
 		t.Fatal("too-small reconcile interval was accepted")
 	}
-	fleet, err := parseConfig(json.RawMessage(`{"executors":[{"actor_id":" executor-a ","capability":"http.fetch"},{"actor_id":"executor-b","capability":"browser.recipe"}]}`))
-	if err != nil || len(fleet.Executors) != 2 || fleet.Executors[0].ActorID != "executor-a" || fleet.Executors[1].Capability != "browser.recipe" {
+	fleet, err := parseConfig(json.RawMessage(`{"executors":[{"actor_id":" tool:executor-a ","capability":"http.fetch"},{"actor_id":"tool:executor-b:123","capability":"browser.recipe"}]}`))
+	if err != nil || len(fleet.Executors) != 2 || fleet.Executors[0].ActorID != "tool:executor-a" || fleet.Executors[1].Capability != "browser.recipe" {
 		t.Fatalf("executor fleet = %+v err=%v", fleet.Executors, err)
 	}
-	if _, err := parseConfig(json.RawMessage(`{"executors":[{"actor_id":"executor-a","capability":"http.fetch"},{"actor_id":"executor-a","capability":"browser.recipe"}]}`)); err == nil {
+	if _, err := parseConfig(json.RawMessage(`{"executors":[{"actor_id":"tool:executor-a","capability":"http.fetch"},{"actor_id":"tool:executor-a","capability":"browser.recipe"}]}`)); err == nil {
 		t.Fatal("duplicate executor actor was accepted")
+	}
+	if _, err := parseConfig(json.RawMessage(`{"executors":[{"actor_id":"executor-a","capability":"http.fetch"}]}`)); err == nil {
+		t.Fatal("unqualified executor target was accepted")
 	}
 	for _, raw := range []json.RawMessage{
 		json.RawMessage(`{"daily_schedule_timezone":"Not/AZone"}`),
@@ -60,12 +63,12 @@ func TestParseConfigDefaultsAndRejectsUnknownFields(t *testing.T) {
 
 func TestExecutionDispatchTargetIsCapabilityBoundAndDeterministic(t *testing.T) {
 	cfg := Config{Executors: []ExecutorTargetConfig{
-		{ActorID: "executor-http-b", Capability: "http.fetch"},
-		{ActorID: "executor-browser", Capability: "browser.recipe"},
-		{ActorID: "executor-http-a", Capability: "http.fetch"},
+		{ActorID: "tool:executor-http-b", Capability: "http.fetch"},
+		{ActorID: "tool:executor-browser", Capability: "browser.recipe"},
+		{ActorID: "tool:executor-http-a", Capability: "http.fetch"},
 	}}
 	first, found := cfg.executionDispatchTarget("http.fetch", "command-1\nwork-1")
-	if !found || first.Capability != "http.fetch" || (first.ActorID != "executor-http-a" && first.ActorID != "executor-http-b") {
+	if !found || first.Capability != "http.fetch" || (first.ActorID != "tool:executor-http-a" && first.ActorID != "tool:executor-http-b") {
 		t.Fatalf("selected HTTP target = %+v found=%v", first, found)
 	}
 	for index := 0; index < 10; index++ {

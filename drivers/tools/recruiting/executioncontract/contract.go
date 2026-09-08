@@ -23,6 +23,47 @@ const (
 	TypeWakeCompleted = "recruiting.execution.wake.completed"
 )
 
+// ValidToolTarget accepts either a stable two-segment Atoll address
+// (tool:name) or one concrete seated identity (tool:name:timestamp). Keeping
+// placement configurable by stable address avoids a deployment-time cycle
+// between control and executor declarations.
+func ValidToolTarget(value string) bool {
+	if strings.TrimSpace(value) != value || len(value) == 0 || len(value) > 191 {
+		return false
+	}
+	parts := strings.Split(value, ":")
+	if len(parts) != 2 && len(parts) != 3 {
+		return false
+	}
+	if parts[0] != "tool" {
+		return false
+	}
+	for _, part := range parts[1:] {
+		if part == "" || strings.ContainsAny(part, "\r\n\t ") {
+			return false
+		}
+	}
+	return true
+}
+
+// TargetMatchesAuthenticatedActor proves that a concrete three-segment
+// sender is the member selected by an exact identity or stable two-segment
+// target. The authenticated envelope remains authoritative.
+func TargetMatchesAuthenticatedActor(target, sender string) bool {
+	if !ValidToolTarget(target) || !ValidToolTarget(sender) {
+		return false
+	}
+	senderParts := strings.Split(sender, ":")
+	if len(senderParts) != 3 {
+		return false
+	}
+	if target == sender {
+		return true
+	}
+	targetParts := strings.Split(target, ":")
+	return len(targetParts) == 2 && targetParts[0] == senderParts[0] && targetParts[1] == senderParts[1]
+}
+
 type WakeRequest struct {
 	CommandID string `json:"command_id"`
 	Origin    string `json:"origin,omitempty"`
