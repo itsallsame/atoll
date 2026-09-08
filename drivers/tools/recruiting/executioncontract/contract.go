@@ -5,6 +5,8 @@ package executioncontract
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
@@ -28,10 +30,45 @@ type OfferRequest struct {
 }
 
 type TransitionRequest struct {
-	CommandID           string `json:"command_id"`
-	AttemptID           string `json:"attempt_id"`
-	ExecutorIncarnation string `json:"executor_incarnation"`
-	Reason              string `json:"reason,omitempty"`
+	CommandID           string         `json:"command_id"`
+	AttemptID           string         `json:"attempt_id"`
+	ExecutorIncarnation string         `json:"executor_incarnation"`
+	Reason              string         `json:"reason,omitempty"`
+	Failure             *FailureReport `json:"failure,omitempty"`
+}
+
+// FailureReport binds classified executor evidence to the same transaction
+// that closes execution authority. It remains an application contract; Atoll
+// transports it without interpreting recruiting failure classes.
+type FailureReport struct {
+	Class       string                 `json:"class"`
+	Retryable   bool                   `json:"retryable"`
+	NeedsRepair bool                   `json:"needs_repair"`
+	Artifact    model.ArtifactMetadata `json:"artifact"`
+}
+
+func (f FailureReport) Validate(attemptID string) error {
+	if strings.TrimSpace(f.Class) != f.Class {
+		return fmt.Errorf("execution failure class is not normalized")
+	}
+	repairExpected := false
+	switch strings.TrimSpace(f.Class) {
+	case "transport_timeout", "endpoint_rejected", "response_too_large", "redirect_rejected", "robots_disallowed", "throttled", "forbidden",
+		"upstream_5xx", "unexpected_status", "auth_expired", "captcha", "budget_revoked":
+	case "parse_error", "quality_rejected", "contract_violated":
+		repairExpected = true
+	default:
+		return fmt.Errorf("unsupported execution failure class %q", f.Class)
+	}
+	if f.NeedsRepair != repairExpected {
+		return fmt.Errorf("execution failure repair classification does not match class %q", f.Class)
+	}
+	validated, err := model.NewArtifactMetadata(f.Artifact.ArtifactID, f.Artifact.Kind, f.Artifact.ContentHash, f.Artifact.ObjectRef,
+		f.Artifact.WorkID, f.Artifact.AttemptID, f.Artifact.AccessScope, f.Artifact.Retention, f.Artifact.Redacted)
+	if err != nil || validated != f.Artifact || f.Artifact.Kind != model.ArtifactFailure || f.Artifact.AttemptID != strings.TrimSpace(attemptID) {
+		return fmt.Errorf("execution failure requires normalized failure Artifact metadata bound to its Attempt")
+	}
+	return nil
 }
 
 // Offer is the immutable input accepted by one executor. Kind selects the

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
@@ -101,13 +102,19 @@ func TestListingExecutionOfferAndLifecycleAreFenced(t *testing.T) {
 	if work.Status != model.WorkRunning || occurrence.Status != model.OccurrenceRunning {
 		t.Fatalf("start was not atomic: work=%+v occurrence=%+v", work, occurrence)
 	}
-	failed, err := repository.FailListingExecution(ctx, offer.Attempt.AttemptID, "executor-a", "boot-a", "transient_timeout", offerAt.Add(2*time.Second))
+	failureArtifact := mustResultArtifact(t, "execution-life-failure", model.ArtifactFailure, offer.Work.WorkID, offer.Attempt.AttemptID)
+	failed, err := repository.FailExecutionWithReport(ctx, offer.Attempt.AttemptID, "executor-a", "boot-a", "transport_timeout",
+		executioncontract.FailureReport{Class: "transport_timeout", Retryable: true, Artifact: failureArtifact}, offerAt.Add(2*time.Second))
 	if err != nil || failed.Status != model.AttemptFailed {
 		t.Fatalf("failed attempt = %+v err=%v", failed, err)
 	}
 	work, _ = repository.GetWork(ctx, workID)
-	if work.Status != model.WorkWaitingRetry || work.WaitingReason != "transient_timeout" {
+	if work.Status != model.WorkWaitingRetry || work.WaitingReason != "transport_timeout" {
 		t.Fatalf("failed execution did not become retryable: %+v", work)
+	}
+	var failureArtifacts int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_artifacts WHERE artifact_id = ? AND rejected = FALSE", failureArtifact.ArtifactID).Scan(&failureArtifacts); err != nil || failureArtifacts != 1 {
+		t.Fatalf("failure Artifact metadata was not committed atomically: count=%d err=%v", failureArtifacts, err)
 	}
 	replayed, err = repository.OfferListingExecution(ctx, ListingOfferRequest{
 		AttemptID: "attempt-execution-life-1", ExecutorActorID: "executor-a", ExecutorIncarnation: "boot-a",

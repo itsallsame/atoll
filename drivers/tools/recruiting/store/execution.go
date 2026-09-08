@@ -416,24 +416,36 @@ WHERE s.source_id = ?`, job.SourceID).Scan(&companyState, &sourceState, &assignm
 // The name is retained for API compatibility; it accepts both executable
 // purposes selected by OfferExecution.
 func (r *Repository) AcceptListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation string, businessAt time.Time) (model.Attempt, error) {
-	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "accept", "", businessAt)
+	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "accept", "", nil, businessAt)
 }
 
 // StartListingExecution atomically starts Attempt, Work, and the first
 // occurrence execution. A retry starts a new Attempt while retaining the
 // already-running occurrence lifecycle.
 func (r *Repository) StartListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation string, businessAt time.Time) (model.Attempt, error) {
-	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "start", "", businessAt)
+	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "start", "", nil, businessAt)
 }
 
 // FailListingExecution releases the active Attempt slot and moves Work to a
 // retryable state. Retry policy and repair classification are a later control
 // decision; the repository never loops automatically.
 func (r *Repository) FailListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation, reason string, businessAt time.Time) (model.Attempt, error) {
-	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "fail", reason, businessAt)
+	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "fail", reason, nil, businessAt)
 }
 
-func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation, action, reason string, businessAt time.Time) (model.Attempt, error) {
+func (r *Repository) FailExecutionWithReport(ctx context.Context, attemptID, executorActorID, executorIncarnation, reason string,
+	report executioncontract.FailureReport, businessAt time.Time) (model.Attempt, error) {
+	if err := report.Validate(attemptID); err != nil {
+		return model.Attempt{}, err
+	}
+	if strings.TrimSpace(reason) != report.Class {
+		return model.Attempt{}, fmt.Errorf("execution failure reason must match its classified report")
+	}
+	return r.transitionListingExecution(ctx, attemptID, executorActorID, executorIncarnation, "fail", reason, &report, businessAt)
+}
+
+func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation, action, reason string,
+	report *executioncontract.FailureReport, businessAt time.Time) (model.Attempt, error) {
 	if strings.TrimSpace(attemptID) == "" || strings.TrimSpace(executorActorID) == "" || strings.TrimSpace(executorIncarnation) == "" || businessAt.IsZero() ||
 		(action == "fail" && strings.TrimSpace(reason) == "") {
 		return model.Attempt{}, fmt.Errorf("execution transition requires attempt, executor identity, incarnation, time, and failure reason when applicable")
@@ -453,6 +465,9 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 	}
 	if attempt.ExecutorActorID != executorActorID || attempt.ExecutorIncarnation != executorIncarnation || attempt.AcceptanceVersion != work.AcceptanceVersion {
 		return model.Attempt{}, ErrAttemptConflict
+	}
+	if report != nil && report.Artifact.WorkID != work.WorkID {
+		return model.Attempt{}, fmt.Errorf("execution failure Artifact belongs to another Work")
 	}
 	if action != "fail" {
 		if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, businessAt); err != nil {
@@ -519,6 +534,9 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 		}
 		if err == nil {
 			err = releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitReleased, businessAt)
+		}
+		if err == nil && report != nil {
+			err = insertArtifact(ctx, tx, report.Artifact, false, businessAt)
 		}
 	default:
 		err = fmt.Errorf("unknown execution transition %q", action)

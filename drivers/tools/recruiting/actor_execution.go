@@ -222,7 +222,18 @@ func handleExecutionTransition(sys actorbase.Sys, repository *store.Repository, 
 			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "reason is required for execution.failed")
 			return
 		}
-		attempt, err = repository.FailListingExecution(msg.Ctx(), payload.AttemptID, string(msg.Sender.ID), payload.ExecutorIncarnation, payload.Reason, businessAt)
+		if payload.Failure != nil {
+			if err := payload.Failure.Validate(payload.AttemptID); err != nil || strings.TrimSpace(payload.Reason) != payload.Failure.Class {
+				_, _ = sys.Fail(msg, ErrorPayloadInvalid, "execution.failed report is invalid or does not match reason")
+				return
+			}
+		}
+		if payload.Failure == nil {
+			attempt, err = repository.FailListingExecution(msg.Ctx(), payload.AttemptID, string(msg.Sender.ID), payload.ExecutorIncarnation, payload.Reason, businessAt)
+		} else {
+			attempt, err = repository.FailExecutionWithReport(msg.Ctx(), payload.AttemptID, string(msg.Sender.ID), payload.ExecutorIncarnation,
+				payload.Reason, *payload.Failure, businessAt)
+		}
 	default:
 		err = fmt.Errorf("unsupported execution transition")
 	}

@@ -17,6 +17,7 @@
 - Executor ingress 已把 listing/detail offer 映射为 Recipe ABI RunInput，并在 Resource 解析及网络 I/O 前重检 Work/Attempt acceptance、Company/Source/Assignment/Recipe/Profile fence、BudgetPermit 与到期时间、origin、Recipe hash/capability/transport，以及 discriminator 与 Occurrence/Checkpoint/Detail payload 的互斥关系。Listing 输入保留版本化 Source Endpoint 和旧 Checkpoint，Detail 输入固定 Job URL/version 与 profile opaque ref；过期 permit、跨 origin、Recipe 串版和混合 payload 的测试均 fail closed；
 - `execution.offer/accept/started/failed` 的消息类型、请求和成功响应也已收进同一共享合同。Executor 协议客户端只调用 Atoll 公开 `Sys.Call`/`Pending.Wait`，检查 response kind/type、core terminal status、合同版本、correlation、requested_by、Attempt/Executor/incarnation 绑定；远端失败保留结构化 error code，等待失败会主动 Cancel 当前 call，completed 响应的未知字段 fail closed。尚未加入唤醒/循环，因此不会产生空轮询；
 - `listing_page/listing_completion/detail` 结果 payload 也已归入共享 execution contract。Listing 成功转换会严格核对页面顺序、Artifact 顺序、末页标记、游标和唯一条目总数；把相对详情 URL 按实际页面 URL 解析并规范化，支持无精度损失的整数岗位 ID，为每条 Observation 和 listing fingerprint 生成稳定 SHA-256，并额外保存绑定 Work/Attempt 的 ListingDelta Artifact 后才形成 completion。原始 Artifact 的 `redacted` 不再被虚假固定为 true，而由实际 sink 策略声明；
+- Driver 失败输出可转换为共享 FailureReport；控制面校验闭集 failure class、修复分类和绑定 Attempt/Work 的 Failure Artifact，并在 `execution.failed` 的同一招聘事务中保存 Artifact metadata、关闭 Attempt、释放 Permit、把 Work 置为可重试。这样 Resource 中的失败证据不会因随后状态提交而成为无元数据孤儿；
 - HTTP Detail runner 已实现“先证据、后解析”：成功响应先保存 response Artifact，再由同一声明式 JSON/HTML Recipe 离线提取且必须恰好得到一条记录，规范 JSON 和 normalized SHA-256 随稳定 detail-version ID 提交；HTTP 失败保留 failure Artifact，解析失败同时保留原始 response 与独立分类 failure Artifact。JSON 字符串字段现在与 DOM 一样去除首尾空白，确保规范详情重放稳定；
 - Executor 的 result 客户端已通过共享 `recruiting.execution.result` 类型提交，并严格要求控制面 acknowledgement 的 `page|completion|detail` 分支与所提交 result_kind 唯一匹配；
 - 固定 Recipe 类型 `listing|detail|discovery` 和执行 transport `http_json|http_html|browser`，但 capability 仍为可扩展字符串，不制造多种 Worker class；Extension 是候选 Recipe 捕获入口，不是日常执行 transport；
@@ -76,6 +77,6 @@ make recruiting-live-smoke
 - 更多站型的 Nightly/Weekly Live 验证，以及由正式 Artifact 存储提供保留期，而不是验收机本地文件；
 - Resource 适配器已经过内存 capability 合同测试，但仍缺真实 Atoll daemon 上 Recipe KV 与 Artifact File 的跨进程读写、权限拒绝和重启保持 e2e；
 - 已有 Repository 合同证明旧 listing Attempt 只保存 rejected Artifact、不能提交业务结果；仍缺真实 Executor Actor 经 Atoll Message 提交该迟到结果的进程级端到端证明。
-- 页面进度已改为 Attempt 作用域，并通过 MySQL 8.4 的 crash/retry 合同：Attempt A 接受第一页后失败，Attempt B 可从第一页重新运行；A/B 页面证据同时保留，B 的 completion 只统计 B 的页面。该恢复阻塞项已经关闭，但进程级自动执行仍须补齐 failure Artifact、消息唤醒与真实进程崩溃切点后才能启用。
+- 页面进度已改为 Attempt 作用域，并通过 MySQL 8.4 的 crash/retry 合同：Attempt A 接受第一页后失败，Attempt B 可从第一页重新运行；A/B 页面证据同时保留，B 的 completion 只统计 B 的页面。Failure Artifact 的原子控制面合同也已闭合；进程级自动执行仍须补齐消息唤醒与真实进程崩溃切点后才能启用。
 
 P4 仍为进行中；ABI 冻结不等于 Driver 与真实站点验收完成。
