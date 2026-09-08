@@ -136,6 +136,11 @@ func TestRecruitingLiveExecutionThroughAtoll(t *testing.T) {
 	if work.Status == model.WorkWaitingHuman && work.LastFailureClass != "quality_rejected" && work.LastFailureClass != "contract_violated" {
 		t.Fatalf("deterministic live quality failure class=%q", work.LastFailureClass)
 	}
+
+	dispatchID := simulateLostLiveCompletion(t, runtimeDSN)
+	recovered.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
+	deliveryAttempts := waitLiveDispatchRedelivery(t, runtimeDSN, dispatchID, work.WorkID, 30*time.Second)
+	t.Logf("lost completion recovered: dispatch_id=%s delivery_attempts=%d attempts_for_work=1", dispatchID, deliveryAttempts)
 }
 
 func waitPendingLiveDispatch(t *testing.T, dsn, sourceID string, timeout time.Duration) {
@@ -289,4 +294,58 @@ func waitLiveRecruitingExecution(t *testing.T, dsn, sourceID string, timeout tim
 	}
 	t.Fatalf("live execution timed out: work=%+v attempt=%q delivered=%d err=%v", lastWork, lastAttempt, delivered, err)
 	return model.Work{}, "", 0
+}
+
+func simulateLostLiveCompletion(t *testing.T, dsn string) string {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var dispatchID string
+	if err := db.QueryRow(`
+SELECT dispatch_id FROM recruiting_execution_dispatch_outbox
+WHERE cause_kind = 'work_materialized' AND delivery_status = 'delivered'
+ORDER BY created_at LIMIT 1`).Scan(&dispatchID); err != nil {
+		t.Fatalf("find delivered dispatch for fault injection: %v", err)
+	}
+	result, err := db.Exec(`
+UPDATE recruiting_execution_dispatch_outbox
+SET delivery_status = 'pending', delivered_at = NULL, delivery_attempts = 1,
+    next_attempt_at = UTC_TIMESTAMP(6), last_error_class = 'awaiting_completion'
+WHERE dispatch_id = ? AND delivery_status = 'delivered'`, dispatchID)
+	if err != nil {
+		t.Fatalf("inject lost completion checkpoint: %v", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		t.Fatalf("lost completion injection changed %d rows", changed)
+	}
+	return dispatchID
+}
+
+func waitLiveDispatchRedelivery(t *testing.T, dsn, dispatchID, workID string, timeout time.Duration) uint64 {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var status string
+	var deliveryAttempts uint64
+	var workAttempts int
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		err = db.QueryRow(`SELECT delivery_status, delivery_attempts FROM recruiting_execution_dispatch_outbox WHERE dispatch_id = ?`, dispatchID).
+			Scan(&status, &deliveryAttempts)
+		if err == nil {
+			err = db.QueryRow(`SELECT COUNT(*) FROM recruiting_attempts WHERE work_id = ?`, workID).Scan(&workAttempts)
+		}
+		if err == nil && status == "delivered" && deliveryAttempts >= 2 && workAttempts == 1 {
+			return deliveryAttempts
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("redelivery did not converge without another Attempt: status=%q delivery_attempts=%d work_attempts=%d err=%v",
+		status, deliveryAttempts, workAttempts, err)
+	return 0
 }

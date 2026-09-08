@@ -156,7 +156,7 @@ func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, in
 		return
 	}
 	offer, err := requestExecutionOffer(msg.Ctx(), sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()), executioncontract.OfferRequest{
-		CommandID: wakeOfferCommandID(incarnation, payload.CommandID), ExecutorIncarnation: incarnation,
+		CommandID: wakeOfferCommandID(incarnation, payload.CommandID, string(msg.ID)), ExecutorIncarnation: incarnation,
 		Capability: cfg.Capability, Origin: payload.Origin, ProfileID: payload.ProfileID,
 	}, time.Duration(cfg.ControlWaitMS)*time.Millisecond)
 	if err != nil {
@@ -197,8 +197,8 @@ func completeWake(sys actorbase.Sys, controlActor actor.ActorID, msg actorbase.M
 	return err
 }
 
-func wakeOfferCommandID(incarnation, commandID string) string {
-	sum := sha256.Sum256([]byte("recruiting.execution.wake.v1\n" + incarnation + "\n" + commandID))
+func wakeOfferCommandID(incarnation, dispatchID, deliveryID string) string {
+	sum := sha256.Sum256([]byte("recruiting.execution.wake.v1\n" + incarnation + "\n" + dispatchID + "\n" + deliveryID))
 	return fmt.Sprintf("wake-offer-%x", sum[:16])
 }
 

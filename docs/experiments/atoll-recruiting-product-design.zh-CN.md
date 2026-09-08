@@ -809,7 +809,7 @@ M1 选择最简单可工作的方案，M4 用 20,000 个 Recruitment Source 的�
   → Executor 处理一份 Work 或确认当前无 Work 后回传 completion acknowledgement
 ```
 
-第一版选择“持久意图 + 单次 push wake + Executor 内部单次 pull offer”的混合方式。它不为每个任务建立轮询器，也不让一次 wake 隐式 drain 整个队列：日程物化时最多按该 capability 的可用 Executor 数创建初始 wake；每次 Attempt 成功或失败时，在同一业务事务写入一个容量释放 wake，可重试 Work 另写一个到 `retry_not_before` 才到期的 wake。Recruiting Actor 通过已有 reconcile durable timer 有界投递；Executor 只有在完成一份 Work 或明确 idle 后才回传 acknowledgement。投递消息、offer 命令、结果命令均有稳定幂等身份，未确认投递按有界次数和退避恢复。这样大量 Work 保留在有索引的领域队列中，控制消息量与实际并发和完成速率相关，而不与积压总量同时爆发。
+第一版选择“持久意图 + 单次 push wake + Executor 内部单次 pull offer”的混合方式。它不为每个任务建立轮询器，也不让一次 wake 隐式 drain 整个队列：日程物化时最多按该 capability 的可用 Executor 数创建初始 wake；每次 Attempt 成功或失败时，在同一业务事务写入一个容量释放 wake，可重试 Work 另写一个到 `retry_not_before` 才到期的 wake。Recruiting Actor 通过已有 reconcile durable timer 有界投递；Executor 只有在完成一份 Work 或明确 idle 后才回传 acknowledgement。dispatch ID 在整个恢复生命周期稳定，每次 delivery attempt 使用不同消息 ID；offer command 在同一 delivery 内稳定、跨 redelivery 必须变化，使丢 completion acknowledgement 后的新投递重新判断当前队列，而不会按旧 receipt 取回已经完成的 Offer。结果命令继续按 Attempt 稳定幂等，未确认投递按有界次数和退避恢复。这样大量 Work 保留在有索引的领域队列中，控制消息量与实际并发和完成速率相关，而不与积压总量同时爆发。
 
 Executor fleet 是招聘扩展配置中的 `actor_target + capability` placement，不是新 Worker 类型。`actor_target` 可使用 Atoll 稳定两段地址，由 Atoll 在投递时解析当前三段成员；Executor completion 必须由 envelope 中匹配该目标的 authenticated 三段 sender 提交。这样控制面与 Executor 声明不需要预先知道对方本次 seating ID，也不会以放宽身份校验解决部署循环。初始唤醒按 capability 过滤并确定性分散到实例；实际领取仍在数据库事务中执行全局 priority、`not_before`、origin/Profile 条件和 BudgetPermit 检查，所以唤醒只代表“可以尝试领取”，不代表绕过领域状态机或预先授予执行权。没有匹配 Executor 时 Work 保持持久可运维状态，不丢弃、不降级到错误 capability。
 

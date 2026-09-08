@@ -49,7 +49,7 @@ WHERE id = ? AND version = ?
 
 单一事务内完成：锁定/读取 command receipt → CAS 聚合 → 插入 append-only 证据（如有）→ 插入 outbox event intent → 保存稳定 receipt。Outbox intent 创建时冻结最大投递次数；失败以 expected attempts 做 CAS，记录错误分类和下次投递时间，达到上限进入 `exhausted`，不能无限重试。提交后再通过 Atoll ledger 发送事件；ledger 失败时 outbox 保留并可重放。接收方仍按 event ID 幂等，因此数据库提交与 ledger append 不要求分布式事务。
 
-可执行 Work 的创建与对应 execution dispatch intent 必须在同一事务提交；Attempt 成功、分类失败及未来重试到期同样在关闭执行权的事务内写入后续 dispatch。Recruiting Actor 使用已有 reconcile timer 按 `(delivery_status, next_attempt_at, dispatch_id)` 有界扫描并发送一次 wake，发送后等待目标 Executor completion acknowledgement；进程在发送与确认之间退出时允许重新投递，但稳定 dispatch command、Attempt 唯一约束和结果 receipt 保证不重复生效。该 outbox 是招聘应用的可恢复流程事实，不修改 Atoll ledger、timer 或 Message 语义。
+可执行 Work 的创建与对应 execution dispatch intent 必须在同一事务提交；Attempt 成功、分类失败及未来重试到期同样在关闭执行权的事务内写入后续 dispatch。Recruiting Actor 使用已有 reconcile timer 按 `(delivery_status, next_attempt_at, dispatch_id)` 有界扫描并发送一次 wake，发送后等待目标 Executor completion acknowledgement；进程在发送与确认之间退出时允许重新投递。dispatch identity 稳定，但不同 delivery attempt 的消息和 offer command identity 必须不同；Attempt 唯一约束与结果 receipt 保证已经执行的业务不重复生效，新 offer 则能观察到当前已无 Work 并用 idle completion 收口。该 outbox 是招聘应用的可恢复流程事实，不修改 Atoll ledger、timer 或 Message 语义。
 
 ### 每日列表页
 

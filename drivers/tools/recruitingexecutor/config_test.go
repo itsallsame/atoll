@@ -61,10 +61,12 @@ func TestManifestHasOneExecutorClass(t *testing.T) {
 	}
 }
 
-func TestWakeOfferCommandIsStableWithinIncarnationAndChangesAcrossRestart(t *testing.T) {
-	first := wakeOfferCommandID("boot-a", "wake-1")
-	if first == "" || first != wakeOfferCommandID("boot-a", "wake-1") || first == wakeOfferCommandID("boot-b", "wake-1") ||
-		first == wakeOfferCommandID("boot-a", "wake-2") {
+func TestWakeOfferCommandIsStablePerDeliveryAndChangesAcrossRedeliveryOrRestart(t *testing.T) {
+	first := wakeOfferCommandID("boot-a", "dispatch-1", "delivery-1")
+	if first == "" || first != wakeOfferCommandID("boot-a", "dispatch-1", "delivery-1") ||
+		first == wakeOfferCommandID("boot-b", "dispatch-1", "delivery-1") ||
+		first == wakeOfferCommandID("boot-a", "dispatch-2", "delivery-1") ||
+		first == wakeOfferCommandID("boot-a", "dispatch-1", "delivery-2") {
 		t.Fatalf("wake offer identity is not correctly scoped: %q", first)
 	}
 }
