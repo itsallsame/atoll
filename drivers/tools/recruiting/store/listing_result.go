@@ -92,6 +92,9 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 	if occurrence.Status != model.OccurrenceRunning {
 		return ListingPageOutcome{}, fmt.Errorf("occurrence is no longer accepting listing results"), nil
 	}
+	if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, input.ObservedAt); err != nil {
+		return ListingPageOutcome{}, err, nil
+	}
 	_, currentFence, err := loadListingOfferFence(ctx, tx, occurrence, attempt.ProfileID)
 	if err != nil {
 		return ListingPageOutcome{}, err, nil
@@ -244,6 +247,9 @@ func (r *Repository) acceptListingCompletionOnce(ctx context.Context, input List
 	if occurrence.Status != model.OccurrenceRunning {
 		return ListingCompletionOutcome{}, fmt.Errorf("occurrence is no longer accepting listing results"), nil
 	}
+	if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, input.CompletedAt); err != nil {
+		return ListingCompletionOutcome{}, err, nil
+	}
 	_, currentFence, err := loadListingOfferFence(ctx, tx, occurrence, attempt.ProfileID)
 	if err != nil {
 		return ListingCompletionOutcome{}, err, nil
@@ -328,6 +334,9 @@ WHERE source_id = ? AND checkpoint_version = ?`, committedCheckpoint.Version, co
 		return ListingCompletionOutcome{}, nil, err
 	}
 	if err := updateOccurrenceInTx(ctx, tx, occurrence.Version, completedOccurrence, input.CompletedAt); err != nil {
+		return ListingCompletionOutcome{}, nil, err
+	}
+	if err := releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitReleased, input.CompletedAt); err != nil {
 		return ListingCompletionOutcome{}, nil, err
 	}
 	payload, _ := json.Marshal(map[string]any{

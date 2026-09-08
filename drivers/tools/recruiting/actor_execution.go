@@ -194,7 +194,7 @@ func handleListingCompletionResult(sys actorbase.Sys, repository *store.Reposito
 	_, _ = sys.Reply(msg, response)
 }
 
-func handleExecutionControlMessage(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+func handleExecutionControlMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	if repository == nil {
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
 		return
@@ -204,13 +204,13 @@ func handleExecutionControlMessage(sys actorbase.Sys, repository *store.Reposito
 		return
 	}
 	if msg.Type == TypeExecutionOffer {
-		handleListingOffer(sys, repository, msg)
+		handleListingOffer(sys, cfg, repository, msg)
 		return
 	}
 	handleExecutionTransition(sys, repository, msg)
 }
 
-func handleListingOffer(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+func handleListingOffer(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	var payload listingOfferPayload
 	if !decode(sys, msg, &payload) {
 		return
@@ -230,6 +230,7 @@ func handleListingOffer(sys actorbase.Sys, repository *store.Repository, msg act
 		Origin:              strings.TrimSpace(payload.Origin),
 		ProfileID:           strings.TrimSpace(payload.ProfileID),
 		OfferedAt:           time.UnixMilli(msg.TS).UTC(),
+		BudgetPolicy:        cfg.executionBudgetPolicy(),
 	})
 	response := executionControlResponse{
 		ContractVersion: "recruiting.execution.v1", CorrelationID: string(msg.CorrelationID),

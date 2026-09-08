@@ -264,6 +264,8 @@ func failStoreError(sys actorbase.Sys, msg actorbase.Msg, err error) {
 		code = ErrorVersionConflict
 	case errors.Is(err, store.ErrResultFenced):
 		code = ErrorQualityRejected
+	case errors.Is(err, store.ErrBudgetBlocked):
+		code = ErrorBudgetBlocked
 	default:
 		var conflict *model.VersionConflictError
 		var transition *model.InvalidTransitionError

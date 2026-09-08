@@ -26,11 +26,9 @@ func (r *Repository) RecoverStaleAttempts(ctx context.Context, staleBefore time.
 		return AttemptRecoveryResult{}, fmt.Errorf("attempt recovery requires ordered times and limit in [1,500]")
 	}
 	rows, err := r.db.QueryContext(ctx, `
-SELECT attempt_id
-FROM recruiting_attempts
+SELECT attempt_id FROM recruiting_attempts
 WHERE attempt_status IN ('offered', 'accepted', 'running') AND updated_at <= ?
-ORDER BY updated_at, attempt_id
-LIMIT ?`, staleBefore.UTC(), limit)
+ORDER BY updated_at, attempt_id LIMIT ?`, staleBefore.UTC(), limit)
 	if err != nil {
 		return AttemptRecoveryResult{}, fmt.Errorf("list stale attempts: %w", err)
 	}
@@ -48,6 +46,39 @@ LIMIT ?`, staleBefore.UTC(), limit)
 	}
 	if err := rows.Err(); err != nil {
 		return AttemptRecoveryResult{}, err
+	}
+	seen := make(map[string]struct{}, len(attemptIDs))
+	for _, attemptID := range attemptIDs {
+		seen[attemptID] = struct{}{}
+	}
+	if remaining := limit - len(attemptIDs); remaining > 0 {
+		rows, err = r.db.QueryContext(ctx, `
+SELECT p.attempt_id
+FROM recruiting_budget_permits p
+JOIN recruiting_attempts a ON a.attempt_id = p.attempt_id
+WHERE p.permit_status = 'granted' AND p.expires_at <= ?
+  AND a.attempt_status IN ('offered', 'accepted', 'running')
+ORDER BY p.expires_at, p.attempt_id LIMIT ?`, recoveredAt.UTC(), remaining)
+		if err != nil {
+			return AttemptRecoveryResult{}, fmt.Errorf("list expired execution permits: %w", err)
+		}
+		for rows.Next() {
+			var attemptID string
+			if err := rows.Scan(&attemptID); err != nil {
+				_ = rows.Close()
+				return AttemptRecoveryResult{}, err
+			}
+			if _, duplicate := seen[attemptID]; !duplicate {
+				seen[attemptID] = struct{}{}
+				attemptIDs = append(attemptIDs, attemptID)
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return AttemptRecoveryResult{}, err
+		}
+		if err := rows.Err(); err != nil {
+			return AttemptRecoveryResult{}, err
+		}
 	}
 	result := AttemptRecoveryResult{Scanned: len(attemptIDs)}
 	for _, attemptID := range attemptIDs {
@@ -87,7 +118,14 @@ FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE SKIP LOCKED`, attemptID
 	if err != nil {
 		return false, false, err
 	}
-	if updatedAt.After(staleBefore) || (status != model.AttemptOffered && status != model.AttemptAccepted && status != model.AttemptRunning) {
+	var permitExpiresAt time.Time
+	var permitStatus model.BudgetPermitStatus
+	permitErr := tx.QueryRowContext(ctx, `SELECT permit_status, expires_at FROM recruiting_budget_permits WHERE attempt_id = ?`, attemptID).Scan(&permitStatus, &permitExpiresAt)
+	if permitErr != nil && !errors.Is(permitErr, sql.ErrNoRows) {
+		return false, false, permitErr
+	}
+	permitExpired := permitErr == nil && permitStatus == model.PermitGranted && !recoveredAt.UTC().Before(permitExpiresAt.UTC())
+	if (updatedAt.After(staleBefore) && !permitExpired) || (status != model.AttemptOffered && status != model.AttemptAccepted && status != model.AttemptRunning) {
 		return false, false, ErrAttemptConflict
 	}
 	var attempt model.Attempt
@@ -117,13 +155,16 @@ FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE SKIP LOCKED`, attemptID
 	expiredState, _ := json.Marshal(expired)
 	update, err := tx.ExecContext(ctx, `
 UPDATE recruiting_attempts SET attempt_status = ?, state_json = ?, updated_at = ?
-WHERE attempt_id = ? AND attempt_status = ? AND updated_at <= ?`, expired.Status, expiredState,
-		recoveredAt.UTC(), attempt.AttemptID, attempt.Status, staleBefore.UTC())
+WHERE attempt_id = ? AND attempt_status = ?`, expired.Status, expiredState,
+		recoveredAt.UTC(), attempt.AttemptID, attempt.Status)
 	if err != nil {
 		return false, false, err
 	}
 	if changed, _ := update.RowsAffected(); changed != 1 {
 		return false, false, ErrAttemptConflict
+	}
+	if err := releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitExpired, recoveredAt); err != nil {
+		return false, false, err
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"attempt_id": attempt.AttemptID, "work_id": attempt.WorkID, "previous_status": attempt.Status,

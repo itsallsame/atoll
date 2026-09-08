@@ -9,7 +9,7 @@ P1 契约基线：`a94d2b8d`
 ## 已完成
 
 - Schema ADR 冻结访问模式、唯一约束、CAS、事务切点、outbox 恢复、基线 staging 和权限边界；
-- 首版 migration 从空库创建 24 张招聘业务表，migration runner 另建版本/checksum ledger；
+- migration 从空库创建 25 张招聘业务表，migration runner 另建版本/checksum ledger；
 - migration 使用 MySQL advisory lock 串行化，成功重跑幂等，checksum 改变拒绝启动，残留 `applying` 状态要求从升级前备份恢复；
 - DSN 必须显式数据库和非 root 用户，adapter 强制 UTC、关闭 multi-statements，并设置有界连接池；
 - Company Repository 已实现 create/get、规范官网并发唯一约束、`updated_at + company_id` seek pagination 和单版本 CAS；
@@ -30,7 +30,7 @@ P1 契约基线：`a94d2b8d`
 - Attempt 保存 Executor identity/incarnation 与全部领域 fence；状态通过预期前态 CAS，两个并发 accept 只有一个成功，状态机无循环因此不产生 ABA；
 - Recipe 使用 `(recipe_id, recipe_version)` 身份和独立 state version CAS；ABI、opaque content ref、transport、required capability、内容与 contract 在同一 Recipe version 内不可变，Repository 只接受领域状态机产生的状态转换；Source candidate→validating 单独持久化，ready Endpoint 与首个 Listing Assignment 同事务发布；
 - Recipe rollout 要求匹配 active kind/contract，并在同一事务比较 Source version 与 Assignment version；两个并发 rollout 只有一个成功，任一 CAS 冲突都会回滚另一侧，数据库不会出现 Source JSON 与 Assignment 行不一致；
-- Detail result 接受会从数据库重读 Company、Source、Detail Assignment/Recipe、Checkpoint、Job refresh generation、Profile（如有）、Work acceptance version 和 Attempt Executor incarnation；不信任结果消息声明的“当前版本”；
+- Detail result 接受会从数据库重读 Company、Source、Detail Assignment/Recipe、Job refresh generation、Profile（如有）、Work acceptance version、BudgetPermit 和 Attempt Executor incarnation；不信任结果消息声明的“当前版本”。Listing Checkpoint 不标识详情代际，因此不参与 detail fence；
 - Listing page 接受同样重读 Attempt/Work/Occurrence 和全部当前 fence，每页最多 500 项；Artifact、Observation、由当前 detail Recipe 与详情 URL 派生的 detail Work、顺序恢复点在一个事务内提交。Executor 不能指定 detail capability/origin，也不能指定 Job/Work identity；这些值由控制面 Recipe、规范 URL 和稳定业务键生成；
 - Listing completion 只接受已提交 terminal page 和完整 identity/pagination/order/frontier/same-time/overlap 证明；Executor 只能提出新 frontier 时间/键，Source、Recipe、contract、策略、overlap、occurrence 和版本均由当前 Checkpoint 与冻结 occurrence 重建；Checkpoint、Attempt succeeded、Work completed、Occurrence completed 和 outbox 在一个事务内提交；
 - accepted completion outcome 随 Attempt 保存，后续 Checkpoint 再次推进后重放旧结果仍返回第一次接受的稳定快照；错误 incarnation、变更后的 Source 或不完整质量证明只保存 rejected Artifact，不产生 Observation、恢复点或 Checkpoint 变化；
@@ -38,7 +38,7 @@ P1 契约基线：`a94d2b8d`
 - 合法详情结果在一个事务内提交 Artifact、SourceJob、append-only JobDetailVersion、Attempt succeeded 和 Work completed；同 Artifact/Attempt 重放返回既有 Job，不增加详情版本；
 - 错误 Executor incarnation 或已变化 Source version 的详情结果只新增 `rejected=true` Artifact，Job、Work 和 Attempt 均保持原状态；
 - Profile Repository 只持久化 opaque secret reference，并以 profile version CAS 驱动 repairing/verifying；测试确认没有 Cookie、密码或 OTP 字段；
-- BudgetPermit 以 Attempt 唯一并使用版本 CAS，只能从 granted 进入一个终态；两个并发 release 只有一个成功；
+- BudgetPermit 以 Attempt 唯一并使用版本 CAS，只能从 granted 进入一个终态；migration `000009` 新增 global/capability/origin/company/profile 活动计数和 Permit 到期索引。计数行、Permit 和 Attempt 同事务取得，完成/失败/超时同事务释放；origin 上限为 1 的并发测试没有超发，Permit 到期即使 Attempt 尚未达到普通 stale 阈值也会由同一 reconcile 回收；
 - RepairIncident 以 failure domain/signature/failing version 形成的 repair key 单飞；相同 origin 故障的多个 Work 只形成一个 incident 和多条幂等 affected-work 关联；
 - DailyRun 按 schedule date 唯一并冻结调度策略版本、截点、执行窗口和 expected sources；普通启动使用版本 CAS，两个并发启动实测只有一个成功，全部计划字段在创建后不可修改；
 - 可信日切路径在一个 Repeatable Read 事务中读取 Company/Source/Listing Assignment/active Recipe，使用领域 `EligibleForDailyRun` 再验证四维增量契约，并原子写入 running DailyRun、全部轻量 SourceOccurrence 和 `daily_run.started` outbox；`expected_sources` 直接取该快照行数，不接受外部调用方声明；

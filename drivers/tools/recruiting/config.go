@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 	"github.com/wanpengxie/atoll/protocol/actor"
 )
 
@@ -27,6 +28,13 @@ type Config struct {
 	DailyWindowDurationMinutes   int           `json:"daily_window_duration_minutes"`
 	DailySchedulePolicyVersion   uint64        `json:"daily_schedule_policy_version"`
 	DailyWorkMaterializeLimit    int           `json:"daily_work_materialize_limit"`
+	BudgetPolicyVersion          uint64        `json:"budget_policy_version"`
+	BudgetMaxActive              int           `json:"budget_max_active"`
+	BudgetMaxPerCapability       int           `json:"budget_max_per_capability"`
+	BudgetMaxPerOrigin           int           `json:"budget_max_per_origin"`
+	BudgetMaxPerCompany          int           `json:"budget_max_per_company"`
+	BudgetMaxPerProfile          int           `json:"budget_max_per_profile"`
+	BudgetPermitTTLMS            int           `json:"budget_permit_ttl_ms"`
 }
 
 func DefaultConfig() json.RawMessage {
@@ -56,6 +64,15 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 	if cfg.DailyWorkMaterializeLimit < 1 || cfg.DailyWorkMaterializeLimit > 500 {
 		return Config{}, fmt.Errorf("recruiting config: daily_work_materialize_limit must be in [1,500]")
 	}
+	budget := cfg.executionBudgetPolicy()
+	if budget.Version == 0 || budget.MaxActive < 1 || budget.MaxActive > 100_000 ||
+		budget.MaxPerCapability < 1 || budget.MaxPerCapability > budget.MaxActive ||
+		budget.MaxPerOrigin < 1 || budget.MaxPerOrigin > budget.MaxActive ||
+		budget.MaxPerCompany < 1 || budget.MaxPerCompany > budget.MaxActive ||
+		budget.MaxPerProfile < 1 || budget.MaxPerProfile > budget.MaxActive ||
+		budget.PermitTTL < time.Second || budget.PermitTTL > 24*time.Hour {
+		return Config{}, fmt.Errorf("recruiting config: invalid execution budget policy")
+	}
 	if cfg.DailyScheduleEnabled {
 		if _, err := time.LoadLocation(cfg.DailyScheduleTimezone); err != nil {
 			return Config{}, fmt.Errorf("recruiting config: invalid daily_schedule_timezone: %w", err)
@@ -78,7 +95,16 @@ func defaultConfig() Config {
 		DailyScheduleEnabled: true, DailyScheduleTimezone: "UTC", DailyCutoffLocal: "00:00:00",
 		DailyWindowStartDelayMinutes: 0, DailyWindowDurationMinutes: 480, DailySchedulePolicyVersion: 1,
 		DailyWorkMaterializeLimit: 100,
+		BudgetPolicyVersion:       1, BudgetMaxActive: 1_000, BudgetMaxPerCapability: 1_000,
+		BudgetMaxPerOrigin: 8, BudgetMaxPerCompany: 50, BudgetMaxPerProfile: 1, BudgetPermitTTLMS: 900_000,
 	}
+}
+
+func (c Config) executionBudgetPolicy() store.ExecutionBudgetPolicy {
+	return store.ExecutionBudgetPolicy{Version: c.BudgetPolicyVersion, MaxActive: c.BudgetMaxActive,
+		MaxPerCapability: c.BudgetMaxPerCapability, MaxPerOrigin: c.BudgetMaxPerOrigin,
+		MaxPerCompany: c.BudgetMaxPerCompany, MaxPerProfile: c.BudgetMaxPerProfile,
+		PermitTTL: time.Duration(c.BudgetPermitTTLMS) * time.Millisecond}
 }
 
 const ConfigSchema = `{
@@ -97,5 +123,12 @@ const ConfigSchema = `{
     "daily_window_duration_minutes":{"type":"integer","minimum":1,"maximum":2880},
     "daily_schedule_policy_version":{"type":"integer","minimum":1},
     "daily_work_materialize_limit":{"type":"integer","minimum":1,"maximum":500}
+	,"budget_policy_version":{"type":"integer","minimum":1}
+	,"budget_max_active":{"type":"integer","minimum":1,"maximum":100000}
+	,"budget_max_per_capability":{"type":"integer","minimum":1,"maximum":100000}
+	,"budget_max_per_origin":{"type":"integer","minimum":1,"maximum":100000}
+	,"budget_max_per_company":{"type":"integer","minimum":1,"maximum":100000}
+	,"budget_max_per_profile":{"type":"integer","minimum":1,"maximum":100000}
+	,"budget_permit_ttl_ms":{"type":"integer","minimum":1000,"maximum":86400000}
   }
 }`

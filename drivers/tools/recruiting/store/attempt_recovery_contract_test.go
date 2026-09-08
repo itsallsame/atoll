@@ -32,7 +32,7 @@ func TestStaleAttemptRecoveryReleasesOffersAndRetriesRunningWork(t *testing.T) {
 	}
 	offer, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
 		AttemptID: "recovery-offer-attempt", ExecutorActorID: "recovery-offer-executor", ExecutorIncarnation: "boot-1",
-		Capability: "http.fetch", Origin: "https://recovery-offer.example.com", OfferedAt: offerAt,
+		Capability: "http.fetch", Origin: "https://recovery-offer.example.com", OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -47,9 +47,13 @@ func TestStaleAttemptRecoveryReleasesOffersAndRetriesRunningWork(t *testing.T) {
 	if attempt.Status != model.AttemptExpired || work.Status != model.WorkOpen {
 		t.Fatalf("offered recovery attempt=%s work=%s", attempt.Status, work.Status)
 	}
+	var recoveredPermit model.BudgetPermitStatus
+	if err := db.QueryRowContext(ctx, "SELECT permit_status FROM recruiting_budget_permits WHERE attempt_id = ?", offer.Attempt.AttemptID).Scan(&recoveredPermit); err != nil || recoveredPermit != model.PermitExpired {
+		t.Fatalf("recovered offered permit=%s err=%v", recoveredPermit, err)
+	}
 	secondOffer, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
 		AttemptID: "recovery-offer-attempt-2", ExecutorActorID: "recovery-offer-executor", ExecutorIncarnation: "boot-2",
-		Capability: "http.fetch", Origin: "https://recovery-offer.example.com", OfferedAt: offerAt,
+		Capability: "http.fetch", Origin: "https://recovery-offer.example.com", OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(),
 	})
 	if err != nil {
 		t.Fatalf("expired offer did not release active slot: %v", err)
@@ -119,6 +123,15 @@ ORDER BY updated_at, attempt_id LIMIT 100`, cutoff).Scan(&explain); err != nil {
 	}
 	if !strings.Contains(explain, "ix_recruiting_attempt_stale") {
 		t.Fatalf("stale attempt query did not use intended index: %s", explain)
+	}
+	if err := db.QueryRowContext(ctx, `EXPLAIN FORMAT=JSON
+SELECT attempt_id FROM recruiting_budget_permits
+WHERE permit_status = 'granted' AND expires_at <= ?
+ORDER BY expires_at, attempt_id LIMIT 100`, recoveredAt).Scan(&explain); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(explain, "ix_recruiting_permit_expiry") {
+		t.Fatalf("permit expiry query did not use intended index: %s", explain)
 	}
 	for _, sourceID := range []string{"recovery-offer-source-0", "recovery-running-source-0"} {
 		source, err := repository.GetSource(ctx, sourceID)

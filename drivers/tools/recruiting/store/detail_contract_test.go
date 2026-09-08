@@ -16,6 +16,7 @@ func TestDetailResultAcceptsAtomicallyAndReplays(t *testing.T) {
 	repository, db, ctx, cleanup := detailContractRepository(t)
 	defer cleanup()
 	fixture := createDetailFixture(t, ctx, repository, "detail-accept", time.Date(2026, 9, 8, 5, 0, 0, 0, time.UTC))
+	defer pauseExecutionSource(t, ctx, repository, fixture.source.SourceID, fixture.now.Add(10*time.Minute))
 	// Listing completion may establish/advance its Source checkpoint after a
 	// detail offer was accepted. That waterline does not identify the detail
 	// generation and must not fence this result.
@@ -73,6 +74,7 @@ func TestStaleOrWrongSenderDetailResultOnlyKeepsRejectedArtifact(t *testing.T) {
 	defer cleanup()
 	now := time.Date(2026, 9, 8, 6, 0, 0, 0, time.UTC)
 	wrongSender := createDetailFixture(t, ctx, repository, "detail-wrong-sender", now)
+	defer pauseExecutionSource(t, ctx, repository, wrongSender.source.SourceID, now.Add(10*time.Minute))
 	wrong := wrongSender.result("detail-artifact-wrong-sender")
 	wrong.ExecutorIncarnation = "stale-incarnation"
 	if _, err := repository.AcceptDetailResult(ctx, wrong); !errors.Is(err, ErrResultFenced) {
@@ -81,6 +83,7 @@ func TestStaleOrWrongSenderDetailResultOnlyKeepsRejectedArtifact(t *testing.T) {
 	assertRejectedOnly(t, ctx, db, repository, wrongSender, wrong.Artifact.ArtifactID)
 
 	stale := createDetailFixture(t, ctx, repository, "detail-stale-source", now.Add(time.Minute))
+	defer pauseExecutionSource(t, ctx, repository, stale.source.SourceID, now.Add(10*time.Minute))
 	currentSource, _ := repository.GetSource(ctx, stale.source.SourceID)
 	degraded, _ := currentSource.SetHealth(currentSource.Version, model.HealthDegraded)
 	if err := repository.UpdateSourceCAS(ctx, currentSource.Version, degraded, now.Add(2*time.Minute)); err != nil {
@@ -98,6 +101,7 @@ func TestDetailExecutionFailureReturnsWorkToGenericOffer(t *testing.T) {
 	defer cleanup()
 	now := time.Date(2026, 9, 8, 7, 0, 0, 0, time.UTC)
 	fixture := createDetailFixture(t, ctx, repository, "detail-retry", now)
+	defer pauseExecutionSource(t, ctx, repository, fixture.source.SourceID, now.Add(10*time.Minute))
 	failed, err := repository.FailListingExecution(ctx, fixture.attempt.AttemptID, fixture.attempt.ExecutorActorID,
 		fixture.attempt.ExecutorIncarnation, "upstream_timeout", now.Add(time.Minute))
 	if err != nil || failed.Status != model.AttemptFailed {
@@ -109,7 +113,7 @@ func TestDetailExecutionFailureReturnsWorkToGenericOffer(t *testing.T) {
 	}
 	retry, err := repository.OfferExecution(ctx, ListingOfferRequest{
 		AttemptID: "detail-retry-attempt-2", ExecutorActorID: "executor-b", ExecutorIncarnation: "incarnation-b",
-		Capability: "http.fetch", Origin: "https://detail-retry.example.com", OfferedAt: now.Add(2 * time.Minute),
+		Capability: "http.fetch", Origin: "https://detail-retry.example.com", OfferedAt: now.Add(2 * time.Minute), BudgetPolicy: testExecutionBudgetPolicy(),
 	})
 	if err != nil || retry.Kind != "detail" || retry.Work.WorkID != work.WorkID || retry.Detail == nil {
 		t.Fatalf("retried generic detail offer = %+v err=%v", retry, err)
@@ -179,7 +183,7 @@ func createDetailFixture(t *testing.T, ctx context.Context, repository *Reposito
 	}
 	offer, err := repository.OfferExecution(ctx, ListingOfferRequest{
 		AttemptID: prefix + "-attempt", ExecutorActorID: "executor-a", ExecutorIncarnation: "incarnation-a",
-		Capability: "http.fetch", Origin: "https://" + prefix + ".example.com", OfferedAt: now,
+		Capability: "http.fetch", Origin: "https://" + prefix + ".example.com", OfferedAt: now, BudgetPolicy: testExecutionBudgetPolicy(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +194,7 @@ func createDetailFixture(t *testing.T, ctx context.Context, repository *Reposito
 	}
 	replay, err := repository.OfferExecution(ctx, ListingOfferRequest{
 		AttemptID: prefix + "-attempt", ExecutorActorID: "executor-a", ExecutorIncarnation: "incarnation-a",
-		Capability: "http.fetch", Origin: "https://" + prefix + ".example.com", OfferedAt: now,
+		Capability: "http.fetch", Origin: "https://" + prefix + ".example.com", OfferedAt: now, BudgetPolicy: testExecutionBudgetPolicy(),
 	})
 	if err != nil || replay.Detail == nil || replay.Detail.Job.JobID != listing.Job.JobID {
 		t.Fatalf("detail execution offer replay = %+v err=%v", replay, err)

@@ -24,6 +24,8 @@ type ExecutionOffer struct {
 	Occurrence          *model.SourceOccurrence      `json:"occurrence,omitempty"`
 	Checkpoint          *model.IncrementalCheckpoint `json:"checkpoint,omitempty"`
 	Detail              *DetailExecutionInput        `json:"detail,omitempty"`
+	Budget              model.BudgetPermit           `json:"budget"`
+	BudgetExpiresAt     string                       `json:"budget_expires_at"`
 	RequestedCapability string                       `json:"requested_capability"`
 	RequestedOrigin     string                       `json:"requested_origin,omitempty"`
 	RequestedProfileID  string                       `json:"requested_profile_id,omitempty"`
@@ -47,6 +49,7 @@ type ListingOfferRequest struct {
 	Origin              string
 	ProfileID           string
 	OfferedAt           time.Time
+	BudgetPolicy        ExecutionBudgetPolicy
 }
 
 // OfferListingExecution claims one runnable listing Work and creates its
@@ -64,7 +67,8 @@ func (r *Repository) OfferExecution(ctx context.Context, request ListingOfferReq
 
 func (r *Repository) offerExecution(ctx context.Context, request ListingOfferRequest, requiredPurpose string) (ExecutionOffer, error) {
 	if strings.TrimSpace(request.AttemptID) == "" || strings.TrimSpace(request.ExecutorActorID) == "" ||
-		strings.TrimSpace(request.ExecutorIncarnation) == "" || strings.TrimSpace(request.Capability) == "" || request.OfferedAt.IsZero() {
+		strings.TrimSpace(request.ExecutorIncarnation) == "" || strings.TrimSpace(request.Capability) == "" || request.OfferedAt.IsZero() ||
+		request.BudgetPolicy.validate() != nil {
 		return ExecutionOffer{}, fmt.Errorf("execution offer requires attempt, executor identity, incarnation, capability, and time")
 	}
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
@@ -187,6 +191,14 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	if err != nil {
 		return ExecutionOffer{}, err
 	}
+	sourceID := occurrence.SourceID
+	if detail != nil {
+		sourceID = detail.Job.SourceID
+	}
+	var companyID string
+	if err := tx.QueryRowContext(ctx, "SELECT company_id FROM recruiting_sources WHERE source_id = ?", sourceID).Scan(&companyID); err != nil {
+		return ExecutionOffer{}, fmt.Errorf("load execution company: %w", err)
+	}
 	attempt, err := model.NewAttempt(request.AttemptID, work)
 	if err == nil {
 		attempt, err = attempt.BindExecutor(strings.TrimSpace(request.ExecutorActorID), strings.TrimSpace(request.ExecutorIncarnation), request.Capability)
@@ -197,9 +209,14 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	if err != nil {
 		return ExecutionOffer{}, err
 	}
+	permit, permitExpiresAt, err := acquireBudgetPermitTx(ctx, tx, attempt.AttemptID, placement.Origin, placement.ProfileID,
+		placement.Capability, companyID, request.BudgetPolicy, request.OfferedAt)
+	if err != nil {
+		return ExecutionOffer{}, err
+	}
 	offer := ExecutionOffer{
 		Kind: strings.TrimSuffix(work.Purpose, "_sync"), Attempt: attempt, Work: work, Checkpoint: checkpoint,
-		Detail:              detail,
+		Detail: detail, Budget: permit, BudgetExpiresAt: permitExpiresAt.Format(time.RFC3339Nano),
 		RequestedCapability: strings.TrimSpace(request.Capability), RequestedOrigin: strings.TrimSpace(request.Origin),
 		RequestedProfileID: strings.TrimSpace(request.ProfileID),
 	}
@@ -452,6 +469,11 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 	if attempt.ExecutorActorID != executorActorID || attempt.ExecutorIncarnation != executorIncarnation || attempt.AcceptanceVersion != work.AcceptanceVersion {
 		return model.Attempt{}, ErrAttemptConflict
 	}
+	if action != "fail" {
+		if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, businessAt); err != nil {
+			return model.Attempt{}, err
+		}
+	}
 	var occurrence model.SourceOccurrence
 	var currentFence model.AttemptFence
 	// A failure closes execution authority but does not publish business data,
@@ -509,6 +531,9 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			if err == nil {
 				err = updateWorkTx(ctx, tx, previousWorkVersion, work, businessAt)
 			}
+		}
+		if err == nil {
+			err = releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitReleased, businessAt)
 		}
 	default:
 		err = fmt.Errorf("unknown execution transition %q", action)

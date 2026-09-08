@@ -111,6 +111,9 @@ func (r *Repository) acceptDetailResultTransaction(ctx context.Context, input De
 	if work.TargetType != "job" || input.Artifact.WorkID != work.WorkID {
 		return DetailResultOutcome{}, fmt.Errorf("detail result work target or artifact link is inconsistent"), nil
 	}
+	if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, input.ObservedAt); err != nil {
+		return DetailResultOutcome{}, err, nil
+	}
 	placement, err := getWorkPlacementWith(ctx, tx, work.WorkID)
 	if err != nil {
 		return DetailResultOutcome{}, nil, err
@@ -172,6 +175,9 @@ WHERE work_id = ? AND version = ?`,
 	changed, _ := result.RowsAffected()
 	if changed != 1 {
 		return DetailResultOutcome{}, fmt.Errorf("detail work changed during acceptance"), nil
+	}
+	if err := releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitReleased, input.ObservedAt); err != nil {
+		return DetailResultOutcome{}, nil, err
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"attempt_id": succeededAttempt.AttemptID, "work_id": completedWork.WorkID, "job_id": acceptance.Job.JobID,

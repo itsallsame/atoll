@@ -31,6 +31,7 @@
 - RepairIncident 使用 `repair_key` 唯一，使相同故障域、签名和失败版本单飞；
 - command receipt 以 `command_id` 唯一，并保存 request hash；同 ID 不同请求拒绝；
 - Artifact 以 ID 唯一、内容哈希建普通索引；相同内容可因权限、保留策略或 Work 血缘不同而有多个元数据记录。
+- BudgetPermit 每 Attempt 唯一；`budget_usage` 为 global、capability、origin、company 和可选 profile 保存活动计数。领取按稳定维度顺序锁定计数行，容量判断、计数递增、Permit 和 Attempt 同事务提交；完成、失败或过期在原事务中递减，禁止用并发不安全的 `COUNT(*)` 后插入。
 
 所有可修改聚合执行：
 
@@ -64,6 +65,8 @@ Executor 先上传外部对象，再返回不可变引用。接受事务验证 A
 ## 领取与索引
 
 每日到期领取使用 `source_occurrences(status, due_at, occurrence_id)`；Work 使用 `(status, not_before, priority, deadline_at, work_id)`，并辅以 `(capability, status, not_before)`、`(origin, status, not_before)`、`(profile_id, status, not_before)`。实现可使用 `SELECT ... FOR UPDATE SKIP LOCKED`，但对外仍表达 execution offer/accept，不暴露数据库 lease 语义。
+
+活动 Attempt 的普通无进展扫描使用 `(attempt_status, updated_at, attempt_id)`；较短 Permit 独立使用 `(permit_status, expires_at, attempt_id)` 找到期项。两条有界索引扫描在应用层去重，避免带跨表 `OR` 的全量扫描；二者都复用同一个 reconcile timer。
 
 查询分页采用稳定 seek cursor `(updated_at, id)` 或业务对应的稳定复合键，不使用大 offset。所有日常扫描必须有 `EXPLAIN` 证据；测试拒绝关键查询 `type=ALL` 且无适用 key。
 

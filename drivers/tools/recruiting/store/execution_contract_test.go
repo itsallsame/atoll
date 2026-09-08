@@ -15,6 +15,29 @@ import (
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
+func testExecutionBudgetPolicy() ExecutionBudgetPolicy {
+	policy := DefaultExecutionBudgetPolicy()
+	policy.MaxActive, policy.MaxPerCapability = 100, 100
+	policy.MaxPerOrigin, policy.MaxPerCompany, policy.MaxPerProfile = 100, 100, 100
+	return policy
+}
+
+func pauseExecutionSource(t *testing.T, ctx context.Context, repository *Repository, sourceID string, at time.Time) {
+	t.Helper()
+	source, err := repository.GetSource(ctx, sourceID)
+	if err != nil || source.ControlStatus != model.ControlActive {
+		return
+	}
+	paused, err := source.Pause(source.Version, model.PauseDrain)
+	if err != nil {
+		t.Errorf("pause fixture source %s: %v", sourceID, err)
+		return
+	}
+	if err := repository.UpdateSourceCAS(ctx, source.Version, paused, at); err != nil {
+		t.Errorf("persist paused fixture source %s: %v", sourceID, err)
+	}
+}
+
 func TestListingExecutionOfferAndLifecycleAreFenced(t *testing.T) {
 	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
 	if dsn == "" {
@@ -33,7 +56,7 @@ func TestListingExecutionOfferAndLifecycleAreFenced(t *testing.T) {
 
 	offer, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
 		AttemptID: "attempt-execution-life-1", ExecutorActorID: "executor-a", ExecutorIncarnation: "boot-a",
-		Capability: "http.fetch", Origin: "https://execution-life.example.com", OfferedAt: offerAt,
+		Capability: "http.fetch", Origin: "https://execution-life.example.com", OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -45,20 +68,20 @@ func TestListingExecutionOfferAndLifecycleAreFenced(t *testing.T) {
 	}
 	replayed, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
 		AttemptID: "attempt-execution-life-1", ExecutorActorID: "executor-a", ExecutorIncarnation: "boot-a",
-		Capability: "http.fetch", Origin: "https://execution-life.example.com", OfferedAt: offerAt,
+		Capability: "http.fetch", Origin: "https://execution-life.example.com", OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(),
 	})
 	if err != nil || !reflect.DeepEqual(replayed, offer) {
 		t.Fatalf("execution offer replay changed: %+v err=%v", replayed, err)
 	}
 	if _, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
 		AttemptID: "attempt-execution-life-1", ExecutorActorID: "executor-a", ExecutorIncarnation: "boot-a",
-		Capability: "http.fetch", OfferedAt: offerAt,
+		Capability: "http.fetch", OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(),
 	}); !errors.Is(err, ErrAttemptConflict) {
 		t.Fatalf("changed offer request replay was accepted: %v", err)
 	}
 	if _, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
 		AttemptID: "attempt-execution-life-duplicate", ExecutorActorID: "executor-b", ExecutorIncarnation: "boot-b",
-		Capability: "http.fetch", Origin: "https://execution-life.example.com", OfferedAt: offerAt,
+		Capability: "http.fetch", Origin: "https://execution-life.example.com", OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(),
 	}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second active offer claimed same work: %v", err)
 	}
@@ -88,14 +111,14 @@ func TestListingExecutionOfferAndLifecycleAreFenced(t *testing.T) {
 	}
 	replayed, err = repository.OfferListingExecution(ctx, ListingOfferRequest{
 		AttemptID: "attempt-execution-life-1", ExecutorActorID: "executor-a", ExecutorIncarnation: "boot-a",
-		Capability: "http.fetch", Origin: "https://execution-life.example.com", OfferedAt: offerAt,
+		Capability: "http.fetch", Origin: "https://execution-life.example.com", OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(),
 	})
 	if err != nil || !reflect.DeepEqual(replayed, offer) {
 		t.Fatalf("completed attempt changed persisted offer replay: %+v err=%v", replayed, err)
 	}
 	retry, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
 		AttemptID: "attempt-execution-life-2", ExecutorActorID: "executor-b", ExecutorIncarnation: "boot-b",
-		Capability: "http.fetch", Origin: "https://execution-life.example.com", OfferedAt: offerAt,
+		Capability: "http.fetch", Origin: "https://execution-life.example.com", OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(),
 	})
 	if err != nil || retry.Work.WorkID != workID || retry.Attempt.AcceptanceVersion != work.AcceptanceVersion {
 		t.Fatalf("retry offer = %+v err=%v", retry, err)
@@ -146,7 +169,7 @@ func TestConcurrentListingOffersClaimDistinctWorks(t *testing.T) {
 			result, offerErr := repository.OfferListingExecution(ctx, ListingOfferRequest{
 				AttemptID: fmt.Sprintf("attempt-execution-race-%d", worker), ExecutorActorID: fmt.Sprintf("executor-%d", worker),
 				ExecutorIncarnation: fmt.Sprintf("boot-%d", worker), Capability: "http.fetch",
-				Origin: "https://execution-race.example.com", OfferedAt: offerAt,
+				Origin: "https://execution-race.example.com", OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(),
 			})
 			results <- result
 			errorsFound <- offerErr

@@ -224,7 +224,7 @@ func startListingAttempt(t *testing.T, ctx context.Context, repository *Reposito
 	incarnation := prefix + "-boot"
 	offer, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
 		AttemptID: prefix + "-attempt", ExecutorActorID: executorID, ExecutorIncarnation: incarnation,
-		Capability: "http.fetch", Origin: "https://" + prefix + ".example.com", OfferedAt: at,
+		Capability: "http.fetch", Origin: "https://" + prefix + ".example.com", OfferedAt: at, BudgetPolicy: testExecutionBudgetPolicy(),
 	})
 	if err != nil {
 		t.Fatal(err)
