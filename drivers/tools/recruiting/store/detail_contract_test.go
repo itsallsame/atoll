@@ -109,7 +109,7 @@ func createDetailFixture(t *testing.T, ctx context.Context, repository *Reposito
 		t.Fatal(err)
 	}
 	listingAssignment, _ := model.NewSourceRecipeAssignment(source.SourceID, model.RecipeListing, listingRecipe.RecipeID, 1, listingRecipe.ContractHash, now.Format(time.RFC3339))
-	ready, _ := validating.PublishValidated(validating.Version, listingAssignment)
+	ready, _ := validating.PublishValidated(validating.Version, listingAssignment, verifiedStoreAssessment(validating, listingAssignment, now))
 	if err := repository.PublishSourceAssignment(ctx, validating.Version, 0, ready, listingAssignment, now); err != nil {
 		t.Fatal(err)
 	}

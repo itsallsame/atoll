@@ -63,7 +63,7 @@ func FuzzSourceNeverBecomesEligibleWithoutPublishedProductionFacts(f *testing.F)
 				next, transitionErr = source.BeginValidation(source.Version)
 			case 1:
 				assignment, _ := NewSourceRecipeAssignment(source.SourceID, RecipeListing, "listing-1", 1, "contract-a", "2026-09-07T00:00:00Z")
-				next, transitionErr = source.PublishValidated(source.Version, assignment)
+				next, transitionErr = source.PublishValidated(source.Version, assignment, verifiedAssessment(source, assignment))
 			case 2:
 				next, transitionErr = source.StageEndpoint(source.Version, "https://jobs.example.com/v2", "all")
 			case 3:
@@ -82,7 +82,8 @@ func FuzzSourceNeverBecomesEligibleWithoutPublishedProductionFacts(f *testing.F)
 			} else if source != current {
 				t.Fatal("failed transition mutated source")
 			}
-			if source.EligibleForDailyRun(company) && (source.ActiveEndpoint == nil || source.ListingAssignment == nil || source.ReadinessStatus != SourceReady || source.ControlStatus != ControlActive) {
+			if source.EligibleForDailyRun(company) && (source.ActiveEndpoint == nil || source.ListingAssignment == nil || source.ContractAssessment == nil ||
+				source.ReadinessStatus != SourceReady || source.ControlStatus != ControlActive) {
 				t.Fatalf("source became eligible without production facts: %+v", source)
 			}
 			if source.ControlStatus == ControlArchived && source.EligibleForDailyRun(company) {

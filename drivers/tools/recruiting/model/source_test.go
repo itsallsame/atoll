@@ -2,6 +2,20 @@ package model
 
 import "testing"
 
+func verifiedAssessment(source RecruitmentSource, assignment SourceRecipeAssignment) SourceContractAssessment {
+	revision := uint64(0)
+	if source.CandidateEndpoint != nil {
+		revision = source.CandidateEndpoint.Revision
+	}
+	return SourceContractAssessment{
+		SourceID: source.SourceID, EndpointRevision: revision, RecipeID: assignment.RecipeID,
+		RecipeVersion: assignment.RecipeVersion, ContractHash: assignment.ContractHash,
+		Identity: ContractVerified, Pagination: ContractVerified, Ordering: ContractVerified, UpdateRetop: ContractVerified,
+		EvidenceArtifactIDs: []string{"artifact-calibration-a", "artifact-calibration-b"},
+		AssessedAt:          "2026-09-07T00:00:00Z", Version: 1,
+	}
+}
+
 func validatedSource(t *testing.T) (Company, RecruitmentSource) {
 	t.Helper()
 	company := readyCompany(t)
@@ -17,7 +31,7 @@ func validatedSource(t *testing.T) (Company, RecruitmentSource) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err = source.PublishValidated(source.Version, assignment)
+	source, err = source.PublishValidated(source.Version, assignment, verifiedAssessment(source, assignment))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,12 +79,50 @@ func TestSourcePublishesCandidateAtomicallyAndKeepsOldEndpointDuringRepair(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	published, err := validating.PublishValidated(validating.Version, assignment)
+	published, err := validating.PublishValidated(validating.Version, assignment, verifiedAssessment(validating, assignment))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if published.ActiveEndpoint.URL != "https://jobs.example.com/v2" || published.CandidateEndpoint != nil {
 		t.Fatalf("candidate was not atomically published: %+v", published)
+	}
+}
+
+func TestSourceCannotPublishAnUnverifiedIncrementalContract(t *testing.T) {
+	source, _ := NewRecruitmentSource("source-1", "company-1", "https://jobs.example.com", "all", 1)
+	source, _ = source.BeginValidation(source.Version)
+	assignment, _ := NewSourceRecipeAssignment(source.SourceID, RecipeListing, "recipe-1", 1, "contract-a", "2026-09-07T00:00:00Z")
+	assessment := verifiedAssessment(source, assignment)
+	assessment.UpdateRetop = ContractUnverified
+	if _, err := source.PublishValidated(source.Version, assignment, assessment); err == nil {
+		t.Fatal("source published without verified update-retop evidence")
+	}
+	assessment.UpdateRetop = ContractVerified
+	assessment.Ordering = ContractViolated
+	if _, err := source.PublishValidated(source.Version, assignment, assessment); err == nil {
+		t.Fatal("source published despite an ordering-contract violation")
+	}
+}
+
+func TestDailyEligibilityRequiresAssessmentToMatchCurrentFacts(t *testing.T) {
+	company, source := validatedSource(t)
+	for name, mutate := range map[string]func(*RecruitmentSource){
+		"endpoint": func(s *RecruitmentSource) { s.ActiveEndpoint.Revision++ },
+		"recipe":   func(s *RecruitmentSource) { s.ListingAssignment.RecipeVersion++ },
+		"contract": func(s *RecruitmentSource) { s.ListingAssignment.ContractHash = "contract-b" },
+		"missing":  func(s *RecruitmentSource) { s.ContractAssessment = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := source
+			endpoint := *source.ActiveEndpoint
+			assignment := *source.ListingAssignment
+			assessment := *source.ContractAssessment
+			changed.ActiveEndpoint, changed.ListingAssignment, changed.ContractAssessment = &endpoint, &assignment, &assessment
+			mutate(&changed)
+			if changed.EligibleForDailyRun(company) {
+				t.Fatal("stale or missing assessment remained daily eligible")
+			}
+		})
 	}
 }
 
@@ -125,6 +177,23 @@ func TestRecipeAssignmentHasIndependentCAS(t *testing.T) {
 	replaced, err := assignment.Replace(assignment.AssignmentVersion, "recipe-2", 3, "contract-a", "2026-09-08T00:00:00Z")
 	if err != nil || replaced.AssignmentVersion != 2 || replaced.RecipeVersion != 3 {
 		t.Fatalf("assignment replacement = %+v %v", replaced, err)
+	}
+}
+
+func TestListingRecipeChangeForcesSourceRecalibration(t *testing.T) {
+	_, source := validatedSource(t)
+	current := *source.ListingAssignment
+	replacement, err := current.Replace(current.AssignmentVersion, "recipe-2", current.RecipeVersion+1,
+		current.ContractHash, "2026-09-08T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := source.AssignRecipe(source.Version, replacement, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.ReadinessStatus != SourceRepairing || changed.ContractAssessment != nil || changed.CandidateEndpoint == nil {
+		t.Fatalf("listing implementation changed without explicit recalibration state: %+v", changed)
 	}
 }
 

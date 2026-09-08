@@ -115,6 +115,9 @@ func (r *Repository) PublishSourceAssignment(ctx context.Context, expectedSource
 	if selected == nil || *selected != assignment {
 		return fmt.Errorf("source projection does not contain assignment")
 	}
+	if assignment.Kind == model.RecipeListing && source.ReadinessStatus == model.SourceReady && !source.HasVerifiedIncrementalContract() {
+		return fmt.Errorf("ready listing assignment requires a matching verified source contract assessment")
+	}
 	recipe, err := r.GetRecipe(ctx, assignment.RecipeID, assignment.RecipeVersion)
 	if err != nil {
 		return err

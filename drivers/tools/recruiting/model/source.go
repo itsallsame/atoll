@@ -25,19 +25,20 @@ type SourceEndpoint struct {
 }
 
 type RecruitmentSource struct {
-	SourceID            string                  `json:"source_id"`
-	CompanyID           string                  `json:"company_id"`
-	DiscoveryGeneration uint64                  `json:"discovery_generation"`
-	ReadinessStatus     SourceReadinessStatus   `json:"readiness_status"`
-	ControlStatus       ControlStatus           `json:"control_status"`
-	HealthStatus        HealthStatus            `json:"health_status"`
-	LastPauseMode       PauseMode               `json:"last_pause_mode,omitempty"`
-	CandidateEndpoint   *SourceEndpoint         `json:"candidate_endpoint,omitempty"`
-	ActiveEndpoint      *SourceEndpoint         `json:"active_endpoint,omitempty"`
-	ListingAssignment   *SourceRecipeAssignment `json:"listing_assignment,omitempty"`
-	DetailAssignment    *SourceRecipeAssignment `json:"detail_assignment,omitempty"`
-	DiscoveryAssignment *SourceRecipeAssignment `json:"discovery_assignment,omitempty"`
-	Version             uint64                  `json:"version"`
+	SourceID            string                    `json:"source_id"`
+	CompanyID           string                    `json:"company_id"`
+	DiscoveryGeneration uint64                    `json:"discovery_generation"`
+	ReadinessStatus     SourceReadinessStatus     `json:"readiness_status"`
+	ControlStatus       ControlStatus             `json:"control_status"`
+	HealthStatus        HealthStatus              `json:"health_status"`
+	LastPauseMode       PauseMode                 `json:"last_pause_mode,omitempty"`
+	CandidateEndpoint   *SourceEndpoint           `json:"candidate_endpoint,omitempty"`
+	ActiveEndpoint      *SourceEndpoint           `json:"active_endpoint,omitempty"`
+	ListingAssignment   *SourceRecipeAssignment   `json:"listing_assignment,omitempty"`
+	DetailAssignment    *SourceRecipeAssignment   `json:"detail_assignment,omitempty"`
+	DiscoveryAssignment *SourceRecipeAssignment   `json:"discovery_assignment,omitempty"`
+	ContractAssessment  *SourceContractAssessment `json:"contract_assessment,omitempty"`
+	Version             uint64                    `json:"version"`
 }
 
 type SourceRecipeAssignment struct {
@@ -87,8 +88,9 @@ func (s RecruitmentSource) AssignRecipe(expected uint64, assignment SourceRecipe
 	if err := requireVersion(expected, s.Version); err != nil {
 		return RecruitmentSource{}, err
 	}
-	if s.ReadinessStatus != SourceReady || assignment.SourceID != s.SourceID || assignment.AssignmentVersion == 0 {
-		return RecruitmentSource{}, fmt.Errorf("ready source and matching complete assignment are required")
+	if (s.ReadinessStatus != SourceReady && s.ReadinessStatus != SourceRepairing) ||
+		assignment.SourceID != s.SourceID || assignment.AssignmentVersion == 0 {
+		return RecruitmentSource{}, fmt.Errorf("ready/repairing source and matching complete assignment are required")
 	}
 	copyOf := assignment
 	switch assignment.Kind {
@@ -96,7 +98,21 @@ func (s RecruitmentSource) AssignRecipe(expected uint64, assignment SourceRecipe
 		if s.ListingAssignment != nil && s.ListingAssignment.ContractHash != assignment.ContractHash && !checkpointCompatible {
 			return RecruitmentSource{}, fmt.Errorf("listing contract change requires checkpoint compatibility proof or recalibration")
 		}
+		changed := s.ListingAssignment == nil || s.ListingAssignment.RecipeID != assignment.RecipeID ||
+			s.ListingAssignment.RecipeVersion != assignment.RecipeVersion ||
+			s.ListingAssignment.ContractHash != assignment.ContractHash
 		s.ListingAssignment = &copyOf
+		if changed {
+			// Recipe validation proves implementation behavior; source
+			// calibration proves endpoint behavior. Any changed listing
+			// implementation must be calibrated again before daily scheduling.
+			s.ContractAssessment = nil
+			if s.ActiveEndpoint != nil {
+				candidate := *s.ActiveEndpoint
+				s.CandidateEndpoint = &candidate
+			}
+			s.ReadinessStatus = SourceRepairing
+		}
 	case RecipeDetail:
 		s.DetailAssignment = &copyOf
 	case RecipeDiscovery:
@@ -146,7 +162,7 @@ func (s RecruitmentSource) BeginValidation(expected uint64) (RecruitmentSource, 
 	}
 }
 
-func (s RecruitmentSource) PublishValidated(expected uint64, assignment SourceRecipeAssignment) (RecruitmentSource, error) {
+func (s RecruitmentSource) PublishValidated(expected uint64, assignment SourceRecipeAssignment, assessment SourceContractAssessment) (RecruitmentSource, error) {
 	if err := requireVersion(expected, s.Version); err != nil {
 		return RecruitmentSource{}, err
 	}
@@ -157,10 +173,21 @@ func (s RecruitmentSource) PublishValidated(expected uint64, assignment SourceRe
 		strings.TrimSpace(assignment.RecipeID) == "" || assignment.RecipeVersion == 0 || strings.TrimSpace(assignment.ContractHash) == "" || assignment.AssignmentVersion == 0 {
 		return RecruitmentSource{}, fmt.Errorf("candidate endpoint and complete listing assignment are required")
 	}
+	if err := assessment.Validate(); err != nil {
+		return RecruitmentSource{}, err
+	}
+	if !assessment.matches(s, assignment) {
+		return RecruitmentSource{}, fmt.Errorf("contract assessment does not match candidate endpoint and listing assignment")
+	}
+	if !assessment.ProductionIncrementalEligible() {
+		return RecruitmentSource{}, fmt.Errorf("source contract is not verified for production incremental collection")
+	}
 	endpoint := *s.CandidateEndpoint
 	s.ActiveEndpoint = &endpoint
 	s.CandidateEndpoint = nil
 	s.ListingAssignment = &assignment
+	assessmentCopy := assessment
+	s.ContractAssessment = &assessmentCopy
 	s.ReadinessStatus = SourceReady
 	s.HealthStatus = HealthHealthy
 	s.Version++
@@ -305,5 +332,15 @@ func (s RecruitmentSource) Restore(expected uint64) (RecruitmentSource, error) {
 func (s RecruitmentSource) EligibleForDailyRun(company Company) bool {
 	return company.CompanyID == s.CompanyID && company.EligibleForDailyRun() &&
 		s.ControlStatus == ControlActive && s.ReadinessStatus == SourceReady &&
-		s.HealthStatus != HealthCircuitOpen && s.ActiveEndpoint != nil && s.ListingAssignment != nil
+		s.HealthStatus != HealthCircuitOpen && s.HasVerifiedIncrementalContract()
+}
+
+func (s RecruitmentSource) HasVerifiedIncrementalContract() bool {
+	return s.ActiveEndpoint != nil && s.ListingAssignment != nil && s.ContractAssessment != nil &&
+		s.ContractAssessment.ProductionIncrementalEligible() &&
+		s.ContractAssessment.SourceID == s.SourceID &&
+		s.ContractAssessment.EndpointRevision == s.ActiveEndpoint.Revision &&
+		s.ContractAssessment.RecipeID == s.ListingAssignment.RecipeID &&
+		s.ContractAssessment.RecipeVersion == s.ListingAssignment.RecipeVersion &&
+		s.ContractAssessment.ContractHash == s.ListingAssignment.ContractHash
 }

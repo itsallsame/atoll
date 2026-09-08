@@ -11,6 +11,17 @@ import (
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
+func verifiedStoreAssessment(source model.RecruitmentSource, assignment model.SourceRecipeAssignment, assessedAt time.Time) model.SourceContractAssessment {
+	return model.SourceContractAssessment{
+		SourceID: source.SourceID, EndpointRevision: source.CandidateEndpoint.Revision,
+		RecipeID: assignment.RecipeID, RecipeVersion: assignment.RecipeVersion, ContractHash: assignment.ContractHash,
+		Identity: model.ContractVerified, Pagination: model.ContractVerified,
+		Ordering: model.ContractVerified, UpdateRetop: model.ContractVerified,
+		EvidenceArtifactIDs: []string{"artifact-calibration-a", "artifact-calibration-b"},
+		AssessedAt:          assessedAt.UTC().Format(time.RFC3339), Version: 1,
+	}
+}
+
 func TestSourceEndpointAndAssignmentPublishAtomically(t *testing.T) {
 	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
 	if dsn == "" {
@@ -45,7 +56,12 @@ func TestSourceEndpointAndAssignmentPublishAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	listingAssignment, _ := model.NewSourceRecipeAssignment(source.SourceID, model.RecipeListing, listingRecipe.RecipeID, listingRecipe.Version, listingRecipe.ContractHash, now.Format(time.RFC3339))
-	ready, _ := validating.PublishValidated(validating.Version, listingAssignment)
+	ready, _ := validating.PublishValidated(validating.Version, listingAssignment, verifiedStoreAssessment(validating, listingAssignment, now))
+	forgedReady := ready
+	forgedReady.ContractAssessment = nil
+	if err := repository.PublishSourceAssignment(ctx, validating.Version, 0, forgedReady, listingAssignment, now); err == nil {
+		t.Fatal("repository accepted a forged ready source without contract evidence")
+	}
 	if err := repository.PublishSourceAssignment(ctx, validating.Version, 0, ready, listingAssignment, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}

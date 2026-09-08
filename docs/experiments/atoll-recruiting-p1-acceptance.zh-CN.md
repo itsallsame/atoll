@@ -13,6 +13,8 @@
 - Company 接入状态与 control 状态独立，支持带版本的暂停、恢复、归档和受控恢复；
 - Company 与 Source 是一对多，Source 具有 candidate/active Endpoint、独立 readiness/control/health 以及版本化 Recipe Assignment；
 - Listing Assignment 变更契约时必须提供 Checkpoint 兼容证明，否则拒绝复用旧边界；
+- Recipe 中的排序/update-retop 声明只是假设，不再等同于事实。Source 发布必须携带绑定 Source、candidate Endpoint revision、Recipe/version 和 contract hash 的四维校准证据；identity、pagination、ordering、update-retop 全部为 `verified` 才能成为每日增量候选；
+- 校准结论固定为 `verified|unverified|violated`，必须带版本、时间和有界且唯一的 Artifact ID；Recipe 实现或 Endpoint revision 改变后旧证据失配，Listing Recipe 替换会自动进入 repairing 并清除旧校准；
 - Recipe、Profile、Work、Attempt、Checkpoint、SourceOccurrence、DailyRun、BudgetPermit 和 RepairIncident 均有显式状态转换与 CAS/fencing；
 - Attempt 接受结果同时核对 Work acceptance version、Executor incarnation、Company、Source、Assignment、Recipe、Checkpoint、Job refresh generation 和 Profile 版本；
 - ListingObservation 与 JobDetailVersion 保留 Recipe/Artifact 血缘，人工 Override 不覆盖底层证据；
@@ -46,9 +48,9 @@ drivers/tools/recruiting/model/testdata/fuzz/FuzzCanonicalHTTPURLIdempotent/8a33
 ## 退出门结论
 
 - Company onboarding/control、Source readiness/control、Recipe、Profile、Work/Attempt、Checkpoint、DailyRun/Occurrence 和 RepairIncident 的合法/非法主状态组合均有矩阵测试；
-- fuzz 合法事件序列证明终态 Work 单调、Source 不会在缺少生产 Endpoint/Assignment 或归档状态下进入每日运行；
+- fuzz 合法事件序列证明终态 Work 单调、Source 不会在缺少生产 Endpoint/Assignment/匹配的四维校准证据或归档状态下进入每日运行；
 - Attempt 对 Executor incarnation 以及 Company、Source、Assignment、Recipe、Checkpoint、refresh generation、Profile 的每一项变化均逐项拒绝；
-- Source 结构最多持有一个当前 Listing/Detail/Discovery Assignment 和一个 active Endpoint，发布与替换受 CAS 及契约兼容证明约束；
+- Source 结构最多持有一个当前 Listing/Detail/Discovery Assignment、一个 active Endpoint 和一个与当前 Listing 事实精确绑定的校准；领域层与 Repository 层都拒绝伪造的 ready Source；
 - BaselineGeneration 明确区分 listing、details_pending、completed 和 completed_with_exceptions，列表 finalize 与详情逐步核算使用独立版本转换；
 - 模型无网络、数据库和墙钟读取，业务时间均由调用方显式注入；
 - 全部相关回归、构建和核心冻结检查通过。
