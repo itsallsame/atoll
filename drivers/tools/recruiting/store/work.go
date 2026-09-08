@@ -180,27 +180,44 @@ LIMIT ?`, query.Capability, query.DueAt.UTC(), query.DueAt.UTC(),
 }
 
 func (r *Repository) CreateAttempt(ctx context.Context, attempt model.Attempt, businessAt time.Time) error {
+	return insertAttempt(ctx, r.db, attempt, nil, businessAt)
+}
+
+func insertAttempt(ctx context.Context, executor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, attempt model.Attempt, executionOffer json.RawMessage, businessAt time.Time) error {
 	if attempt.AttemptID == "" || attempt.WorkID == "" || attempt.Status != model.AttemptOffered {
 		return fmt.Errorf("new attempt must be offered and identified")
 	}
 	state, _ := json.Marshal(attempt)
-	_, err := r.db.ExecContext(ctx, `
+	_, err := executor.ExecContext(ctx, `
 INSERT INTO recruiting_attempts(
   attempt_id, work_id, attempt_status, executor_actor_id, executor_incarnation,
   capability, acceptance_version, company_version, source_version, assignment_version,
   recipe_id, recipe_version, checkpoint_version, refresh_generation, profile_id,
-  profile_version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  profile_version, state_json, execution_offer_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		attempt.AttemptID, attempt.WorkID, attempt.Status, nullableString(attempt.ExecutorActorID),
 		nullableString(attempt.ExecutorIncarnation), nullableString(attempt.Capability), attempt.AcceptanceVersion,
 		nullableUint(attempt.CompanyVersion), nullableUint(attempt.SourceVersion), nullableUint(attempt.AssignmentVersion),
 		nullableString(attempt.RecipeID), nullableUint(attempt.RecipeVersion), nullableUint(attempt.CheckpointVersion),
 		nullableUint(attempt.RefreshGeneration), nullableString(attempt.ProfileID), nullableUint(attempt.ProfileVersion),
-		state, businessAt.UTC(), businessAt.UTC())
-	if err != nil {
-		return fmt.Errorf("create attempt: %w", err)
+		state, nullableJSON(executionOffer), businessAt.UTC(), businessAt.UTC())
+	if err == nil {
+		return nil
 	}
-	return nil
+	var mysqlError *mysql.MySQLError
+	if errors.As(err, &mysqlError) && mysqlError.Number == 1062 {
+		return fmt.Errorf("%w: attempt ID or active work", ErrAttemptConflict)
+	}
+	return fmt.Errorf("create attempt: %w", err)
+}
+
+func nullableJSON(value json.RawMessage) any {
+	if len(value) == 0 {
+		return nil
+	}
+	return []byte(value)
 }
 
 func (r *Repository) GetAttempt(ctx context.Context, attemptID string) (model.Attempt, error) {

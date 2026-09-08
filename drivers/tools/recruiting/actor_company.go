@@ -260,6 +260,10 @@ func failStoreError(sys actorbase.Sys, msg actorbase.Msg, err error) {
 		code = ErrorBusinessKeyConflict
 	case errors.Is(err, store.ErrCommandConflict):
 		code = ErrorCommandConflict
+	case errors.Is(err, store.ErrAttemptConflict):
+		code = ErrorVersionConflict
+	case errors.Is(err, store.ErrResultFenced):
+		code = ErrorQualityRejected
 	default:
 		var conflict *model.VersionConflictError
 		var transition *model.InvalidTransitionError

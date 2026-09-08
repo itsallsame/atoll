@@ -17,6 +17,10 @@
 - Repository 已实现可信日切原语：在同一 Repeatable Read 事务内从 Company/Source/Listing Assignment/active Recipe 计算完整 eligible 名单，原子创建 running DailyRun、全部轻量 SourceOccurrence 和 outbox；并发同日触发只产生一份确定性名单，昂贵 Work 不在截点洪峰中创建；
 - Recruiting Actor 使用 Atoll 现有 durable one-shot timer 驱动日切，不引入进程内 cron；招聘侧只持久化当前 timer ID，只有该 ID 的 fire 可创建名单和续接下一日。时区、本地截点、窗口延迟/时长和策略版本均为严格校验的 extension config；timer payload 冻结本次 UTC 截点和窗口，延迟交付不会按当前墙钟改写所属日期；
 - Work 渐进物化同样使用 Atoll durable one-shot timer，但不固定频率轮询：Actor 查询数据库最早 planned `due_at` 后只挂一个 timer；到点以配置上限领取，仍有到期项时续挂 1ms timer，无待办时不产生空轮询。多个 Actor 依靠 occurrence 行级 `SKIP LOCKED` 协作，Work capability/origin 来自截点 Recipe 快照；
+- `recruiting.execution.offer/accept/started/failed` 已进入同一个 Recruiting Actor；Executor 必须是 Atoll envelope 中的 authenticated tool actor，稳定 Actor ID 取 envelope，incarnation 由本次执行进程声明并在后续每一步严格匹配，客户端不能替换 envelope 身份；
+- listing offer 在一个 MySQL 事务内锁定单个 runnable Work、重读 cutoff SourceOccurrence 及当前 Company/Source/Assignment/Recipe/Checkpoint/Profile 条件、创建绑定 Executor 的 Attempt；Recipe 正文仍只通过 opaque content ref 传递，完整轻量 offer（含当时 checkpoint）随 Attempt 持久化，因此 Actor/Executor 重启后相同命令可精确重放原始输入，不会读到后来推进的 checkpoint；
+- 同一 Work 的活动 Attempt 由数据库生成列唯一约束保证最多一个；领取先无锁读取最多 100 个候选 ID，再按 Work 主键逐项 `FOR UPDATE SKIP LOCKED`，避免 MySQL 对带 `ORDER BY/EXISTS` 的 range locking read 扩大锁范围。两个 Executor 的并发领取连续三轮均获得不同 Work；
+- accept 在执行权授予前重检完整领域 fence；started 在一个事务内推进 `Attempt accepted→running`、`Work open/waiting_retry→running` 和首次 `Occurrence queued→running`。错误 incarnation、暂停/变更后的 Source 或不再 active 的 Recipe 均不能启动；failed 不发布业务数据，允许在配置变化后关闭旧执行权，并把 Work 显式置为 `waiting_retry`，不在 Repository 内盲目自动循环；
 - Company 和 Source 新增/修改命令均将稳定 response receipt、聚合创建/CAS 和 outbox event intent 原子提交；新增冲突不留下 receipt；Source 创建还在同一事务锁定所属 Company，拒绝向 archived Company 添加 Source，同时不妨碍历史成功命令在父对象状态改变后重放；
 - `recruiting.system.reconcile` 每次只读取最多 500 条到期 outbox，将完整 EventIntent 作为公开业务事件写入 Atoll ledger；事件 ID 与 fingerprint 稳定，覆盖 Emit 成功但 SQL checkpoint 前崩溃的重放窗口；失败采用持久 CAS 次数、有界指数退避和 exhausted 终态；
 - Actor 在招聘侧状态中持久保存唯一 reconcile timer ID，使用 Atoll 现有 durable timer 自动运行；下一 timer 在当前 fire 被确认前完成挂载与持久化，重启窗口中的孤立 timer 因 ID 不匹配只能被确认、不能继续生长，避免重复周期链；周期可配置为 100ms 至 1h，单轮仍固定最多 100 条以保护 mailbox 公平性；
@@ -38,7 +42,9 @@ ATOLL_E2E_BIN=$PWD/bin go test -count=1 ./e2e \
   -run 'TestRecruiting(P0Journey|CompanySourceAndWorkControlUsesMySQLAcrossServerRestart)' \
   -v -timeout 240s
 make recruiting-mysql-test
-go test -race ./drivers/tools/recruiting/...
+RECRUITING_MYSQL_ITERATIONS=3 RECRUITING_MYSQL_TEST_RUN='TestListingExecutionOfferAndLifecycleAreFenced|TestConcurrentListingOffersClaimDistinctWorks' \
+  ./scripts/recruiting-mysql-test.sh
+go test -race ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/...
 ./scripts/recruiting-boundary-check.sh a94d2b8d
 ```
 
@@ -46,7 +52,7 @@ go test -race ./drivers/tools/recruiting/...
 
 - System/Capacity 查询、Work correct 和 DailyRun 修改控制词；Work resolve 的真实 `waiting_human` 旅程依赖后续 Attempt/repair 切片；Source validate 当前只进入 `validating`，验证 Attempt 的接受、契约证明和原子发布仍属于后续纵向切片；
 - 窗口末对账、DailyRun 自动闭账和 recovered 补偿仍待实现；
-- Attempt offer/accept/start/result/fail 与完整数据库 fence；
+- listing Attempt 的 result/page/checkpoint 最终接受事务及 rejected Artifact 证据链；detail Attempt 的自动 offer 输入构造；Attempt 超时/Actor incarnation 消失后的 expire/reconcile；execution accept/start/fail 的 command receipt/outbox 审计仍待完成；
 - 批量导入 preview/confirm 和逐项 outcome；
 - `recruiting_recovery_test.go` 的完整重启、重复 ledger delivery 与日报恢复路径。
 
