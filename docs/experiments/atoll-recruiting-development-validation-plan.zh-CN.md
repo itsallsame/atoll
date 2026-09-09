@@ -377,6 +377,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 连续日测试至少运行 D0 baseline、D1 无变化、D2 新岗位、D3 历史更新置顶、D4 同时间跨页、D5 边界消失、D6 修复恢复。每一日注入重复消息、Actor/Executor 退出和数据库回包丢失。
 
+执行状态：进行中。隔离非 root MySQL 8.4 合同 `TestDailyIncrementalD0ThroughD6PreservesBoundaryAndRefreshInvariants` 已建立首个连续旅程：D0 不是伪造 Checkpoint，而是实际创建并运行 baseline Work/Attempt，证明 staging 在 finalize 前不可见，随后物化 Job/Detail Work、完成全部详情成员并把 Company 推进 ready；D1 的无变化重叠只增加 Observation，不重复产生有效 Detail generation；D2 只为新岗位创建一项详情 Work；D3 对重新置顶的历史岗位保留同一 Job 并推进 refresh generation；D4 只有完整消费跨页的同活动时间组后才提交新边界。D5 在 `max_pages` 内找不到旧边界时，Driver 的质量证明先失败，页面不发布，Checkpoint、Job 和 Observation 均不改变，Work 携证据进入 `waiting_human`；D6 由用户 `terminated` 原生命周期并创建因果 Retry Work，SourceOccurrence 原子重绑，新 Executor incarnation 从第 1 页重扫并恢复同一 Checkpoint 谱系。成功日均重放 plan、page、completion，并重复运行定时物化协调；最终断言 5 个 occurrence 全部完成、Checkpoint 从 1 精确推进至 6、8 个 Job、9 个 Detail Work、25 条已接受 Observation、13 条 Attempt 级 page progress，失败 Work/重试 Work 的终态及预算归零一致。尚未完成“每一日”全部 Actor/Executor 退出和数据库回包丢失排列，也未以真实站点证明历史更新重新置顶，因此 P6 退出门仍未关闭。
+
 退出门：所有成功日只扫描必要增量和重叠，不抓取历史全集；任何故障排列均为零漏失的已接受 Observation、零陈旧 Checkpoint 覆盖、零重复有效 Detail generation。
 
 ## 12. P7：运维、修复与人工参与
