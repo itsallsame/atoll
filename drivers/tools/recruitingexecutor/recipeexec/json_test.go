@@ -61,6 +61,64 @@ func TestExecuteJSONReportsOrderingAndIdentityContractViolations(t *testing.T) {
 	}
 }
 
+func TestExecuteJSONDerivesBoundedOffsetPagination(t *testing.T) {
+	spec := listingSpec()
+	spec.Extraction.Collection = "/content"
+	spec.Extraction.Next = ""
+	spec.Extraction.Fields = map[string]string{
+		"job_key": "/id", "title": "/name", "activity_at": "/releasedDate", "detail_url": "/ref",
+	}
+	spec.Listing.ExcludePinnedField = ""
+	spec.OffsetPagination = &recipeabi.OffsetPagination{OffsetPointer: "/offset", LimitPointer: "/limit",
+		TotalPointer: "/totalFound", OffsetQuery: "offset"}
+	document := []byte(`{"offset":0,"limit":2,"totalFound":3,"content":[
+      {"id":"job-2","name":"New","releasedDate":"2026-09-09T10:00:00Z","ref":"https://jobs.example/2"},
+      {"id":"job-1","name":"Old","releasedDate":"2026-09-09T09:00:00Z","ref":"https://jobs.example/1"}]}`)
+	result, err := ExecuteJSON(spec, document)
+	if err != nil || result.OffsetPage == nil || result.OffsetPage.NextOffset != 2 || len(result.Next) == 0 {
+		t.Fatalf("offset page = %+v, %v", result, err)
+	}
+	last, err := ExecuteJSON(spec, []byte(`{"offset":2,"limit":2,"totalFound":3,"content":[
+      {"id":"job-0","name":"Last","releasedDate":"2026-09-09T08:00:00Z","ref":"https://jobs.example/0"}]}`))
+	if err != nil || last.OffsetPage == nil || len(last.Next) != 0 {
+		t.Fatalf("terminal offset page = %+v, %v", last, err)
+	}
+	for _, invalid := range [][]byte{
+		[]byte(`{"offset":0,"limit":2,"totalFound":3,"content":[]}`),
+		[]byte(`{"offset":-1,"limit":2,"totalFound":3,"content":[]}`),
+		[]byte(`{"offset":0,"limit":0,"totalFound":3,"content":[]}`),
+		[]byte(`{"offset":4,"limit":2,"totalFound":3,"content":[]}`),
+	} {
+		if _, err := ExecuteJSON(spec, invalid); err == nil {
+			t.Fatalf("invalid offset page accepted: %s", invalid)
+		}
+	}
+}
+
+func TestExecuteJSONDerivesShortPageOffsetPaginationForRootArray(t *testing.T) {
+	spec := listingSpec()
+	spec.Extraction.Collection = ""
+	spec.Extraction.CollectionRoot = true
+	spec.Extraction.Next = ""
+	spec.Extraction.Fields = map[string]string{
+		"job_key": "/id", "title": "/text", "detail_url": "/hostedUrl",
+	}
+	spec.Listing.ActivityField = ""
+	spec.Listing.BoundaryMode = "frontier_keys"
+	spec.Listing.ExcludePinnedField = ""
+	spec.OffsetPagination = &recipeabi.OffsetPagination{OffsetQuery: "skip", LimitQuery: "limit", PageSize: 2}
+	page, err := ExecuteJSON(spec, []byte(`[
+      {"id":"job-2","text":"New","hostedUrl":"https://jobs.example/2"},
+      {"id":"job-1","text":"Old","hostedUrl":"https://jobs.example/1"}]`))
+	if err != nil || page.OffsetPage == nil || !page.OffsetPage.Relative || page.OffsetPage.NextOffset != 2 || len(page.Next) == 0 {
+		t.Fatalf("short offset page = %+v, %v", page, err)
+	}
+	last, err := ExecuteJSON(spec, []byte(`[{"id":"job-0","text":"Last","hostedUrl":"https://jobs.example/0"}]`))
+	if err != nil || last.OffsetPage == nil || !last.OffsetPage.Relative || len(last.Next) != 0 {
+		t.Fatalf("terminal short offset page = %+v, %v", last, err)
+	}
+}
+
 func TestExecuteJSONAcceptsIntegerIdentityWithoutLosingPrecision(t *testing.T) {
 	document := []byte(`{"data":{"jobs":[
       {"id":80720940000000000001,"title":"Backend","url":"https://jobs.example/large","updated_at":"2026-09-08T10:00:00Z","pinned":false}

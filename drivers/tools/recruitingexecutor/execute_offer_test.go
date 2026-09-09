@@ -50,6 +50,19 @@ func (d executeDriverStub) RunListing(context.Context, recipeabi.Spec, recipeabi
 	return d.listing, d.err
 }
 
+func (d executeDriverStub) RunListingStreaming(_ context.Context, _ recipeabi.Spec, _ recipeabi.RunInput,
+	_ httpdriver.ComplianceEvidence, _ httpdriver.ArtifactSink, consume httpdriver.ListingPageConsumer) (httpdriver.ListingRunResult, error) {
+	if len(d.listing.Pages) == 0 {
+		return httpdriver.ListingRunResult{}, errors.New("unexpected streaming listing run")
+	}
+	for _, page := range d.listing.Pages {
+		if err := consume(page); err != nil {
+			return httpdriver.ListingRunResult{}, err
+		}
+	}
+	return d.listing, d.err
+}
+
 func (d executeDriverStub) RunListingValidation(context.Context, recipeabi.Spec, recipeabi.RunInput,
 	httpdriver.ComplianceEvidence, httpdriver.ArtifactSink) (httpdriver.ListingRunResult, error) {
 	if len(d.listing.Pages) == 0 {
@@ -152,6 +165,36 @@ func TestExecuteOfferSubmitsListingPagesBeforeCompletion(t *testing.T) {
 	}
 	if control.kind != "listing_completion" || spec.Kind != recipeabi.KindListing {
 		t.Fatalf("listing completion was not terminal submission")
+	}
+}
+
+func TestExecuteOfferKeepsSubmittedPageWhenLaterListingWorkFails(t *testing.T) {
+	now := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
+	offer, _, recipe := listingExecutionOffer(t, now)
+	pageRef := recipeabi.ArtifactRef{ArtifactID: "listing-page-1", ContentHash: "sha256:page-1", ObjectRef: "artifact://page-1"}
+	item := map[string]json.RawMessage{"id": json.RawMessage(`"new-job"`), "detail_url": json.RawMessage(`"/roles/new-job"`)}
+	run := httpdriver.ListingRunResult{Pages: []httpdriver.ListingPage{{
+		Sequence: 1, URL: offer.Occurrence.ListingExecution.Endpoint.URL,
+		ResumeCursor: offer.Occurrence.ListingExecution.Endpoint.URL + "?page=2", Artifact: pageRef,
+		Items: []map[string]json.RawMessage{item},
+	}}}
+	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}}, recipe: recipe}
+	control := &executeControlStub{}
+	if err := executeOffer(context.Background(), control, resources,
+		executeDriverStub{listing: run, err: errors.New("page two connection reset")}, offer, executeTestOptions(now)); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"accept", "started", "submit:listing_page", "failed"}
+	if len(control.calls) != len(want) {
+		t.Fatalf("control lifecycle = %v", control.calls)
+	}
+	for index := range want {
+		if control.calls[index] != want[index] {
+			t.Fatalf("control lifecycle = %v", control.calls)
+		}
+	}
+	if page, ok := control.submissions[0].(executioncontract.ListingPageResult); !ok || page.PageSequence != 1 || page.Terminal {
+		t.Fatalf("first page was not submitted before failure: %#v", control.submissions)
 	}
 }
 

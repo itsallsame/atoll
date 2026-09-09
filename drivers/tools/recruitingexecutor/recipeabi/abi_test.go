@@ -46,6 +46,51 @@ func TestRecipeSpecHashIsStableAndBindsContract(t *testing.T) {
 	}
 }
 
+func TestOffsetPaginationIsHashBoundAndRestrictedToJSONListings(t *testing.T) {
+	spec := validListingSpec()
+	spec.Extraction.Next = ""
+	spec.OffsetPagination = &OffsetPagination{OffsetPointer: "/offset", LimitPointer: "/limit",
+		TotalPointer: "/totalFound", OffsetQuery: "offset"}
+	if err := spec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := spec.ContentHash()
+	changed := spec
+	changedPage := *spec.OffsetPagination
+	changedPage.OffsetQuery = "page_offset"
+	changed.OffsetPagination = &changedPage
+	second, err := changed.ContentHash()
+	if err != nil || second == first {
+		t.Fatalf("offset pagination was not hash-bound: first=%s second=%s err=%v", first, second, err)
+	}
+	for name, mutate := range map[string]func(*Spec){
+		"next conflict":   func(value *Spec) { value.Extraction.Next = "/next" },
+		"unsafe query":    func(value *Spec) { value.OffsetPagination.OffsetQuery = "offset&admin=true" },
+		"missing pointer": func(value *Spec) { value.OffsetPagination.TotalPointer = "" },
+		"html transport":  func(value *Spec) { value.Transport = TransportHTTPHTML },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := spec
+			page := *spec.OffsetPagination
+			candidate.OffsetPagination = &page
+			mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("invalid offset pagination was accepted")
+			}
+		})
+	}
+	shortPage := validListingSpec()
+	shortPage.Extraction.Next = ""
+	shortPage.OffsetPagination = &OffsetPagination{OffsetQuery: "skip", LimitQuery: "limit", PageSize: 100}
+	if err := shortPage.Validate(); err != nil {
+		t.Fatalf("bounded short-page offset pagination: %v", err)
+	}
+	shortPage.OffsetPagination.PageSize = 501
+	if err := shortPage.Validate(); err == nil {
+		t.Fatal("unbounded short-page offset pagination was accepted")
+	}
+}
+
 func TestRecipeSpecRejectsWritesSecretsAndWeakIncrementalClaims(t *testing.T) {
 	for name, mutate := range map[string]func(*Spec){
 		"write method":        func(s *Spec) { s.Request.Method = "POST" },

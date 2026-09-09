@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
@@ -46,19 +47,35 @@ type ListingPage struct {
 	Items        []map[string]json.RawMessage
 }
 
+// ListingPageConsumer receives each page after its response Artifact is
+// durable and its terminal or resume cursor has been validated. Returning an
+// error stops the scan before another page is fetched.
+type ListingPageConsumer func(ListingPage) error
+
 func (d *Driver) RunListing(ctx context.Context, spec recipeabi.Spec, input recipeabi.RunInput, compliance ComplianceEvidence, sink ArtifactSink) (ListingRunResult, error) {
-	return d.runListing(ctx, spec, input, compliance, sink, true)
+	return d.runListing(ctx, spec, input, compliance, sink, true, nil)
+}
+
+// RunListingStreaming persists and exposes one bounded page at a time. The
+// caller can therefore durably acknowledge progress before the next network
+// request and safely stop an interrupted Attempt at a page boundary.
+func (d *Driver) RunListingStreaming(ctx context.Context, spec recipeabi.Spec, input recipeabi.RunInput,
+	compliance ComplianceEvidence, sink ArtifactSink, consume ListingPageConsumer) (ListingRunResult, error) {
+	if consume == nil {
+		return ListingRunResult{}, fmt.Errorf("listing page consumer is required")
+	}
+	return d.runListing(ctx, spec, input, compliance, sink, true, consume)
 }
 
 // RunListingValidation executes the same bounded, read-only listing Recipe but
 // returns contract quality as evidence instead of converting a negative proof
 // into an execution failure. Validation owns no checkpoint authority.
 func (d *Driver) RunListingValidation(ctx context.Context, spec recipeabi.Spec, input recipeabi.RunInput, compliance ComplianceEvidence, sink ArtifactSink) (ListingRunResult, error) {
-	return d.runListing(ctx, spec, input, compliance, sink, false)
+	return d.runListing(ctx, spec, input, compliance, sink, false, nil)
 }
 
 func (d *Driver) runListing(ctx context.Context, spec recipeabi.Spec, input recipeabi.RunInput, compliance ComplianceEvidence,
-	sink ArtifactSink, requireCheckpointQuality bool) (ListingRunResult, error) {
+	sink ArtifactSink, requireCheckpointQuality bool, consume ListingPageConsumer) (ListingRunResult, error) {
 	if sink == nil {
 		return ListingRunResult{}, fmt.Errorf("artifact sink is required")
 	}
@@ -127,14 +144,29 @@ func (d *Driver) runListing(ctx context.Context, spec recipeabi.Spec, input reci
 			Items: pageItems}
 		if scan.Complete() {
 			pages = append(pages, page)
+			if consume != nil {
+				if err := consume(page); err != nil {
+					return ListingRunResult{}, fmt.Errorf("consume listing page %d: %w", pageSequence, err)
+				}
+			}
 			break
 		}
-		nextURL, err := resolveNextPage(initialURL, currentURL, document.Next)
+		var nextURL *url.URL
+		if document.OffsetPage != nil {
+			nextURL, err = resolveOffsetPage(initialURL, currentURL, *spec.OffsetPagination, *document.OffsetPage)
+		} else {
+			nextURL, err = resolveNextPage(initialURL, currentURL, document.Next)
+		}
 		if err != nil {
 			return classifiedListingFailure(ctx, sink, input, artifacts, pageSequence, currentURL.String(), "contract_violated", err, scan.Quality())
 		}
 		page.ResumeCursor = nextURL.String()
 		pages = append(pages, page)
+		if consume != nil {
+			if err := consume(page); err != nil {
+				return ListingRunResult{}, fmt.Errorf("consume listing page %d: %w", pageSequence, err)
+			}
+		}
 		currentURL = nextURL
 	}
 	quality := scan.Quality()
@@ -218,4 +250,49 @@ func resolveNextPage(initial, current *url.URL, raw json.RawMessage) (*url.URL, 
 		return nil, fmt.Errorf("next page crossed origin, scheme, or contained credentials/fragment")
 	}
 	return next, nil
+}
+
+func resolveOffsetPage(initial, current *url.URL, pagination recipeabi.OffsetPagination, page recipeexec.OffsetPage) (*url.URL, error) {
+	if initial == nil || current == nil || page.NextOffset < 0 || strings.TrimSpace(pagination.OffsetQuery) == "" {
+		return nil, fmt.Errorf("offset page requires URLs, query name, and non-negative offset")
+	}
+	nextOffset := page.NextOffset
+	if page.Relative {
+		currentOffset, err := parseNonNegativeQueryInt(current, pagination.OffsetQuery)
+		if err != nil {
+			return nil, err
+		}
+		limit, err := parseNonNegativeQueryInt(current, pagination.LimitQuery)
+		if err != nil || limit != page.Limit {
+			return nil, fmt.Errorf("offset page query limit does not match configured page size")
+		}
+		nextOffset = currentOffset + page.NextOffset
+		if nextOffset < currentOffset {
+			return nil, fmt.Errorf("offset page next offset overflowed")
+		}
+	} else if raw := current.Query().Get(pagination.OffsetQuery); raw != "" {
+		currentOffset, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || currentOffset != page.CurrentOffset {
+			return nil, fmt.Errorf("offset response does not match request query")
+		}
+	}
+	next := *current
+	query := next.Query()
+	query.Set(pagination.OffsetQuery, fmt.Sprintf("%d", nextOffset))
+	next.RawQuery = query.Encode()
+	if next.User != nil || next.Fragment != "" || next.Scheme != initial.Scheme || !strings.EqualFold(next.Host, initial.Host) {
+		return nil, fmt.Errorf("offset page crossed origin, scheme, or contained credentials/fragment")
+	}
+	return &next, nil
+}
+
+func parseNonNegativeQueryInt(target *url.URL, name string) (int64, error) {
+	if target == nil || strings.TrimSpace(name) == "" {
+		return 0, fmt.Errorf("offset page query name is required")
+	}
+	value, err := strconv.ParseInt(target.Query().Get(name), 10, 64)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("offset page query %q must be a non-negative integer", name)
+	}
+	return value, nil
 }

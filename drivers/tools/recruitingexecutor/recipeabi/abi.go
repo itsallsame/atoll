@@ -143,13 +143,14 @@ func (in RunInput) Validate() error {
 }
 
 type Spec struct {
-	ABIVersion         string           `json:"abi_version"`
-	Kind               Kind             `json:"kind"`
-	RequiredCapability string           `json:"required_capability"`
-	Transport          Transport        `json:"transport"`
-	Request            ReadRequest      `json:"request"`
-	Extraction         Extraction       `json:"extraction"`
-	Listing            *ListingContract `json:"listing,omitempty"`
+	ABIVersion         string            `json:"abi_version"`
+	Kind               Kind              `json:"kind"`
+	RequiredCapability string            `json:"required_capability"`
+	Transport          Transport         `json:"transport"`
+	Request            ReadRequest       `json:"request"`
+	Extraction         Extraction        `json:"extraction"`
+	OffsetPagination   *OffsetPagination `json:"offset_pagination,omitempty"`
+	Listing            *ListingContract  `json:"listing,omitempty"`
 }
 
 type ReadRequest struct {
@@ -162,11 +163,25 @@ type ReadRequest struct {
 }
 
 type Extraction struct {
-	Collection    string            `json:"collection,omitempty"`
-	Fields        map[string]string `json:"fields"`
-	Attributes    map[string]string `json:"attributes,omitempty"`
-	Next          string            `json:"next,omitempty"`
-	NextAttribute string            `json:"next_attribute,omitempty"`
+	Collection     string            `json:"collection,omitempty"`
+	CollectionRoot bool              `json:"collection_root,omitempty"`
+	Fields         map[string]string `json:"fields"`
+	Attributes     map[string]string `json:"attributes,omitempty"`
+	Next           string            `json:"next,omitempty"`
+	NextAttribute  string            `json:"next_attribute,omitempty"`
+}
+
+// OffsetPagination describes APIs that paginate through a same-origin offset
+// query instead of embedding a next URL. Metadata mode reads offset, limit,
+// and total from the response. Short-page mode pins a page size and stops when
+// the response collection is shorter; both modes remain bounded by Listing.
+type OffsetPagination struct {
+	OffsetPointer string `json:"offset_pointer,omitempty"`
+	LimitPointer  string `json:"limit_pointer,omitempty"`
+	TotalPointer  string `json:"total_pointer,omitempty"`
+	OffsetQuery   string `json:"offset_query"`
+	LimitQuery    string `json:"limit_query,omitempty"`
+	PageSize      int    `json:"page_size,omitempty"`
 }
 
 type ListingContract struct {
@@ -242,6 +257,19 @@ func (s Spec) Validate() error {
 				return fmt.Errorf("JSON collection and next expressions must be JSON pointers")
 			}
 		}
+	} else if s.Extraction.CollectionRoot {
+		return fmt.Errorf("collection_root is only valid for JSON extraction")
+	}
+	if s.OffsetPagination != nil {
+		page := s.OffsetPagination
+		metadataMode := jsonPointer(page.OffsetPointer) && jsonPointer(page.LimitPointer) && jsonPointer(page.TotalPointer) &&
+			page.LimitQuery == "" && page.PageSize == 0
+		shortPageMode := page.OffsetPointer == "" && page.LimitPointer == "" && page.TotalPointer == "" &&
+			safeQueryName(page.LimitQuery) && page.PageSize >= 1 && page.PageSize <= 500
+		if s.Kind != KindListing || s.Transport != TransportHTTPJSON || s.Extraction.Next != "" ||
+			!safeQueryName(page.OffsetQuery) || (!metadataMode && !shortPageMode) {
+			return fmt.Errorf("offset pagination requires a JSON listing, metadata pointers or bounded short-page mode, safe query names, and no next expression")
+		}
 	}
 	if s.Transport == TransportHTTPHTML || s.Transport == TransportBrowser {
 		for field, attribute := range s.Extraction.Attributes {
@@ -263,8 +291,8 @@ func (s Spec) Validate() error {
 		if _, ok := s.Extraction.Fields[s.Listing.DetailURLField]; !ok {
 			return fmt.Errorf("listing detail_url_field must name an extracted field")
 		}
-		if s.Transport == TransportHTTPJSON && s.Extraction.Collection == "" {
-			return fmt.Errorf("JSON listing recipe requires a collection pointer")
+		if s.Transport == TransportHTTPJSON && s.Extraction.CollectionRoot == (s.Extraction.Collection != "") {
+			return fmt.Errorf("JSON listing extraction requires exactly one collection pointer or collection_root")
 		}
 		if s.Listing.ActivityField != "" {
 			if _, ok := s.Extraction.Fields[s.Listing.ActivityField]; !ok {
@@ -280,7 +308,10 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("listing contract is only valid for listing recipes")
 	}
 	if s.Kind == KindDiscovery {
-		if strings.TrimSpace(s.Extraction.Collection) == "" {
+		if s.Transport == TransportHTTPJSON && s.Extraction.CollectionRoot == (s.Extraction.Collection != "") {
+			return fmt.Errorf("JSON discovery extraction requires exactly one collection pointer or collection_root")
+		}
+		if strings.TrimSpace(s.Extraction.Collection) == "" && !s.Extraction.CollectionRoot {
 			return fmt.Errorf("discovery recipe requires a bounded candidate collection")
 		}
 		if _, ok := s.Extraction.Fields["endpoint"]; !ok {
@@ -320,6 +351,24 @@ func safeAttributeName(value string) bool {
 		return len(value) <= 64
 	}
 	return false
+}
+
+func jsonPointer(value string) bool {
+	return strings.HasPrefix(value, "/") && len(value) <= 512 && !strings.ContainsAny(value, "\r\n")
+}
+
+func safeQueryName(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for index, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || index > 0 && char >= '0' && char <= '9' || char == '_' || char == '-' || char == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (s Spec) ContentHash() (string, error) {

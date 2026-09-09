@@ -89,6 +89,110 @@ func TestRunListingPersistsEveryPageBeforeSafeCheckpoint(t *testing.T) {
 	}
 }
 
+func TestRunListingAdvancesSameOriginOffsetPagination(t *testing.T) {
+	var offsets []string
+	var stateMu sync.Mutex
+	firstConsumed := false
+	secondFetchedBeforeConsume := false
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/robots.txt" {
+			_, _ = response.Write([]byte("User-agent: *\nAllow: /\n"))
+			return
+		}
+		offset := request.URL.Query().Get("offset")
+		stateMu.Lock()
+		offsets = append(offsets, offset)
+		if offset == "2" && !firstConsumed {
+			secondFetchedBeforeConsume = true
+		}
+		stateMu.Unlock()
+		if offset == "2" {
+			_, _ = response.Write([]byte(`{"offset":2,"limit":2,"totalFound":3,"content":[
+          {"id":"job-1","name":"Old","releasedDate":"2026-09-09T08:00:00Z","ref":"/roles/job-1"}]}`))
+			return
+		}
+		_, _ = response.Write([]byte(`{"offset":0,"limit":2,"totalFound":3,"content":[
+        {"id":"job-3","name":"New","releasedDate":"2026-09-09T10:00:00Z","ref":"/roles/job-3"},
+        {"id":"job-2","name":"Middle","releasedDate":"2026-09-09T09:00:00Z","ref":"/roles/job-2"}]}`))
+	}))
+	defer server.Close()
+	spec := runnerSpec()
+	spec.Extraction.Collection = "/content"
+	spec.Extraction.Next = ""
+	spec.Extraction.Fields = map[string]string{
+		"job_key": "/id", "activity_at": "/releasedDate", "detail_url": "/ref", "title": "/name",
+	}
+	spec.OffsetPagination = &recipeabi.OffsetPagination{OffsetPointer: "/offset", LimitPointer: "/limit",
+		TotalPointer: "/totalFound", OffsetQuery: "offset"}
+	checker, _ := newRobotsTxtChecker(robotsPolicy(), true)
+	driver, _ := newDriver(testPolicy(), checker, true)
+	input := runnerInput(server.URL + "/postings?limit=2&offset=0")
+	input.Checkpoint = nil
+	sink := &memoryArtifactSink{}
+	var consumed []uint64
+	result, err := driver.RunListingStreaming(context.Background(), spec, input, compliance, sink, func(page ListingPage) error {
+		sink.mu.Lock()
+		artifactDurable := len(sink.writes) >= int(page.Sequence)
+		sink.mu.Unlock()
+		if !artifactDurable {
+			return fmt.Errorf("page %d was exposed before its artifact was durable", page.Sequence)
+		}
+		stateMu.Lock()
+		consumed = append(consumed, page.Sequence)
+		if page.Sequence == 1 {
+			firstConsumed = true
+		}
+		stateMu.Unlock()
+		return nil
+	})
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	if err != nil || result.Output.Failure != nil || len(result.Pages) != 2 || len(sink.writes) != 2 ||
+		len(offsets) != 2 || offsets[0] != "0" || offsets[1] != "2" ||
+		len(consumed) != 2 || consumed[0] != 1 || consumed[1] != 2 || secondFetchedBeforeConsume ||
+		result.Pages[0].ResumeCursor != server.URL+"/postings?limit=2&offset=2" || !result.Pages[1].Terminal {
+		t.Fatalf("offset listing result=%+v offsets=%v consumed=%v early=%v writes=%d err=%v",
+			result, offsets, consumed, secondFetchedBeforeConsume, len(sink.writes), err)
+	}
+}
+
+func TestRunListingAdvancesRootArrayUntilShortOffsetPage(t *testing.T) {
+	var skips []string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/robots.txt" {
+			_, _ = response.Write([]byte("User-agent: *\nAllow: /\n"))
+			return
+		}
+		skips = append(skips, request.URL.Query().Get("skip"))
+		if request.URL.Query().Get("skip") == "2" {
+			_, _ = response.Write([]byte(`[{"id":"job-1","text":"Last","hostedUrl":"/roles/job-1"}]`))
+			return
+		}
+		_, _ = response.Write([]byte(`[
+      {"id":"job-3","text":"New","hostedUrl":"/roles/job-3"},
+      {"id":"job-2","text":"Middle","hostedUrl":"/roles/job-2"}]`))
+	}))
+	defer server.Close()
+	spec := runnerSpec()
+	spec.Extraction.Collection = ""
+	spec.Extraction.CollectionRoot = true
+	spec.Extraction.Next = ""
+	spec.Extraction.Fields = map[string]string{"job_key": "/id", "detail_url": "/hostedUrl", "title": "/text"}
+	spec.Listing.ActivityField = ""
+	spec.Listing.BoundaryMode = "frontier_keys"
+	spec.Listing.ExcludePinnedField = ""
+	spec.OffsetPagination = &recipeabi.OffsetPagination{OffsetQuery: "skip", LimitQuery: "limit", PageSize: 2}
+	checker, _ := newRobotsTxtChecker(robotsPolicy(), true)
+	driver, _ := newDriver(testPolicy(), checker, true)
+	input := runnerInput(server.URL + "/postings?limit=2&skip=0")
+	input.Checkpoint = nil
+	result, err := driver.RunListing(context.Background(), spec, input, compliance, &memoryArtifactSink{})
+	if err != nil || result.Output.Failure != nil || len(result.Pages) != 2 ||
+		len(skips) != 2 || skips[0] != "0" || skips[1] != "2" || !result.Pages[1].Terminal {
+		t.Fatalf("short-page offset result=%+v skips=%v err=%v", result, skips, err)
+	}
+}
+
 func TestRunListingReturnsEvidenceForParseAndPaginationFailures(t *testing.T) {
 	for name, payload := range map[string]string{
 		"parse":      `{"jobs":[`,

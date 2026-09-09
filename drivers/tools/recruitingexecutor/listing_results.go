@@ -67,11 +67,7 @@ func prepareDiagnosticSubmission(ctx context.Context, offer executioncontract.Of
 
 func prepareListingSubmissions(ctx context.Context, offer executioncontract.Offer, spec recipeabi.Spec,
 	run httpdriver.ListingRunResult, sink *atollArtifactSink) (listingSubmissions, error) {
-	standaloneProduction := offer.ListingRun != nil && offer.ListingRun.Mode == model.ListingRunProduction
-	baseline := offer.Baseline != nil
-	if ctx == nil || sink == nil || offer.Kind != "listing" || (offer.Occurrence == nil && !standaloneProduction && !baseline) ||
-		(offer.Occurrence != nil && (offer.ListingRun != nil || offer.Baseline != nil)) ||
-		(offer.ListingRun != nil && offer.Baseline != nil) || spec.Kind != recipeabi.KindListing ||
+	if ctx == nil || sink == nil || !validProductionListingOffer(offer, spec) ||
 		run.Output.Failure != nil || run.CheckpointCandidate == nil || run.Output.AttemptID != offer.Attempt.AttemptID || len(run.Pages) == 0 {
 		return listingSubmissions{}, errors.New("successful listing offer, recipe, run, and artifact sink are required")
 	}
@@ -84,43 +80,81 @@ func prepareListingSubmissions(ctx context.Context, offer executioncontract.Offe
 	for index, page := range run.Pages {
 		sequence := uint64(index + 1)
 		if page.Sequence != sequence || page.Artifact != run.Output.Artifacts[index] || page.Terminal != (index == len(run.Pages)-1) ||
-			(page.Terminal && page.ResumeCursor != "") || (!page.Terminal && strings.TrimSpace(page.ResumeCursor) == "") || len(page.Items) > 500 {
+			(page.Terminal && page.ResumeCursor != "") || (!page.Terminal && strings.TrimSpace(page.ResumeCursor) == "") {
 			return listingSubmissions{}, fmt.Errorf("listing page %d sequence, artifact, terminal, cursor, or size is inconsistent", sequence)
 		}
-		metadata, err := sink.metadata(page.Artifact, model.ArtifactPage)
+		submission, err := prepareListingPageSubmission(offer, spec, page, sink)
 		if err != nil {
 			return listingSubmissions{}, err
 		}
-		observations := make([]model.ListingObservation, 0, len(page.Items))
-		for itemIndex, item := range page.Items {
-			observation, err := listingObservation(offer, spec, page, metadata.ArtifactID, item, itemIndex)
-			if err != nil {
-				return listingSubmissions{}, fmt.Errorf("listing page %d item %d: %w", sequence, itemIndex, err)
-			}
-			observations = append(observations, observation)
-		}
-		totalItems += len(observations)
-		submissions.Pages = append(submissions.Pages, executioncontract.ListingPageResult{
-			CommandID: "listing-page-" + offer.Attempt.AttemptID + "-" + strconv.FormatUint(sequence, 10), ResultKind: "listing_page",
-			AttemptID: offer.Attempt.AttemptID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation,
-			PageSequence: sequence, ResumeCursor: page.ResumeCursor, Terminal: page.Terminal, Artifact: metadata, Observations: observations,
-		})
+		totalItems += len(submission.Observations)
+		submissions.Pages = append(submissions.Pages, submission)
 	}
-	if totalItems != run.Output.Quality.ItemCount {
-		return listingSubmissions{}, fmt.Errorf("listing run quality count %d does not match %d unique page observations", run.Output.Quality.ItemCount, totalItems)
-	}
-	deltaRef, err := sink.Put(ctx, httpdriver.ArtifactWrite{Kind: "listing_delta", AttemptID: offer.Attempt.AttemptID,
-		PageSequence: len(run.Pages) + 1, URL: listingOfferEndpoint(offer),
-		ContentType: "application/json", Body: run.Output.Result})
-	if err != nil {
-		return listingSubmissions{}, fmt.Errorf("save listing delta artifact: %w", err)
-	}
-	deltaMetadata, err := sink.metadata(deltaRef, model.ArtifactListingDelta)
+	completion, err := prepareListingCompletion(ctx, offer, spec, run, sink, len(run.Pages), totalItems)
 	if err != nil {
 		return listingSubmissions{}, err
 	}
+	submissions.Completion = completion
+	return submissions, nil
+}
+
+func validProductionListingOffer(offer executioncontract.Offer, spec recipeabi.Spec) bool {
+	standaloneProduction := offer.ListingRun != nil && offer.ListingRun.Mode == model.ListingRunProduction
+	baseline := offer.Baseline != nil
+	return offer.Kind == "listing" && (offer.Occurrence != nil || standaloneProduction || baseline) &&
+		!(offer.Occurrence != nil && (offer.ListingRun != nil || offer.Baseline != nil)) &&
+		!(offer.ListingRun != nil && offer.Baseline != nil) && spec.Kind == recipeabi.KindListing
+}
+
+func prepareListingPageSubmission(offer executioncontract.Offer, spec recipeabi.Spec, page httpdriver.ListingPage,
+	sink *atollArtifactSink) (executioncontract.ListingPageResult, error) {
+	if sink == nil || !validProductionListingOffer(offer, spec) || page.Sequence == 0 || len(page.Items) > 500 ||
+		(page.Terminal && page.ResumeCursor != "") || (!page.Terminal && strings.TrimSpace(page.ResumeCursor) == "") {
+		return executioncontract.ListingPageResult{}, errors.New("valid bounded production listing page and artifact sink are required")
+	}
+	metadata, err := sink.metadata(page.Artifact, model.ArtifactPage)
+	if err != nil {
+		return executioncontract.ListingPageResult{}, err
+	}
+	observations := make([]model.ListingObservation, 0, len(page.Items))
+	for itemIndex, item := range page.Items {
+		observation, err := listingObservation(offer, spec, page, metadata.ArtifactID, item, itemIndex)
+		if err != nil {
+			return executioncontract.ListingPageResult{}, fmt.Errorf("listing page %d item %d: %w", page.Sequence, itemIndex, err)
+		}
+		observations = append(observations, observation)
+	}
+	return executioncontract.ListingPageResult{
+		CommandID: "listing-page-" + offer.Attempt.AttemptID + "-" + strconv.FormatUint(page.Sequence, 10), ResultKind: "listing_page",
+		AttemptID: offer.Attempt.AttemptID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation,
+		PageSequence: page.Sequence, ResumeCursor: page.ResumeCursor, Terminal: page.Terminal, Artifact: metadata, Observations: observations,
+	}, nil
+}
+
+func prepareListingCompletion(ctx context.Context, offer executioncontract.Offer, spec recipeabi.Spec,
+	run httpdriver.ListingRunResult, sink *atollArtifactSink, pageCount, totalItems int) (executioncontract.ListingCompletionResult, error) {
+	if ctx == nil || sink == nil || !validProductionListingOffer(offer, spec) || pageCount <= 0 || totalItems < 0 ||
+		run.Output.Failure != nil || run.CheckpointCandidate == nil || run.Output.AttemptID != offer.Attempt.AttemptID ||
+		len(run.Pages) != pageCount || len(run.Output.Artifacts) != pageCount || run.Output.Quality.ItemCount != totalItems {
+		return executioncontract.ListingCompletionResult{}, errors.New("listing completion is inconsistent with submitted pages")
+	}
+	for index, page := range run.Pages {
+		if page.Sequence != uint64(index+1) || page.Artifact != run.Output.Artifacts[index] || page.Terminal != (index == pageCount-1) {
+			return executioncontract.ListingCompletionResult{}, errors.New("listing completion page sequence, artifact, or terminal boundary is inconsistent")
+		}
+	}
+	deltaRef, err := sink.Put(ctx, httpdriver.ArtifactWrite{Kind: "listing_delta", AttemptID: offer.Attempt.AttemptID,
+		PageSequence: pageCount + 1, URL: listingOfferEndpoint(offer),
+		ContentType: "application/json", Body: run.Output.Result})
+	if err != nil {
+		return executioncontract.ListingCompletionResult{}, fmt.Errorf("save listing delta artifact: %w", err)
+	}
+	deltaMetadata, err := sink.metadata(deltaRef, model.ArtifactListingDelta)
+	if err != nil {
+		return executioncontract.ListingCompletionResult{}, err
+	}
 	quality := run.Output.Quality
-	submissions.Completion = executioncontract.ListingCompletionResult{
+	return executioncontract.ListingCompletionResult{
 		CommandID: "listing-completion-" + offer.Attempt.AttemptID, ResultKind: "listing_completion",
 		AttemptID: offer.Attempt.AttemptID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Artifact: deltaMetadata,
 		Quality: executioncontract.ListingQuality{IdentityComplete: quality.IdentityComplete, OrderingContractHeld: quality.OrderingContractHeld,
@@ -128,8 +162,7 @@ func prepareListingSubmissions(ctx context.Context, offer executioncontract.Offe
 			OverlapCompleted: quality.OverlapCompleted, ItemCount: quality.ItemCount},
 		Checkpoint: executioncontract.ListingCheckpointCandidate{FrontierActivityAt: run.CheckpointCandidate.LastActivityAt,
 			FrontierJobKeys: append([]string(nil), run.CheckpointCandidate.FrontierKeys...)},
-	}
-	return submissions, nil
+	}, nil
 }
 
 func (s *atollArtifactSink) metadata(ref recipeabi.ArtifactRef, kind model.ArtifactKind) (model.ArtifactMetadata, error) {
