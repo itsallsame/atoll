@@ -213,32 +213,43 @@ func TestSourceDiscoveryCreateCommandIsAtomicAndReplayable(t *testing.T) {
 		t.Fatal(err)
 	}
 	work, _ := model.NewWork("discovery-command-work", "company", company.CompanyID, "source_discovery", "human")
-	discovery, _ := model.NewSourceDiscovery("discovery-command", work.WorkID, company, 1, company.Website, recipe)
+	discoveringCompany, _ := company.StartDiscovery(company.Version)
+	discovery, _ := model.NewSourceDiscovery("discovery-command", work.WorkID, discoveringCompany, 1, company.Website, recipe)
 	placement := WorkPlacement{BusinessKey: "source-discovery|discovery-command-company|1", Priority: 10,
 		Capability: recipe.Execution.RequiredCapability, Origin: "https://source-discovery-command.example.com", NotBefore: now}
 	receipt, _ := model.NewCommandReceipt("discovery-command-create", "recruiting.source.discover", "sha256:request", []byte(`{"discovery_id":"discovery-command"}`))
 	event, _ := model.NewEventIntent("event-discovery-command", "source.discovery.created", "source_discovery",
 		discovery.DiscoveryID, discovery.Version, now.Format(time.RFC3339Nano), receipt.CommandID, []byte(`{"requested_by":"human:operator:1"}`))
+	companyEvent, _ := model.NewEventIntent("event-discovery-company-command", "company.discovery.started", "company",
+		discoveringCompany.CompanyID, discoveringCompany.Version, now.Format(time.RFC3339Nano), receipt.CommandID,
+		[]byte(`{"requested_by":"human:operator:1"}`))
 	dispatch, _ := NewExecutionDispatchIntent("dispatch-discovery-command", "tool:recruiting-executor", placement.Capability,
 		placement.Origin, "", "source_discovery_created", receipt.CommandID, now)
-	first, err := repository.ApplyCreateSourceDiscoveryCommand(ctx, discovery, work, placement, receipt, event, &dispatch, now)
+	first, err := repository.ApplyCreateSourceDiscoveryCommand(ctx, company.Version, discoveringCompany, discovery, work,
+		placement, receipt, event, &companyEvent, &dispatch, now)
 	if err != nil || first.Replayed {
 		t.Fatalf("first source discovery command = %+v, %v", first, err)
 	}
-	replay, err := repository.ApplyCreateSourceDiscoveryCommand(ctx, discovery, work, placement, receipt, event, &dispatch, now)
+	replay, err := repository.ApplyCreateSourceDiscoveryCommand(ctx, company.Version, discoveringCompany, discovery, work,
+		placement, receipt, event, &companyEvent, &dispatch, now)
 	if err != nil || !replay.Replayed || string(replay.Response) != string(first.Response) {
 		t.Fatalf("source discovery command replay = %+v, %v", replay, err)
 	}
-	var works, discoveries, receipts, events, dispatches int
+	var works, discoveries, receipts, events, companyEvents, dispatches int
 	for query, destination := range map[string]*int{
 		"SELECT COUNT(*) FROM recruiting_works WHERE work_id = 'discovery-command-work'":                             &works,
 		"SELECT COUNT(*) FROM recruiting_source_discoveries WHERE discovery_id = 'discovery-command'":                &discoveries,
 		"SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id = 'discovery-command-create'":             &receipts,
 		"SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = 'event-discovery-command'":                    &events,
+		"SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = 'event-discovery-company-command'":            &companyEvents,
 		"SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE dispatch_id = 'dispatch-discovery-command'": &dispatches,
 	} {
 		if err := db.QueryRowContext(ctx, query).Scan(destination); err != nil || *destination != 1 {
 			t.Fatalf("atomic source discovery fact count = %d, %v", *destination, err)
 		}
+	}
+	storedCompany, err := repository.GetCompany(ctx, company.CompanyID)
+	if err != nil || storedCompany != discoveringCompany {
+		t.Fatalf("discovery Company transition = %+v, %v", storedCompany, err)
 	}
 }

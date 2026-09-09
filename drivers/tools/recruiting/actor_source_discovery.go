@@ -30,6 +30,7 @@ type sourceDiscoveryCommandResponse struct {
 	RequestedBy     string                `json:"requested_by"`
 	Discovery       model.SourceDiscovery `json:"discovery"`
 	Work            model.Work            `json:"work"`
+	Company         model.Company         `json:"company"`
 	Target          Target                `json:"target"`
 	NextAction      string                `json:"next_action"`
 }
@@ -41,13 +42,13 @@ type sourceDiscoveryCandidateDecisionPayload struct {
 }
 
 type sourceDiscoveryCandidateDecisionResponse struct {
-	ContractVersion string                           `json:"contract_version"`
-	CorrelationID   string                           `json:"correlation_id"`
-	RequestedBy     string                           `json:"requested_by"`
-	Candidate       model.SourceDiscoveryCandidate   `json:"candidate"`
-	Source          *model.RecruitmentSource         `json:"source,omitempty"`
-	Target          Target                           `json:"target"`
-	NextAction      string                           `json:"next_action"`
+	ContractVersion string                         `json:"contract_version"`
+	CorrelationID   string                         `json:"correlation_id"`
+	RequestedBy     string                         `json:"requested_by"`
+	Candidate       model.SourceDiscoveryCandidate `json:"candidate"`
+	Source          *model.RecruitmentSource       `json:"source,omitempty"`
+	Target          Target                         `json:"target"`
+	NextAction      string                         `json:"next_action"`
 }
 
 func handleSourceDiscoveryMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -183,6 +184,21 @@ func handleSourceDiscover(sys actorbase.Sys, cfg Config, repository *store.Repos
 		failStoreError(sys, msg, &model.VersionConflictError{Expected: payload.ExpectedVersion, Actual: company.Version})
 		return
 	}
+	nextCompany := company
+	switch company.OnboardingStatus {
+	case model.CompanyNew, model.CompanyBlockedNoSources, model.CompanyBlocked:
+		nextCompany, err = company.StartDiscovery(payload.ExpectedVersion)
+	case model.CompanyDiscoveringSources, model.CompanyInitializing, model.CompanyReady:
+		if company.ControlStatus != model.ControlActive {
+			err = &model.InvalidTransitionError{Entity: "company", From: string(company.ControlStatus), Action: "start discovery"}
+		}
+	default:
+		err = fmt.Errorf("unsupported Company onboarding state %q", company.OnboardingStatus)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
 	recipe, err := repository.GetRecipe(msg.Ctx(), strings.TrimSpace(payload.RecipeID), payload.RecipeVersion)
 	if err != nil {
 		failStoreError(sys, msg, err)
@@ -195,14 +211,14 @@ func handleSourceDiscover(sys actorbase.Sys, cfg Config, repository *store.Repos
 	}
 	discovery := model.SourceDiscovery{}
 	if err == nil {
-		discovery, err = model.NewSourceDiscovery(strings.TrimSpace(payload.DiscoveryID), work.WorkID, company,
-			payload.Generation, company.Website, recipe)
+		discovery, err = model.NewSourceDiscovery(strings.TrimSpace(payload.DiscoveryID), work.WorkID, nextCompany,
+			payload.Generation, nextCompany.Website, recipe)
 	}
 	if err != nil {
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
 		return
 	}
-	placement, err := sourceDiscoveryPlacement(company.Website, recipe.Execution.RequiredCapability, payload.ProfileID,
+	placement, err := sourceDiscoveryPlacement(nextCompany.Website, recipe.Execution.RequiredCapability, payload.ProfileID,
 		payload.Priority, payload.DeadlineAt, businessAt)
 	if err != nil {
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
@@ -210,7 +226,7 @@ func handleSourceDiscover(sys actorbase.Sys, cfg Config, repository *store.Repos
 	}
 	placement.BusinessKey = fmt.Sprintf("source-discovery|%s|%d", company.CompanyID, payload.Generation)
 	response := sourceDiscoveryCommandResponse{ContractVersion: ContractVersion, CorrelationID: string(msg.CorrelationID),
-		RequestedBy: commandContext.RequestedBy, Discovery: discovery, Work: work,
+		RequestedBy: commandContext.RequestedBy, Discovery: discovery, Work: work, Company: nextCompany,
 		Target: Target{Type: "source_discovery", ID: discovery.DiscoveryID}, NextAction: "await_discovery_execution"}
 	responseBytes, _ := json.Marshal(response)
 	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, commandRequestHash(msg), responseBytes)
@@ -222,13 +238,21 @@ func handleSourceDiscover(sys actorbase.Sys, cfg Config, repository *store.Repos
 			"source.discovery.created", "source_discovery", discovery.DiscoveryID, discovery.Version,
 			businessAt.Format(time.RFC3339Nano), payload.CommandID, auditPayload)
 	}
+	var companyEvent *model.EventIntent
+	if err == nil && nextCompany.Version != company.Version {
+		created, createErr := model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|company.discovery.started"),
+			"company.discovery.started", "company", nextCompany.CompanyID, nextCompany.Version,
+			businessAt.Format(time.RFC3339Nano), payload.CommandID, auditPayload)
+		err, companyEvent = createErr, &created
+	}
 	dispatch, dispatchErr := workCommandDispatch(cfg, work, placement, payload.CommandID, "source_discovery_created")
 	if err == nil {
 		err = dispatchErr
 	}
 	var result store.CommandResult
 	if err == nil {
-		result, err = repository.ApplyCreateSourceDiscoveryCommand(msg.Ctx(), discovery, work, placement, receipt, event, dispatch, businessAt)
+		result, err = repository.ApplyCreateSourceDiscoveryCommand(msg.Ctx(), payload.ExpectedVersion, nextCompany,
+			discovery, work, placement, receipt, event, companyEvent, dispatch, businessAt)
 	}
 	if err != nil {
 		failStoreError(sys, msg, err)

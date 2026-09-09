@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -52,13 +53,15 @@ func (r *Repository) CreateSourceDiscovery(ctx context.Context, discovery model.
 // ApplyCreateSourceDiscoveryCommand makes the public command acknowledgement,
 // Work, immutable discovery generation, audit event, and executor wake intent
 // one atomic fact. A replay therefore cannot create a second generation.
-func (r *Repository) ApplyCreateSourceDiscoveryCommand(ctx context.Context, discovery model.SourceDiscovery, work model.Work,
-	placement WorkPlacement, receipt model.CommandReceipt, event model.EventIntent, dispatch *ExecutionDispatchIntent,
+func (r *Repository) ApplyCreateSourceDiscoveryCommand(ctx context.Context, expectedCompanyVersion uint64,
+	company model.Company, discovery model.SourceDiscovery, work model.Work, placement WorkPlacement,
+	receipt model.CommandReceipt, event model.EventIntent, companyEvent *model.EventIntent, dispatch *ExecutionDispatchIntent,
 	businessAt time.Time) (CommandResult, error) {
 	if err := validateNewSourceDiscovery(discovery, work, placement, businessAt); err != nil {
 		return CommandResult{}, err
 	}
-	if receipt.CommandID == "" || event.AggregateType != "source_discovery" || event.AggregateID != discovery.DiscoveryID ||
+	if expectedCompanyVersion == 0 || company.CompanyID != discovery.CompanyID || company.Version != discovery.CompanyVersion ||
+		receipt.CommandID == "" || event.AggregateType != "source_discovery" || event.AggregateID != discovery.DiscoveryID ||
 		event.AggregateVersion != discovery.Version || event.CauseCommandID != receipt.CommandID {
 		return CommandResult{}, fmt.Errorf("source discovery command, receipt, and event are inconsistent")
 	}
@@ -75,6 +78,56 @@ func (r *Repository) ApplyCreateSourceDiscoveryCommand(ctx context.Context, disc
 		return CommandResult{}, err
 	} else if found {
 		return CommandResult{Response: replay, Replayed: true}, nil
+	}
+	var currentState []byte
+	if err := tx.QueryRowContext(ctx, "SELECT state_json FROM recruiting_companies WHERE company_id = ? FOR UPDATE", company.CompanyID).Scan(&currentState); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return CommandResult{}, ErrNotFound
+		}
+		return CommandResult{}, fmt.Errorf("lock discovery Company: %w", err)
+	}
+	var currentCompany model.Company
+	if err := json.Unmarshal(currentState, &currentCompany); err != nil {
+		return CommandResult{}, fmt.Errorf("decode discovery Company: %w", err)
+	}
+	if currentCompany.Version != expectedCompanyVersion {
+		return CommandResult{}, &model.VersionConflictError{Expected: expectedCompanyVersion, Actual: currentCompany.Version}
+	}
+	expectedCompany := currentCompany
+	switch currentCompany.OnboardingStatus {
+	case model.CompanyNew, model.CompanyBlockedNoSources, model.CompanyBlocked:
+		expectedCompany, err = currentCompany.StartDiscovery(expectedCompanyVersion)
+	case model.CompanyDiscoveringSources, model.CompanyInitializing, model.CompanyReady:
+		if currentCompany.ControlStatus != model.ControlActive {
+			err = &model.InvalidTransitionError{Entity: "company", From: string(currentCompany.ControlStatus), Action: "start discovery"}
+		}
+	default:
+		err = fmt.Errorf("unsupported Company onboarding state %q", currentCompany.OnboardingStatus)
+	}
+	if err != nil {
+		return CommandResult{}, err
+	}
+	if !reflect.DeepEqual(expectedCompany, company) {
+		return CommandResult{}, fmt.Errorf("source discovery Company transition does not match locked state")
+	}
+	if company.Version != currentCompany.Version {
+		if companyEvent == nil || companyEvent.AggregateType != "company" || companyEvent.AggregateID != company.CompanyID ||
+			companyEvent.AggregateVersion != company.Version || companyEvent.CauseCommandID != receipt.CommandID {
+			return CommandResult{}, fmt.Errorf("source discovery Company event is inconsistent")
+		}
+		companyState, _ := json.Marshal(company)
+		result, updateErr := tx.ExecContext(ctx, `UPDATE recruiting_companies
+SET normalized_website = ?, name = ?, onboarding_status = ?, control_status = ?, version = ?, state_json = ?, updated_at = ?
+WHERE company_id = ? AND version = ?`, nullableString(company.Website), company.Name, company.OnboardingStatus,
+			company.ControlStatus, company.Version, companyState, businessAt.UTC(), company.CompanyID, expectedCompanyVersion)
+		if updateErr != nil {
+			return CommandResult{}, updateErr
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return CommandResult{}, &model.VersionConflictError{Expected: expectedCompanyVersion, Actual: currentCompany.Version}
+		}
+	} else if companyEvent != nil {
+		return CommandResult{}, fmt.Errorf("unchanged discovery Company cannot emit a transition event")
 	}
 	if err := lockSourceDiscoveryDependencies(ctx, tx, discovery, placement); err != nil {
 		return CommandResult{}, err
@@ -94,6 +147,15 @@ func (r *Repository) ApplyCreateSourceDiscoveryCommand(ctx context.Context, disc
 	}
 	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
 		return CommandResult{}, err
+	}
+	if companyEvent != nil {
+		companyEventAt, parseErr := time.Parse(time.RFC3339, companyEvent.BusinessAt)
+		if parseErr != nil {
+			return CommandResult{}, parseErr
+		}
+		if err := appendEventIntent(ctx, tx, *companyEvent, companyEventAt, businessAt); err != nil {
+			return CommandResult{}, err
+		}
 	}
 	if err := appendWorkCommandDispatch(ctx, tx, dispatch, placement, receipt.CommandID, "source_discovery_created", businessAt); err != nil {
 		return CommandResult{}, err

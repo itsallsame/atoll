@@ -105,6 +105,11 @@ func TestRecruitingLiveSourceDiscoveryThroughAtoll(t *testing.T) {
 	if nestedStringField(t, replayed, "work", "work_id") != nestedStringField(t, started, "work", "work_id") {
 		t.Fatalf("source discovery replay changed Work: first=%v replay=%v", started, replayed)
 	}
+	if nestedStringField(t, started, "company", "onboarding_status") != "discovering_sources" ||
+		nestedNumberField(t, started, "company", "version") != companyVersion+1 ||
+		nestedNumberField(t, replayed, "company", "version") != companyVersion+1 {
+		t.Fatalf("source discovery did not atomically advance/replay Company onboarding: first=%v replay=%v", started, replayed)
+	}
 	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 20})
 
 	var completed map[string]any
