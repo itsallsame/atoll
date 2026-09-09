@@ -34,7 +34,8 @@ func TestSourceEndpointUpdateIsPatchLikeAndRejectsNoop(t *testing.T) {
 func TestSourceEventVocabularyAndManifest(t *testing.T) {
 	words := map[string]string{
 		TypeSourceAdd: "source.added", TypeSourceUpdate: "source.updated",
-		TypeSourceValidate: "source.validation_started", TypeSourcePause: "source.paused",
+		TypeSourceValidate: "source.validation_started", TypeSourceValidationPublish: "source.validation.published",
+		TypeSourcePause:  "source.paused",
 		TypeSourceResume: "source.resumed", TypeSourceArchive: "source.archived", TypeSourceRestore: "source.restored",
 	}
 	actorManifest := manifest()

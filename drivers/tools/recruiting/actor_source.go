@@ -32,6 +32,18 @@ type sourcePausePayload struct {
 	PauseMode model.PauseMode `json:"pause_mode"`
 }
 
+type sourceValidationPublishPayload struct {
+	MutationCommand
+	RecipeID                  string                     `json:"recipe_id"`
+	RecipeVersion             uint64                     `json:"recipe_version"`
+	ExpectedAssignmentVersion uint64                     `json:"expected_assignment_version"`
+	Identity                  model.ContractVerification `json:"identity"`
+	Pagination                model.ContractVerification `json:"pagination"`
+	Ordering                  model.ContractVerification `json:"ordering"`
+	UpdateRetop               model.ContractVerification `json:"update_retop"`
+	EvidenceArtifactIDs       []string                   `json:"evidence_artifact_ids"`
+}
+
 type sourceCommandResponse struct {
 	ContractVersion string                  `json:"contract_version"`
 	CorrelationID   string                  `json:"correlation_id"`
@@ -48,6 +60,10 @@ func handleSourceMessage(sys actorbase.Sys, repository *store.Repository, msg ac
 	}
 	if msg.Type == TypeSourceAdd {
 		handleSourceAdd(sys, repository, msg)
+		return
+	}
+	if msg.Type == TypeSourceValidationPublish {
+		handleSourceValidationPublish(sys, repository, msg)
 		return
 	}
 	handleSourceMutation(sys, repository, msg)
@@ -87,6 +103,98 @@ func handleSourceAdd(sys actorbase.Sys, repository *store.Repository, msg actorb
 	}
 	response := makeSourceResponse(msg, source)
 	result, err := applySourceCommandFacts(repository, msg, payload.CommandID, payload.Reason, response, source, 0)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
+}
+
+func handleSourceValidationPublish(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload sourceValidationPublishPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	commandContext, err := NewCommandContext(payload.MutationCommand, string(msg.Sender.ID))
+	if err != nil || payload.Target.Type != "source" || strings.TrimSpace(payload.RecipeID) == "" || payload.RecipeVersion == 0 {
+		if err == nil {
+			err = fmt.Errorf("source target, recipe_id, and recipe_version are required")
+		}
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	requestHash := commandRequestHash(msg)
+	if replay, found, lookupErr := repository.LookupCommand(msg.Ctx(), payload.CommandID, requestHash); lookupErr != nil {
+		failStoreError(sys, msg, lookupErr)
+		return
+	} else if found {
+		_, _ = sys.Reply(msg, json.RawMessage(replay.Response))
+		return
+	}
+	current, err := repository.GetSource(msg.Ctx(), payload.Target.ID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	recipe, err := repository.GetRecipe(msg.Ctx(), strings.TrimSpace(payload.RecipeID), payload.RecipeVersion)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	businessAt := time.UnixMilli(msg.TS).UTC()
+	var assignment model.SourceRecipeAssignment
+	if payload.ExpectedAssignmentVersion == 0 {
+		assignment, err = model.NewSourceRecipeAssignment(current.SourceID, model.RecipeListing, recipe.RecipeID,
+			recipe.Version, recipe.ContractHash, businessAt.Format(time.RFC3339Nano))
+	} else {
+		var existing model.SourceRecipeAssignment
+		existing, err = repository.GetAssignment(msg.Ctx(), current.SourceID, model.RecipeListing)
+		if err == nil {
+			assignment, err = existing.Replace(payload.ExpectedAssignmentVersion, recipe.RecipeID, recipe.Version,
+				recipe.ContractHash, businessAt.Format(time.RFC3339Nano))
+		}
+	}
+	assessmentVersion := uint64(1)
+	if current.ContractAssessment != nil {
+		assessmentVersion = current.ContractAssessment.Version + 1
+	}
+	endpointRevision := uint64(0)
+	if current.CandidateEndpoint != nil {
+		endpointRevision = current.CandidateEndpoint.Revision
+	}
+	assessment := model.SourceContractAssessment{
+		SourceID: current.SourceID, EndpointRevision: endpointRevision, RecipeID: recipe.RecipeID,
+		RecipeVersion: recipe.Version, ContractHash: recipe.ContractHash, Identity: payload.Identity,
+		Pagination: payload.Pagination, Ordering: payload.Ordering, UpdateRetop: payload.UpdateRetop,
+		EvidenceArtifactIDs: append([]string(nil), payload.EvidenceArtifactIDs...),
+		AssessedAt:          businessAt.Format(time.RFC3339Nano), Version: assessmentVersion,
+	}
+	var next model.RecruitmentSource
+	if err == nil {
+		next, err = current.PublishValidated(payload.ExpectedVersion, assignment, assessment)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := makeSourceResponse(msg, next)
+	responseBytes, _ := json.Marshal(response)
+	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, requestHash, responseBytes)
+	auditPayload, _ := json.Marshal(map[string]any{
+		"requested_by": commandContext.RequestedBy, "reason": payload.Reason, "recipe_id": recipe.RecipeID,
+		"recipe_version": recipe.Version, "evidence_artifact_ids": payload.EvidenceArtifactIDs,
+	})
+	var event model.EventIntent
+	if err == nil {
+		event, err = model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|source.validation.published"),
+			"source.validation.published", "source", next.SourceID, next.Version,
+			businessAt.Format(time.RFC3339Nano), payload.CommandID, auditPayload)
+	}
+	var result store.CommandResult
+	if err == nil {
+		result, err = repository.ApplyPublishSourceValidationCommand(msg.Ctx(), payload.ExpectedVersion,
+			payload.ExpectedAssignmentVersion, next, assignment, receipt, event, businessAt)
+	}
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
@@ -244,6 +352,8 @@ func sourceEventKind(word string) string {
 		return "source.updated"
 	case TypeSourceValidate:
 		return "source.validation_started"
+	case TypeSourceValidationPublish:
+		return "source.validation.published"
 	case TypeSourcePause:
 		return "source.paused"
 	case TypeSourceResume:

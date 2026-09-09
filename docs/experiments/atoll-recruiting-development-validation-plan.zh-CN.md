@@ -334,6 +334,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 ## 10. P5：公司接入和首次基线纵向切片
 
+执行状态：进行中。显式 Source Discovery generation、受 Recipe/Company/Attempt fence 约束的一页有界真实执行、证据 Artifact、0/1/N 候选分页，以及逐候选接受/拒绝已经进入 Recruiting 扩展；接受候选会在同一事务创建 `candidate` Source，跨 Company 的规范 Source key 冲突会完整回滚并交给人工判断。MongoDB 公共 careers 页面已经通过普通用户、真实 server/daemon、非 root MySQL 和 HTTP Executor 完成 `Company → discovery → Candidate → 人工接受 → Source(candidate)` 纵向验证。Source validation publication 的证据闸门也已实现：只有目标 Source Work 所属、未拒绝且非 failure-only 的 Artifact，才能随 active Listing Recipe、Assignment、四项校准结论、命令 receipt 和事件一起原子发布。验证 Work 的执行编排、baseline generation、首个 Checkpoint 和详情纵向链路仍未完成，因此尚未达到 P5 退出门。当前证据见 `docs/experiments/atoll-recruiting-p5-acceptance.zh-CN.md`。
+
 按以下顺序交付一个真正可用的切片：
 
 ```text
