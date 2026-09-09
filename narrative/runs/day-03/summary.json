@@ -1,0 +1,12 @@
+{
+  "scenario_id": "generated-day-03",
+  "day": 3,
+  "title": "病船",
+  "chapter_title": "病船",
+  "pov": "林素云",
+  "event_count": 5,
+  "seeded_events": 0,
+  "emergent_events": 5,
+  "end_condition_met": true,
+  "registration_state": "continued"
+}

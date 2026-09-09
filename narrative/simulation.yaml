@@ -1,0 +1,184 @@
+schema_version: "0.1"
+
+# 这里没有第三日剧情。环境过程与人物策略会在每个 tick 检查事实状态，
+# 只要条件成立就提出行动；运行器选择当时效用最高的可行行动并结算后果。
+ticks:
+  - id: dawn
+    label: 同治六年五月初十 卯正
+  - id: morning
+    label: 同治六年五月初十 辰初
+  - id: late_morning
+    label: 同治六年五月初十 巳初
+  - id: noon
+    label: 同治六年五月初十 午初
+  - id: departure
+    label: 同治六年五月初十 午正
+
+environment_processes:
+  - id: temple_case_progression
+    tick: dawn
+    order: 10
+    actor: environment
+    location: 河神庙
+    when:
+      - {key: disease.temple_cases, op: gte, value: 4}
+    participants: [he_asheng]
+    observers: [he_asheng, shen_yanqiu, zhou_jiren]
+    options:
+      - id: fever_worsens
+        action: 病程推进
+        summary: 河神庙里又有一名病人发热昏厥，必须在午前送到对岸药铺。
+        perceived_goal: 无
+        intended_effect: 无
+        actual_effect: 病例增至五人，封渡规则第一次与救治时限正面冲突。
+        effects:
+          - {key: disease.temple_cases, op: add, value: 1}
+          - {key: patient.transport, op: set, value: needed_before_noon}
+        utility: {causal_pressure: 8}
+        prose: 河神庙那边天刚亮就来敲门。来人不肯进屋，只隔着门说，第五个人也烧得认不得亲娘了。对岸药铺答应收，条件是午前送到；午后潮头顶住洲口，小船便过不得横水。
+
+actor_policies:
+  - id: he_food_strategy
+    tick: morning
+    order: 20
+    actor: he_asheng
+    location: 北渡
+    when:
+      - {key: he_household.food_today, op: eq, value: none}
+      - {key: ferryman.claim, op: eq, value: one_day_grain}
+      - {key: patient.transport, op: eq, value: needed_before_noon}
+    participants: [lin_suyun]
+    observers: [he_asheng, lin_suyun, shen_yanqiu]
+    options:
+      - id: repay_with_crossing
+        action: 提议以撑病船抵偿船户的一日粮债
+        summary: 何阿生选择用劳力换掉粮债，并接下无人肯接的病人转运。
+        perceived_goal: 今日不向陆敬和立借粮字据，也让何小满吃上一顿。
+        intended_effect: 船户免去粮债并给何家半袋碎米。
+        actual_effect: 病船有了撑船人；一次私人还债变成了全洲不得不承认的公共需要。
+        effects:
+          - {key: ferryman.claim, op: set, value: repaid_by_medical_crossing}
+          - {key: he_household.food_today, op: set, value: half_bag_broken_rice}
+          - {key: patient.transport, op: set, value: crewed}
+        utility: {avoid_land_debt: 6, feed_household: 5, infection_risk: -2}
+        prose: 何阿生把那张还没按手印的借粮字据折回陆家的封套里。他对船户说，昨日欠的一日粮，他用一趟船还。船户问他敢不敢碰庙里的病人。他说不碰也要饿，碰了至少只欠老天。
+      - id: accept_lu_grain
+        action: 接受陆敬和的两斗粮并立债据
+        summary: 何阿生以土地争议中的书面让步换取眼前口粮。
+        perceived_goal: 先让家中渡过今日。
+        intended_effect: 获得两斗粮。
+        actual_effect: 陆氏取得一份可用于解释南湾七号田关系的新字据。
+        effects:
+          - {key: he_household.food_today, op: set, value: two_dou_grain}
+          - {key: lu_claim.debt_basis, op: set, value: strengthened_by_new_note}
+        utility: {feed_household: 5, avoid_infection: 3, land_claim_damage: -4}
+        prose: 何阿生在借粮字据前停了很久。
+
+  - id: lin_exit_strategy
+    tick: late_morning
+    order: 30
+    actor: lin_suyun
+    location: 册局门外
+    when:
+      - {key: lin_suyun.exit, op: eq, value: blocked}
+      - {key: patient.transport, op: eq, value: crewed}
+      - {key: claimant.lin_suyun.recorded_as, op: eq, value: 林素云}
+    participants: [shen_yanqiu, he_asheng]
+    observers: [lin_suyun, shen_yanqiu, he_asheng]
+    options:
+      - id: join_as_attendant
+        action: 以病人照看人的身份申请随船过江
+        summary: 林素云把新取得的姓名记录变成一项离洲请求，而不是继续等待封渡解除。
+        perceived_goal: 在丈夫家来人登洲之前离开，并保住以本名追索田产的资格。
+        intended_effect: 取得医船随行名额。
+        actual_effect: 救治、逃离与土地申报被绑在同一次制度裁量上。
+        effects:
+          - {key: lin_suyun.exit, op: set, value: requested_as_patient_attendant}
+          - {key: medical_crossing.attendant, op: set, value: lin_suyun}
+        utility: {escape_window: 8, preserve_claim: 4, exposure_risk: -2}
+        prose: 林素云没有再问什么时候开渡。她问沈砚秋，名册里写下的人，能不能替病人端水。沈砚秋抬头看她，她便把话说完：“若能，就把林素云三个字写在随船人的格子里。”
+      - id: wait_for_open_ferry
+        action: 留在册局等待封渡解除
+        summary: 林素云避免让离洲意图与病船发生关联。
+        perceived_goal: 不给旁人新的口实。
+        intended_effect: 等候正常渡运。
+        actual_effect: 丈夫家的人更可能在开渡时与她相遇。
+        effects:
+          - {key: lin_suyun.exit, op: set, value: waiting}
+        utility: {avoid_suspicion: 3, escape_window: -3}
+        prose: 林素云退回了廊下。
+
+  - id: shen_record_strategy
+    tick: noon
+    order: 40
+    actor: shen_yanqiu
+    location: 册局
+    when:
+      - {key: medical_crossing.attendant, op: eq, value: lin_suyun}
+      - {key: naming_precedent, op: eq, value: provisional}
+    participants: [lin_suyun, zhou_jiren]
+    observers: [shen_yanqiu, lin_suyun, zhou_jiren]
+    options:
+      - id: copy_name_to_crossing_slip
+        action: 从争议册抄出林素云本名，填入临时过渡凭单
+        summary: 沈砚秋使昨日的临时姓名记录产生了新的现实效力。
+        perceived_goal: 只忠实抄录已经存在的事实，不替任何人编造身份。
+        intended_effect: 让县吏面对一张格式完整、无法靠空格拖延的凭单。
+        actual_effect: 程序例外跨出土地册，成为林素云可实际使用的身份凭证。
+        effects:
+          - {key: medical_crossing.slip, op: set, value: complete_pending_seal}
+          - {key: naming_precedent, op: set, value: operational}
+        utility: {record_accuracy: 7, aid_without_falsehood: 5, public_exposure: -2}
+        prose: 沈砚秋裁下一条窄纸，先抄病人的姓名，再抄撑船人。写到随行者一栏，她没有写“林氏”，也没有停笔等父亲开口。墨迹从争议册越到过渡凭单上，只隔了半张桌子。
+      - id: leave_attendant_blank
+        action: 将随行者一栏留空请示
+        summary: 沈砚秋避免扩大昨日的程序例外。
+        perceived_goal: 把责任留给有名义权力的人。
+        intended_effect: 等候沈伯安或周继仁决定。
+        actual_effect: 医船可能错过潮时。
+        effects:
+          - {key: medical_crossing.slip, op: set, value: incomplete}
+        utility: {avoid_exposure: 5, record_accuracy: 1, delay_harm: -4}
+        prose: 沈砚秋把笔搁在空格之前。
+
+  - id: zhou_crossing_decision
+    tick: departure
+    order: 50
+    actor: zhou_jiren
+    location: 北渡
+    when:
+      - {key: medical_crossing.slip, op: eq, value: complete_pending_seal}
+      - {key: ferry.status, op: eq, value: restricted_until_sunset}
+    participants: [lin_suyun, he_asheng, shen_yanqiu]
+    observers: [zhou_jiren, lin_suyun, he_asheng, shen_yanqiu, lu_jinghe]
+    options:
+      - id: seal_one_way_medical_crossing
+        action: 加盖巡核小印，准许病船单程离洲
+        summary: 周继仁把病船定义为公务救治的临时例外，并要求随行者姓名留档。
+        perceived_goal: 避免病死洲上成为自己的延误记录，同时不宣布全面开渡。
+        intended_effect: 病人在潮前过江，封渡原则仍可维持。
+        actual_effect: 林素云合法离洲；她的姓名、土地主张与逃离行动从此被同一张凭单连接。
+        effects:
+          - {key: medical_crossing.status, op: set, value: departed_one_way}
+          - {key: patient.transport, op: set, value: departed}
+          - {key: lin_suyun.exit, op: set, value: departed_with_recorded_name}
+          - {key: ferry.status, op: set, value: restricted_medical_exception_used}
+        utility: {avoid_reportable_death: 8, preserve_restriction: 4, precedent_risk: -3}
+        prose: 周继仁怕水，站在跳板上时脸色比病人还白。他把小印按下去，说这是送医，不是开渡；是单程，不是成例。林素云接过纸，没有道谢。岸上每个人都听懂了他那句“不是成例”正因为已经有了成例。
+      - id: refuse_until_sunset
+        action: 拒绝在封渡期间用印
+        summary: 周继仁维持规则，不承担临时例外的先例风险。
+        perceived_goal: 保持渡口命令一致。
+        intended_effect: 等日落后按正常程序过江。
+        actual_effect: 病人错过收治时限，责任转化为新的县务风险。
+        effects:
+          - {key: medical_crossing.status, op: set, value: refused}
+          - {key: patient.transport, op: set, value: missed_deadline}
+        utility: {preserve_restriction: 5, avoid_precedent: 4, reportable_death_risk: -6}
+        prose: 周继仁把印盒合上了。
+
+chapter:
+  title: 病船
+  pov: 林素云
+  opening: 林素云醒来时，先听见河神庙的门板响了五下。她左耳听不清，每一下都像从水底传来；第五下以后，再没有人敲。
+  closing: 船离岸以后，林素云才把凭单翻到背面。湿墨透过纸，三个字反着浮出来。她第一次知道，一个名字不仅能把人写进田里，也能把人带走。

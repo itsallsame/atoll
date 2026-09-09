@@ -1,0 +1,100 @@
+[
+  {
+    "event_id": "E002",
+    "rule_id": "he_food_strategy",
+    "actor": "he_asheng",
+    "tick": "同治六年五月初十 辰初",
+    "known_facts": {
+      "ferryman.claim": "one_day_grain",
+      "he_household.food_today": "none",
+      "patient.transport": "needed_before_noon"
+    },
+    "candidates": [
+      {
+        "id": "repay_with_crossing",
+        "action": "提议以撑病船抵偿船户的一日粮债",
+        "score": 9
+      },
+      {
+        "id": "accept_lu_grain",
+        "action": "接受陆敬和的两斗粮并立债据",
+        "score": 4
+      }
+    ],
+    "selected": "repay_with_crossing",
+    "selection_why": "只依据 3 条已知事实，选择总效用 9 的行动。"
+  },
+  {
+    "event_id": "E003",
+    "rule_id": "lin_exit_strategy",
+    "actor": "lin_suyun",
+    "tick": "同治六年五月初十 巳初",
+    "known_facts": {
+      "claimant.lin_suyun.recorded_as": "林素云",
+      "lin_suyun.exit": "blocked",
+      "patient.transport": "crewed"
+    },
+    "candidates": [
+      {
+        "id": "join_as_attendant",
+        "action": "以病人照看人的身份申请随船过江",
+        "score": 10
+      },
+      {
+        "id": "wait_for_open_ferry",
+        "action": "留在册局等待封渡解除",
+        "score": 0
+      }
+    ],
+    "selected": "join_as_attendant",
+    "selection_why": "只依据 3 条已知事实，选择总效用 10 的行动。"
+  },
+  {
+    "event_id": "E004",
+    "rule_id": "shen_record_strategy",
+    "actor": "shen_yanqiu",
+    "tick": "同治六年五月初十 午初",
+    "known_facts": {
+      "medical_crossing.attendant": "lin_suyun",
+      "naming_precedent": "provisional"
+    },
+    "candidates": [
+      {
+        "id": "copy_name_to_crossing_slip",
+        "action": "从争议册抄出林素云本名，填入临时过渡凭单",
+        "score": 10
+      },
+      {
+        "id": "leave_attendant_blank",
+        "action": "将随行者一栏留空请示",
+        "score": 2
+      }
+    ],
+    "selected": "copy_name_to_crossing_slip",
+    "selection_why": "只依据 2 条已知事实，选择总效用 10 的行动。"
+  },
+  {
+    "event_id": "E005",
+    "rule_id": "zhou_crossing_decision",
+    "actor": "zhou_jiren",
+    "tick": "同治六年五月初十 午正",
+    "known_facts": {
+      "ferry.status": "restricted_until_sunset",
+      "medical_crossing.slip": "complete_pending_seal"
+    },
+    "candidates": [
+      {
+        "id": "seal_one_way_medical_crossing",
+        "action": "加盖巡核小印，准许病船单程离洲",
+        "score": 9
+      },
+      {
+        "id": "refuse_until_sunset",
+        "action": "拒绝在封渡期间用印",
+        "score": 3
+      }
+    ],
+    "selected": "seal_one_way_medical_crossing",
+    "selection_why": "只依据 2 条已知事实，选择总效用 9 的行动。"
+  }
+]

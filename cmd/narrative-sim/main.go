@@ -1,6 +1,6 @@
-// Command narrative-sim runs the deterministic first experiment in a
-// narrative bundle. It deliberately stops at auditable scene material: prose
-// generation is a downstream editorial operation, never part of world truth.
+// Command narrative-sim runs deterministic authored scenarios and can then
+// continue from the latest world state using reusable environment processes
+// and actor policies. Prose remains downstream of the auditable world ledger.
 package main
 
 import (
@@ -131,6 +131,7 @@ type event struct {
 	SelectedScore        int              `json:"selected_score,omitempty"`
 	Utility              map[string]int   `json:"utility,omitempty"`
 	RejectedOptions      []rejectedOption `json:"rejected_options,omitempty"`
+	DecisionBasis        []string         `json:"decision_basis,omitempty"`
 }
 
 type memory struct {
@@ -152,6 +153,8 @@ type stateDiff struct {
 type runResult struct {
 	Events    []event
 	Memories  []memory
+	Beliefs   beliefLedger
+	Proposals []actionProposal
 	StateDiff stateDiff
 	Scene     string
 	Chapter   string
@@ -188,7 +191,17 @@ func main() {
 	scenarioPath := fs.String("scenario", "", "scenario YAML (default: <bundle>/scenarios/day-01.yaml)")
 	outDir := fs.String("out", "", "output directory; omit to print the run summary")
 	all := fs.Bool("all", false, "run all scenarios in day order and write a run index")
+	continueDays := fs.Int("continue", 0, "continue the latest run for N generated days")
 	_ = fs.Parse(os.Args[1:])
+	if *continueDays > 0 {
+		if *outDir == "" {
+			*outDir = filepath.Join(*bundleDir, "runs")
+		}
+		if err := continueRuns(*bundleDir, *outDir, *continueDays); err != nil {
+			fatal(err)
+		}
+		return
+	}
 	if *all {
 		if *outDir == "" {
 			*outDir = filepath.Join(*bundleDir, "runs")
@@ -545,6 +558,12 @@ func writeResult(dir string, result runResult) error {
 		return err
 	}
 	if err := writeJSONFile(filepath.Join(dir, "memories.json"), result.Memories); err != nil {
+		return err
+	}
+	if err := writeJSONFile(filepath.Join(dir, "beliefs.json"), result.Beliefs); err != nil {
+		return err
+	}
+	if err := writeJSONFile(filepath.Join(dir, "proposals.json"), result.Proposals); err != nil {
 		return err
 	}
 	if err := writeJSONFile(filepath.Join(dir, "state-diff.json"), result.StateDiff); err != nil {
