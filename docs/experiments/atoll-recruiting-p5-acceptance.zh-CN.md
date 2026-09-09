@@ -23,12 +23,13 @@
 
 - 真实网站：`https://www.mongodb.com/careers`，实际规范入口为 `https://www.mongodb.com/company/careers/see-jobs`。
 - 真实链路：普通用户通过 Atoll Portal/WebSocket 新增 Company；Recruiting Actor 建立 generation；真实 daemon 上的 Recruiting Executor 访问公开页面并保存 Artifact；用户接受候选后回读到归属正确、readiness 为 `candidate` 的 Source；发现与接受命令重放均稳定。
+- 真实 Source 校验：同一普通用户把 MongoDB 的公开 Greenhouse Job Board API 作为确认后的逻辑列表入口，调用 `source.validate` 并重放命令；真实 daemon/Executor 完成 Work 和 Attempt，保存 page/trace Artifact。实际列表不满足 `newest_activity_desc`，系统因此把“执行成功、契约失败”原子落为 Source `invalid`，没有写入任何 Job、ListingObservation 或 Checkpoint。该结果没有被包装成成功发布，也没有进入 baseline；机读证据见 `docs/experiments/evidence/recruiting-live-source-validation-20260909.json`。
 - 隔离数据库：MySQL 8.4；migration 与 runtime 使用不同非 root 账号。合同测试覆盖 discovery 执行、候选独立裁决、跨 Company 冲突回滚、validation 原子创建/offer/Attempt/结果、零业务数据副作用、验证证据绑定、发布原子性和命令重放；baseline 覆盖 start、offer、page staging、completion、并发物化、持久游标、Job/Detail Work 唯一性和结果重放。
 - 工程检查：招聘扩展 race、vet 通过；核心边界脚本以 `a94d2b8d` 为冻结基线通过。
 
 ## 尚未通过的退出项
 
-- Source validation 的专用 Work、统一 Executor 执行、evidence-only 结果协议和质量违反后 `validating → invalid` 已通过隔离 MySQL 合同，但尚未在真实站点贯通；执行失败后的重试、Recipe/Endpoint 变更围栏和人工修复仍需场景验收。
+- Source validation 的专用 Work、统一 Executor 执行、evidence-only 结果协议和质量违反后 `validating → invalid` 已通过隔离 MySQL及上述真实站点；执行失败后的重试、Recipe/Endpoint 变更围栏和人工修复仍需场景验收。
 - MongoDB 单次真实样本不能证明“历史岗位更新后重新置顶”，因此不得把它标记为 `update_retop=verified`，也没有借此发布为每日增量 Source。
 - baseline generation 的有界分页、staging/finalize、首次 Checkpoint、Job/Detail Work 有界物化、详情成功/人工接受缺口核算和 Company ready 已通过隔离 MySQL 合同，但尚未贯通真实站点；详情最终失败后的重试修复和拒绝接受缺口场景仍需完整验收。
 - 零 Source、1 万岗位、baseline 分页中断、详情部分失败和用户取消仍需加入 P5 场景验收。

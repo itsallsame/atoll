@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -162,6 +164,93 @@ func TestRecruitingLiveSourceDiscoveryThroughAtoll(t *testing.T) {
 	if nestedStringField(t, workView, "entity", "work_status") != "completed" {
 		t.Fatalf("live source discovery Work=%v", workView)
 	}
+
+	// The published careers page points to a presentation route. The operator
+	// stages the company's public, read-only Greenhouse endpoint as the logical
+	// listing Source, then validates it through the same live daemon Executor.
+	listingSpec := recruitingLiveRecipe()
+	listingBytes, err := json.Marshal(listingSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const listingContentRef = "recipe://e2e-live-source-validation-listing"
+	ws.resource(map[string]any{"channel_id": homeID, "op": "create", "resource_id": listingContentRef,
+		"args": json.RawMessage(listingBytes)})
+	listingRecipe := seedLiveSourceValidationRecipe(t, runtimeDSN, listingContentRef, listingSpec)
+	staged := ws.request(homeID, "recruiting.source.update", controlID, map[string]any{
+		"command_id": "e2e-live-source-stage-api", "target": map[string]any{
+			"target_type": "source", "target_id": "e2e-live-mongodb-source"},
+		"expected_version": nestedNumberField(t, sourceView, "entity", "version"),
+		"endpoint":         recruitingLiveExecutionURL, "reason": "operator confirms the public read-only job board endpoint",
+	})
+	validationCommand := map[string]any{
+		"command_id": "e2e-live-source-validation", "run_id": "e2e-live-source-validation-run",
+		"work_id": "e2e-live-source-validation-work", "recipe_id": listingRecipe.RecipeID,
+		"recipe_version": listingRecipe.Version, "expected_assignment_version": 0,
+		"target":           map[string]any{"target_type": "source", "target_id": "e2e-live-mongodb-source"},
+		"expected_version": nestedNumberField(t, staged, "source", "version"),
+		"reason":           "validate the staged endpoint and listing contract with real evidence",
+	}
+	validation := ws.request(homeID, "recruiting.source.validate", controlID, validationCommand)
+	validationReplay := ws.request(homeID, "recruiting.source.validate", controlID, validationCommand)
+	if nestedStringField(t, validation, "validation_work", "work_id") != "e2e-live-source-validation-work" ||
+		nestedStringField(t, validationReplay, "validation_run", "listing_run_id") != "e2e-live-source-validation-run" {
+		t.Fatalf("source validation command/replay=%v / %v", validation, validationReplay)
+	}
+	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 20})
+	validationWork, validationAttempt := waitLiveWorkByID(t, runtimeDSN, "e2e-live-source-validation-work", 90*time.Second,
+		daemonLog, h.server.logPath)
+	if validationWork.Status != model.WorkCompleted || validationWork.Resolution != model.ResolutionSucceeded ||
+		validationAttempt != string(model.AttemptSucceeded) {
+		t.Fatalf("live source validation work=%+v attempt=%s", validationWork, validationAttempt)
+	}
+	validatedSource := ws.request(homeID, "recruiting.source.get", controlID, map[string]any{"id": "e2e-live-mongodb-source"})
+	readiness := nestedStringField(t, validatedSource, "entity", "readiness_status")
+	if readiness != string(model.SourceValidating) && readiness != string(model.SourceInvalid) {
+		t.Fatalf("live source validation readiness=%q response=%v", readiness, validatedSource)
+	}
+	jobs, observations, checkpoint := liveSourceBusinessCounts(t, runtimeDSN, "e2e-live-mongodb-source")
+	if jobs != 0 || observations != 0 || checkpoint != 0 {
+		t.Fatalf("live validation leaked business facts jobs=%d observations=%d checkpoint=%d", jobs, observations, checkpoint)
+	}
+	validationArtifacts := liveWorkArtifacts(t, runtimeDSN, validationWork.WorkID)
+	hasPage, hasTrace := false, false
+	for _, artifact := range validationArtifacts {
+		hasPage = hasPage || artifact[0] == string(model.ArtifactPage)
+		hasTrace = hasTrace || artifact[0] == string(model.ArtifactTrace)
+	}
+	if len(validationArtifacts) < 2 || !hasPage || !hasTrace {
+		t.Fatalf("live validation artifacts=%v want page evidence plus terminal trace", validationArtifacts)
+	}
+	t.Logf("live source validation: readiness=%s work=%s attempt=%s artifacts=%v and business facts unchanged",
+		readiness, validationWork.Status, validationAttempt, validationArtifacts)
+}
+
+func liveWorkArtifacts(t *testing.T, dsn, workID string) [][2]string {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT artifact_kind, content_hash FROM recruiting_artifacts
+WHERE work_id = ? AND rejected = FALSE ORDER BY created_at, artifact_id`, workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var values [][2]string
+	for rows.Next() {
+		var value [2]string
+		if err := rows.Scan(&value[0], &value[1]); err != nil {
+			t.Fatal(err)
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return values
 }
 
 func seedLiveDiscoveryRecipe(t *testing.T, dsn, contentRef string, spec recipeabi.Spec) {
@@ -189,4 +278,35 @@ func seedLiveDiscoveryRecipe(t *testing.T, dsn, contentRef string, spec recipeab
 	if err := repository.CreateRecipe(ctx, recipe, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func seedLiveSourceValidationRecipe(t *testing.T, dsn, contentRef string, spec recipeabi.Spec) model.Recipe {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repository, _ := store.NewRepository(db)
+	contentHash, err := spec.ContentHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contractBytes, _ := json.Marshal(spec.Listing)
+	contractSum := sha256.Sum256(contractBytes)
+	recipe, err := model.NewRecipe("e2e-live-source-validation-recipe", model.RecipeListing,
+		"boards-api.greenhouse.io", 1, contentHash, "sha256:"+hex.EncodeToString(contractSum[:]),
+		model.RecipeExecution{ABIVersion: model.RecipeABIVersion, ContentRef: contentRef,
+			RequiredCapability: "http.fetch", Transport: model.RecipeTransportHTTPJSON})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipe, _ = recipe.BeginValidation(recipe.StateVersion)
+	recipe, _ = recipe.Publish(recipe.StateVersion)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := repository.CreateRecipe(ctx, recipe, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	return recipe
 }

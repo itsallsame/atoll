@@ -50,6 +50,14 @@ func (d executeDriverStub) RunListing(context.Context, recipeabi.Spec, recipeabi
 	return d.listing, d.err
 }
 
+func (d executeDriverStub) RunListingValidation(context.Context, recipeabi.Spec, recipeabi.RunInput,
+	httpdriver.ComplianceEvidence, httpdriver.ArtifactSink) (httpdriver.ListingRunResult, error) {
+	if len(d.listing.Pages) == 0 {
+		return httpdriver.ListingRunResult{}, errors.New("unexpected listing validation run")
+	}
+	return d.listing, d.err
+}
+
 func (d executeDriverStub) RunDetail(context.Context, recipeabi.Spec, recipeabi.RunInput,
 	httpdriver.ComplianceEvidence, httpdriver.ArtifactSink) (httpdriver.DetailRunResult, error) {
 	return d.detail, d.err

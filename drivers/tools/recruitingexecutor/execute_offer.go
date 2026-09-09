@@ -20,6 +20,7 @@ type executionResourceAccess interface {
 
 type executionHTTPDriver interface {
 	RunListing(context.Context, recipeabi.Spec, recipeabi.RunInput, httpdriver.ComplianceEvidence, httpdriver.ArtifactSink) (httpdriver.ListingRunResult, error)
+	RunListingValidation(context.Context, recipeabi.Spec, recipeabi.RunInput, httpdriver.ComplianceEvidence, httpdriver.ArtifactSink) (httpdriver.ListingRunResult, error)
 	RunDetail(context.Context, recipeabi.Spec, recipeabi.RunInput, httpdriver.ComplianceEvidence, httpdriver.ArtifactSink) (httpdriver.DetailRunResult, error)
 }
 
@@ -76,7 +77,14 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 
 	switch offer.Kind {
 	case "listing":
-		run, runErr := driver.RunListing(ctx, spec, input, options.Compliance, sink)
+		validation := offer.ListingRun != nil && offer.ListingRun.Mode == model.ListingRunValidation
+		var run httpdriver.ListingRunResult
+		var runErr error
+		if validation {
+			run, runErr = driver.RunListingValidation(ctx, spec, input, options.Compliance, sink)
+		} else {
+			run, runErr = driver.RunListing(ctx, spec, input, options.Compliance, sink)
+		}
 		if runErr != nil {
 			return failLocalExecution(ctx, control, sink, offer, "unexpected_status", "listing_driver", runErr)
 		}

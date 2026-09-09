@@ -47,6 +47,18 @@ type ListingPage struct {
 }
 
 func (d *Driver) RunListing(ctx context.Context, spec recipeabi.Spec, input recipeabi.RunInput, compliance ComplianceEvidence, sink ArtifactSink) (ListingRunResult, error) {
+	return d.runListing(ctx, spec, input, compliance, sink, true)
+}
+
+// RunListingValidation executes the same bounded, read-only listing Recipe but
+// returns contract quality as evidence instead of converting a negative proof
+// into an execution failure. Validation owns no checkpoint authority.
+func (d *Driver) RunListingValidation(ctx context.Context, spec recipeabi.Spec, input recipeabi.RunInput, compliance ComplianceEvidence, sink ArtifactSink) (ListingRunResult, error) {
+	return d.runListing(ctx, spec, input, compliance, sink, false)
+}
+
+func (d *Driver) runListing(ctx context.Context, spec recipeabi.Spec, input recipeabi.RunInput, compliance ComplianceEvidence,
+	sink ArtifactSink, requireCheckpointQuality bool) (ListingRunResult, error) {
 	if sink == nil {
 		return ListingRunResult{}, fmt.Errorf("artifact sink is required")
 	}
@@ -126,13 +138,17 @@ func (d *Driver) RunListing(ctx context.Context, spec recipeabi.Spec, input reci
 		currentURL = nextURL
 	}
 	quality := scan.Quality()
-	if !quality.MayAdvanceCheckpoint() {
+	if requireCheckpointQuality && !quality.MayAdvanceCheckpoint() {
 		return classifiedListingFailure(ctx, sink, input, artifacts, len(artifacts), currentURL.String(), "quality_rejected",
 			fmt.Errorf("listing stopped at %s without complete boundary proof", scan.StopReason()), quality)
 	}
-	candidate, err := scan.CheckpointCandidate()
-	if err != nil {
-		return ListingRunResult{}, err
+	var candidate *recipeabi.CheckpointRef
+	if quality.MayAdvanceCheckpoint() {
+		value, err := scan.CheckpointCandidate()
+		if err != nil {
+			return ListingRunResult{}, err
+		}
+		candidate = &value
 	}
 	resultPayload, err := json.Marshal(map[string]any{"items": scan.Items(), "checkpoint_candidate": candidate, "stop_reason": scan.StopReason()})
 	if err != nil {
@@ -142,7 +158,7 @@ func (d *Driver) RunListing(ctx context.Context, spec recipeabi.Spec, input reci
 	if err := output.Validate(); err != nil {
 		return ListingRunResult{}, err
 	}
-	return ListingRunResult{Output: output, CheckpointCandidate: &candidate, Pages: pages}, nil
+	return ListingRunResult{Output: output, CheckpointCandidate: candidate, Pages: pages}, nil
 }
 
 func putArtifact(ctx context.Context, sink ArtifactSink, write ArtifactWrite) (recipeabi.ArtifactRef, error) {

@@ -117,6 +117,32 @@ func TestRunListingReturnsEvidenceForParseAndPaginationFailures(t *testing.T) {
 	}
 }
 
+func TestRunListingValidationReturnsNegativeQualityAsSuccessfulEvidence(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/robots.txt" {
+			_, _ = response.Write([]byte("User-agent: *\nAllow: /\n"))
+			return
+		}
+		_, _ = response.Write([]byte(`{"jobs":[{"id":"old","url":"/roles/old","activity_at":"2026-09-08T09:00:00Z","title":"old"},{"id":"new","url":"/roles/new","activity_at":"2026-09-08T11:00:00Z","title":"new"}],"next":null}`))
+	}))
+	defer server.Close()
+	checker, _ := newRobotsTxtChecker(robotsPolicy(), true)
+	driver, _ := newDriver(testPolicy(), checker, true)
+	input := runnerInput(server.URL + "/jobs")
+	input.Checkpoint = nil
+	productionSink := &memoryArtifactSink{}
+	production, err := driver.RunListing(context.Background(), runnerSpec(), input, compliance, productionSink)
+	if err != nil || production.Output.Failure == nil || production.Output.Failure.Class != "quality_rejected" {
+		t.Fatalf("production did not reject negative ordering proof: result=%+v err=%v", production, err)
+	}
+	validationSink := &memoryArtifactSink{}
+	validation, err := driver.RunListingValidation(context.Background(), runnerSpec(), input, compliance, validationSink)
+	if err != nil || validation.Output.Failure != nil || validation.Output.Quality.OrderingContractHeld ||
+		validation.CheckpointCandidate != nil || len(validation.Pages) != 1 || len(validationSink.writes) != 1 {
+		t.Fatalf("validation evidence=%+v writes=%+v err=%v", validation, validationSink.writes, err)
+	}
+}
+
 func TestRunListingStopsWhenArtifactCannotBeDurablySaved(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/robots.txt" {

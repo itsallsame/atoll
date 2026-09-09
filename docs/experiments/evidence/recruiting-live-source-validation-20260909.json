@@ -1,0 +1,48 @@
+{
+  "observed_at": "2026-09-09",
+  "test": "TestRecruitingLiveSourceDiscoveryThroughAtoll",
+  "command": "ATOLL_RECRUITING_LIVE_E2E=1 go test -count=1 ./e2e -run '^TestRecruitingLiveSourceDiscoveryThroughAtoll$' -v -timeout 240s",
+  "actor_path": {
+    "operator": "recruiting-discovery-operator",
+    "control": "recruiting-discovery-control",
+    "executor": "recruiting-discovery-executor",
+    "daemon": "real atoll-daemon",
+    "database_accounts": "ephemeral migration/runtime non-root users"
+  },
+  "website": {
+    "discovery_seed": "https://www.mongodb.com/careers",
+    "discovered_url": "https://www.mongodb.com/company/careers/see-jobs",
+    "validated_logical_endpoint": "https://boards-api.greenhouse.io/v1/boards/mongodb/jobs",
+    "access": "read-only public HTTP"
+  },
+  "commands": {
+    "discovery": "e2e-live-source-discovery",
+    "candidate_accept": "e2e-live-source-candidate-accept",
+    "source_update": "e2e-live-source-stage-api",
+    "source_validation": "e2e-live-source-validation"
+  },
+  "result": {
+    "work_id": "e2e-live-source-validation-work",
+    "work_status": "completed",
+    "work_resolution": "succeeded",
+    "attempt_status": "succeeded",
+    "source_readiness": "invalid",
+    "reason": "the real listing sample violated newest_activity_desc; the execution itself succeeded"
+  },
+  "artifacts": [
+    {
+      "kind": "page",
+      "content_hash": "sha256:a1ec2e5cfe82b47e0c41ee52fc94ab7b022ed64236d17a93c996ba1e2e78ff69"
+    },
+    {
+      "kind": "trace",
+      "content_hash": "sha256:361d5ebfe646e2ce2e41237b6d385711976ded66ca7b72863dfbb39b96a2e9b0"
+    }
+  ],
+  "business_side_effects": {
+    "source_jobs": 0,
+    "listing_observations": 0,
+    "checkpoint_version": 0
+  },
+  "conclusion": "Discovery through validation is live-proven. This endpoint is correctly not publishable for the assumed incremental ordering contract, so baseline and daily scheduling were not started."
+}
