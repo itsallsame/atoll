@@ -1,0 +1,100 @@
+[
+  {
+    "event_id": "E002",
+    "rule_id": "he_returned_field_strategy",
+    "actor": "he_asheng",
+    "tick": "同治六年五月十二 辰初",
+    "known_facts": {
+      "boundary.marker": "exposed_maple_stump",
+      "he_asheng.location": "returned_at_dawn",
+      "south_field.control": "lu_workers"
+    },
+    "candidates": [
+      {
+        "id": "challenge_control_at_stump",
+        "action": "拔掉树根旁的陆氏竹签，要求按新露物证复勘",
+        "score": 10
+      },
+      {
+        "id": "accept_lu_rescue_as_debt",
+        "action": "承认陆氏救田并请求继续代护",
+        "score": 3
+      }
+    ],
+    "selected": "challenge_control_at_stump",
+    "selection_why": "只依据 3 条已知事实，选择总效用 10 的行动。"
+  },
+  {
+    "event_id": "E003",
+    "rule_id": "lu_exposed_boundary_strategy",
+    "actor": "lu_jinghe",
+    "tick": "同治六年五月十二 巳初",
+    "known_facts": {
+      "boundary.marker": "exposed_maple_stump",
+      "boundary.review": "demanded_at_stump",
+      "evidence.upper_deed": "withheld"
+    },
+    "candidates": [
+      {
+        "id": "submit_upper_deed_sealed",
+        "action": "取出一直扣留的上手契，当众交周继仁封存",
+        "score": 9
+      },
+      {
+        "id": "keep_deed_withheld",
+        "action": "坚持树根不能改变现有登记，不提交上手契",
+        "score": 1
+      }
+    ],
+    "selected": "submit_upper_deed_sealed",
+    "selection_why": "只依据 3 条已知事实，选择总效用 9 的行动。"
+  },
+  {
+    "event_id": "E004",
+    "rule_id": "shen_compare_deed_to_stump",
+    "actor": "shen_yanqiu",
+    "tick": "同治六年五月十二 午初",
+    "known_facts": {
+      "boundary.marker": "exposed_maple_stump",
+      "evidence.upper_deed": "submitted_sealed"
+    },
+    "candidates": [
+      {
+        "id": "compare_words_with_ground",
+        "action": "逐句朗读上手契地界，并把树根位置画入草图",
+        "score": 11
+      },
+      {
+        "id": "copy_deed_without_site_comparison",
+        "action": "只誊录契文，不标树根位置",
+        "score": 1
+      }
+    ],
+    "selected": "compare_words_with_ground",
+    "selection_why": "只依据 2 条已知事实，选择总效用 11 的行动。"
+  },
+  {
+    "event_id": "E005",
+    "rule_id": "zhou_orders_measured_review",
+    "actor": "zhou_jiren",
+    "tick": "同治六年五月十二 午正",
+    "known_facts": {
+      "boundary.east": "probable_old_maple_line",
+      "evidence.deed_boundary_match": "partial"
+    },
+    "candidates": [
+      {
+        "id": "seal_evidence_order_measurement",
+        "action": "封存契据与草图，命三方次日各从树根量三步",
+        "score": 9
+      },
+      {
+        "id": "assign_boundary_from_deed",
+        "action": "直接按陆氏上手契确定东界",
+        "score": 1
+      }
+    ],
+    "selected": "seal_evidence_order_measurement",
+    "selection_why": "只依据 2 条已知事实，选择总效用 9 的行动。"
+  }
+]

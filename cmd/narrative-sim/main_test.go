@@ -270,6 +270,48 @@ func TestActorCannotUseAnUnobservedOpportunity(t *testing.T) {
 	}
 }
 
+func TestContinuationSelectsDistinctChaptersThroughDayFive(t *testing.T) {
+	out := t.TempDir()
+	if err := runAll("../../narrative", out); err != nil {
+		t.Fatal(err)
+	}
+	if err := continueRuns("../../narrative", out, 3); err != nil {
+		t.Fatal(err)
+	}
+	var index []runIndexEntry
+	data, err := os.ReadFile(filepath.Join(out, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &index); err != nil {
+		t.Fatal(err)
+	}
+	if len(index) != 5 {
+		t.Fatalf("got %d indexed days, want 5", len(index))
+	}
+	if got := []string{index[2].ChapterTitle, index[3].ChapterTitle, index[4].ChapterTitle}; !reflect.DeepEqual(got, []string{"病船", "岸上的名字", "退水以后"}) {
+		t.Fatalf("generated chapter sequence = %v", got)
+	}
+	data, err = os.ReadFile(filepath.Join(out, "day-05", "state-diff.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diff stateDiff
+	if err := json.Unmarshal(data, &diff); err != nil {
+		t.Fatal(err)
+	}
+	if got := diff.After["boundary.review"]; got != "measurement_ordered" {
+		t.Fatalf("day five did not turn exposed evidence into a measured review: %v", got)
+	}
+	data, err = os.ReadFile(filepath.Join(out, "day-05", "ledger.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "同治六年五月十二") {
+		t.Fatal("day five ledger did not advance the calendar")
+	}
+}
+
 func testBundle(t *testing.T) bundle {
 	t.Helper()
 	b, err := loadBundle("../../narrative", "../../narrative/scenarios/day-01.yaml")

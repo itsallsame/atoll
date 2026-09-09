@@ -1,0 +1,12 @@
+{
+  "scenario_id": "generated-day-05",
+  "day": 5,
+  "title": "退水以后",
+  "chapter_title": "退水以后",
+  "pov": "何阿生",
+  "event_count": 5,
+  "seeded_events": 0,
+  "emergent_events": 5,
+  "end_condition_met": true,
+  "registration_state": "continued"
+}

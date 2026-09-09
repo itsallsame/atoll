@@ -1,0 +1,12 @@
+{
+  "scenario_id": "generated-day-04",
+  "day": 4,
+  "title": "岸上的名字",
+  "chapter_title": "岸上的名字",
+  "pov": "沈砚秋",
+  "event_count": 4,
+  "seeded_events": 0,
+  "emergent_events": 4,
+  "end_condition_met": true,
+  "registration_state": "continued"
+}

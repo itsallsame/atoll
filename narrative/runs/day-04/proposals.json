@@ -1,0 +1,77 @@
+[
+  {
+    "event_id": "E002",
+    "rule_id": "lu_absent_cultivator_strategy",
+    "actor": "lu_jinghe",
+    "tick": "同治六年五月十一 辰初",
+    "known_facts": {
+      "he_asheng.location": "opposite_bank",
+      "registration.south_field_7": "attached_pending",
+      "south_field.flooding": "resumed"
+    },
+    "candidates": [
+      {
+        "id": "occupy_as_emergency_custodian",
+        "action": "派陆家长工接管缺口，并以救田为名插下竹签",
+        "score": 9
+      },
+      {
+        "id": "wait_for_he_return",
+        "action": "只派人察看水势，等何阿生回来",
+        "score": 1
+      }
+    ],
+    "selected": "occupy_as_emergency_custodian",
+    "selection_why": "只依据 3 条已知事实，选择总效用 9 的行动。"
+  },
+  {
+    "event_id": "E003",
+    "rule_id": "shen_absent_name_strategy",
+    "actor": "shen_yanqiu",
+    "tick": "同治六年五月十一 巳初",
+    "known_facts": {
+      "claimant.lin_suyun.recorded_as": "林素云",
+      "naming_precedent": "operational",
+      "south_field.control": "lu_workers"
+    },
+    "candidates": [
+      {
+        "id": "file_objection_in_absent_name",
+        "action": "以册中已有姓名替不在场的林素云登记异议",
+        "score": 9
+      },
+      {
+        "id": "record_only_lu_custody",
+        "action": "只记录陆氏代护田亩",
+        "score": 1
+      }
+    ],
+    "selected": "file_objection_in_absent_name",
+    "selection_why": "只依据 3 条已知事实，选择总效用 9 的行动。"
+  },
+  {
+    "event_id": "E004",
+    "rule_id": "zhou_absence_ruling",
+    "actor": "zhou_jiren",
+    "tick": "同治六年五月十一 午初",
+    "known_facts": {
+      "objection.lin_suyun": "filed_in_absence",
+      "registration.south_field_7": "attached_pending",
+      "south_field.control": "lu_workers"
+    },
+    "candidates": [
+      {
+        "id": "preserve_both_facts",
+        "action": "同时记录陆氏代护与林素云异议，不准改写业主栏",
+        "score": 9
+      },
+      {
+        "id": "recognize_lu_emergency_control",
+        "action": "暂认陆氏代管并搁置缺席异议",
+        "score": 2
+      }
+    ],
+    "selected": "preserve_both_facts",
+    "selection_why": "只依据 3 条已知事实，选择总效用 9 的行动。"
+  }
+]

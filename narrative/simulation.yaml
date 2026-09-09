@@ -21,7 +21,7 @@ environment_processes:
     actor: environment
     location: 河神庙
     when:
-      - {key: disease.temple_cases, op: gte, value: 4}
+      - {key: disease.temple_cases, op: eq, value: 4}
     participants: [he_asheng]
     observers: [he_asheng, shen_yanqiu, zhou_jiren]
     options:
@@ -36,6 +36,55 @@ environment_processes:
           - {key: patient.transport, op: set, value: needed_before_noon}
         utility: {causal_pressure: 8}
         prose: 河神庙那边天刚亮就来敲门。来人不肯进屋，只隔着门说，第五个人也烧得认不得亲娘了。对岸药铺答应收，条件是午前送到；午后潮头顶住洲口，小船便过不得横水。
+
+  - id: crossing_leaves_field_unattended
+    tick: dawn
+    order: 11
+    actor: environment
+    location: 南湾七号田
+    when:
+      - {key: patient.transport, op: eq, value: departed}
+      - {key: south_field.flooding, op: eq, value: slowed}
+    participants: [he_asheng]
+    observers: [lu_jinghe, shen_yanqiu, zhou_jiren]
+    options:
+      - id: dyke_slumps_without_he
+        action: 水势与劳力缺口继续作用
+        summary: 何阿生随病船滞留对岸，南湾新垒的土袋在夜水里塌了一角。
+        perceived_goal: 无
+        intended_effect: 无
+        actual_effect: 南湾重新进水；何阿生不在场使“救田”成为任何人都可以声称的公共理由。
+        effects:
+          - {key: he_asheng.location, op: set, value: opposite_bank}
+          - {key: south_field.flooding, op: set, value: resumed}
+          - {key: patient.transport, op: set, value: delivered_waiting_return}
+        utility: {environmental_continuity: 8}
+        prose: 天亮后南湾又进了水。何阿生没有回来，昨夜病船靠岸以后，对岸不许撑船人立刻折返。土袋少了他那只伤脚踩实，最上面一层向沟里歪下去，水从缝里一线一线钻进田。
+
+  - id: water_reveals_old_boundary
+    tick: dawn
+    order: 12
+    actor: environment
+    location: 南湾七号田
+    when:
+      - {key: south_field.control, op: eq, value: lu_workers}
+      - {key: review.after_flood, op: eq, value: true}
+    participants: [he_asheng]
+    observers: [he_asheng, lu_jinghe, shen_yanqiu, zhou_jiren]
+    options:
+      - id: stump_emerges
+        action: 退水暴露旧地貌
+        summary: 水退两寸，争议东界附近露出一圈埋在淤泥下的枫杨树根。
+        perceived_goal: 无
+        intended_effect: 无
+        actual_effect: 一个一直存在却不可见的物证进入所有在场者的判断。
+        effects:
+          - {key: river.level, op: set, value: receding}
+          - {key: boundary.marker, op: set, value: exposed_maple_stump}
+          - {key: he_asheng.location, op: set, value: returned_at_dawn}
+          - {key: south_field.control, op: set, value: lu_workers}
+        utility: {latent_evidence: 9}
+        prose: 第五日清早，水退了两寸。第一班渡船把何阿生送回来时，他没有先回家，径直蹚进南湾。陆家长工的竹签旁，淤泥塌下去一圈，露出几根发黑的粗根，断口都朝着田心。
 
 actor_policies:
   - id: he_food_strategy
@@ -177,8 +226,265 @@ actor_policies:
         utility: {preserve_restriction: 5, avoid_precedent: 4, reportable_death_risk: -6}
         prose: 周继仁把印盒合上了。
 
+  - id: lu_absent_cultivator_strategy
+    tick: morning
+    order: 60
+    actor: lu_jinghe
+    location: 南湾七号田
+    when:
+      - {key: he_asheng.location, op: eq, value: opposite_bank}
+      - {key: south_field.flooding, op: eq, value: resumed}
+      - {key: registration.south_field_7, op: eq, value: attached_pending}
+    participants: [shen_yanqiu]
+    observers: [lu_jinghe, shen_yanqiu, zhou_jiren]
+    options:
+      - id: occupy_as_emergency_custodian
+        action: 派陆家长工接管缺口，并以救田为名插下竹签
+        summary: 陆敬和利用现耕者缺席，以公共救灾的说法取得南湾事实控制。
+        perceived_goal: 不让一季稻谷毁在无人承担的争议里，并把陆氏重新写成承担者。
+        intended_effect: 先控制水口与收成，再等待册局确认。
+        actual_effect: 陆氏尚未取得所有权，却取得了每天都能被旁人看见的占有事实。
+        effects:
+          - {key: south_field.control, op: set, value: lu_workers}
+          - {key: harvest.intent, op: set, value: emergency_salvage_by_lu}
+        utility: {gain_control: 7, save_crop: 4, public_backlash: -2}
+        prose: 陆敬和带来六个人和两捆竹签。他没有说收田，只叫人堵缺口，说稻子不能等争讼。每堵住一段，长工便在泥里插一根竹签。沈砚秋数到第七根时，才明白他们不是在标水深。
+      - id: wait_for_he_return
+        action: 只派人察看水势，等何阿生回来
+        summary: 陆敬和避免在登记未定时形成新的强占口实。
+        perceived_goal: 保存陆氏的程序优势。
+        intended_effect: 不改变田间控制。
+        actual_effect: 更多稻苗可能被淹。
+        effects:
+          - {key: harvest.intent, op: set, value: wait}
+        utility: {avoid_backlash: 5, crop_loss: -4}
+        prose: 陆敬和站在田埂上，没有叫人下水。
+
+  - id: shen_absent_name_strategy
+    tick: late_morning
+    order: 70
+    actor: shen_yanqiu
+    location: 册局
+    when:
+      - {key: south_field.control, op: eq, value: lu_workers}
+      - {key: claimant.lin_suyun.recorded_as, op: eq, value: 林素云}
+      - {key: naming_precedent, op: eq, value: operational}
+    participants: [zhou_jiren]
+    observers: [shen_yanqiu, zhou_jiren, lu_jinghe]
+    options:
+      - id: file_objection_in_absent_name
+        action: 以册中已有姓名替不在场的林素云登记异议
+        summary: 沈砚秋让林素云的名字在本人离洲后继续阻止田产被改写。
+        perceived_goal: 只延续已经被承认的争议主体，不虚构新的授权。
+        intended_effect: 使陆氏接管不能自动成为无争议占有。
+        actual_effect: 人虽然离开，记录却第一次代替她留在冲突现场。
+        effects:
+          - {key: objection.lin_suyun, op: set, value: filed_in_absence}
+          - {key: naming_precedent, op: set, value: used_beyond_presence}
+        utility: {preserve_record: 7, resist_silent_rewrite: 5, authority_risk: -3}
+        prose: 册局里没有林素云，沈砚秋仍把她的名字写了一遍。她在“陆氏代护”四字旁添注：林素云异议未撤。父亲问人都走了，谁准她异议。沈砚秋说：“昨日准她有名字的人。”
+      - id: record_only_lu_custody
+        action: 只记录陆氏代护田亩
+        summary: 沈砚秋把不在场视为无法继续表达异议。
+        perceived_goal: 不超出抄写者权限。
+        intended_effect: 保存眼前占有事实。
+        actual_effect: 林素云的主张因离洲而失去持续效力。
+        effects:
+          - {key: objection.lin_suyun, op: set, value: lapsed_by_absence}
+        utility: {procedural_safety: 6, erase_claim_risk: -5}
+        prose: 沈砚秋把那一栏空着。
+
+  - id: zhou_absence_ruling
+    tick: noon
+    order: 80
+    actor: zhou_jiren
+    location: 册局
+    when:
+      - {key: objection.lin_suyun, op: eq, value: filed_in_absence}
+      - {key: south_field.control, op: eq, value: lu_workers}
+      - {key: registration.south_field_7, op: eq, value: attached_pending}
+    participants: [shen_yanqiu, lu_jinghe]
+    observers: [zhou_jiren, shen_yanqiu, lu_jinghe]
+    options:
+      - id: preserve_both_facts
+        action: 同时记录陆氏代护与林素云异议，不准改写业主栏
+        summary: 周继仁把新的事实控制与旧的权利争议并列保存。
+        perceived_goal: 既不承担毁田责任，也不让临时救田变成县衙确认归属。
+        intended_effect: 把判断推迟到退水复勘。
+        actual_effect: 田被陆氏控制，名字却仍留在册上；占有与承认第一次公开分离。
+        effects:
+          - {key: registration.south_field_7, op: set, value: attached_with_absent_claimant_objection}
+          - {key: day4.dispute, op: set, value: control_without_recognition}
+        utility: {preserve_tax_base: 5, avoid_ownership_ruling: 6, complexity_cost: -2}
+        prose: 周继仁把两条注记圈在一起，圈得很大，谁也盖不住谁。他说陆家救的是苗，不是业；林素云留的是名，不是人。说完又让沈砚秋在末尾添四字：退水再勘。
+      - id: recognize_lu_emergency_control
+        action: 暂认陆氏代管并搁置缺席异议
+        summary: 周继仁以现场可执行性压过缺席者记录。
+        perceived_goal: 尽快形成单一责任人。
+        intended_effect: 陆氏负责田亩和税粮。
+        actual_effect: 临时控制开始替代尚未完成的产权判断。
+        effects:
+          - {key: registration.south_field_7, op: set, value: lu_temporary_custody}
+        utility: {administrative_simplicity: 6, appeal_risk: -4}
+        prose: 周继仁把林素云的名字压在纸镇下面。
+
+  - id: he_returned_field_strategy
+    tick: morning
+    order: 90
+    actor: he_asheng
+    location: 南湾七号田
+    when:
+      - {key: he_asheng.location, op: eq, value: returned_at_dawn}
+      - {key: boundary.marker, op: eq, value: exposed_maple_stump}
+      - {key: south_field.control, op: eq, value: lu_workers}
+    participants: [lu_jinghe]
+    observers: [he_asheng, lu_jinghe, shen_yanqiu]
+    options:
+      - id: challenge_control_at_stump
+        action: 拔掉树根旁的陆氏竹签，要求按新露物证复勘
+        summary: 何阿生没有否认树根，而是利用它反对陆氏把救田变成接管。
+        perceived_goal: 保住现耕事实，并迫使所有人回到尚未解释完的地界问题。
+        intended_effect: 中止陆家继续插签和预备收割。
+        actual_effect: 树根不能单独证明谁有田，却足以使陆氏新形成的控制失去稳定性。
+        effects:
+          - {key: south_field.control, op: set, value: openly_contested}
+          - {key: boundary.review, op: set, value: demanded_at_stump}
+        utility: {keep_field: 8, use_new_evidence: 4, confrontation_risk: -2}
+        prose: 何阿生拔起离树根最近的竹签，泥水溅到陆敬和衣摆上。他说树是林家说的那棵，田却是他种活的田。若这根东西今天算证据，陆家的竹签就只能算昨夜才长出来的草。
+      - id: accept_lu_rescue_as_debt
+        action: 承认陆氏救田并请求继续代护
+        summary: 何阿生以新的劳役或债务换取作物保全。
+        perceived_goal: 先保住收成。
+        intended_effect: 避免现场冲突。
+        actual_effect: 陆氏取得新的债务解释空间。
+        effects:
+          - {key: lu_claim.debt_basis, op: set, value: renewed_by_field_rescue}
+        utility: {save_crop: 5, avoid_conflict: 3, debt_risk: -5}
+        prose: 何阿生把竹签重新按进泥里。
+
+  - id: lu_exposed_boundary_strategy
+    tick: late_morning
+    order: 100
+    actor: lu_jinghe
+    location: 南湾七号田
+    when:
+      - {key: boundary.marker, op: eq, value: exposed_maple_stump}
+      - {key: boundary.review, op: eq, value: demanded_at_stump}
+      - {key: evidence.upper_deed, op: eq, value: withheld}
+    participants: [he_asheng, shen_yanqiu]
+    observers: [lu_jinghe, he_asheng, shen_yanqiu, zhou_jiren]
+    options:
+      - id: submit_upper_deed_sealed
+        action: 取出一直扣留的上手契，当众交周继仁封存
+        summary: 陆敬和判断继续藏契的风险已经超过契据本身可能暴露的矛盾。
+        perceived_goal: 用文书夺回对新物证的解释权。
+        intended_effect: 证明陆氏契据链覆盖争议地界。
+        actual_effect: 上手契进入公共证据链，也使陆氏此前扣留证据的事实无法再隐藏。
+        effects:
+          - {key: evidence.upper_deed, op: set, value: submitted_sealed}
+          - {key: lu_jinghe.withholding_exposed, op: set, value: true}
+        utility: {control_interpretation: 7, concealment_loss: -4, avoid_boundary_defeat: 6}
+        prose: 陆敬和叫人回支祠取来一只蓝布包。他当众解开三层结，把那张一直不存在似的上手契递给周继仁。他说昨日不取，是怕雨打湿。没有人问为什么蓝布还是干的。
+      - id: keep_deed_withheld
+        action: 坚持树根不能改变现有登记，不提交上手契
+        summary: 陆敬和继续保存信息优势。
+        perceived_goal: 避免契据链被逐字核对。
+        intended_effect: 维持代护事实。
+        actual_effect: 树根与扣契疑云共同削弱陆氏说法。
+        effects:
+          - {key: lu_claim.credibility, op: set, value: weakened}
+        utility: {keep_secret: 6, credibility_loss: -5}
+        prose: 陆敬和说一截烂根不在册上。
+
+  - id: shen_compare_deed_to_stump
+    tick: noon
+    order: 110
+    actor: shen_yanqiu
+    location: 南湾七号田
+    when:
+      - {key: evidence.upper_deed, op: eq, value: submitted_sealed}
+      - {key: boundary.marker, op: eq, value: exposed_maple_stump}
+    participants: [he_asheng, lu_jinghe, zhou_jiren]
+    observers: [shen_yanqiu, he_asheng, lu_jinghe, zhou_jiren]
+    options:
+      - id: compare_words_with_ground
+        action: 逐句朗读上手契地界，并把树根位置画入草图
+        summary: 沈砚秋把文书与土地放在同一张可核对的记录里。
+        perceived_goal: 不替任何一方裁断，只让矛盾不能再次被分开隐藏。
+        intended_effect: 确认契中“老枫杨外三步”是否能对应现场。
+        actual_effect: 契据与树根部分相合，却把争议从有没有证据推进到“三步从哪边量”。
+        effects:
+          - {key: evidence.deed_boundary_match, op: set, value: partial}
+          - {key: boundary.east, op: set, value: probable_old_maple_line}
+          - {key: ownership, op: set, value: unresolved_with_better_evidence}
+        utility: {accuracy: 8, expose_contradiction: 5, family_risk: -2}
+        prose: 沈砚秋念到“老枫杨外三步”时蹲下来，把纸压在膝上画根须。何阿生从根向东量，陆敬和的人从根向西量，三步都没有错，却落在两块不同的泥里。
+      - id: copy_deed_without_site_comparison
+        action: 只誊录契文，不标树根位置
+        summary: 沈砚秋避免把现场判断写进正式草图。
+        perceived_goal: 限制自己的责任。
+        intended_effect: 留待县衙复核。
+        actual_effect: 新物证仍可能被旧文书语言吞没。
+        effects:
+          - {key: evidence.deed_boundary_match, op: set, value: untested}
+        utility: {procedural_safety: 5, accuracy_loss: -4}
+        prose: 沈砚秋只抄了字，没有画根。
+
+  - id: zhou_orders_measured_review
+    tick: departure
+    order: 120
+    actor: zhou_jiren
+    location: 南湾七号田
+    when:
+      - {key: evidence.deed_boundary_match, op: eq, value: partial}
+      - {key: boundary.east, op: eq, value: probable_old_maple_line}
+    participants: [shen_yanqiu, he_asheng, lu_jinghe]
+    observers: [zhou_jiren, shen_yanqiu, he_asheng, lu_jinghe]
+    options:
+      - id: seal_evidence_order_measurement
+        action: 封存契据与草图，命三方次日各从树根量三步
+        summary: 周继仁拒绝把更好的证据误写成已经解决的产权结论。
+        perceived_goal: 形成可复核程序，同时不减少本年税粮。
+        intended_effect: 固定证据，延后归属裁定。
+        actual_effect: 南湾争议获得了共同起点，却产生了两个合法方向；下一轮冲突由记忆转向测量权。
+        effects:
+          - {key: boundary.review, op: set, value: measurement_ordered}
+          - {key: registration.south_field_7, op: set, value: evidence_enriched_pending_measurement}
+        utility: {auditability: 7, preserve_taxpayer: 4, unresolved_cost: -2}
+        prose: 周继仁把契和草图一同封起来，命他们次日带尺再来。他特意没有写从哪边量。何阿生看见陆敬和也在看那一处空白，便知道今天露出来的不只是一截树根。
+      - id: assign_boundary_from_deed
+        action: 直接按陆氏上手契确定东界
+        summary: 周继仁用文书结束现场争论。
+        perceived_goal: 尽快交付可登记界线。
+        intended_effect: 完成南湾测绘。
+        actual_effect: 对“三步”方向的分歧被隐藏进正式图册。
+        effects:
+          - {key: boundary.review, op: set, value: closed_by_deed}
+        utility: {finish_register: 6, appeal_risk: -5}
+        prose: 周继仁在草图上划下了一条直线。
+
 chapter:
   title: 病船
   pov: 林素云
   opening: 林素云醒来时，先听见河神庙的门板响了五下。她左耳听不清，每一下都像从水底传来；第五下以后，再没有人敲。
   closing: 船离岸以后，林素云才把凭单翻到背面。湿墨透过纸，三个字反着浮出来。她第一次知道，一个名字不仅能把人写进田里，也能把人带走。
+
+chapters:
+  - title: 退水以后
+    pov: 何阿生
+    when:
+      - {key: south_field.control, op: eq, value: lu_workers}
+    opening: 何阿生坐第一班船回洲。船户把篙递给他，他没有接；昨夜他用这双手扶过病人，现在只想知道田还认不认得他的脚。
+    closing: 泥里的两行脚印分别向东、向西，都是从同一截树根开始。何阿生把伤脚踩进自己那一行，觉得今天的地比昨日多了一件证据，也多了一种丢法。
+  - title: 岸上的名字
+    pov: 沈砚秋
+    when:
+      - {key: medical_crossing.status, op: eq, value: departed_one_way}
+    opening: 林素云离洲后的第一个早晨，册局里还留着她坐过的竹凳。沈砚秋把凳子推回墙边，纸上的名字却没有地方可推。
+    closing: 太阳落下去以前，南湾多了七根陆家的竹签，册上多了一次林素云的异议。人和田隔着一条河，名字比船先回到了洲上。
+  - title: 病船
+    pov: 林素云
+    when:
+      - {key: lin_suyun.exit, op: eq, value: blocked}
+    opening: 林素云醒来时，先听见河神庙的门板响了五下。她左耳听不清，每一下都像从水底传来；第五下以后，再没有人敲。
+    closing: 船离岸以后，林素云才把凭单翻到背面。湿墨透过纸，三个字反着浮出来。她第一次知道，一个名字不仅能把人写进田里，也能把人带走。

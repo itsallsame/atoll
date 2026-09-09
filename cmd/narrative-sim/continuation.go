@@ -15,6 +15,7 @@ type continuationSpec struct {
 	Ticks     []continuationTick `yaml:"ticks"`
 	Processes []continuationRule `yaml:"environment_processes"`
 	Policies  []continuationRule `yaml:"actor_policies"`
+	Chapters  []generatedChapter `yaml:"chapters"`
 	Chapter   generatedChapter   `yaml:"chapter"`
 }
 
@@ -60,10 +61,11 @@ type stateEffect struct {
 }
 
 type generatedChapter struct {
-	Title   string `yaml:"title"`
-	POV     string `yaml:"pov"`
-	Opening string `yaml:"opening"`
-	Closing string `yaml:"closing"`
+	Title   string           `yaml:"title"`
+	POV     string           `yaml:"pov"`
+	Opening string           `yaml:"opening"`
+	Closing string           `yaml:"closing"`
+	When    []stateCondition `yaml:"when"`
 }
 
 type beliefLedger struct {
@@ -149,9 +151,13 @@ func continueRuns(bundleDir, outDir string, count int) error {
 func runContinuationDay(spec continuationSpec, day int, inherited map[string]any, inheritedBeliefs map[string]characterBelief) (runResult, error) {
 	state := cloneMap(inherited)
 	beliefs := cloneBeliefs(inheritedBeliefs)
+	chapter, err := chapterForState(spec, inherited)
+	if err != nil {
+		return runResult{}, err
+	}
 	events := []event{}
 	proposals := []actionProposal{}
-	prose := []string{spec.Chapter.Opening}
+	prose := []string{chapter.Opening}
 	for _, tick := range spec.Ticks {
 		rules := rulesForTick(spec, tick.ID)
 		for _, rule := range rules {
@@ -173,7 +179,8 @@ func runContinuationDay(spec continuationSpec, day int, inherited map[string]any
 				causes = []string{events[len(events)-1].EventID}
 			}
 			basis := conditionKeys(rule.When)
-			e := event{EventID: id, SourceID: "generated/" + rule.ID, OccurredAt: tick.Label, Location: rule.Location, Actor: rule.Actor, Participants: rule.Participants, Action: selected.Action, Summary: selected.Summary, PerceivedGoalByActor: selected.PerceivedGoal, CauseEventIDs: causes, IntendedEffect: selected.IntendedEffect, ActualEffect: selected.ActualEffect, WorldStateDelta: delta, Observers: rule.Observers, SelectedOption: selected.ID, SelectedScore: utilityScore(selected.Utility), Utility: selected.Utility, RejectedOptions: rejected, DecisionBasis: basis}
+			occurredAt := tickLabel(day, tick.Label)
+			e := event{EventID: id, SourceID: "generated/" + rule.ID, OccurredAt: occurredAt, Location: rule.Location, Actor: rule.Actor, Participants: rule.Participants, Action: selected.Action, Summary: selected.Summary, PerceivedGoalByActor: selected.PerceivedGoal, CauseEventIDs: causes, IntendedEffect: selected.IntendedEffect, ActualEffect: selected.ActualEffect, WorldStateDelta: delta, Observers: rule.Observers, SelectedOption: selected.ID, SelectedScore: utilityScore(selected.Utility), Utility: selected.Utility, RejectedOptions: rejected, DecisionBasis: basis}
 			events = append(events, e)
 			if rule.Actor != "environment" {
 				proposals = append(proposals, proposalRecord(e, rule, decisionState))
@@ -187,15 +194,40 @@ func runContinuationDay(spec continuationSpec, day int, inherited map[string]any
 	if len(events) == 0 {
 		return runResult{}, errors.New("continuation produced no events")
 	}
-	prose = append(prose, spec.Chapter.Closing)
-	chapter := fmt.Sprintf("# 第%d章 %s\n\n%s\n", day, spec.Chapter.Title, strings.Join(nonEmpty(prose), "\n\n"))
+	prose = append(prose, chapter.Closing)
+	chapterText := fmt.Sprintf("# 第%d章 %s\n\n%s\n", day, chapter.Title, strings.Join(nonEmpty(prose), "\n\n"))
 	diff := stateDiff{Scenario: fmt.Sprintf("generated-day-%02d", day), Before: cloneMap(inherited), After: cloneMap(state)}
 	for _, e := range events {
 		diff.Changes = append(diff.Changes, map[string]string{"event_id": e.EventID, "change": e.ActualEffect})
 	}
-	summary := runSummary{ScenarioID: diff.Scenario, Day: day, Title: spec.Chapter.Title, ChapterTitle: spec.Chapter.Title, POV: spec.Chapter.POV, EventCount: len(events), EmergentEvents: len(events), EndConditionMet: true, RegistrationState: "continued"}
-	b := bundle{Title: "名册之外", Scenario: scenario{Day: day, ID: diff.Scenario, Title: spec.Chapter.Title, EndCondition: "本日所有可触发过程与人物行动完成", Inherits: fmt.Sprintf("day-%02d", day-1), Chapter: chapterSpec{Title: spec.Chapter.Title, POV: spec.Chapter.POV}}}
-	return runResult{Events: events, Memories: deriveMemories(events, uniqueObservers(events)), Beliefs: beliefLedger{Day: day, Characters: beliefs}, Proposals: proposals, StateDiff: diff, Scene: sceneMaterial(b, events), Chapter: chapter, Summary: summary}, nil
+	summary := runSummary{ScenarioID: diff.Scenario, Day: day, Title: chapter.Title, ChapterTitle: chapter.Title, POV: chapter.POV, EventCount: len(events), EmergentEvents: len(events), EndConditionMet: true, RegistrationState: "continued"}
+	b := bundle{Title: "名册之外", Scenario: scenario{Day: day, ID: diff.Scenario, Title: chapter.Title, EndCondition: "本日所有可触发过程与人物行动完成", Inherits: fmt.Sprintf("day-%02d", day-1), Chapter: chapterSpec{Title: chapter.Title, POV: chapter.POV}}}
+	return runResult{Events: events, Memories: deriveMemories(events, uniqueObservers(events)), Beliefs: beliefLedger{Day: day, Characters: beliefs}, Proposals: proposals, StateDiff: diff, Scene: sceneMaterial(b, events), Chapter: chapterText, Summary: summary}, nil
+}
+
+func chapterForState(spec continuationSpec, state map[string]any) (generatedChapter, error) {
+	for _, chapter := range spec.Chapters {
+		if conditionsMatch(state, chapter.When) {
+			return chapter, nil
+		}
+	}
+	if spec.Chapter.Title != "" {
+		return spec.Chapter, nil
+	}
+	return generatedChapter{}, errors.New("no chapter profile matches the current state")
+}
+
+func tickLabel(day int, label string) string {
+	phase := label
+	if index := strings.LastIndex(label, " "); index >= 0 {
+		phase = label[index+1:]
+	}
+	dates := map[int]string{1: "同治六年五月初八", 2: "同治六年五月初九", 3: "同治六年五月初十", 4: "同治六年五月十一", 5: "同治六年五月十二"}
+	date, ok := dates[day]
+	if !ok {
+		date = fmt.Sprintf("演化第%d日", day)
+	}
+	return date + " " + phase
 }
 
 func replayBeliefs(bundleDir, outDir string, index []runIndexEntry) (map[string]characterBelief, error) {
