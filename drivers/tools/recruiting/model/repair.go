@@ -31,7 +31,9 @@ type RepairIncident struct {
 	FailureSignature string        `json:"failure_signature"`
 	FailingVersion   string        `json:"failing_version"`
 	RepairWorkID     string        `json:"repair_work_id,omitempty"`
+	ValidationWorkID string        `json:"validation_work_id,omitempty"`
 	AffectedWorkIDs  []string      `json:"affected_work_ids"`
+	RecoveredWorks   uint64        `json:"recovered_works,omitempty"`
 	Status           RepairStatus  `json:"repair_status"`
 	Resolution       string        `json:"resolution,omitempty"`
 	Version          uint64        `json:"version"`
@@ -98,6 +100,22 @@ func (r RepairIncident) BeginValidation(expected uint64) (RepairIncident, error)
 	return r, nil
 }
 
+// BeginValidationWithWork binds the state transition to executor-produced
+// success evidence. The repository additionally verifies that the Work is a
+// causal retry of an affected member before committing the transition.
+func (r RepairIncident) BeginValidationWithWork(expected uint64, workID string) (RepairIncident, error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return RepairIncident{}, fmt.Errorf("validation Work is required")
+	}
+	next, err := r.BeginValidation(expected)
+	if err != nil {
+		return RepairIncident{}, err
+	}
+	next.ValidationWorkID = workID
+	return next, nil
+}
+
 func (r RepairIncident) Resolve(expected uint64, resolution string) (RepairIncident, error) {
 	if err := requireVersion(expected, r.Version); err != nil {
 		return RepairIncident{}, err
@@ -106,5 +124,17 @@ func (r RepairIncident) Resolve(expected uint64, resolution string) (RepairIncid
 		return RepairIncident{}, &InvalidTransitionError{Entity: "repair incident", From: string(r.Status), Action: "resolve"}
 	}
 	r.Status, r.Resolution, r.Version = RepairResolved, strings.TrimSpace(resolution), r.Version+1
+	return r, nil
+}
+
+func (r RepairIncident) RecordRecoveryBatch(expected uint64, recovered uint64) (RepairIncident, error) {
+	if err := requireVersion(expected, r.Version); err != nil {
+		return RepairIncident{}, err
+	}
+	if r.Status != RepairResolved || recovered == 0 || r.RecoveredWorks > ^uint64(0)-recovered {
+		return RepairIncident{}, &InvalidTransitionError{Entity: "repair incident", From: string(r.Status), Action: "recover affected work"}
+	}
+	r.RecoveredWorks += recovered
+	r.Version++
 	return r, nil
 }

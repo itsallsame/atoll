@@ -66,6 +66,11 @@ func newRepairFailure(work model.Work, attempt model.Attempt, placement WorkPlac
 	}
 	digest := sha256.Sum256([]byte(repairKey))
 	suffix := hex.EncodeToString(digest[:16])
+	return repairFailureWithSuffix(work, domain, domainKey, report.StableSignature(), failingVersion, repairKey, suffix, at)
+}
+
+func repairFailureWithSuffix(affected model.Work, domain model.FailureDomain, domainKey, signature, failingVersion,
+	repairKey, suffix string, at time.Time) (repairFailure, error) {
 	repairWork, err := model.NewWork("repair-work-"+suffix, "repair_incident", "repair-incident-"+suffix, "repair", "automatic")
 	if err == nil {
 		repairWork, err = repairWork.WithCausality("system:recruiting-repair", "", "")
@@ -74,7 +79,7 @@ func newRepairFailure(work model.Work, attempt model.Attempt, placement WorkPlac
 		return repairFailure{}, err
 	}
 	incident, err := model.NewRepairIncident("repair-incident-"+suffix, domain, domainKey,
-		report.StableSignature(), failingVersion, work.WorkID)
+		signature, failingVersion, affected.WorkID)
 	if err == nil {
 		incident, err = incident.WithRepairWork(repairWork.WorkID)
 	}
@@ -84,6 +89,14 @@ func newRepairFailure(work model.Work, attempt model.Attempt, placement WorkPlac
 	return repairFailure{Incident: incident, Work: repairWork, Placement: WorkPlacement{
 		BusinessKey: "repair|" + suffix, Priority: 500, NotBefore: at.UTC(),
 	}}, nil
+}
+
+func rekeyResolvedRepairFailure(failure repairFailure, affectedWorkID, causeID string, at time.Time) (repairFailure, error) {
+	digest := sha256.Sum256([]byte(failure.Incident.RepairKey + "\nregression\n" + affectedWorkID + "\n" + causeID))
+	suffix := hex.EncodeToString(digest[:16])
+	affected := model.Work{WorkID: affectedWorkID}
+	return repairFailureWithSuffix(affected, failure.Incident.Domain, failure.Incident.DomainKey,
+		failure.Incident.FailureSignature, failure.Incident.FailingVersion, failure.Incident.RepairKey, suffix, at)
 }
 
 func failureDomainFor(work model.Work, attempt model.Attempt, placement WorkPlacement, failureClass string) model.FailureDomain {
@@ -152,9 +165,9 @@ func openOrJoinRepairFailureTx(ctx context.Context, tx *sql.Tx, failure repairFa
 	failure.Placement.NotBefore = at.UTC()
 	state, _ := json.Marshal(failure.Incident)
 	result, err := tx.ExecContext(ctx, `INSERT IGNORE INTO recruiting_repair_incidents(
-  incident_id, repair_key, failure_domain, domain_key, failure_signature,
+  incident_id, repair_key, active_repair_key, failure_domain, domain_key, failure_signature,
   failing_version, repair_work_id, repair_status, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, failure.Incident.IncidentID, failure.Incident.RepairKey,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, failure.Incident.IncidentID, failure.Incident.RepairKey, failure.Incident.RepairKey,
 		failure.Incident.Domain, failure.Incident.DomainKey, failure.Incident.FailureSignature,
 		failure.Incident.FailingVersion, failure.Incident.RepairWorkID, failure.Incident.Status,
 		failure.Incident.Version, state, at.UTC(), at.UTC())
@@ -163,33 +176,60 @@ func openOrJoinRepairFailureTx(ctx context.Context, tx *sql.Tx, failure repairFa
 	}
 	createdRows, _ := result.RowsAffected()
 	created := createdRows == 1
+	if !created {
+		var activeID string
+		activeErr := tx.QueryRowContext(ctx, `SELECT incident_id FROM recruiting_repair_incidents
+WHERE active_repair_key = ?`, failure.Incident.RepairKey).Scan(&activeID)
+		if errors.Is(activeErr, sql.ErrNoRows) {
+			failure, err = rekeyResolvedRepairFailure(failure, affectedWorkID, causeID, at)
+			if err != nil {
+				return model.RepairIncident{}, false, err
+			}
+			state, _ = json.Marshal(failure.Incident)
+			result, err = tx.ExecContext(ctx, `INSERT IGNORE INTO recruiting_repair_incidents(
+  incident_id, repair_key, active_repair_key, failure_domain, domain_key, failure_signature,
+  failing_version, repair_work_id, repair_status, version, state_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, failure.Incident.IncidentID, failure.Incident.RepairKey, failure.Incident.RepairKey,
+				failure.Incident.Domain, failure.Incident.DomainKey, failure.Incident.FailureSignature,
+				failure.Incident.FailingVersion, failure.Incident.RepairWorkID, failure.Incident.Status,
+				failure.Incident.Version, state, at.UTC(), at.UTC())
+			if err != nil {
+				return model.RepairIncident{}, false, fmt.Errorf("open regressed repair incident: %w", err)
+			}
+			createdRows, _ = result.RowsAffected()
+			created = createdRows == 1
+		} else if activeErr != nil {
+			return model.RepairIncident{}, false, activeErr
+		}
+	}
 	var existingState []byte
 	if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_repair_incidents
-WHERE repair_key = ?`, failure.Incident.RepairKey).Scan(&existingState); err != nil {
+WHERE active_repair_key = ?`, failure.Incident.RepairKey).Scan(&existingState); err != nil {
 		return model.RepairIncident{}, false, fmt.Errorf("read repair incident: %w", err)
 	}
 	var incident model.RepairIncident
 	if err := json.Unmarshal(existingState, &incident); err != nil {
 		return model.RepairIncident{}, false, err
 	}
-	if incident.RepairKey != failure.Incident.RepairKey || incident.RepairWorkID != failure.Work.WorkID {
+	if incident.RepairKey != failure.Incident.RepairKey {
 		return model.RepairIncident{}, false, fmt.Errorf("repair incident identity collision")
 	}
 	// Locking the smaller single-flight row before touching the shared Work key
 	// gives every failure transaction the same order. The reverse Incident→Work
 	// foreign key is intentionally absent; the exact Work is verified here,
 	// while affected Work rows retain their database-enforced self-reference.
-	if err := insertWork(ctx, tx, failure.Work, failure.Placement, at); err != nil {
-		if !errors.Is(err, ErrBusinessKeyExists) {
+	if created {
+		if err := insertWork(ctx, tx, failure.Work, failure.Placement, at); err != nil {
 			return model.RepairIncident{}, false, err
 		}
-		existing, readErr := getWorkWith(ctx, tx, failure.Work.WorkID, true)
+	} else {
+		existing, readErr := getWorkWith(ctx, tx, incident.RepairWorkID, true)
 		if readErr != nil {
 			return model.RepairIncident{}, false, fmt.Errorf("read competing repair Work: %w", readErr)
 		}
-		if existing != failure.Work {
-			return model.RepairIncident{}, false, fmt.Errorf("repair Work identity collision: stored=%+v expected=%+v",
-				existing, failure.Work)
+		if existing.WorkID != incident.RepairWorkID || existing.TargetID != incident.IncidentID || existing.Purpose != "repair" {
+			return model.RepairIncident{}, false, fmt.Errorf("repair Work identity collision: stored=%+v incident=%+v",
+				existing, incident)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO recruiting_repair_affected_works(incident_id, work_id, created_at)

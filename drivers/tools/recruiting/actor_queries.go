@@ -197,13 +197,22 @@ func handleRepairGetQuery(sys actorbase.Sys, repository *store.Repository, msg a
 		}
 		repairWork = value
 	}
+	var validationWork any
+	if incident.Incident.ValidationWorkID != "" {
+		value, err := repository.GetWorkRecord(msg.Ctx(), incident.Incident.ValidationWorkID)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+		validationWork = value
+	}
 	affected, err := repository.ListRepairAffectedWorks(msg.Ctx(), payload.ID, payload.AffectedCursor, payload.AffectedLimit)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
 	}
 	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "repair": incident,
-		"repair_work": repairWork, "affected_works": affected.Items,
+		"repair_work": repairWork, "validation_work": validationWork, "affected_works": affected.Items,
 		"affected_page": PageInfo{NextCursor: affected.NextCursor, HasMore: affected.HasMore}})
 }
 

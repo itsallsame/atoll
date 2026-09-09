@@ -72,6 +72,10 @@ migration 22 让失败 Work 以 `blocked_by_repair_work_id` 自引用同一张 W
 
 migration 23 为 RepairIncident 的无状态筛选增加 `(updated_at, incident_id)` 索引；已有 `(repair_status, updated_at, incident_id)` 索引服务按状态筛选。公开的 `recruiting.repair.list/get` 只返回有界投影：Incident JSON 中的种子 `affected_work_ids` 不作为成员清单输出，成员总数和待人工数由规范化关系计算，具体 Work 按 `incident_id + work_id` seek 分页。Repair Work 也通过 Actor 查询投影返回，运营端不直连数据库。列表游标绑定 repair status，成员游标绑定 incident ID，不能跨筛选条件复用。
 
+migration 24 增加 `validation_work_id`、`recovered_work_count` 和可空唯一 `active_repair_key`。`repair_key` 是跨历史的故障分组事实，不再全局唯一；只有 open/validating 行持有 `active_repair_key`，resolve 事务将其置空，所以相同签名和失败版本在修复后再次回归会创建新 Incident，而并发回归仍只有一个活动 Incident。首代确定性 Incident ID 与 Repair Work ID 保持兼容；若该 ID 已属于关闭历史，新回归使用命令因果派生的新 ID，并仍由活动键竞争收敛。
+
+`recruiting.repair.validation.begin` 只接受已经由 Executor 完成且 `resolution=succeeded` 的因果 Retry Work，Repository 反查其 `cause_work_id` 必须属于规范化 affected 集合；运营员不能凭文字宣称验证成功。该事务同时把唯一 Repair Work 从 open 推进为 running，使 Work Center 与 Incident 的 validating 投影一致。`repair.resolve` 再次锁定同一验证 Work，在一个事务解决 Incident、释放活动键并把 Repair Work 从 running 完成为 succeeded。`repair.recover` 每个版本栅栏命令最多选择 100 个仍为 `waiting_human` 且阻塞指针仍指向该 Repair Work 的成员，按 Work ID 锁定并恢复为 open；失败 Attempt 和分类元数据不改写。每个 capability 至多创建一个无 origin/Profile 偏置的初始 wake，后续领取仍经过原有 origin/company/profile 预算，避免按积压成员数同时发送控制消息。
+
 ### 首次基线
 
 `baseline_generations` 保存 generation 状态和 fencing version；`baseline_staging` 按 `(source_id, generation, source_job_key)` 分块幂等写入，并为每行标记产生它的 `attempt_id`。失败 Attempt 的行不删除，可用于诊断；新 Attempt 必须从第 1 页重扫，同键行会改绑到新 Attempt，旧 Attempt 独有键保持隔离。finalize 只统计当前成功 Attempt 的行，并把该 `listing_attempt_id` 冻结到 generation；后续物化也只读取这个 Attempt 的 staging，因此旧页无法混入基线。游标失效可从头重扫。finalize 锁定 generation、核对当前 Attempt 的实际 staging 数、改变 generation 可见性并建立首个 Checkpoint，不搬运一万行数据；详情 Job/Work 复用上述页提交协议按主键 seek 渐进物化，避免单个超大事务。旧 Attempt staging 的有界保留/清理服从 Artifact 与运行证据保留策略，不进入成功事实热路径。

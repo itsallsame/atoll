@@ -138,10 +138,10 @@ func (r *Repository) OpenOrJoinRepair(ctx context.Context, incident model.Repair
 	state, _ := json.Marshal(incident)
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO recruiting_repair_incidents(
-  incident_id, repair_key, failure_domain, domain_key, failure_signature,
+  incident_id, repair_key, active_repair_key, failure_domain, domain_key, failure_signature,
   failing_version, repair_status, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		incident.IncidentID, incident.RepairKey, incident.Domain, incident.DomainKey,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		incident.IncidentID, incident.RepairKey, incident.RepairKey, incident.Domain, incident.DomainKey,
 		incident.FailureSignature, incident.FailingVersion, incident.Status, incident.Version,
 		state, businessAt.UTC(), businessAt.UTC())
 	joined := false
@@ -154,7 +154,7 @@ INSERT INTO recruiting_repair_incidents(
 		var existingState []byte
 		if err := tx.QueryRowContext(ctx, `
 SELECT state_json FROM recruiting_repair_incidents
-WHERE repair_key = ? FOR UPDATE`, incident.RepairKey).Scan(&existingState); err != nil {
+WHERE active_repair_key = ? FOR UPDATE`, incident.RepairKey).Scan(&existingState); err != nil {
 			return model.RepairIncident{}, false, fmt.Errorf("join repair incident: %w", err)
 		}
 		if err := json.Unmarshal(existingState, &incident); err != nil {

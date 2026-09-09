@@ -257,6 +257,22 @@ func (w Work) Resume(expected uint64) (Work, error) {
 	return w, nil
 }
 
+// RecoverFromRepair reopens a non-terminal Work after its shared Repair Work
+// has been validated and resolved. Failed Attempts and failure metadata remain
+// immutable; only the current scheduling gate is cleared.
+func (w Work) RecoverFromRepair(expected uint64, repairWorkID string) (Work, error) {
+	if err := requireVersion(expected, w.Version); err != nil {
+		return Work{}, err
+	}
+	repairWorkID = strings.TrimSpace(repairWorkID)
+	if w.Status != WorkWaitingHuman || repairWorkID == "" || w.BlockedByRepairWorkID != repairWorkID {
+		return Work{}, &InvalidTransitionError{Entity: "work", From: string(w.Status), Action: "recover from repair"}
+	}
+	w.Status, w.WaitingReason, w.BlockedByRepairWorkID, w.RetryNotBefore = WorkOpen, "", "", ""
+	w.Version++
+	return w, nil
+}
+
 func (w Work) Fail(expected uint64, reason string) (Work, error) {
 	if err := requireVersion(expected, w.Version); err != nil {
 		return Work{}, err

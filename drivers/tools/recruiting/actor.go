@@ -169,6 +169,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleSourceMessage(sys, cfg, repository, msg)
 		case TypeRecipeRollout:
 			handleRecipeRollout(sys, repository, msg)
+		case TypeRepairValidate, TypeRepairResolve, TypeRepairRecover:
+			handleRepairMessage(sys, cfg, repository, msg)
 		case TypeSourceDiscover, TypeSourceDiscoveryCandidateAccept, TypeSourceDiscoveryCandidateReject:
 			handleSourceDiscoveryMessage(sys, cfg, repository, msg)
 		case TypeBaselineStart:

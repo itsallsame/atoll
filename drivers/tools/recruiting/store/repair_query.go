@@ -48,16 +48,17 @@ func (r *Repository) GetRepairIncident(ctx context.Context, incidentID string) (
 		return RepairOverview{}, fmt.Errorf("repair incident ID is required")
 	}
 	var state []byte
-	var repairWorkID sql.NullString
+	var repairWorkID, validationWorkID sql.NullString
+	var recovered uint64
 	var overview RepairOverview
 	err := r.db.QueryRowContext(ctx, `
-SELECT i.state_json, i.repair_work_id,
+SELECT i.state_json, i.repair_work_id, i.validation_work_id, i.recovered_work_count,
        (SELECT COUNT(*) FROM recruiting_repair_affected_works a WHERE a.incident_id = i.incident_id),
        (SELECT COUNT(*) FROM recruiting_repair_affected_works a
           JOIN recruiting_works w ON w.work_id = a.work_id
          WHERE a.incident_id = i.incident_id AND w.status = 'waiting_human')
 FROM recruiting_repair_incidents i WHERE i.incident_id = ?`, incidentID).Scan(
-		&state, &repairWorkID, &overview.AffectedCount, &overview.WaitingHumanCount)
+		&state, &repairWorkID, &validationWorkID, &recovered, &overview.AffectedCount, &overview.WaitingHumanCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RepairOverview{}, ErrNotFound
 	}
@@ -68,8 +69,37 @@ FROM recruiting_repair_incidents i WHERE i.incident_id = ?`, incidentID).Scan(
 		return RepairOverview{}, fmt.Errorf("decode repair incident: %w", err)
 	}
 	overview.Incident.RepairWorkID = repairWorkID.String
+	overview.Incident.ValidationWorkID = validationWorkID.String
+	overview.Incident.RecoveredWorks = recovered
 	overview.Incident.AffectedWorkIDs = nil
 	return overview, nil
+}
+
+// GetRepairIncidentAggregate returns the complete bounded aggregate state for
+// command derivation. Public projections use GetRepairIncident and suppress
+// the legacy seed member so callers cannot mistake it for the canonical set.
+func (r *Repository) GetRepairIncidentAggregate(ctx context.Context, incidentID string) (model.RepairIncident, error) {
+	incidentID = strings.TrimSpace(incidentID)
+	if incidentID == "" {
+		return model.RepairIncident{}, fmt.Errorf("repair incident ID is required")
+	}
+	var state []byte
+	var repairWorkID, validationWorkID sql.NullString
+	var recovered uint64
+	err := r.db.QueryRowContext(ctx, `SELECT state_json, repair_work_id, validation_work_id, recovered_work_count
+FROM recruiting_repair_incidents WHERE incident_id = ?`, incidentID).Scan(&state, &repairWorkID, &validationWorkID, &recovered)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.RepairIncident{}, ErrNotFound
+	}
+	if err != nil {
+		return model.RepairIncident{}, fmt.Errorf("get repair incident aggregate: %w", err)
+	}
+	var incident model.RepairIncident
+	if err := json.Unmarshal(state, &incident); err != nil {
+		return model.RepairIncident{}, fmt.Errorf("decode repair incident aggregate: %w", err)
+	}
+	incident.RepairWorkID, incident.ValidationWorkID, incident.RecoveredWorks = repairWorkID.String, validationWorkID.String, recovered
+	return incident, nil
 }
 
 func (r *Repository) ListRepairIncidents(ctx context.Context, status model.RepairStatus, cursor string, limit int) (RepairIncidentPage, error) {
@@ -101,7 +131,7 @@ func (r *Repository) ListRepairIncidents(ctx context.Context, status model.Repai
 	}
 	args = append(args, limit+1)
 	query := fmt.Sprintf(`
-SELECT i.state_json, i.repair_work_id, i.updated_at, i.incident_id,
+SELECT i.state_json, i.repair_work_id, i.validation_work_id, i.recovered_work_count, i.updated_at, i.incident_id,
        (SELECT COUNT(*) FROM recruiting_repair_affected_works a WHERE a.incident_id = i.incident_id),
        (SELECT COUNT(*) FROM recruiting_repair_affected_works a
           JOIN recruiting_works w ON w.work_id = a.work_id
@@ -123,8 +153,9 @@ ORDER BY i.updated_at DESC, i.incident_id DESC LIMIT ?`, index, workListWhere(cl
 	for rows.Next() {
 		var value rowValue
 		var state []byte
-		var repairWorkID sql.NullString
-		if err := rows.Scan(&state, &repairWorkID, &value.updated, &value.id,
+		var repairWorkID, validationWorkID sql.NullString
+		var recovered uint64
+		if err := rows.Scan(&state, &repairWorkID, &validationWorkID, &recovered, &value.updated, &value.id,
 			&value.overview.AffectedCount, &value.overview.WaitingHumanCount); err != nil {
 			return RepairIncidentPage{}, fmt.Errorf("scan repair incident: %w", err)
 		}
@@ -132,6 +163,8 @@ ORDER BY i.updated_at DESC, i.incident_id DESC LIMIT ?`, index, workListWhere(cl
 			return RepairIncidentPage{}, fmt.Errorf("decode repair incident: %w", err)
 		}
 		value.overview.Incident.RepairWorkID = repairWorkID.String
+		value.overview.Incident.ValidationWorkID = validationWorkID.String
+		value.overview.Incident.RecoveredWorks = recovered
 		value.overview.Incident.AffectedWorkIDs = nil
 		values = append(values, value)
 	}

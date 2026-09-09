@@ -199,6 +199,24 @@ func TestRecruitingLiveDetailRecipeRepairThroughAtoll(t *testing.T) {
 		repairedAttemptStatus != string(model.AttemptSucceeded) {
 		t.Fatalf("real repaired Recipe did not succeed: work=%+v attempt=%s", repaired, repairedAttemptStatus)
 	}
+	validatingRepair := ws.request(homeID, "recruiting.repair.validation.begin", controlID, map[string]any{
+		"command_id": "e2e-live-detail-repair-validation", "target": map[string]any{"target_type": "repair_incident", "target_id": repairIncidentID},
+		"expected_version": 1, "validation_work_id": repaired.WorkID,
+		"reason": "the repaired Recipe succeeded against the real public detail endpoint",
+	})
+	if nestedStringField(t, validatingRepair, "incident", "repair_status") != "validating" {
+		t.Fatalf("real repair validation transition = %v", validatingRepair)
+	}
+	resolvedRepair := ws.request(homeID, "recruiting.repair.resolve", controlID, map[string]any{
+		"command_id":       "e2e-live-detail-repair-incident-resolve",
+		"target":           map[string]any{"target_type": "repair_incident", "target_id": repairIncidentID},
+		"expected_version": 2, "resolution": "validated corrected JSON pointer against the current real response",
+		"reason": "close the shared repair only after executor success",
+	})
+	if nestedStringField(t, resolvedRepair, "incident", "repair_status") != "resolved" ||
+		nestedStringField(t, resolvedRepair, "repair_work", "resolution") != "succeeded" {
+		t.Fatalf("real repair resolution transition = %v", resolvedRepair)
+	}
 	repairedAttemptID, repairedArtifacts := liveDetailAttemptEvidence(t, runtimeDSN, repaired.WorkID, "succeeded")
 	assertLiveDetailArtifacts(t, daemonHome, deviceID, qualifiedChannel, repairedAttemptID, repairedArtifacts)
 	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 50})

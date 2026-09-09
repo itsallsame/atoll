@@ -72,6 +72,14 @@ func TestWorkRecordsVersionedRetryAndHumanFailureDecisions(t *testing.T) {
 		human.RetryNotBefore != "" || human.BlockedByRepairWorkID != "repair-work-1" {
 		t.Fatalf("human decision = %+v err=%v", human, err)
 	}
+	recovered, err := human.RecoverFromRepair(human.Version, "repair-work-1")
+	if err != nil || recovered.Status != WorkOpen || recovered.BlockedByRepairWorkID != "" || recovered.WaitingReason != "" ||
+		recovered.LastFailureClass != "parse_error" || recovered.AutomaticAttempts != 2 {
+		t.Fatalf("repair recovery = %+v err=%v", recovered, err)
+	}
+	if _, err := human.RecoverFromRepair(human.Version, "another-repair"); err == nil {
+		t.Fatal("repair recovery ignored its blocking Repair Work")
+	}
 	if _, err := work.ApplyExecutionFailure(work.Version, ExecutionFailureDecision{PolicyVersion: 3, AttemptCount: 2,
 		FailureClass: "transport_timeout", Route: FailureRetry, RetryNotBefore: retryAt}); err == nil {
 		t.Fatal("non-monotonic automatic attempt count was accepted")
@@ -106,13 +114,17 @@ func TestRetryCreatesCausalWorkWithoutReopeningTerminal(t *testing.T) {
 
 func TestRepairRecipeProfileAndCompanyTerminalPaths(t *testing.T) {
 	incident, _ := NewRepairIncident("repair-1", FailureOrigin, "jobs.example.com", "http_403", "policy-1", "work-1")
-	incident, err := incident.BeginValidation(incident.Version)
+	incident, err := incident.BeginValidationWithWork(incident.Version, "validation-work-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	incident, err = incident.Resolve(incident.Version, "origin access restored")
-	if err != nil || incident.Status != RepairResolved {
+	if err != nil || incident.Status != RepairResolved || incident.ValidationWorkID != "validation-work-1" {
 		t.Fatalf("repair resolve = %+v %v", incident, err)
+	}
+	incident, err = incident.RecordRecoveryBatch(incident.Version, 25)
+	if err != nil || incident.RecoveredWorks != 25 {
+		t.Fatalf("repair recovery accounting = %+v %v", incident, err)
 	}
 
 	recipe, _ := NewRecipe("recipe-1", RecipeDetail, "jobs.example.com", 1, "content", "contract", testRecipeExecution("recipe-1"))

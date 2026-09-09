@@ -76,7 +76,7 @@ go test -race ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/
 
 - Work correct 和 DailyRun 修改控制词；Work resolve 的真实 `waiting_human` 旅程依赖后续 Attempt/repair 切片；Source validate 当前只进入 `validating`，验证 Attempt 的接受、契约证明和原子发布仍属于后续纵向切片；
 - 日报关闭后的 recovered 补偿记录仍待实现；
-- 分类失败已有版本化、有界退避并能转 `waiting_human`；按 origin/Recipe/Profile 故障域创建单飞 RepairIncident、站点级覆盖参数和修复后分批唤醒仍待实现。主动 incarnation 失效信号当前仅按无进展超时恢复；正常 dispatch→Executor→result→ack、“Work/dispatch 已提交、首次投递前 server 退出”及 completion acknowledgement 丢失均已通过真实进程与真实网站，仍需 Executor 处理中退出和业务结果 acknowledgement 丢失等切点；execution offer 和高频 page 是否写 ledger/outbox 的审计分层仍待按容量测试确定（accept/start/fail/result 的数据库 receipt 已完成）；
+- 分类失败已有版本化、有界退避并能转 `waiting_human`；按 origin/Recipe/Profile/single-target 故障域创建活动单飞 RepairIncident，普通用户可用成功 canary 证据验证、结案并以每批至多 100 条恢复，初始 wake 按 capability 聚合且 offer 仍经过原预算。站点级策略覆盖参数和自动续批协调仍待实现。主动 incarnation 失效信号当前仅按无进展超时恢复；正常 dispatch→Executor→result→ack、“Work/dispatch 已提交、首次投递前 server 退出”及 completion acknowledgement 丢失均已通过真实进程与真实网站，仍需 Executor 处理中退出和业务结果 acknowledgement 丢失等切点；execution offer 和高频 page 是否写 ledger/outbox 的审计分层仍待按容量测试确定（accept/start/fail/result 的数据库 receipt 已完成）；
 - 批量导入 preview、confirm、逐公司独立 Work/outcome、部分失败、多页续跑、末项已提交但 finalizer 丢失恢复以及整批有界取消已完成；等待人工项修复和修复后父级重新汇总尚未完成；
 - `recruiting_recovery_test.go` 的完整重启、重复 ledger delivery 与日报恢复路径。
 

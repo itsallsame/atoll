@@ -238,4 +238,49 @@ updated_at = VALUES(updated_at)`,
 	if err := json.Unmarshal(incidentState, &incident); err != nil || len(incident.AffectedWorkIDs) != 1 {
 		t.Fatalf("incident embedded an unbounded affected set: %+v err=%v", incident, err)
 	}
+
+	// Resolving releases only the active single-flight key. A later regression
+	// with the exact same signature/version must create a new Incident rather
+	// than attach to closed history, while still leaving just one active row.
+	incident.Status, incident.Resolution, incident.Version = model.RepairResolved, "regression fixture", incident.Version+1
+	closedState, _ := json.Marshal(incident)
+	if _, err := db.ExecContext(ctx, `UPDATE recruiting_repair_incidents
+SET active_repair_key = NULL, repair_status = 'resolved', version = ?, state_json = ?, updated_at = ?
+WHERE incident_id = ?`, incident.Version, closedState, now.Add(3*time.Second), incident.IncidentID); err != nil {
+		t.Fatal(err)
+	}
+	regressionWork, _ := model.NewWork("shared-origin-regression-work", "source", "shared-origin-regression-source", "listing_sync", "timer")
+	regressionPlacement := WorkPlacement{BusinessKey: "shared-origin|regression", Capability: "http.fetch", Origin: origin, NotBefore: now.Add(4 * time.Second)}
+	if err := repository.CreateWork(ctx, regressionWork, regressionPlacement, now.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	regressionFailure, err := newRepairFailure(regressionWork, model.Attempt{AttemptID: "shared-origin-regression-attempt"},
+		regressionPlacement, executioncontract.FailureReport{Class: "forbidden", Signature: "http.forbidden"}, policy.Version, now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regressed, created, err := openOrJoinRepairFailureTx(ctx, tx, regressionFailure, regressionWork.WorkID,
+		"shared-origin-regression-command", now.Add(4*time.Second))
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if !created || regressed.IncidentID == incident.IncidentID || regressed.RepairKey != incident.RepairKey {
+		t.Fatalf("regressed repair = %+v created=%v closed=%s", regressed, created, incident.IncidentID)
+	}
+	var sameKey, activeSameKey int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*), COUNT(active_repair_key) FROM recruiting_repair_incidents WHERE repair_key = ?", incident.RepairKey).
+		Scan(&sameKey, &activeSameKey); err != nil {
+		t.Fatal(err)
+	}
+	if sameKey != 2 || activeSameKey != 1 {
+		t.Fatalf("regression lifecycle rows=%d active=%d", sameKey, activeSameKey)
+	}
 }
