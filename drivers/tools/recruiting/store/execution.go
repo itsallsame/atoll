@@ -864,6 +864,13 @@ func (r *Repository) ApplyExecutionTransitionCommand(ctx context.Context, comman
 	if errors.Is(err, ErrCommandConflict) {
 		return r.replayCommittedCommand(ctx, command.CommandID, command.RequestHash)
 	}
+	if command.Action == "fail" && command.Failure != nil &&
+		(errors.Is(err, ErrAttemptConflict) || errors.Is(err, ErrResultFenced)) {
+		if artifactErr := r.saveRejectedArtifact(ctx, command.Failure.Artifact, businessAt); artifactErr != nil {
+			return CommandResult{}, fmt.Errorf("%w; also failed to retain rejected failure artifact: %v", err, artifactErr)
+		}
+		return CommandResult{}, fmt.Errorf("%w: late execution failure was fenced", ErrResultFenced)
+	}
 	if err != nil {
 		return CommandResult{}, err
 	}

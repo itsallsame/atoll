@@ -5,7 +5,28 @@ import (
 	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
+	"github.com/wanpengxie/atoll/protocol/actor"
 )
+
+func TestExecutableWorkPurposesCreateCapabilityDispatches(t *testing.T) {
+	cfg := Config{Executors: []ExecutorTargetConfig{{ActorID: actor.ActorID("tool:executor-http"), Capability: "http.fetch"}}}
+	placement := store.WorkPlacement{Capability: "http.fetch", Origin: "https://jobs.example.test", NotBefore: time.Now().UTC()}
+	for _, purpose := range []string{"listing_sync", "source_validation", "detail_sync", "source_discovery", "baseline_listing"} {
+		work, err := model.NewWork("work-"+purpose, "source", "source-1", purpose, "human")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dispatch, err := workCommandDispatch(cfg, work, placement, "command-"+purpose, purpose+"_created")
+		if err != nil || dispatch == nil || dispatch.TargetActorID != "tool:executor-http" || dispatch.Capability != "http.fetch" {
+			t.Fatalf("purpose %q dispatch = %+v, %v", purpose, dispatch, err)
+		}
+	}
+	nonExecutable, _ := model.NewWork("work-repair", "source", "source-1", "repair", "human")
+	if dispatch, err := workCommandDispatch(cfg, nonExecutable, placement, "command-repair", "work_created"); err != nil || dispatch != nil {
+		t.Fatalf("non-executable repair dispatch = %+v, %v", dispatch, err)
+	}
+}
 
 func TestManualWorkPlacementIsBoundedAndCanonical(t *testing.T) {
 	now := time.Date(2026, 9, 8, 8, 0, 0, 0, time.UTC)

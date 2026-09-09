@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
@@ -138,6 +139,30 @@ WHERE cause_id = ? AND cause_kind = 'capacity_released'`, receipt.CommandID).Sca
 	if baselineStatus != model.BaselineCanceled || permitStatus != model.PermitReleased || activeBudget != 0 || releaseDispatches != 1 {
 		t.Fatalf("cancel did not close baseline/permit: baseline=%s permit=%s active_budget=%d release_dispatches=%d",
 			baselineStatus, permitStatus, activeBudget, releaseDispatches)
+	}
+	lateFailureArtifact, _ := model.NewArtifactMetadata("cancel-baseline-late-failure", model.ArtifactFailure,
+		"sha256:cancel-baseline-late-failure", "object://baseline/cancel/late-failure", work.WorkID,
+		offer.Attempt.AttemptID, "operators", "30d", true)
+	lateFailure := executioncontract.FailureReport{Class: "quality_rejected", NeedsRepair: true, Artifact: lateFailureArtifact}
+	_, err = repository.ApplyExecutionTransitionCommand(ctx, ExecutionTransitionCommand{
+		CommandID: "cancel-baseline-late-failure-command", Word: executioncontract.TypeFailed,
+		RequestHash: "sha256:cancel-baseline-late-failure-command", CorrelationID: "cancel-baseline-late-failure-correlation",
+		RequestedBy: offer.Attempt.ExecutorActorID, AttemptID: offer.Attempt.AttemptID,
+		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Action: "fail", Reason: lateFailure.Class,
+		Failure: &lateFailure, FailurePolicy: testExecutionFailurePolicy(),
+	}, now.Add(5*time.Second))
+	if !errors.Is(err, ErrResultFenced) {
+		t.Fatalf("late canceled baseline failure was not fenced: %v", err)
+	}
+	var rejectedFailure bool
+	if err := db.QueryRowContext(ctx, `SELECT rejected FROM recruiting_artifacts WHERE artifact_id = ?`,
+		lateFailureArtifact.ArtifactID).Scan(&rejectedFailure); err != nil || !rejectedFailure {
+		t.Fatalf("late canceled baseline failure evidence rejected=%t err=%v", rejectedFailure, err)
+	}
+	var lateFailureReceipts int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id = ?`,
+		"cancel-baseline-late-failure-command").Scan(&lateFailureReceipts); err != nil || lateFailureReceipts != 0 {
+		t.Fatalf("fenced late failure receipt count=%d err=%v", lateFailureReceipts, err)
 	}
 
 	lateArtifact, _ := model.NewArtifactMetadata("cancel-baseline-late-page", model.ArtifactPage,
