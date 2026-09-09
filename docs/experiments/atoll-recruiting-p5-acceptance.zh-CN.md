@@ -35,7 +35,7 @@
 
 - Source validation 的专用 Work、统一 Executor 执行、evidence-only 结果协议和质量违反后 `validating → invalid` 已通过隔离 MySQL及上述真实站点；Endpoint/Recipe 变更排除旧 Work、新 revision/Recipe version 再校验、瞬时故障自动重试和人工拒绝已有合同覆盖。人工终止后重试及在途结果与修复命令并发仍需场景验收。
 - MongoDB 单次真实样本不能证明“历史岗位更新后重新置顶”，因此不得把它标记为 `update_retop=verified`，也没有借此发布为每日增量 Source。
-- baseline generation 的有界分页、staging/finalize、首次 Checkpoint、Job/Detail Work 有界物化、详情成功/人工接受缺口核算、拒绝缺口后的因果 Work 重试修复和 Company ready 已通过隔离 MySQL 合同，但尚未贯通真实站点/进程旅程。
-- 零 Source 已通过隔离 MySQL 结果事务合同；仍需普通用户/真实进程旅程。1 万岗位的当前物化路径已经通过上述隔离 MySQL 容量合同；尚未覆盖的是把 1 万条从可执行 listing 分页一直贯通至全部详情终态的端到端负载。baseline 分页执行中断和详情部分失败后人工修复已通过隔离 MySQL 合同，仍需真实进程/普通用户旅程。运行中 baseline 用户取消已进一步通过真实 Atoll server、登录用户 Home Channel、WebSocket Message 和 Recruiting Actor：测试由仓储层模拟 Executor 到达 running 切点，用户消息原子收口 Work/Baseline/Attempt/Permit，命令重放和 server 重启后仍稳定，并能启动更高 generation；尚未覆盖 daemon 正在第三方网络 I/O 时的同一取消切点。
+- baseline generation 的有界分页、staging/finalize、首次 Checkpoint、Job/Detail Work 有界物化、详情成功/人工接受缺口核算、拒绝缺口后的因果 Work 重试修复和 Company ready 已通过隔离 MySQL 合同。新增真实 Atoll server 旅程由登录用户经 Home Channel 和 Recruiting Actor 完成 `terminated` 人工裁决及 `work.retry`，证明拒绝缺口不核算成员、Retry Work 原子重绑、真实详情结果核算成功，以及 reconcile 推进 Company ready；该用例的 Executor 生命周期由仓储层确定性模拟，完整第三方站点/daemon 旅程仍未贯通。
+- 零 Source 已通过隔离 MySQL 结果事务合同；仍需普通用户/真实进程旅程。1 万岗位的当前物化路径已经通过上述隔离 MySQL 容量合同；尚未覆盖的是把 1 万条从可执行 listing 分页一直贯通至全部详情终态的端到端负载。baseline 分页执行中断仍需真实进程旅程。运行中 baseline 用户取消已进一步通过真实 Atoll server、登录用户 Home Channel、WebSocket Message 和 Recruiting Actor：测试由仓储层模拟 Executor 到达 running 切点，用户消息原子收口 Work/Baseline/Attempt/Permit，命令重放和 server 重启后仍稳定，并能启动更高 generation；详情失败后的拒绝缺口与因果重试也已通过同一普通用户入口。尚未覆盖 daemon 正在第三方网络 I/O 时取消，以及真实 daemon 提交失败后用户修复的切点。
 
 只有完成 `discovery → validation → baseline → detail` 的至少一个允许访问的真实站点，并证明同一命令重放不改变岗位数，P5 才能标记完成。

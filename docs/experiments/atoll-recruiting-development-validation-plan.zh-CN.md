@@ -340,7 +340,7 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 进展补充（2026-09-09，baseline 用户取消）：通用 `recruiting.work.cancel` 对 `baseline_listing` 进入领域感知事务，而不是只改 Work 行。运行中取消会原子终结 Baseline、拒绝 Attempt、释放非 root MySQL 中的 Permit/全部预算维度、追加 work/baseline 事件和容量 wake；在途迟到页只保存 rejected Artifact，不产生 Checkpoint。同一命令重放保持所有版本和计数不变，后续可创建更高 baseline generation。隔离 MySQL 合同已覆盖；`TestRecruitingBaselineCancellationThroughAtoll` 又以真实 server、登录用户 Home Channel、WebSocket Message 和 Recruiting Actor 覆盖启动、运行中取消、重放、server 重启恢复、更高 generation 重启和 queued 取消，仓储层只用于把模拟 Executor 推进到确定的 running 切点。daemon 正在第三方网络 I/O 时收到用户取消的切点仍待完成，不能把当前用例表述成真实网站取消验收。
 
-进展补充（2026-09-09，baseline 详情人工修复）：三岗位合同先完成一个详情，让第二个 `parse_error` 进入 `waiting_human`；用户拒绝 accepted gap，以 `terminated` 关闭旧 Work 后，Baseline 核算数和成员 pending 状态保持不变。随后 `work.retry` 在创建新因果 Work、receipt/event/dispatch 的同一事务重绑成员 `detail_work_id`；新 Attempt 提交真实 DetailVersion 后，该成员核算为 succeeded 且不增加 exception。第三个失败项由用户明确接受缺口，最终 Baseline 为 `completed_with_exceptions`、恰有一个 accepted gap，Company ready。隔离 MySQL 已覆盖；普通用户/真实 Executor 旅程仍待完成。
+进展补充（2026-09-09，baseline 详情人工修复）：三岗位合同先完成一个详情，让第二个 `parse_error` 进入 `waiting_human`；用户拒绝 accepted gap，以 `terminated` 关闭旧 Work 后，Baseline 核算数和成员 pending 状态保持不变。随后 `work.retry` 在创建新因果 Work、receipt/event/dispatch 的同一事务重绑成员 `detail_work_id`；新 Attempt 提交真实 DetailVersion 后，该成员核算为 succeeded 且不增加 exception。第三个失败项由用户明确接受缺口，最终 Baseline 为 `completed_with_exceptions`、恰有一个 accepted gap，Company ready。隔离 MySQL 合同已覆盖；`TestRecruitingBaselineDetailRepairThroughAtoll` 又以真实 server、登录用户 Home Channel、WebSocket Message 和 Recruiting Actor 覆盖一岗位 baseline 的 `parse_error → waiting_human → terminated → causal retry → detail succeeded → Company ready`，并验证 retry 命令重放及成员重绑。该测试由仓储层模拟 Executor 生命周期，真实 daemon 提交失败后由普通用户修复的进程切点仍待完成。
 
 按以下顺序交付一个真正可用的切片：
 
