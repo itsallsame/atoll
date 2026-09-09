@@ -149,6 +149,8 @@ Timer 粒度不冻结：可以每个 Recruitment Source 一个 durable timer，�
 
 人工处理是 Work 的状态和协作过程。第一版不要求独立 Human Review 实体或表；Review 只是 `waiting_human` Work 的视图。
 
+详情 Recipe 修复的安全切点不是“直接重跑旧 Work”，而是先把已验证的新版本以 Source Assignment 原子切换，再从已终结的失败 Work 创建因果 Retry Work。首个实现只接受结果契约和 Executor capability 均兼容的 Detail Recipe；Source version、Assignment version、命令回执和审计事件在同一事务受围栏。改变契约或 capability 的版本必须进入独立迁移流程，不能借普通修复命令悄悄改变既有 Work 的执行含义。Listing Recipe 还涉及 Checkpoint 兼容证明与重新校准，也不复用这个简化切点。
+
 ### 5.5 正交表达工作来源
 
 ```text

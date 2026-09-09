@@ -51,6 +51,9 @@ func TestSourceEventVocabularyAndManifest(t *testing.T) {
 	if _, exists := actorManifest.Words[TypeSourceList]; !exists {
 		t.Fatal("source list is absent from manifest")
 	}
+	if _, exists := actorManifest.Words[TypeRecipeRollout]; !exists {
+		t.Fatal("Recipe rollout is absent from manifest")
+	}
 	for _, word := range []string{TypeSourceDiscover, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
 		TypeSourceDiscoveryCandidateAccept, TypeSourceDiscoveryCandidateReject} {
 		if _, exists := actorManifest.Words[word]; !exists {
