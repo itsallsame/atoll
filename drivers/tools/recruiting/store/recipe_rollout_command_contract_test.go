@@ -122,6 +122,14 @@ func TestDetailRecipeRolloutCommandIsFencedReplayableAndAtomic(t *testing.T) {
 		storedAssignment != replacement || *storedSource.DetailAssignment != replacement {
 		t.Fatalf("source=%+v assignment=%+v", storedSource, storedAssignment)
 	}
+	historyV1, err := repository.GetAssignmentVersion(ctx, source.SourceID, model.RecipeDetail, 1)
+	if err != nil || historyV1 != detailAssignment {
+		t.Fatalf("detail assignment history v1=%+v err=%v", historyV1, err)
+	}
+	historyV2, err := repository.GetAssignmentVersion(ctx, source.SourceID, model.RecipeDetail, 2)
+	if err != nil || historyV2 != replacement {
+		t.Fatalf("detail assignment history v2=%+v err=%v", historyV2, err)
+	}
 	var receiptCount, eventCount int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id = ?", winner.receipt.CommandID).Scan(&receiptCount); err != nil {
 		t.Fatal(err)
@@ -157,5 +165,60 @@ func TestDetailRecipeRolloutCommandIsFencedReplayableAndAtomic(t *testing.T) {
 	afterRejected, _ := repository.GetSource(ctx, source.SourceID)
 	if badReceipts != 0 || badEvents != 0 || afterRejected.Version != storedSource.Version {
 		t.Fatalf("rejected rollout leaked receipt=%d event=%d source_version=%d", badReceipts, badEvents, afterRejected.Version)
+	}
+	if _, err := repository.GetAssignmentVersion(ctx, source.SourceID, model.RecipeDetail, 3); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("rejected rollout leaked assignment history: %v", err)
+	}
+
+	// Quarantine is a constant-size Recipe lifecycle operation: it must not
+	// rewrite Source assignments or their immutable history.
+	quarantineAt := rolloutAt.Add(2 * time.Second)
+	quarantineReceipt, _ := model.NewCommandReceipt("detail-quarantine", "recruiting.recipe.quarantine",
+		"sha256:detail-quarantine", json.RawMessage(`{"status":"quarantined"}`))
+	quarantineEvent, _ := model.NewEventIntent("detail-quarantine-event", "recipe.quarantined", "recipe",
+		fmt.Sprintf("%s@%d", detailV2.RecipeID, detailV2.Version), detailV2.StateVersion+1,
+		quarantineAt.Format(time.RFC3339Nano), quarantineReceipt.CommandID, json.RawMessage(`{}`))
+	quarantineResult, err := repository.ApplyRecipeQuarantineCommand(ctx, detailV2.StateVersion, detailV2.RecipeID,
+		detailV2.Version, quarantineReceipt, quarantineEvent, quarantineAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quarantineReplay, err := repository.ApplyRecipeQuarantineCommand(ctx, detailV2.StateVersion, detailV2.RecipeID,
+		detailV2.Version, quarantineReceipt, quarantineEvent, quarantineAt)
+	if err != nil || !quarantineReplay.Replayed || string(quarantineReplay.Response) != string(quarantineResult.Response) {
+		t.Fatalf("quarantine replay=%+v err=%v", quarantineReplay, err)
+	}
+	inspected, assignmentCount, err := repository.InspectRecipe(ctx, detailV2.RecipeID, detailV2.Version)
+	if err != nil || inspected.Status != model.RecipeQuarantined || assignmentCount != 1 {
+		t.Fatalf("quarantined Recipe=%+v assignments=%d err=%v", inspected, assignmentCount, err)
+	}
+	afterQuarantine, _ := repository.GetAssignment(ctx, source.SourceID, model.RecipeDetail)
+	if afterQuarantine != replacement {
+		t.Fatalf("quarantine rewrote assignment: %+v", afterQuarantine)
+	}
+	if unchangedHistory, err := repository.GetAssignmentVersion(ctx, source.SourceID, model.RecipeDetail, 2); err != nil || unchangedHistory != replacement {
+		t.Fatalf("quarantine rewrote history: %+v err=%v", unchangedHistory, err)
+	}
+
+	// Rolling back to historical assignment v1 appends v3. Assignment versions
+	// are monotonic operational facts and never move backwards.
+	rollbackAt := quarantineAt.Add(time.Second)
+	historical, _ := repository.GetAssignmentVersion(ctx, source.SourceID, model.RecipeDetail, 1)
+	rollbackAssignment, _ := afterQuarantine.Replace(afterQuarantine.AssignmentVersion, historical.RecipeID,
+		historical.RecipeVersion, historical.ContractHash, rollbackAt.Format(time.RFC3339Nano))
+	rollbackSource, _ := afterRejected.AssignRecipe(afterRejected.Version, rollbackAssignment, false)
+	rollbackReceipt, _ := model.NewCommandReceipt("detail-rollback", "recruiting.recipe.rollback",
+		"sha256:detail-rollback", json.RawMessage(`{"status":"rolled_back"}`))
+	rollbackEvent, _ := model.NewEventIntent("detail-rollback-event", "source.detail_recipe_rolled_back", "source",
+		rollbackSource.SourceID, rollbackSource.Version, rollbackAt.Format(time.RFC3339Nano), rollbackReceipt.CommandID,
+		json.RawMessage(`{}`))
+	if _, err := repository.ApplyDetailRecipeRolloutCommand(ctx, afterRejected.Version,
+		afterQuarantine.AssignmentVersion, rollbackSource, rollbackAssignment, rollbackReceipt, rollbackEvent,
+		rollbackAt); err != nil {
+		t.Fatal(err)
+	}
+	storedRollback, err := repository.GetAssignmentVersion(ctx, source.SourceID, model.RecipeDetail, 3)
+	if err != nil || storedRollback != rollbackAssignment || storedRollback.RecipeVersion != detailV1.Version {
+		t.Fatalf("rollback history v3=%+v err=%v", storedRollback, err)
 	}
 }

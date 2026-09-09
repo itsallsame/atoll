@@ -231,6 +231,9 @@ WHERE source_id = ? AND recipe_kind = ? AND assignment_version = ?`,
 	if err != nil {
 		return fmt.Errorf("publish source assignment: %w", err)
 	}
+	if err := appendAssignmentVersion(ctx, tx, assignment, businessAt); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit source assignment: %w", err)
 	}

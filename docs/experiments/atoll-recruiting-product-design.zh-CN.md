@@ -607,13 +607,16 @@ Recipe 的生产入口是“按 scope 查找 active 版本并执行”，不是�
 
 ```text
 draft → validating → active → superseded
-  ↑         │          └→ disabled
-  └─────────┘ validation_failed
+  ↑         │          ├→ quarantined → validating
+  └─────────┘          └→ disabled
+       validation_failed
 ```
 
 Recipe 至少保存 `recipe_id`、`kind=list|detail|discovery`、适用 scope、ABI 版本、不可解析的代码/Resource 引用、transport、所需 capability、输入输出契约、版本、内容哈希、验证证据和状态。上述执行契约属于 Recipe version 的不可变内容，不能在原版本上把 HTTP 静默换成 Browser 或改变 capability；变化必须创建新版本并重新验证。Listing Recipe 还必须保存活动倒序、稳定身份、边界、重叠窗口和异常终止契约。同一 scope/kind 可以有一个默认 active 版本，但生产执行由版本化 `SourceRecipeAssignment` 决定，从而支持逐 Source 灰度和回滚。
 
-Assignment 固定 `source_id + kind + recipe_version + contract_hash + effective_at/version`。`contract_hash` 覆盖岗位身份、排序、分页和边界语义；变化时必须证明 Checkpoint 兼容，或者重新校准。Recipe 共享故障时先进入 `quarantined`，停止使用该版本创建新 Attempt，不影响未使用该版本的 Source。
+Assignment 固定 `source_id + kind + recipe_version + contract_hash + effective_at/version`。`contract_hash` 覆盖岗位身份、排序、分页和边界语义；变化时必须证明 Checkpoint 兼容，或者重新校准。每次发布、灰度或回滚都追加不可变 Assignment 历史；回滚引用一个确实存在的历史版本，但产生的新 Assignment version 必须继续单调递增，不能把当前版本号倒退，也不能从事件日志猜测已经丢失的旧配置。
+
+Recipe 共享故障时先把该 Recipe version 原子推进到 `quarantined`。隔离不对所有 Source 做扇出更新：执行领取时必须重新要求 Recipe 为 active，因此不会基于已隔离版本创建新 Attempt；现有 Source Assignment 仍保留为“当时选择了什么”的事实，方便查询影响面和逐 Source 恢复。Source 回滚必须选择同 kind、同 contract hash、同 capability 且当前为 active 的历史 Recipe，并以 Source version 与当前 Assignment version 双重 CAS 原子更新 Source 投影、当前 Assignment、Assignment 历史、命令 receipt 和审计事件。Listing Recipe 的回滚还须先处理 Checkpoint 兼容或重新校准，首个可操作切片只开放 Detail Recipe。
 
 Attempt 固定引用 `recipe_id + recipe_version`，不能静默漂移版本。
 

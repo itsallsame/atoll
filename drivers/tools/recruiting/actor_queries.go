@@ -66,6 +66,11 @@ type operationalStatusPayload struct {
 	Limit int `json:"limit,omitempty"`
 }
 
+type recipeInspectPayload struct {
+	RecipeID      string `json:"recipe_id"`
+	RecipeVersion uint64 `json:"recipe_version"`
+}
+
 func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	if repository == nil {
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
@@ -107,6 +112,10 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		handleOperationalStatusQuery(sys, cfg, repository, msg)
 		return
 	}
+	if msg.Type == TypeRecipeInspect {
+		handleRecipeInspectQuery(sys, repository, msg)
+		return
+	}
 	var payload entityGetPayload
 	if !decode(sys, msg, &payload) {
 		return
@@ -141,6 +150,25 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		return
 	}
 	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "entity": value})
+}
+
+func handleRecipeInspectQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload recipeInspectPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.RecipeID = strings.TrimSpace(payload.RecipeID)
+	if payload.RecipeID == "" || payload.RecipeVersion == 0 {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "recipe_id and recipe_version are required")
+		return
+	}
+	recipe, assignments, err := repository.InspectRecipe(msg.Ctx(), payload.RecipeID, payload.RecipeVersion)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "recipe": recipe,
+		"current_assignment_count": assignments})
 }
 
 func handleRepairListQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

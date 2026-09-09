@@ -129,6 +129,9 @@ WHERE source_id = ? AND recipe_kind = ? AND assignment_version = ?`, assignment.
 	if changed, _ := result.RowsAffected(); changed != 1 {
 		return CommandResult{}, ErrAssignmentConflict
 	}
+	if err := appendAssignmentVersion(ctx, tx, assignment, businessAt); err != nil {
+		return CommandResult{}, err
+	}
 	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
 		return CommandResult{}, err
 	}

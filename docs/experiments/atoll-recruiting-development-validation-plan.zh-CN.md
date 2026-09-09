@@ -319,6 +319,8 @@ Listing Recipe 必须显式声明 identity field 与 detail URL field，不能�
 
 Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接入，不新增或修改 core Resource 语义：Recipe 正文是受 Channel 权限保护的小型 KV Resource，offer 只携带 `recipe://`/`artifact://` 不透明引用和预期 SHA-256；Executor 读取后严格解码，并复核 ABI、kind、transport、capability 与内容哈希。原始响应、页面和截图是 File Resource，Executor 在字节上限内流式写入并提交，领域消息和 MySQL 只保存 ResourceID、内容哈希、访问范围与保留策略。Resource 拒绝、缺失、超量或哈希不符均 fail closed，不能降级为把正文塞进 Message、State 或数据库。
 
+进展补充（2026-09-09，Recipe 隔离与 Source 级回滚）：migration 25 为所有当前 `SourceRecipeAssignment` 建立不可变版本历史，此后 validation publish、rollout 和 rollback 都在原业务事务中追加历史。公开 `recipe.inspect` 返回一个不可变 Recipe version 及当前 Assignment 数；`recipe.quarantine` 只以 Recipe state version CAS 隔离 active 版本，并原子保存 receipt/event，不对大量 Source 扇出写入。执行领取已有的 active Recipe fence 立即阻止新 Attempt。Detail Source 可用 `recipe.rollback` 引用较早历史版本，但实际追加更高 Assignment version，并以 Source/Assignment 双 fence、active target、contract/capability 兼容性共同拒绝陈旧或不安全切换。普通用户经真实 server 完成 rollout→inspect→quarantine→rollback，服务重启后写命令稳定重放；隔离 MySQL 使用独立 `staircase_migrator`/`staircase_runtime` 非 root 账号验证原子性、历史不被改写和版本单调。Listing rollback 因 Checkpoint 兼容语义尚未开放；候选 Recipe 的真实执行验证与审批也不能用本状态切换替代。
+
 ### 9.3 本地确定性站点
 
 建立可编程测试服务器，至少模拟：

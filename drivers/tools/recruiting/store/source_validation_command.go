@@ -190,6 +190,9 @@ WHERE source_id = ? AND recipe_kind = ? AND assignment_version = ?`, assignment.
 		}
 		return CommandResult{}, fmt.Errorf("publish source validation assignment: %w", err)
 	}
+	if err := appendAssignmentVersion(ctx, tx, assignment, businessAt); err != nil {
+		return CommandResult{}, err
+	}
 	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
 		return CommandResult{}, err
 	}

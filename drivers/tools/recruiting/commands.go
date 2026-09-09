@@ -64,12 +64,13 @@ const (
 	TypeRunJoinOccurrence = "recruiting.run.join_occurrence"
 	TypeRunProduction     = "recruiting.run.production"
 
-	TypeRecipeInspect  = "recruiting.recipe.inspect"
-	TypeRecipeValidate = "recruiting.recipe.validate"
-	TypeRecipeApprove  = "recruiting.recipe.approve"
-	TypeRecipeReject   = "recruiting.recipe.reject"
-	TypeRecipeRollout  = "recruiting.recipe.rollout"
-	TypeRecipeRollback = "recruiting.recipe.rollback"
+	TypeRecipeInspect    = "recruiting.recipe.inspect"
+	TypeRecipeValidate   = "recruiting.recipe.validate"
+	TypeRecipeApprove    = "recruiting.recipe.approve"
+	TypeRecipeReject     = "recruiting.recipe.reject"
+	TypeRecipeRollout    = "recruiting.recipe.rollout"
+	TypeRecipeQuarantine = "recruiting.recipe.quarantine"
+	TypeRecipeRollback   = "recruiting.recipe.rollback"
 
 	TypeExecutionOffer         = executioncontract.TypeOffer
 	TypeExecutionAccept        = executioncontract.TypeAccept
