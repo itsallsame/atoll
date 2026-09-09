@@ -21,6 +21,29 @@ type SourceValidationPreparation struct {
 	Recipe  model.Recipe
 }
 
+func updateSourceInTx(ctx context.Context, tx *sql.Tx, expectedVersion uint64, source model.RecruitmentSource, at time.Time) error {
+	endpoint, origin, err := sourceStorageIdentity(source)
+	if err != nil {
+		return err
+	}
+	state, err := json.Marshal(source)
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE recruiting_sources
+SET canonical_source_key = ?, origin = ?, readiness_status = ?, control_status = ?, health_status = ?,
+    discovery_generation = ?, version = ?, state_json = ?, updated_at = ?
+WHERE source_id = ? AND version = ?`, endpoint.CanonicalKey, origin, source.ReadinessStatus, source.ControlStatus,
+		source.HealthStatus, source.DiscoveryGeneration, source.Version, state, at.UTC(), source.SourceID, expectedVersion)
+	if err != nil {
+		return fmt.Errorf("update Source in transaction: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return &model.VersionConflictError{Expected: expectedVersion, Actual: source.Version}
+	}
+	return nil
+}
+
 func (r *Repository) PrepareSourceValidation(ctx context.Context, sourceID, recipeID string, recipeVersion uint64) (SourceValidationPreparation, error) {
 	return readSourceValidationPreparation(ctx, r.db, sourceID, recipeID, recipeVersion, false)
 }

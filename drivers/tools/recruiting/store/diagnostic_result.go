@@ -21,6 +21,7 @@ type DiagnosticResult struct {
 type DiagnosticResultOutcome struct {
 	Work      model.Work                       `json:"work"`
 	Run       model.ListingRun                 `json:"listing_run"`
+	Source    *model.RecruitmentSource         `json:"source,omitempty"`
 	Artifacts int                              `json:"artifact_count"`
 	Quality   executioncontract.ListingQuality `json:"quality"`
 	Replayed  bool                             `json:"replayed"`
@@ -109,7 +110,23 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 	if err != nil {
 		return DiagnosticResultOutcome{}, err
 	}
-	outcome := DiagnosticResultOutcome{Work: completedWork, Run: completedRun, Artifacts: len(input.Artifacts), Quality: input.Quality}
+	var invalidSource *model.RecruitmentSource
+	if validation && (!input.Quality.IdentityComplete || !input.Quality.OrderingContractHeld || !input.Quality.PaginationStable) {
+		currentSource, sourceErr := getSourceForUpdate(ctx, tx, run.SourceID)
+		if sourceErr != nil {
+			return DiagnosticResultOutcome{}, sourceErr
+		}
+		if currentSource.Version != run.SourceVersion || currentSource.ReadinessStatus != model.SourceValidating {
+			return DiagnosticResultOutcome{}, fmt.Errorf("source validation failure is fenced by changed Source")
+		}
+		invalid, sourceErr := currentSource.MarkInvalid(currentSource.Version)
+		if sourceErr != nil {
+			return DiagnosticResultOutcome{}, sourceErr
+		}
+		invalidSource = &invalid
+	}
+	outcome := DiagnosticResultOutcome{Work: completedWork, Run: completedRun, Source: invalidSource,
+		Artifacts: len(input.Artifacts), Quality: input.Quality}
 	outcomeState, _ := json.Marshal(outcome)
 	for _, artifact := range input.Artifacts {
 		if err := insertArtifact(ctx, tx, artifact, false, input.CompletedAt); err != nil {
@@ -124,6 +141,11 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 	}
 	if err := updateListingRunInTx(ctx, tx, run.Version, completedRun, input.CompletedAt); err != nil {
 		return DiagnosticResultOutcome{}, err
+	}
+	if invalidSource != nil {
+		if err := updateSourceInTx(ctx, tx, run.SourceVersion, *invalidSource, input.CompletedAt); err != nil {
+			return DiagnosticResultOutcome{}, err
+		}
 	}
 	if err := releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitReleased, input.CompletedAt); err != nil {
 		return DiagnosticResultOutcome{}, err
@@ -141,6 +163,19 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 	}
 	if err := appendEventIntent(ctx, tx, event, input.CompletedAt, input.CompletedAt); err != nil {
 		return DiagnosticResultOutcome{}, err
+	}
+	if invalidSource != nil {
+		failurePayload, _ := json.Marshal(map[string]any{"attempt_id": attempt.AttemptID, "work_id": work.WorkID,
+			"identity_complete": input.Quality.IdentityComplete, "ordering_contract_held": input.Quality.OrderingContractHeld,
+			"pagination_stable": input.Quality.PaginationStable})
+		failureEvent, eventErr := model.NewEventIntent("validation-failed-"+attempt.AttemptID, "source.validation_failed", "source",
+			invalidSource.SourceID, invalidSource.Version, input.CompletedAt.UTC().Format(time.RFC3339Nano), input.CommandID, failurePayload)
+		if eventErr != nil {
+			return DiagnosticResultOutcome{}, eventErr
+		}
+		if err := appendEventIntent(ctx, tx, failureEvent, input.CompletedAt, input.CompletedAt); err != nil {
+			return DiagnosticResultOutcome{}, err
+		}
 	}
 	if err := appendAttemptDispatch(ctx, tx, attempt.AttemptID, attempt.ExecutorActorID, attempt.Capability, "", "capacity_released",
 		input.CommandID, input.CompletedAt, input.CompletedAt); err != nil {

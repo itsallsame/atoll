@@ -11,6 +11,7 @@
 - 同一规范 Source key 已由另一 Company 使用时，接受事务不创建 Source、不改变 Candidate、不保留 receipt，返回业务键冲突供人工确认归属。
 - `recruiting.source.validate` 在一个事务内把 Candidate/Repairing Source 推进到 `validating`，冻结 Candidate Endpoint、active Listing Recipe、Company/Source 版本和可选 Profile，创建专用 `source_validation` Work、validation run、receipt、事件与 capability dispatch。它不增加 Worker 类型，而由统一 Executor 按 Listing Recipe 执行。
 - validation result 保存有界页面 Artifact、trace 和客观质量观测，完成 Work/Attempt 并释放预算；它不写 Job、Listing Observation 或 Checkpoint，也不代替人工判断 `update-retop`。
+- identity、ordering 或 pagination 的客观质量证明不成立时，结果与证据仍被接受，并在同一事务把 Source 从 `validating` 推进到 `invalid`、写失败事件；操作者修正后可从保留的 Candidate 再次启动校验，不会以超时恢复代替业务失败。
 - `recruiting.source.validation.publish` 是独立的证据发布闸门。它重新锁定 validating Source、active Listing Recipe、当前 Assignment 版本和全部证据 Artifact，验证四项契约结论均为 `verified` 后，原子发布 active Endpoint、Listing Assignment、SourceContractAssessment、receipt 与事件。
 - 验证证据必须属于目标 Source 已成功完成的 `source_validation` Work/run，且 Endpoint revision、Recipe/contract、拟发布 Assignment version 完全一致；Artifact 还必须未被拒绝、不是 failure-only。引用缺失、伪造的普通 Work、旧 Endpoint/Recipe 或串线证据时整个事务回滚。
 - `recruiting.baseline.start` 已建立首个可执行列表基线：命令把 Company `discovering_sources → initializing`、不可变 BaselineGeneration、Work、receipt、两类事件和 capability dispatch 原子提交。Baseline 冻结 Company/Source/Assignment/Recipe/Endpoint 版本，以及从已验证 Source 契约复制的 Checkpoint strategy/overlap。
@@ -27,7 +28,7 @@
 
 ## 尚未通过的退出项
 
-- Source validation 的专用 Work、统一 Executor 执行和 evidence-only 结果协议已通过隔离 MySQL 合同，但尚未在真实站点贯通；失败后的重试、Recipe/Endpoint 变更围栏和人工修复仍需场景验收。
+- Source validation 的专用 Work、统一 Executor 执行、evidence-only 结果协议和质量违反后 `validating → invalid` 已通过隔离 MySQL 合同，但尚未在真实站点贯通；执行失败后的重试、Recipe/Endpoint 变更围栏和人工修复仍需场景验收。
 - MongoDB 单次真实样本不能证明“历史岗位更新后重新置顶”，因此不得把它标记为 `update_retop=verified`，也没有借此发布为每日增量 Source。
 - baseline generation 的有界分页、staging/finalize、首次 Checkpoint、Job/Detail Work 有界物化、详情成功/人工接受缺口核算和 Company ready 已通过隔离 MySQL 合同，但尚未贯通真实站点；详情最终失败后的重试修复和拒绝接受缺口场景仍需完整验收。
 - 零 Source、1 万岗位、baseline 分页中断、详情部分失败和用户取消仍需加入 P5 场景验收。

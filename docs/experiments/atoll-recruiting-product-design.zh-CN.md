@@ -724,7 +724,7 @@ Company 只有 `onboarding_status=ready` 且 `control_status=active` 才进入�
 
 Source Discovery 可产生 0、1 或多个候选，候选逐项验证和拒绝，不做整体事务。其幂等代际为 `company_id + discovery_generation`；强制重新发现显式递增 generation。Source `ready` 至少要求归属已确认、生产 Endpoint 已发布、Listing Recipe Assignment 有效，并以真实样本验证分页、稳定岗位键、活动倒序、边界和异常停止。
 
-`source.validate` 不是单纯把状态改为 `validating`：命令必须在同一事务冻结 Candidate Endpoint、active Listing Recipe、Company/Source/Assignment 版本和可选 Browser Profile，创建 `purpose=source_validation` 的 Work、Listing validation run、receipt、事件和 capability dispatch。它复用统一 Executor 与 Listing Recipe 执行面，不增加专用 Worker；成功结果只保存页面/trace Artifact 和客观质量观测，不写 Job、不派生详情、不创建或推进 Checkpoint。人工发布命令再引用这些 Work 证据，对 identity、pagination、ordering、update-retop 分别作判断；发布闸门必须反查证据所属的已完成 validation run，并确认 Endpoint revision、Recipe/contract 和拟发布 Assignment version 完全一致。单次执行不能观察到历史岗位更新时，`update-retop` 必须保持 `unverified`。
+`source.validate` 不是单纯把状态改为 `validating`：命令必须在同一事务冻结 Candidate Endpoint、active Listing Recipe、Company/Source/Assignment 版本和可选 Browser Profile，创建 `purpose=source_validation` 的 Work、Listing validation run、receipt、事件和 capability dispatch。它复用统一 Executor 与 Listing Recipe 执行面，不增加专用 Worker；成功执行只保存页面/trace Artifact 和客观质量观测，不写 Job、不派生详情、不创建或推进 Checkpoint。若稳定身份、活动倒序或分页质量证明不成立，结果事务完成证据 Work 的同时把 Source 推进到可重新校验的 `invalid`，而不是卡在 `validating`；这表示“校验执行成功、候选契约失败”，不应伪装成执行故障。人工发布命令再引用这些 Work 证据，对 identity、pagination、ordering、update-retop 分别作判断；发布闸门必须反查证据所属的已完成 validation run、Attempt 质量结果，并确认 Endpoint revision、Recipe/contract 和拟发布 Assignment version 完全一致。单次执行不能观察到历史岗位更新时，`update-retop` 必须保持 `unverified`。
 
 Company 有至少一个 active/ready Source，且每个准备投产的 Source 已完成 listing baseline、详情均成功或有用户明确接受的缺口时，才进入 onboarding `ready`。零候选进入 `blocked_no_sources`；部分 Source 成功不阻止其余候选独立失败或等待人工，但用户必须看见未投产项。
 

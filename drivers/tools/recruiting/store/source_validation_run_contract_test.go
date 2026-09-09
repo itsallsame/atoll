@@ -159,3 +159,87 @@ func TestSourceValidationCreatesFencedExecutionAndEvidenceForPublish(t *testing.
 		t.Fatalf("repair validation assignment fence = %+v err=%v", repairRun.ListingExecution.Assignment, err)
 	}
 }
+
+func TestSourceValidationQualityViolationMarksSourceInvalid(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	now := time.Date(2094, 7, 2, 2, 0, 0, 0, time.UTC)
+	company, _ := model.NewCompany("invalid-validation-company", "Invalid Validation", "https://invalid-validation.example.com")
+	if err := repository.CreateCompany(ctx, company, now); err != nil {
+		t.Fatal(err)
+	}
+	source, _ := model.NewRecruitmentSource("invalid-validation-source", company.CompanyID,
+		"https://invalid-validation.example.com/jobs", "all", 1)
+	if err := repository.CreateSource(ctx, source, now); err != nil {
+		t.Fatal(err)
+	}
+	recipe := activeRecipe(t, "invalid-validation-recipe", model.RecipeListing, "invalid-validation.example.com", 1,
+		"invalid-validation-contract")
+	if err := repository.CreateRecipe(ctx, recipe, now); err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := repository.PrepareSourceValidation(ctx, source.SourceID, recipe.RecipeID, recipe.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validating, run, err := preparation.NewRun("invalid-validation-run", "invalid-validation-work", 0,
+		now.Format(time.RFC3339Nano))
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, _ := model.NewWork(run.WorkID, "source", source.SourceID, "source_validation", "manual")
+	work, _ = work.WithCausality("human:reviewer:2", "message-invalid-validation", "")
+	placement := WorkPlacement{BusinessKey: "source-validation|" + run.ListingRunID,
+		Capability: run.ListingExecution.Execution.RequiredCapability, Origin: run.ListingExecution.Origin, NotBefore: now}
+	receipt, _ := model.NewCommandReceipt("invalid-validation-command", "recruiting.source.validate",
+		"sha256:invalid-validation", json.RawMessage(`{}`))
+	event, _ := model.NewEventIntent("invalid-validation-event", "source.validation_started", "source", source.SourceID,
+		validating.Version, now.Format(time.RFC3339Nano), receipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplySourceValidationCommand(ctx, source.Version, 0, validating, run, work, placement,
+		receipt, event, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "invalid-validation-attempt",
+		ExecutorActorID: "tool:invalid-validation:1", ExecutorIncarnation: "boot-invalid-validation",
+		Capability: placement.Capability, Origin: placement.Origin, OfferedAt: now, BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+		offer.Attempt.ExecutorIncarnation, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+		offer.Attempt.ExecutorIncarnation, now); err != nil {
+		t.Fatal(err)
+	}
+	page := mustResultArtifact(t, "invalid-validation-page", model.ArtifactPage, work.WorkID, offer.Attempt.AttemptID)
+	trace := mustResultArtifact(t, "invalid-validation-trace", model.ArtifactTrace, work.WorkID, offer.Attempt.AttemptID)
+	outcome, err := repository.AcceptDiagnosticResult(ctx, DiagnosticResult{CommandID: "invalid-validation-result",
+		RequestHash: "sha256:invalid-validation-result", AttemptID: offer.Attempt.AttemptID,
+		ExecutorActorID: offer.Attempt.ExecutorActorID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation,
+		Artifacts: []model.ArtifactMetadata{page, trace}, Quality: executioncontract.ListingQuality{
+			IdentityComplete: true, OrderingContractHeld: false, PaginationStable: true, ItemCount: 12},
+		CompletedAt: now.Add(time.Second)})
+	if err != nil || outcome.Source == nil || outcome.Source.ReadinessStatus != model.SourceInvalid {
+		t.Fatalf("violated validation outcome = %+v err=%v", outcome, err)
+	}
+	stored, err := repository.GetSource(ctx, source.SourceID)
+	if err != nil || stored.ReadinessStatus != model.SourceInvalid || stored.Version != validating.Version+1 {
+		t.Fatalf("invalid Source = %+v err=%v", stored, err)
+	}
+	if _, err := stored.BeginValidation(stored.Version); err != nil {
+		t.Fatalf("invalid Source cannot be revalidated: %v", err)
+	}
+}
