@@ -17,6 +17,7 @@ func verifiedStoreAssessment(source model.RecruitmentSource, assignment model.So
 		RecipeID: assignment.RecipeID, RecipeVersion: assignment.RecipeVersion, ContractHash: assignment.ContractHash,
 		Identity: model.ContractVerified, Pagination: model.ContractVerified,
 		Ordering: model.ContractVerified, UpdateRetop: model.ContractVerified,
+		CheckpointStrategy: model.CheckpointActivityTime, OverlapPages: 1,
 		EvidenceArtifactIDs: []string{"artifact-calibration-a", "artifact-calibration-b"},
 		AssessedAt:          assessedAt.UTC().Format(time.RFC3339), Version: 1,
 	}

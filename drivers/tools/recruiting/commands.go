@@ -43,6 +43,7 @@ const (
 	TypeSourceDiscoveryCandidateReject = "recruiting.source.discovery.candidate.reject"
 	TypeSourceGet                      = "recruiting.source.get"
 	TypeSourceList                     = "recruiting.source.list"
+	TypeBaselineStart                  = "recruiting.baseline.start"
 
 	TypeJobGet     = "recruiting.job.get"
 	TypeJobList    = "recruiting.job.list"

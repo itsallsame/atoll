@@ -77,7 +77,18 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 	var contentRef string
 	switch offer.Kind {
 	case "listing":
-		if offer.Detail != nil || (offer.Occurrence == nil) == (offer.ListingRun == nil) || work.Purpose != "listing_sync" || work.TargetType != "source" {
+		contexts := 0
+		if offer.Occurrence != nil {
+			contexts++
+		}
+		if offer.ListingRun != nil {
+			contexts++
+		}
+		if offer.Baseline != nil {
+			contexts++
+		}
+		if offer.Detail != nil || contexts != 1 ||
+			(work.Purpose != "listing_sync" && work.Purpose != "baseline_listing") || work.TargetType != "source" {
 			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("listing offer must carry exactly one execution context")
 		}
 		var sourceID string
@@ -88,12 +99,20 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 			if offer.Occurrence.WorkID != work.WorkID || (offer.Occurrence.Status != model.OccurrenceQueued && offer.Occurrence.Status != model.OccurrenceRunning) {
 				return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("listing occurrence is not executable")
 			}
-		} else {
+		} else if offer.ListingRun != nil {
 			run := offer.ListingRun
 			sourceID, companyVersion, sourceVersion, snapshot = run.SourceID, run.CompanyVersion, run.SourceVersion, run.ListingExecution
 			if run.WorkID != work.WorkID || (run.Status != model.ListingRunQueued && run.Status != model.ListingRunRunning) ||
 				(run.Mode != model.ListingRunDiagnostic && run.Mode != model.ListingRunProduction) {
 				return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("standalone listing run is not executable")
+			}
+		} else {
+			baseline := offer.Baseline
+			sourceID, companyVersion, sourceVersion, snapshot = baseline.SourceID, baseline.CompanyVersion,
+				baseline.SourceVersion, baseline.ListingExecution
+			if baseline.WorkID != work.WorkID || baseline.Status != model.BaselineListing || baseline.ListingFinalized ||
+				work.Purpose != "baseline_listing" {
+				return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("baseline listing generation is not executable")
 			}
 		}
 		if work.TargetID != sourceID {
@@ -129,7 +148,7 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 			Capability: snapshot.Execution.RequiredCapability, Transport: recipeabi.Transport(snapshot.Execution.Transport)}
 
 	case "detail":
-		if offer.Detail == nil || offer.Occurrence != nil || offer.ListingRun != nil || offer.Checkpoint != nil || work.Purpose != "detail_sync" ||
+		if offer.Detail == nil || offer.Occurrence != nil || offer.ListingRun != nil || offer.Baseline != nil || offer.Checkpoint != nil || work.Purpose != "detail_sync" ||
 			work.TargetType != "job" || work.TargetID != offer.Detail.Job.JobID {
 			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("detail offer shape does not match its work and job")
 		}

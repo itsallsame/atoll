@@ -560,6 +560,7 @@ func seedReadyRecruitingSource(t *testing.T, dsn, sourceID string, now time.Time
 		SourceID: sourceID, EndpointRevision: validating.CandidateEndpoint.Revision,
 		RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, ContractHash: recipe.ContractHash,
 		Identity: model.ContractVerified, Pagination: model.ContractVerified, Ordering: model.ContractVerified, UpdateRetop: model.ContractVerified,
+		CheckpointStrategy: model.CheckpointActivityTime, OverlapPages: 1,
 		EvidenceArtifactIDs: []string{"e2e-daily-calibration-a", "e2e-daily-calibration-b"},
 		AssessedAt:          now.Format(time.RFC3339), Version: 1,
 	}

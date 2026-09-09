@@ -109,6 +109,9 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	  )) OR (w.purpose = 'source_discovery' AND EXISTS (
 	    SELECT 1 FROM recruiting_source_discoveries sd
 	    WHERE sd.work_id = w.work_id AND sd.discovery_status IN ('queued', 'running')
+	  )) OR (w.purpose = 'baseline_listing' AND EXISTS (
+	    SELECT 1 FROM recruiting_baseline_generations bg
+	    WHERE bg.work_id = w.work_id AND bg.generation_status = 'listing' AND bg.listing_finalized = FALSE
 	  )))
   AND NOT EXISTS (
     SELECT 1 FROM recruiting_attempts a
@@ -178,6 +181,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 
 	var occurrence model.SourceOccurrence
 	var listingRun model.ListingRun
+	var baseline model.BaselineGeneration
 	var checkpoint *model.IncrementalCheckpoint
 	var detail *DetailExecutionInput
 	var companyImport model.CompanyImport
@@ -215,6 +219,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		}
 	case "source_discovery":
 		discovery, discoveryRecipe, fence, err = loadSourceDiscoveryOfferFence(ctx, tx, work, placement)
+	case "baseline_listing":
+		baseline, fence, err = loadBaselineOfferFence(ctx, tx, work, placement)
 	default:
 		err = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)
 	}
@@ -224,6 +230,9 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	sourceID := occurrence.SourceID
 	if listingRun.ListingRunID != "" {
 		sourceID = listingRun.SourceID
+	}
+	if baseline.WorkID != "" {
+		sourceID = baseline.SourceID
 	}
 	if detail != nil {
 		sourceID = detail.Job.SourceID
@@ -282,6 +291,9 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	} else if work.Purpose == "source_discovery" {
 		offer.Discovery = &discovery
 		offer.Recipe = &discoveryRecipe
+	} else if work.Purpose == "baseline_listing" {
+		offer.Kind = "listing"
+		offer.Baseline = &baseline
 	}
 	offerState, err := json.Marshal(offer)
 	if err != nil {
@@ -463,6 +475,46 @@ func loadStandaloneListingOfferFence(ctx context.Context, tx *sql.Tx, run model.
 		fence.ProfileID, fence.ProfileVersion = profile.ProfileID, profile.Version
 	}
 	return run.Checkpoint, fence, nil
+}
+
+func loadBaselineOfferFence(ctx context.Context, tx *sql.Tx, work model.Work, placement WorkPlacement) (model.BaselineGeneration, model.AttemptFence, error) {
+	if work.Purpose != "baseline_listing" || work.TargetType != "source" {
+		return model.BaselineGeneration{}, model.AttemptFence{}, fmt.Errorf("baseline requires source listing Work")
+	}
+	var state []byte
+	if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_baseline_generations
+WHERE work_id = ? FOR UPDATE`, work.WorkID).Scan(&state); err != nil {
+		return model.BaselineGeneration{}, model.AttemptFence{}, fmt.Errorf("load baseline execution: %w", err)
+	}
+	var baseline model.BaselineGeneration
+	if err := json.Unmarshal(state, &baseline); err != nil {
+		return model.BaselineGeneration{}, model.AttemptFence{}, err
+	}
+	preparation, err := readListingRunPreparation(ctx, tx, baseline.SourceID, true)
+	if err != nil {
+		return model.BaselineGeneration{}, model.AttemptFence{}, err
+	}
+	expected, err := model.NewExecutableBaselineGeneration(work.WorkID, preparation.Company, preparation.Source,
+		baseline.Generation, preparation.Recipe)
+	if err != nil || !reflect.DeepEqual(expected, baseline) || baseline.ListingFinalized ||
+		placement.Capability != baseline.ListingExecution.Execution.RequiredCapability || placement.Origin != baseline.ListingExecution.Origin {
+		return model.BaselineGeneration{}, model.AttemptFence{}, fmt.Errorf("baseline is fenced by changed Company, Source, Recipe, or placement")
+	}
+	fence := model.AttemptFence{CompanyVersion: baseline.CompanyVersion, SourceVersion: baseline.SourceVersion,
+		AssignmentVersion: baseline.ListingExecution.Assignment.AssignmentVersion, RecipeID: baseline.ListingExecution.RecipeID,
+		RecipeVersion: baseline.ListingExecution.RecipeVersion}
+	if placement.ProfileID != "" {
+		var profileState []byte
+		if err := tx.QueryRowContext(ctx, "SELECT state_json FROM recruiting_profiles WHERE profile_id = ?", placement.ProfileID).Scan(&profileState); err != nil {
+			return model.BaselineGeneration{}, model.AttemptFence{}, err
+		}
+		var profile model.BrowserProfile
+		if err := json.Unmarshal(profileState, &profile); err != nil || profile.AuthStatus != model.ProfileReady {
+			return model.BaselineGeneration{}, model.AttemptFence{}, fmt.Errorf("baseline Profile is not ready")
+		}
+		fence.ProfileID, fence.ProfileVersion = profile.ProfileID, profile.Version
+	}
+	return baseline, fence, nil
 }
 
 func loadDetailOfferFence(ctx context.Context, tx *sql.Tx, work model.Work, placement WorkPlacement) (*DetailExecutionInput, model.AttemptFence, error) {
@@ -834,6 +886,13 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 				fenceErr = placementErr
 			} else {
 				currentDiscovery, _, currentFence, fenceErr = loadSourceDiscoveryOfferFence(ctx, tx, work, placement)
+			}
+		case "baseline_listing":
+			placement, placementErr := getWorkPlacementWith(ctx, tx, work.WorkID)
+			if placementErr != nil {
+				fenceErr = placementErr
+			} else {
+				_, currentFence, fenceErr = loadBaselineOfferFence(ctx, tx, work, placement)
 			}
 		default:
 			fenceErr = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)

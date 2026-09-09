@@ -28,6 +28,8 @@ type SourceContractAssessment struct {
 	Pagination          ContractVerification `json:"pagination"`
 	Ordering            ContractVerification `json:"ordering"`
 	UpdateRetop         ContractVerification `json:"update_retop"`
+	CheckpointStrategy  CheckpointStrategy   `json:"checkpoint_strategy"`
+	OverlapPages        int                  `json:"overlap_pages"`
 	EvidenceArtifactIDs []string             `json:"evidence_artifact_ids"`
 	AssessedAt          string               `json:"assessed_at"`
 	Version             uint64               `json:"version"`
@@ -52,6 +54,10 @@ func (a SourceContractAssessment) Validate() error {
 	}
 	if len(a.EvidenceArtifactIDs) == 0 || len(a.EvidenceArtifactIDs) > 100 {
 		return fmt.Errorf("contract assessment requires bounded artifact evidence")
+	}
+	if (a.CheckpointStrategy != CheckpointActivityTime && a.CheckpointStrategy != CheckpointFrontierKeys) ||
+		a.OverlapPages < 1 || a.OverlapPages > 20 {
+		return fmt.Errorf("contract assessment requires a bounded checkpoint strategy and overlap")
 	}
 	seen := make(map[string]struct{}, len(a.EvidenceArtifactIDs))
 	for _, artifactID := range a.EvidenceArtifactIDs {

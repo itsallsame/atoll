@@ -63,8 +63,10 @@ func prepareDiagnosticSubmission(ctx context.Context, offer executioncontract.Of
 func prepareListingSubmissions(ctx context.Context, offer executioncontract.Offer, spec recipeabi.Spec,
 	run httpdriver.ListingRunResult, sink *atollArtifactSink) (listingSubmissions, error) {
 	standaloneProduction := offer.ListingRun != nil && offer.ListingRun.Mode == model.ListingRunProduction
-	if ctx == nil || sink == nil || offer.Kind != "listing" || (offer.Occurrence == nil && !standaloneProduction) ||
-		(offer.Occurrence != nil && offer.ListingRun != nil) || spec.Kind != recipeabi.KindListing ||
+	baseline := offer.Baseline != nil
+	if ctx == nil || sink == nil || offer.Kind != "listing" || (offer.Occurrence == nil && !standaloneProduction && !baseline) ||
+		(offer.Occurrence != nil && (offer.ListingRun != nil || offer.Baseline != nil)) ||
+		(offer.ListingRun != nil && offer.Baseline != nil) || spec.Kind != recipeabi.KindListing ||
 		run.Output.Failure != nil || run.CheckpointCandidate == nil || run.Output.AttemptID != offer.Attempt.AttemptID || len(run.Pages) == 0 {
 		return listingSubmissions{}, errors.New("successful listing offer, recipe, run, and artifact sink are required")
 	}
@@ -184,6 +186,9 @@ func listingOfferExecutionIdentity(offer executioncontract.Offer) (string, strin
 	if offer.ListingRun != nil && offer.Occurrence == nil && offer.ListingRun.Mode == model.ListingRunProduction {
 		return offer.ListingRun.ListingRunID, offer.ListingRun.SourceID
 	}
+	if offer.Baseline != nil && offer.Occurrence == nil && offer.ListingRun == nil {
+		return offer.Baseline.WorkID, offer.Baseline.SourceID
+	}
 	return "", ""
 }
 
@@ -193,6 +198,9 @@ func listingOfferEndpoint(offer executioncontract.Offer) string {
 	}
 	if offer.ListingRun != nil && offer.Occurrence == nil {
 		return offer.ListingRun.ListingExecution.Endpoint.URL
+	}
+	if offer.Baseline != nil && offer.Occurrence == nil && offer.ListingRun == nil {
+		return offer.Baseline.ListingExecution.Endpoint.URL
 	}
 	return ""
 }

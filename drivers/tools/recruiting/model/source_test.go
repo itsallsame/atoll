@@ -11,6 +11,7 @@ func verifiedAssessment(source RecruitmentSource, assignment SourceRecipeAssignm
 		SourceID: source.SourceID, EndpointRevision: revision, RecipeID: assignment.RecipeID,
 		RecipeVersion: assignment.RecipeVersion, ContractHash: assignment.ContractHash,
 		Identity: ContractVerified, Pagination: ContractVerified, Ordering: ContractVerified, UpdateRetop: ContractVerified,
+		CheckpointStrategy: CheckpointActivityTime, OverlapPages: 1,
 		EvidenceArtifactIDs: []string{"artifact-calibration-a", "artifact-calibration-b"},
 		AssessedAt:          "2026-09-07T00:00:00Z", Version: 1,
 	}

@@ -359,6 +359,7 @@ func seedLiveRecruitingSource(t *testing.T, dsn, sourceID, contentRef string, sp
 	assessment := model.SourceContractAssessment{SourceID: sourceID, EndpointRevision: validating.CandidateEndpoint.Revision,
 		RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, ContractHash: recipe.ContractHash,
 		Identity: model.ContractVerified, Pagination: model.ContractVerified, Ordering: model.ContractVerified, UpdateRetop: model.ContractVerified,
+		CheckpointStrategy: model.CheckpointActivityTime, OverlapPages: 1,
 		EvidenceArtifactIDs: []string{"e2e-live-calibration-a", "e2e-live-calibration-b"}, AssessedAt: now.Format(time.RFC3339), Version: 1}
 	ready, err := validating.PublishValidated(validating.Version, assignment, assessment)
 	if err != nil {

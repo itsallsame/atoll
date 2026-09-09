@@ -45,6 +45,7 @@ func manifest() introspect.Manifest {
 			TypeSourceDiscoveryCandidateReject: {Description: "independently reject one discovered candidate with an audited reason"},
 			TypeSourceGet:                      {Description: "get one recruitment source"},
 			TypeSourceList:                     {Description: "seek-page sources globally or for one company"},
+			TypeBaselineStart:                  {Description: "start one immutable, version-fenced baseline listing generation"},
 			TypeJobGet:                         {Description: "get one source job"},
 			TypeJobList:                        {Description: "seek-page jobs belonging to one recruitment source"},
 			TypeWorkGet:                        {Description: "get one operational work item"},

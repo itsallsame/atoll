@@ -15,14 +15,40 @@ const (
 )
 
 type BaselineGeneration struct {
-	SourceID         string         `json:"source_id"`
-	Generation       uint64         `json:"baseline_generation"`
-	Status           BaselineStatus `json:"status"`
-	ListingFinalized bool           `json:"listing_finalized"`
-	DetailsExpected  uint64         `json:"details_expected"`
-	DetailsAccounted uint64         `json:"details_accounted"`
-	DetailExceptions uint64         `json:"detail_exceptions"`
-	Version          uint64         `json:"version"`
+	SourceID           string                   `json:"source_id"`
+	WorkID             string                   `json:"work_id,omitempty"`
+	Generation         uint64                   `json:"baseline_generation"`
+	CompanyVersion     uint64                   `json:"company_version,omitempty"`
+	SourceVersion      uint64                   `json:"source_version,omitempty"`
+	ListingExecution   ListingExecutionSnapshot `json:"listing_execution,omitempty"`
+	CheckpointStrategy CheckpointStrategy       `json:"checkpoint_strategy,omitempty"`
+	OverlapPages       int                      `json:"overlap_pages,omitempty"`
+	Status             BaselineStatus           `json:"status"`
+	ListingFinalized   bool                     `json:"listing_finalized"`
+	DetailsExpected    uint64                   `json:"details_expected"`
+	DetailsAccounted   uint64                   `json:"details_accounted"`
+	DetailExceptions   uint64                   `json:"detail_exceptions"`
+	Version            uint64                   `json:"version"`
+}
+
+func NewExecutableBaselineGeneration(workID string, company Company, source RecruitmentSource, generation uint64,
+	recipe Recipe) (BaselineGeneration, error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" || source.CompanyID != company.CompanyID || generation == 0 ||
+		company.ControlStatus != ControlActive ||
+		(company.OnboardingStatus != CompanyDiscoveringSources && company.OnboardingStatus != CompanyInitializing) ||
+		source.ReadinessStatus != SourceReady || source.ControlStatus != ControlActive || source.HealthStatus != HealthHealthy ||
+		!source.HasVerifiedIncrementalContract() {
+		return BaselineGeneration{}, fmt.Errorf("executable baseline requires active onboarding Company and verified ready Source")
+	}
+	execution, err := NewListingExecutionSnapshot(source, recipe)
+	if err != nil {
+		return BaselineGeneration{}, err
+	}
+	return BaselineGeneration{SourceID: source.SourceID, WorkID: workID, Generation: generation,
+		CompanyVersion: company.Version, SourceVersion: source.Version, ListingExecution: execution,
+		CheckpointStrategy: source.ContractAssessment.CheckpointStrategy, OverlapPages: source.ContractAssessment.OverlapPages,
+		Status: BaselineListing, Version: 1}, nil
 }
 
 func NewBaselineGeneration(sourceID string, generation uint64) (BaselineGeneration, error) {

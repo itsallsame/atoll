@@ -41,6 +41,8 @@ type sourceValidationPublishPayload struct {
 	Pagination                model.ContractVerification `json:"pagination"`
 	Ordering                  model.ContractVerification `json:"ordering"`
 	UpdateRetop               model.ContractVerification `json:"update_retop"`
+	CheckpointStrategy        model.CheckpointStrategy   `json:"checkpoint_strategy"`
+	OverlapPages              int                        `json:"overlap_pages"`
 	EvidenceArtifactIDs       []string                   `json:"evidence_artifact_ids"`
 }
 
@@ -166,6 +168,7 @@ func handleSourceValidationPublish(sys actorbase.Sys, repository *store.Reposito
 		SourceID: current.SourceID, EndpointRevision: endpointRevision, RecipeID: recipe.RecipeID,
 		RecipeVersion: recipe.Version, ContractHash: recipe.ContractHash, Identity: payload.Identity,
 		Pagination: payload.Pagination, Ordering: payload.Ordering, UpdateRetop: payload.UpdateRetop,
+		CheckpointStrategy: payload.CheckpointStrategy, OverlapPages: payload.OverlapPages,
 		EvidenceArtifactIDs: append([]string(nil), payload.EvidenceArtifactIDs...),
 		AssessedAt:          businessAt.Format(time.RFC3339Nano), Version: assessmentVersion,
 	}

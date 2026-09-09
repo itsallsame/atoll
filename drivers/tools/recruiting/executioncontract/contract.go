@@ -137,6 +137,7 @@ type Offer struct {
 	Work                model.Work                   `json:"work"`
 	Occurrence          *model.SourceOccurrence      `json:"occurrence,omitempty"`
 	ListingRun          *model.ListingRun            `json:"listing_run,omitempty"`
+	Baseline            *model.BaselineGeneration    `json:"baseline,omitempty"`
 	CompanyImport       *model.CompanyImport         `json:"company_import,omitempty"`
 	CompanyImportItems  []CompanyImportApplyItem     `json:"company_import_items,omitempty"`
 	Checkpoint          *model.IncrementalCheckpoint `json:"checkpoint,omitempty"`

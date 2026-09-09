@@ -21,6 +21,12 @@ type BaselineStageRow struct {
 }
 
 func (r *Repository) CreateBaseline(ctx context.Context, baseline model.BaselineGeneration, businessAt time.Time) error {
+	return insertBaselineWith(ctx, r.db, baseline, businessAt)
+}
+
+func insertBaselineWith(ctx context.Context, executor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, baseline model.BaselineGeneration, businessAt time.Time) error {
 	if baseline.Version != 1 || baseline.Status != model.BaselineListing {
 		return fmt.Errorf("new baseline must be in listing status at version 1")
 	}
@@ -28,12 +34,13 @@ func (r *Repository) CreateBaseline(ctx context.Context, baseline model.Baseline
 	if err != nil {
 		return fmt.Errorf("encode baseline: %w", err)
 	}
-	_, err = r.db.ExecContext(ctx, `
+	_, err = executor.ExecContext(ctx, `
 INSERT INTO recruiting_baseline_generations(
-  source_id, baseline_generation, generation_status, listing_finalized,
+  source_id, work_id, baseline_generation, company_version, source_version, generation_status, listing_finalized,
   details_expected, details_accounted, detail_exceptions, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		baseline.SourceID, baseline.Generation, baseline.Status, baseline.ListingFinalized,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		baseline.SourceID, nullableString(baseline.WorkID), baseline.Generation, nullableUint(baseline.CompanyVersion),
+		nullableUint(baseline.SourceVersion), baseline.Status, baseline.ListingFinalized,
 		baseline.DetailsExpected, baseline.DetailsAccounted, baseline.DetailExceptions, baseline.Version, state,
 		businessAt.UTC(), businessAt.UTC())
 	if err == nil {
