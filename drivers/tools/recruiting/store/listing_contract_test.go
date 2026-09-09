@@ -67,13 +67,23 @@ func TestListingObservationCreatesDetailOnlyForNewOrChangedJob(t *testing.T) {
 	if err != nil || unchanged.DetailWork != nil || unchanged.Job.Version != 1 || unchanged.Job.RefreshGeneration != 1 {
 		t.Fatalf("safe overlap generated detail work: %+v %v", unchanged, err)
 	}
+	forced := overlap
+	forced.Observation.ObservationID = "listing-observation-baseline-refresh"
+	forced.Observation.OccurrenceID = "listing-baseline-2"
+	forced.Observation.ArtifactID = "listing-artifact-baseline-refresh"
+	forced.DetailWorkID = "listing-work-baseline-refresh"
+	forced.ForceDetailRefresh = true
+	refreshed, err := repository.ApplyListingObservation(ctx, forced)
+	if err != nil || refreshed.DetailWork == nil || refreshed.Job.Version != 2 || refreshed.Job.RefreshGeneration != 2 {
+		t.Fatalf("explicit baseline refresh did not generate detail: %+v %v", refreshed, err)
+	}
 	updated := overlap
 	updated.Observation.ObservationID = "listing-observation-3"
 	updated.Observation.ActivityAt = "2026-09-08T01:01:00Z"
 	updated.Observation.ListingFingerprint = "fingerprint-2"
 	updated.DetailWorkID = "listing-work-2"
 	changed, err := repository.ApplyListingObservation(ctx, updated)
-	if err != nil || changed.DetailWork == nil || changed.Job.RefreshGeneration != 2 || changed.Job.Version != 2 {
+	if err != nil || changed.DetailWork == nil || changed.Job.RefreshGeneration != 3 || changed.Job.Version != 3 {
 		t.Fatalf("changed listing did not generate detail: %+v %v", changed, err)
 	}
 	var observations, works int
@@ -83,7 +93,7 @@ func TestListingObservationCreatesDetailOnlyForNewOrChangedJob(t *testing.T) {
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_works WHERE target_id = ?", changed.Job.JobID).Scan(&works); err != nil {
 		t.Fatal(err)
 	}
-	if observations != 3 || works != 2 {
+	if observations != 4 || works != 3 {
 		t.Fatalf("observations=%d works=%d", observations, works)
 	}
 	broken := updated
@@ -95,13 +105,13 @@ func TestListingObservationCreatesDetailOnlyForNewOrChangedJob(t *testing.T) {
 		t.Fatal("duplicate detail work ID unexpectedly committed listing transaction")
 	}
 	rolledBack, err := repository.GetJob(ctx, changed.Job.JobID)
-	if err != nil || rolledBack.Version != 2 || rolledBack.RefreshGeneration != 2 {
+	if err != nil || rolledBack.Version != 3 || rolledBack.RefreshGeneration != 3 {
 		t.Fatalf("failed detail work left updated job: %+v %v", rolledBack, err)
 	}
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_listing_observations WHERE source_id = ?", source.SourceID).Scan(&observations); err != nil {
 		t.Fatal(err)
 	}
-	if observations != 3 {
+	if observations != 4 {
 		t.Fatalf("failed detail work left observation behind: %d", observations)
 	}
 }

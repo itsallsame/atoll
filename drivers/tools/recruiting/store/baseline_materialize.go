@@ -104,10 +104,20 @@ ORDER BY stage.source_job_key LIMIT ?`, baseline.SourceID, baseline.Generation, 
 		if err != nil {
 			return BaselineMaterializationResult{}, err
 		}
-		if _, err := applyListingObservationTx(ctx, tx, ListingIngest{Observation: observation, ObservedAt: at,
+		result, err := applyListingObservationTx(ctx, tx, ListingIngest{Observation: observation, ObservedAt: at,
 			Origin: origin, Capability: capability, Priority: 200, NotBefore: at,
-			ParentWorkID: observation.OccurrenceID}); err != nil {
+			ParentWorkID: observation.OccurrenceID, ForceDetailRefresh: true})
+		if err != nil {
 			return BaselineMaterializationResult{}, fmt.Errorf("materialize baseline observation: %w", err)
+		}
+		if result.DetailWork == nil {
+			return BaselineMaterializationResult{}, fmt.Errorf("baseline observation did not produce required detail Work")
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO recruiting_baseline_detail_items(
+  source_id, baseline_generation, job_id, detail_work_id, accounting_status, version, created_at, updated_at
+) VALUES (?, ?, ?, ?, 'pending', 1, ?, ?)`, baseline.SourceID, baseline.Generation, result.Job.JobID,
+			result.DetailWork.WorkID, at.UTC(), at.UTC()); err != nil {
+			return BaselineMaterializationResult{}, fmt.Errorf("bind baseline detail Work: %w", err)
 		}
 	}
 	advanced, err := baseline.AdvanceMaterialization(baseline.Version, staged[len(staged)-1].key, uint64(len(staged)), !hasMore)

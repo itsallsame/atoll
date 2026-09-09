@@ -24,6 +24,9 @@ type ListingIngest struct {
 	Priority     int
 	NotBefore    time.Time
 	ParentWorkID string
+	// ForceDetailRefresh is reserved for an explicit full baseline. Daily
+	// overlap ingestion must leave it false so unchanged rows stay cheap.
+	ForceDetailRefresh bool
 }
 
 type ListingIngestResult struct {
@@ -104,6 +107,10 @@ func applyListingObservationTx(ctx context.Context, tx *sql.Tx, input ListingIng
 		needsDetail = err == nil
 	} else {
 		job, needsDetail, err = job.ObserveListing(job.Version, input.Observation)
+		if err == nil && input.ForceDetailRefresh && !needsDetail {
+			job, err = job.ForceRefresh(job.Version, input.Observation.DetailURL)
+			needsDetail = err == nil
+		}
 	}
 	if err != nil {
 		return ListingIngestResult{}, err

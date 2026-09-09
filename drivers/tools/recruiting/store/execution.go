@@ -552,7 +552,20 @@ WHERE s.source_id = ?`, job.SourceID).Scan(&companyState, &sourceState, &assignm
 	if err != nil {
 		return nil, model.AttemptFence{}, err
 	}
-	if company.OnboardingStatus != model.CompanyReady || company.ControlStatus != model.ControlActive ||
+	companyAllowsDetail := company.OnboardingStatus == model.CompanyReady
+	if company.OnboardingStatus == model.CompanyInitializing && work.ParentWorkID != "" {
+		var baselineMember bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+  SELECT 1 FROM recruiting_baseline_detail_items item
+  JOIN recruiting_baseline_generations baseline
+    ON baseline.source_id = item.source_id AND baseline.baseline_generation = item.baseline_generation
+  WHERE item.job_id = ? AND baseline.work_id = ? AND item.accounting_status = 'pending'
+)`, job.JobID, work.ParentWorkID).Scan(&baselineMember); err != nil {
+			return nil, model.AttemptFence{}, fmt.Errorf("check initializing baseline detail membership: %w", err)
+		}
+		companyAllowsDetail = baselineMember
+	}
+	if !companyAllowsDetail || company.ControlStatus != model.ControlActive ||
 		source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy ||
 		source.DetailAssignment == nil || *source.DetailAssignment != assignment || assignment.Kind != model.RecipeDetail ||
 		recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDetail || recipe.RecipeID != assignment.RecipeID ||

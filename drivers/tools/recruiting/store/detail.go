@@ -28,9 +28,10 @@ type DetailResult struct {
 }
 
 type DetailResultOutcome struct {
-	Job            model.SourceJob `json:"job"`
-	ContentChanged bool            `json:"content_changed"`
-	Replayed       bool            `json:"replayed"`
+	Job            model.SourceJob           `json:"job"`
+	Baseline       *model.BaselineGeneration `json:"baseline,omitempty"`
+	ContentChanged bool                      `json:"content_changed"`
+	Replayed       bool                      `json:"replayed"`
 }
 
 type detailResultSnapshot struct {
@@ -118,6 +119,10 @@ func (r *Repository) acceptDetailResultTransaction(ctx context.Context, input De
 	if !errors.Is(err, sql.ErrNoRows) {
 		return DetailResultOutcome{}, nil, fmt.Errorf("check detail result replay: %w", err)
 	}
+	baselineAccounting, err := loadBaselineDetailAccountingTx(ctx, tx, work)
+	if err != nil {
+		return DetailResultOutcome{}, nil, err
+	}
 	if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, input.ObservedAt); err != nil {
 		return DetailResultOutcome{}, err, nil
 	}
@@ -164,7 +169,11 @@ INSERT INTO recruiting_job_detail_versions(
 	}
 	succeededAttempt, _ := attempt.Succeed()
 	completedWork, _ := work.Complete(work.Version, model.ResolutionSucceeded, "", "")
-	outcome := DetailResultOutcome{Job: acceptance.Job, ContentChanged: acceptance.ContentChanged}
+	accountedBaseline, err := accountBaselineDetailSuccessTx(ctx, tx, baselineAccounting, acceptance.Job.JobID, input.ObservedAt)
+	if err != nil {
+		return DetailResultOutcome{}, nil, err
+	}
+	outcome := DetailResultOutcome{Job: acceptance.Job, Baseline: accountedBaseline, ContentChanged: acceptance.ContentChanged}
 	resultSnapshot, _ := json.Marshal(detailResultSnapshot{InputHash: detailResultInputHash(input), Outcome: outcome})
 	if err := updateAttemptStatusTx(ctx, tx, attempt.Status, succeededAttempt, resultSnapshot, input.ObservedAt); err != nil {
 		return DetailResultOutcome{}, nil, fmt.Errorf("complete detail attempt: %w", err)

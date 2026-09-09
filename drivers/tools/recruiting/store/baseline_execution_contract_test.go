@@ -71,6 +71,7 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 	if err := repository.PublishSourceAssignment(ctx, ready.Version, 0, withDetail, detailAssignment, now); err != nil {
 		t.Fatal(err)
 	}
+	defer pauseExecutionSource(t, ctx, repository, source.SourceID, now.Add(30*time.Second))
 	initializing, _ := discovering.StartInitialization(discovering.Version)
 	work, _ := model.NewWork("executable-baseline-work", "source", source.SourceID, "baseline_listing", "human")
 	work, _ = work.WithCausality("human:baseline:1", "message-baseline", "")
@@ -196,6 +197,58 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 	if materializationCursor != "job-1" || materializedCount != 2 || !materializationCompleted {
 		t.Fatalf("materialization progress cursor=%q count=%d completed=%t",
 			materializationCursor, materializedCount, materializationCompleted)
+	}
+	for index := range 2 {
+		detailOffer, err := repository.OfferExecution(ctx, ListingOfferRequest{
+			AttemptID:       fmt.Sprintf("executable-baseline-detail-attempt-%d", index),
+			ExecutorActorID: "tool:detail-executor", ExecutorIncarnation: "boot-detail",
+			Capability: detailRecipe.Execution.RequiredCapability, Origin: "https://baseline-run.example.com",
+			OfferedAt: now.Add(time.Duration(8+index) * time.Second), BudgetPolicy: testExecutionBudgetPolicy()})
+		if err != nil || detailOffer.Kind != "detail" {
+			t.Fatalf("offer baseline detail %d=%+v %v", index, detailOffer, err)
+		}
+		if _, err := repository.AcceptListingExecution(ctx, detailOffer.Attempt.AttemptID,
+			detailOffer.Attempt.ExecutorActorID, detailOffer.Attempt.ExecutorIncarnation,
+			now.Add(time.Duration(10+index)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repository.StartListingExecution(ctx, detailOffer.Attempt.AttemptID,
+			detailOffer.Attempt.ExecutorActorID, detailOffer.Attempt.ExecutorIncarnation,
+			now.Add(time.Duration(12+index)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		artifact, _ := model.NewArtifactMetadata(fmt.Sprintf("executable-baseline-detail-artifact-%d", index),
+			model.ArtifactResponse, fmt.Sprintf("sha256:baseline-detail-%d", index),
+			fmt.Sprintf("object://baseline/detail/%d", index), detailOffer.Work.WorkID, detailOffer.Attempt.AttemptID,
+			"operators", "30d", true)
+		detailOutcome, err := repository.AcceptDetailResult(ctx, DetailResult{
+			AttemptID: detailOffer.Attempt.AttemptID, ExecutorActorID: detailOffer.Attempt.ExecutorActorID,
+			ExecutorIncarnation: detailOffer.Attempt.ExecutorIncarnation, Artifact: artifact,
+			DetailVersionID:       fmt.Sprintf("executable-baseline-detail-version-%d", index),
+			NormalizedContentHash: fmt.Sprintf("sha256:baseline-normalized-%d", index),
+			DetailJSON:            json.RawMessage([]byte("{\"title\":\"Engineer\"}")),
+			ObservedAt:            now.Add(time.Duration(14+index) * time.Second),
+			CauseCommandID:        fmt.Sprintf("executable-baseline-detail-command-%d", index),
+			RequestHash:           fmt.Sprintf("sha256:baseline-detail-command-%d", index)})
+		if err != nil || detailOutcome.Baseline == nil || detailOutcome.Baseline.DetailsAccounted != uint64(index+1) {
+			t.Fatalf("accept baseline detail %d=%+v %v", index, detailOutcome, err)
+		}
+	}
+	readyCompany, err := repository.PromoteNextReadyCompany(ctx, now.Add(20*time.Second))
+	if err != nil || readyCompany == nil || readyCompany.OnboardingStatus != model.CompanyReady {
+		t.Fatalf("promote baseline Company=%+v %v", readyCompany, err)
+	}
+	readyReplay, err := repository.PromoteNextReadyCompany(ctx, now.Add(21*time.Second))
+	if err != nil || readyReplay != nil {
+		t.Fatalf("replay Company promotion=%+v %v", readyReplay, err)
+	}
+	var succeededItems int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_baseline_detail_items WHERE source_id = ? AND baseline_generation = ? AND accounting_status = 'succeeded'",
+		source.SourceID, baseline.Generation).Scan(&succeededItems); err != nil {
+		t.Fatal(err)
+	}
+	if succeededItems != 2 {
+		t.Fatalf("succeeded baseline detail items=%d", succeededItems)
 	}
 	empty, err := repository.MaterializeNextBaselinePage(ctx, 500, now.Add(7*time.Second), nil)
 	if err != nil || empty.Processed != 0 {
