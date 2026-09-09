@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -150,7 +151,9 @@ func TestRunListingAdvancesSameOriginOffsetPagination(t *testing.T) {
 	if err != nil || result.Output.Failure != nil || len(result.Pages) != 2 || len(sink.writes) != 2 ||
 		len(offsets) != 2 || offsets[0] != "0" || offsets[1] != "2" ||
 		len(consumed) != 2 || consumed[0] != 1 || consumed[1] != 2 || secondFetchedBeforeConsume ||
-		result.Pages[0].ResumeCursor != server.URL+"/postings?limit=2&offset=2" || !result.Pages[1].Terminal {
+		len(result.Pages[0].Items) != 0 || len(result.Pages[1].Items) != 0 ||
+		result.Pages[0].ResumeCursor != server.URL+"/postings?limit=2&offset=2" || !result.Pages[1].Terminal ||
+		!strings.Contains(string(result.Output.Result), `"items_streamed":true`) {
 		t.Fatalf("offset listing result=%+v offsets=%v consumed=%v early=%v writes=%d err=%v",
 			result, offsets, consumed, secondFetchedBeforeConsume, len(sink.writes), err)
 	}

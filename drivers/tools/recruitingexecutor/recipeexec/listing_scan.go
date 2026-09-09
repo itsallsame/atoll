@@ -2,6 +2,7 @@ package recipeexec
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -17,8 +18,9 @@ type ListingScan struct {
 	boundaryTime     time.Time
 	frontierNeeded   map[string]struct{}
 	frontierSeen     map[string]struct{}
-	seenItems        map[string][]byte
+	seenItems        map[string][sha256.Size]byte
 	items            []map[string]json.RawMessage
+	itemCount        int
 	topFrontier      []string
 	topActivity      time.Time
 	previousActivity time.Time
@@ -38,7 +40,7 @@ func NewListingScan(spec recipeabi.Spec, checkpoint *recipeabi.CheckpointRef) (*
 	}
 	scan := &ListingScan{
 		spec: spec, checkpoint: checkpoint, baseline: checkpoint == nil,
-		frontierNeeded: map[string]struct{}{}, frontierSeen: map[string]struct{}{}, seenItems: map[string][]byte{},
+		frontierNeeded: map[string]struct{}{}, frontierSeen: map[string]struct{}{}, seenItems: map[string][sha256.Size]byte{},
 		quality: recipeabi.QualityProof{IdentityComplete: true, OrderingContractHeld: true, PaginationStable: true},
 	}
 	if checkpoint == nil {
@@ -95,13 +97,15 @@ func (s *ListingScan) AddPage(page DocumentResult) error {
 		if err != nil {
 			return fmt.Errorf("canonicalize page %d item %d: %w", s.pages, index, err)
 		}
+		fingerprint := sha256.Sum256(canonical)
 		if previous, duplicate := s.seenItems[identity]; duplicate {
-			if !bytes.Equal(previous, canonical) {
+			if previous != fingerprint {
 				s.quality.PaginationStable = false
 			}
 		} else {
-			s.seenItems[identity] = canonical
+			s.seenItems[identity] = fingerprint
 			s.items = append(s.items, cloneItem(item))
+			s.itemCount++
 			if len(s.topFrontier) < s.spec.Listing.FrontierWidth {
 				s.topFrontier = append(s.topFrontier, identity)
 			}
@@ -151,7 +155,7 @@ func (s *ListingScan) AddPage(page DocumentResult) error {
 	if !s.complete && s.pages >= s.spec.Listing.MaxPages {
 		s.complete, s.stopReason = true, "max_pages"
 	}
-	s.quality.ItemCount = len(s.items)
+	s.quality.ItemCount = s.itemCount
 	return nil
 }
 
@@ -166,7 +170,17 @@ func (s *ListingScan) StopReason() string { return s.stopReason }
 
 func (s *ListingScan) Quality() recipeabi.QualityProof { return s.quality }
 
-func (s *ListingScan) ItemCount() int { return len(s.items) }
+func (s *ListingScan) ItemCount() int { return s.itemCount }
+
+// BufferedItemCount is the number of unique item bodies still retained for a
+// caller to consume. It differs from ItemCount after a streaming caller has
+// released earlier pages.
+func (s *ListingScan) BufferedItemCount() int { return len(s.items) }
+
+// DiscardBufferedItems releases already submitted item bodies while keeping
+// compact identity fingerprints, quality counters, and checkpoint frontier
+// state required to validate later pages.
+func (s *ListingScan) DiscardBufferedItems() { s.items = nil }
 
 // ItemsFrom returns newly accepted unique items without copying the full scan
 // prefix on every page. The caller records these against that page's Artifact.

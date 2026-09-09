@@ -120,3 +120,34 @@ func TestBaselineAdvancesOnlyAtEndOfInput(t *testing.T) {
 		t.Fatalf("baseline proof=%+v reason=%s", scan.Quality(), scan.StopReason())
 	}
 }
+
+func TestListingScanReleasesStreamedBodiesButRetainsDedupeProof(t *testing.T) {
+	scan, err := NewListingScan(scanSpec(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := scanItem("job-1", "2026-09-08T10:00:00Z", "one")
+	if err := scan.AddPage(scanPage("p2", first)); err != nil {
+		t.Fatal(err)
+	}
+	if scan.ItemCount() != 1 || scan.BufferedItemCount() != 1 {
+		t.Fatalf("first page counts total=%d buffered=%d", scan.ItemCount(), scan.BufferedItemCount())
+	}
+	scan.DiscardBufferedItems()
+	if scan.ItemCount() != 1 || scan.BufferedItemCount() != 0 || len(scan.Items()) != 0 {
+		t.Fatalf("discard changed totals or retained bodies: total=%d buffered=%d", scan.ItemCount(), scan.BufferedItemCount())
+	}
+	if err := scan.AddPage(scanPage("p3", first, scanItem("job-2", "2026-09-08T09:00:00Z", "two"))); err != nil {
+		t.Fatal(err)
+	}
+	if scan.ItemCount() != 2 || scan.BufferedItemCount() != 1 || !scan.Quality().PaginationStable {
+		t.Fatalf("fingerprint dedupe after discard: total=%d buffered=%d quality=%+v",
+			scan.ItemCount(), scan.BufferedItemCount(), scan.Quality())
+	}
+	if err := scan.AddPage(scanPage("p4", scanItem("job-1", "2026-09-08T10:00:00Z", "changed"))); err != nil {
+		t.Fatal(err)
+	}
+	if scan.Quality().PaginationStable {
+		t.Fatal("changed duplicate was not detected after its body was released")
+	}
+}

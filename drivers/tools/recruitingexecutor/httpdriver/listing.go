@@ -132,7 +132,7 @@ func (d *Driver) runListing(ctx context.Context, spec recipeabi.Spec, input reci
 		if err != nil {
 			return classifiedListingFailure(ctx, sink, input, artifacts, pageSequence, currentURL.String(), "parse_error", err, scan.Quality())
 		}
-		itemOffset := scan.ItemCount()
+		itemOffset := scan.BufferedItemCount()
 		if err := scan.AddPage(document); err != nil {
 			return classifiedListingFailure(ctx, sink, input, artifacts, pageSequence, currentURL.String(), "contract_violated", err, scan.Quality())
 		}
@@ -143,12 +143,14 @@ func (d *Driver) runListing(ctx context.Context, spec recipeabi.Spec, input reci
 		page := ListingPage{Sequence: uint64(pageSequence), URL: currentURL.String(), Terminal: scan.Complete(), Artifact: artifact,
 			Items: pageItems}
 		if scan.Complete() {
-			pages = append(pages, page)
 			if consume != nil {
 				if err := consume(page); err != nil {
 					return ListingRunResult{}, fmt.Errorf("consume listing page %d: %w", pageSequence, err)
 				}
+				page.Items = nil
+				scan.DiscardBufferedItems()
 			}
+			pages = append(pages, page)
 			break
 		}
 		var nextURL *url.URL
@@ -161,12 +163,14 @@ func (d *Driver) runListing(ctx context.Context, spec recipeabi.Spec, input reci
 			return classifiedListingFailure(ctx, sink, input, artifacts, pageSequence, currentURL.String(), "contract_violated", err, scan.Quality())
 		}
 		page.ResumeCursor = nextURL.String()
-		pages = append(pages, page)
 		if consume != nil {
 			if err := consume(page); err != nil {
 				return ListingRunResult{}, fmt.Errorf("consume listing page %d: %w", pageSequence, err)
 			}
+			page.Items = nil
+			scan.DiscardBufferedItems()
 		}
+		pages = append(pages, page)
 		currentURL = nextURL
 	}
 	quality := scan.Quality()
@@ -182,7 +186,14 @@ func (d *Driver) runListing(ctx context.Context, spec recipeabi.Spec, input reci
 		}
 		candidate = &value
 	}
-	resultPayload, err := json.Marshal(map[string]any{"items": scan.Items(), "checkpoint_candidate": candidate, "stop_reason": scan.StopReason()})
+	result := map[string]any{"checkpoint_candidate": candidate, "stop_reason": scan.StopReason()}
+	if consume == nil {
+		result["items"] = scan.Items()
+	} else {
+		result["item_count"] = scan.ItemCount()
+		result["items_streamed"] = true
+	}
+	resultPayload, err := json.Marshal(result)
 	if err != nil {
 		return ListingRunResult{}, err
 	}
