@@ -87,7 +87,7 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 			run, runErr = driver.RunListingValidation(ctx, spec, input, options.Compliance, sink)
 		} else if diagnostic {
 			run, runErr = driver.RunListing(ctx, spec, input, options.Compliance, sink)
-		} else {
+		} else if offer.Baseline != nil {
 			pageCount, totalItems := 0, 0
 			var submissionErr error
 			run, runErr = driver.RunListingStreaming(ctx, spec, input, options.Compliance, sink, func(page httpdriver.ListingPage) error {
@@ -125,6 +125,8 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 				return fmt.Errorf("submit listing completion: %w", err)
 			}
 			return nil
+		} else {
+			run, runErr = driver.RunListing(ctx, spec, input, options.Compliance, sink)
 		}
 		if runErr != nil {
 			return failLocalExecution(ctx, control, sink, offer, "unexpected_status", "listing_driver", runErr)
@@ -142,8 +144,19 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 			}
 			return nil
 		}
-		return failLocalExecution(ctx, control, sink, offer, "contract_violated", "listing_mode",
-			errors.New("listing offer mode is neither production nor diagnostic/validation"))
+		submissions, err := prepareListingSubmissions(ctx, offer, spec, run, sink)
+		if err != nil {
+			return failLocalExecution(ctx, control, sink, offer, "contract_violated", "listing_result", err)
+		}
+		for index := range submissions.Pages {
+			if err := control.Submit(ctx, "listing_page", submissions.Pages[index]); err != nil {
+				return fmt.Errorf("submit listing page %d: %w", index+1, err)
+			}
+		}
+		if err := control.Submit(ctx, "listing_completion", submissions.Completion); err != nil {
+			return fmt.Errorf("submit listing completion: %w", err)
+		}
+		return nil
 
 	case "detail":
 		run, runErr := driver.RunDetail(ctx, spec, input, options.Compliance, sink)

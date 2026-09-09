@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,8 +25,8 @@ import (
 // A diagnostic request warms the Executor's per-origin limiter. The following
 // baseline Attempt therefore reaches running before the real HTTP read starts,
 // giving an observable and repeatable user-cancellation cut. The daemon then
-// finishes its read and submits a late classified result, which must be fenced
-// into rejected evidence without changing the canceled business aggregates.
+// finishes its read and submits a late page result, which must be fenced into
+// rejected evidence without changing the canceled business aggregates.
 func TestRecruitingLiveBaselineCancellationThroughAtoll(t *testing.T) {
 	if os.Getenv("ATOLL_RECRUITING_LIVE_E2E") != "1" {
 		t.Skip("set ATOLL_RECRUITING_LIVE_E2E=1 to run the real-website baseline cancellation test")
@@ -149,7 +150,7 @@ func TestRecruitingLiveBaselineCancellationThroughAtoll(t *testing.T) {
 		t.Fatalf("live cancellation replay = %v", replay)
 	}
 
-	artifactID := waitLiveRejectedFailure(t, runtimeDSN, running.WorkID, attemptID, 60*time.Second,
+	artifactID := waitLiveRejectedResult(t, runtimeDSN, running.WorkID, attemptID, 60*time.Second,
 		daemonLog, h.server.logPath)
 	physical := filepath.Join(daemonHome, "daemons", deviceID, "channels", qualifiedChannel,
 		"live-baseline-cancel-artifacts--"+attemptID, artifactID+".bin")
@@ -157,10 +158,16 @@ func TestRecruitingLiveBaselineCancellationThroughAtoll(t *testing.T) {
 		t.Fatalf("late rejected Artifact bytes missing at %s: info=%v err=%v", physical, info, err)
 	}
 	assertLiveCanceledBaselineFacts(t, runtimeDSN, sourceID, running.WorkID, attemptID)
-	t.Logf("live baseline canceled while running: attempt=%s rejected_artifact=%s", attemptID, artifactID)
+	t.Logf("live baseline canceled while running: attempt=%s rejected_result_artifact=%s", attemptID, artifactID)
 }
 
 func seedLiveBaselineCancellationSource(t *testing.T, dsn, sourceID, contentRef string, spec recipeabi.Spec, now time.Time) {
+	seedLiveBaselineSource(t, dsn, "e2e-live-baseline-cancel", "E2E Live Baseline Cancel",
+		"https://boards-api.greenhouse.io", sourceID, recruitingLiveExecutionURL, contentRef, spec, now)
+}
+
+func seedLiveBaselineSource(t *testing.T, dsn, fixturePrefix, companyName, companyBaseURL, sourceID, endpoint, contentRef string,
+	spec recipeabi.Spec, now time.Time) {
 	t.Helper()
 	db, err := store.Open(dsn)
 	if err != nil {
@@ -173,8 +180,7 @@ func seedLiveBaselineCancellationSource(t *testing.T, dsn, sourceID, contentRef 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	company, _ := model.NewCompany("e2e-live-baseline-cancel-company", "E2E Live Baseline Cancel",
-		"https://boards-api.greenhouse.io")
+	company, _ := model.NewCompany(fixturePrefix+"-company", companyName, companyBaseURL)
 	if err := repository.CreateCompany(ctx, company, now); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +188,7 @@ func seedLiveBaselineCancellationSource(t *testing.T, dsn, sourceID, contentRef 
 	if err := repository.UpdateCompanyCAS(ctx, company.Version, discovering, now); err != nil {
 		t.Fatal(err)
 	}
-	source, _ := model.NewRecruitmentSource(sourceID, company.CompanyID, recruitingLiveExecutionURL, "all", 1)
+	source, _ := model.NewRecruitmentSource(sourceID, company.CompanyID, endpoint, "all", 1)
 	if err := repository.CreateSource(ctx, source, now); err != nil {
 		t.Fatal(err)
 	}
@@ -199,8 +205,8 @@ func seedLiveBaselineCancellationSource(t *testing.T, dsn, sourceID, contentRef 
 	contractHash := "sha256:" + hex.EncodeToString(contractSum[:])
 	execution := model.RecipeExecution{ABIVersion: model.RecipeABIVersion, ContentRef: contentRef,
 		RequiredCapability: "http.fetch", Transport: model.RecipeTransportHTTPJSON}
-	recipe, _ := model.NewRecipe("e2e-live-baseline-cancel-listing", model.RecipeListing,
-		"boards-api.greenhouse.io", 1, contentHash, contractHash, execution)
+	recipe, _ := model.NewRecipe(fixturePrefix+"-listing", model.RecipeListing,
+		mustURLHost(t, endpoint), 1, contentHash, contractHash, execution)
 	recipe, _ = recipe.BeginValidation(recipe.StateVersion)
 	recipe, _ = recipe.Publish(recipe.StateVersion)
 	if err := repository.CreateRecipe(ctx, recipe, now); err != nil {
@@ -215,7 +221,7 @@ func seedLiveBaselineCancellationSource(t *testing.T, dsn, sourceID, contentRef 
 		RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, ContractHash: recipe.ContractHash,
 		Identity: model.ContractVerified, Pagination: model.ContractVerified, Ordering: model.ContractVerified,
 		UpdateRetop: model.ContractVerified, CheckpointStrategy: model.CheckpointActivityTime, OverlapPages: 1,
-		EvidenceArtifactIDs: []string{"e2e-live-cancel-fixture-a", "e2e-live-cancel-fixture-b"},
+		EvidenceArtifactIDs: []string{fixturePrefix + "-fixture-a", fixturePrefix + "-fixture-b"},
 		AssessedAt:          now.Format(time.RFC3339Nano), Version: 1,
 	}
 	ready, err := validating.PublishValidated(validating.Version, assignment, assessment)
@@ -225,6 +231,15 @@ func seedLiveBaselineCancellationSource(t *testing.T, dsn, sourceID, contentRef 
 	if err := repository.PublishSourceAssignment(ctx, validating.Version, 0, ready, assignment, now); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func mustURLHost(t *testing.T, raw string) string {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		t.Fatalf("fixture endpoint host: %q %v", raw, err)
+	}
+	return parsed.Host
 }
 
 func waitLiveBaselineRunning(t *testing.T, dsn, workID string, timeout time.Duration, logPaths ...string) (model.Work, string) {
@@ -258,7 +273,7 @@ WHERE work_id = ? ORDER BY created_at DESC LIMIT 1`, workID).Scan(&attemptID, &a
 	return model.Work{}, ""
 }
 
-func waitLiveRejectedFailure(t *testing.T, dsn, workID, attemptID string, timeout time.Duration, logPaths ...string) string {
+func waitLiveRejectedResult(t *testing.T, dsn, workID, attemptID string, timeout time.Duration, logPaths ...string) string {
 	t.Helper()
 	db, err := store.Open(dsn)
 	if err != nil {
@@ -268,7 +283,7 @@ func waitLiveRejectedFailure(t *testing.T, dsn, workID, attemptID string, timeou
 	var artifactID string
 	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
 		err = db.QueryRow(`SELECT artifact_id FROM recruiting_artifacts
-WHERE work_id = ? AND attempt_id = ? AND artifact_kind = 'failure' AND rejected = TRUE
+WHERE work_id = ? AND attempt_id = ? AND artifact_kind IN ('page', 'failure') AND rejected = TRUE
 ORDER BY created_at DESC LIMIT 1`, workID, attemptID).Scan(&artifactID)
 		if err == nil {
 			return artifactID
@@ -279,7 +294,7 @@ ORDER BY created_at DESC LIMIT 1`, workID, attemptID).Scan(&artifactID)
 	for _, path := range logPaths {
 		logs += "\n" + path + ":\n" + tailLog(path, 120)
 	}
-	t.Fatalf("late daemon failure was not retained as rejected evidence: work=%s attempt=%s err=%v%s",
+	t.Fatalf("late daemon result was not retained as rejected evidence: work=%s attempt=%s err=%v%s",
 		workID, attemptID, err, logs)
 	return ""
 }

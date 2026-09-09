@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/httpdriver"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 	"github.com/wanpengxie/atoll/protocol/access"
@@ -170,12 +171,13 @@ func TestExecuteOfferSubmitsListingPagesBeforeCompletion(t *testing.T) {
 
 func TestExecuteOfferKeepsSubmittedPageWhenLaterListingWorkFails(t *testing.T) {
 	now := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
-	offer, _, recipe := listingExecutionOffer(t, now)
+	offer, _, recipe := baselineExecutionOffer(t, now)
 	pageRef := recipeabi.ArtifactRef{ArtifactID: "listing-page-1", ContentHash: "sha256:page-1", ObjectRef: "artifact://page-1"}
 	item := map[string]json.RawMessage{"id": json.RawMessage(`"new-job"`), "detail_url": json.RawMessage(`"/roles/new-job"`)}
+	endpoint := offer.Baseline.ListingExecution.Endpoint.URL
 	run := httpdriver.ListingRunResult{Pages: []httpdriver.ListingPage{{
-		Sequence: 1, URL: offer.Occurrence.ListingExecution.Endpoint.URL,
-		ResumeCursor: offer.Occurrence.ListingExecution.Endpoint.URL + "?page=2", Artifact: pageRef,
+		Sequence: 1, URL: endpoint,
+		ResumeCursor: endpoint + "?page=2", Artifact: pageRef,
 		Items: []map[string]json.RawMessage{item},
 	}}}
 	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}}, recipe: recipe}
@@ -196,6 +198,35 @@ func TestExecuteOfferKeepsSubmittedPageWhenLaterListingWorkFails(t *testing.T) {
 	if page, ok := control.submissions[0].(executioncontract.ListingPageResult); !ok || page.PageSequence != 1 || page.Terminal {
 		t.Fatalf("first page was not submitted before failure: %#v", control.submissions)
 	}
+}
+
+func baselineExecutionOffer(t *testing.T, now time.Time) (executioncontract.Offer, recipeabi.Spec, []byte) {
+	t.Helper()
+	original, spec, recipe := listingExecutionOffer(t, now)
+	work, err := model.NewWork("baseline-work-1", "source", original.Occurrence.SourceID, "baseline_listing", "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, _ := model.NewAttempt("baseline-attempt-1", work)
+	attempt, _ = attempt.BindExecutor("executor-1", "boot-1", "http.public")
+	attempt, err = attempt.WithFence(model.AttemptFence{
+		CompanyVersion: original.Occurrence.CompanyVersion, SourceVersion: original.Occurrence.SourceVersion,
+		AssignmentVersion: original.Occurrence.ListingExecution.Assignment.AssignmentVersion,
+		RecipeID:          original.Occurrence.ListingExecution.RecipeID, RecipeVersion: original.Occurrence.ListingExecution.RecipeVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	permit, _ := model.NewBudgetPermit("baseline-permit-1", attempt.AttemptID, original.Occurrence.ListingExecution.Origin,
+		"", attempt.Capability, "company-1", 5)
+	baseline := model.BaselineGeneration{
+		SourceID: original.Occurrence.SourceID, WorkID: work.WorkID, Generation: 1,
+		CompanyVersion: original.Occurrence.CompanyVersion, SourceVersion: original.Occurrence.SourceVersion,
+		ListingExecution: original.Occurrence.ListingExecution, CheckpointStrategy: model.CheckpointFrontierKeys,
+		OverlapPages: 1, Status: model.BaselineListing, Version: 1,
+	}
+	return executioncontract.Offer{Kind: "listing", Attempt: attempt, Work: work, Baseline: &baseline,
+		Budget: permit, BudgetExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano), RequestedCapability: attempt.Capability}, spec, recipe
 }
 
 func TestExecuteOfferSubmitsDiagnosticEvidenceWithoutListingWrites(t *testing.T) {
