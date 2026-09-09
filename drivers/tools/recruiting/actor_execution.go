@@ -20,18 +20,19 @@ type listingOfferPayload = executioncontract.OfferRequest
 type executionTransitionPayload = executioncontract.TransitionRequest
 
 type executionControlResponse struct {
-	ContractVersion string                              `json:"contract_version"`
-	CorrelationID   string                              `json:"correlation_id"`
-	RequestedBy     string                              `json:"requested_by"`
-	Available       bool                                `json:"available,omitempty"`
-	Offer           *store.ExecutionOffer               `json:"offer,omitempty"`
-	Attempt         *model.Attempt                      `json:"attempt,omitempty"`
-	Page            *store.ListingPageOutcome           `json:"page,omitempty"`
-	Completion      *store.ListingCompletionOutcome     `json:"completion,omitempty"`
-	Diagnostic      *store.DiagnosticResultOutcome      `json:"diagnostic,omitempty"`
-	Detail          *store.DetailResultOutcome          `json:"detail,omitempty"`
-	CompanyImport   *store.CompanyImportResultOutcome   `json:"company_import,omitempty"`
-	SourceDiscovery *store.SourceDiscoveryResultOutcome `json:"source_discovery,omitempty"`
+	ContractVersion  string                              `json:"contract_version"`
+	CorrelationID    string                              `json:"correlation_id"`
+	RequestedBy      string                              `json:"requested_by"`
+	Available        bool                                `json:"available,omitempty"`
+	Offer            *store.ExecutionOffer               `json:"offer,omitempty"`
+	Attempt          *model.Attempt                      `json:"attempt,omitempty"`
+	Page             *store.ListingPageOutcome           `json:"page,omitempty"`
+	Completion       *store.ListingCompletionOutcome     `json:"completion,omitempty"`
+	Diagnostic       *store.DiagnosticResultOutcome      `json:"diagnostic,omitempty"`
+	SourceValidation *store.DiagnosticResultOutcome      `json:"source_validation,omitempty"`
+	Detail           *store.DetailResultOutcome          `json:"detail,omitempty"`
+	CompanyImport    *store.CompanyImportResultOutcome   `json:"company_import,omitempty"`
+	SourceDiscovery  *store.SourceDiscoveryResultOutcome `json:"source_discovery,omitempty"`
 }
 
 type listingPageResultPayload = executioncontract.ListingPageResult
@@ -66,7 +67,7 @@ func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, s
 		handleListingPageResult(sys, repository, msg)
 	case "listing_completion":
 		handleListingCompletionResult(sys, repository, msg)
-	case "diagnostic":
+	case "diagnostic", "source_validation":
 		handleDiagnosticResult(sys, repository, msg)
 	case "detail":
 		handleDetailResult(sys, repository, msg)
@@ -182,8 +183,8 @@ func handleDiagnosticResult(sys actorbase.Sys, repository *store.Repository, msg
 	if !decode(sys, msg, &payload) {
 		return
 	}
-	if strings.TrimSpace(payload.CommandID) == "" || payload.ResultKind != "diagnostic" {
-		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "diagnostic command_id and result_kind are required")
+	if strings.TrimSpace(payload.CommandID) == "" || (payload.ResultKind != "diagnostic" && payload.ResultKind != "source_validation") {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "diagnostic/source validation command_id and result_kind are required")
 		return
 	}
 	outcome, err := repository.AcceptDiagnosticResult(msg.Ctx(), store.DiagnosticResult{
@@ -196,7 +197,12 @@ func handleDiagnosticResult(sys actorbase.Sys, repository *store.Repository, msg
 		return
 	}
 	response := executionControlResponse{ContractVersion: executioncontract.Version, CorrelationID: string(msg.CorrelationID),
-		RequestedBy: string(msg.Sender.ID), Diagnostic: &outcome}
+		RequestedBy: string(msg.Sender.ID)}
+	if payload.ResultKind == "source_validation" {
+		response.SourceValidation = &outcome
+	} else {
+		response.Diagnostic = &outcome
+	}
 	_, _ = sys.Reply(msg, response)
 }
 

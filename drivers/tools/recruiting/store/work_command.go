@@ -210,7 +210,7 @@ func (r *Repository) applyRetryWorkCommand(ctx context.Context, expectedPrevious
 	if err := insertWork(ctx, tx, retry, placement, businessAt); err != nil {
 		return CommandResult{}, err
 	}
-	if retry.Purpose == "listing_sync" {
+	if retry.Purpose == "listing_sync" || retry.Purpose == "source_validation" {
 		occurrence, err := getOccurrenceByWorkWith(ctx, tx, previousID, true)
 		if errors.Is(err, ErrNotFound) {
 			run, runErr := getListingRunByWorkWith(ctx, tx, previousID, true)

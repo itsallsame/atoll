@@ -83,12 +83,12 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 		if run.Output.Failure != nil {
 			return failRunExecution(ctx, control, sink, offer, run.Output)
 		}
-		if offer.ListingRun != nil && offer.ListingRun.Mode == model.ListingRunDiagnostic {
+		if offer.ListingRun != nil && (offer.ListingRun.Mode == model.ListingRunDiagnostic || offer.ListingRun.Mode == model.ListingRunValidation) {
 			submission, err := prepareDiagnosticSubmission(ctx, offer, run, sink)
 			if err != nil {
 				return failLocalExecution(ctx, control, sink, offer, "contract_violated", "diagnostic_result", err)
 			}
-			if err := control.Submit(ctx, "diagnostic", submission); err != nil {
+			if err := control.Submit(ctx, submission.ResultKind, submission); err != nil {
 				return fmt.Errorf("submit diagnostic result: %w", err)
 			}
 			return nil

@@ -32,6 +32,18 @@ type sourcePausePayload struct {
 	PauseMode model.PauseMode `json:"pause_mode"`
 }
 
+type sourceValidatePayload struct {
+	MutationCommand
+	RecipeID                  string `json:"recipe_id"`
+	RecipeVersion             uint64 `json:"recipe_version"`
+	ExpectedAssignmentVersion uint64 `json:"expected_assignment_version"`
+	RunID                     string `json:"run_id"`
+	WorkID                    string `json:"work_id"`
+	ProfileID                 string `json:"profile_id,omitempty"`
+	Priority                  int    `json:"priority,omitempty"`
+	DeadlineAt                string `json:"deadline_at,omitempty"`
+}
+
 type sourceValidationPublishPayload struct {
 	MutationCommand
 	RecipeID                  string                     `json:"recipe_id"`
@@ -53,9 +65,11 @@ type sourceCommandResponse struct {
 	Source          model.RecruitmentSource `json:"source"`
 	Target          Target                  `json:"target"`
 	NextAction      string                  `json:"next_action"`
+	ValidationWork  *model.Work             `json:"validation_work,omitempty"`
+	ValidationRun   *model.ListingRun       `json:"validation_run,omitempty"`
 }
 
-func handleSourceMessage(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+func handleSourceMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	if repository == nil {
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
 		return
@@ -68,7 +82,92 @@ func handleSourceMessage(sys actorbase.Sys, repository *store.Repository, msg ac
 		handleSourceValidationPublish(sys, repository, msg)
 		return
 	}
+	if msg.Type == TypeSourceValidate {
+		handleSourceValidate(sys, cfg, repository, msg)
+		return
+	}
 	handleSourceMutation(sys, repository, msg)
+}
+
+func handleSourceValidate(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
+	var payload sourceValidatePayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	commandContext, err := NewCommandContext(payload.MutationCommand, string(msg.Sender.ID))
+	if err != nil || payload.Target.Type != "source" || strings.TrimSpace(payload.RecipeID) == "" || payload.RecipeVersion == 0 ||
+		strings.TrimSpace(payload.RunID) == "" || strings.TrimSpace(payload.WorkID) == "" {
+		if err == nil {
+			err = fmt.Errorf("source target, recipe_id, recipe_version, run_id, and work_id are required")
+		}
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	requestHash := commandRequestHash(msg)
+	if replay, found, lookupErr := repository.LookupCommand(msg.Ctx(), payload.CommandID, requestHash); lookupErr != nil {
+		failStoreError(sys, msg, lookupErr)
+		return
+	} else if found {
+		_, _ = sys.Reply(msg, json.RawMessage(replay.Response))
+		return
+	}
+	preparation, err := repository.PrepareSourceValidation(msg.Ctx(), payload.Target.ID, strings.TrimSpace(payload.RecipeID), payload.RecipeVersion)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	if preparation.Source.Version != payload.ExpectedVersion {
+		failStoreError(sys, msg, &model.VersionConflictError{Expected: payload.ExpectedVersion, Actual: preparation.Source.Version})
+		return
+	}
+	businessAt := time.UnixMilli(msg.TS).UTC()
+	next, run, err := preparation.NewRun(strings.TrimSpace(payload.RunID), strings.TrimSpace(payload.WorkID),
+		payload.ExpectedAssignmentVersion, businessAt.Format(time.RFC3339Nano))
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	placement, err := standaloneListingPlacement(run, payload.ProfileID, payload.Priority, payload.DeadlineAt, businessAt)
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	placement.BusinessKey = "source-validation|" + run.ListingRunID
+	work, err := model.NewWork(run.WorkID, "source", run.SourceID, "source_validation", "manual")
+	if err == nil {
+		work, err = work.WithCausality(commandContext.RequestedBy, string(msg.ID), "")
+	}
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	response := makeSourceResponse(msg, next)
+	response.ValidationWork, response.ValidationRun = &work, &run
+	responseBytes, _ := json.Marshal(response)
+	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, requestHash, responseBytes)
+	auditPayload, _ := json.Marshal(map[string]any{"requested_by": commandContext.RequestedBy, "reason": payload.Reason,
+		"recipe_id": run.ListingExecution.RecipeID, "recipe_version": run.ListingExecution.RecipeVersion,
+		"work_id": work.WorkID, "validation_run_id": run.ListingRunID})
+	var event model.EventIntent
+	if err == nil {
+		event, err = model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|source.validation_started"),
+			"source.validation_started", "source", next.SourceID, next.Version,
+			businessAt.Format(time.RFC3339Nano), payload.CommandID, auditPayload)
+	}
+	dispatch, dispatchErr := workCommandDispatch(cfg, work, placement, payload.CommandID, "source_validation")
+	if err == nil {
+		err = dispatchErr
+	}
+	var result store.CommandResult
+	if err == nil {
+		result, err = repository.ApplySourceValidationCommand(msg.Ctx(), payload.ExpectedVersion, payload.ExpectedAssignmentVersion, next, run, work,
+			placement, receipt, event, dispatch, businessAt)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
 }
 
 func handleSourceAdd(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
@@ -249,8 +348,6 @@ func handleSourceMutation(sys actorbase.Sys, repository *store.Repository, msg a
 	switch msg.Type {
 	case TypeSourceUpdate:
 		next, err = applySourceEndpointUpdate(current, command.ExpectedVersion, update)
-	case TypeSourceValidate:
-		next, err = current.BeginValidation(command.ExpectedVersion)
 	case TypeSourcePause:
 		next, err = current.Pause(command.ExpectedVersion, pause.PauseMode)
 	case TypeSourceResume:

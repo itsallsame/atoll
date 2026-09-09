@@ -63,6 +63,28 @@ func NewListingExecutionSnapshot(source RecruitmentSource, recipe Recipe) (Listi
 	}, nil
 }
 
+// NewCandidateListingExecutionSnapshot freezes the exact staged endpoint and
+// proposed listing Recipe used by Source validation. The assignment is an
+// execution fence only; publishing it remains a separate, evidence-gated
+// operator command.
+func NewCandidateListingExecutionSnapshot(source RecruitmentSource, recipe Recipe, assignment SourceRecipeAssignment) (ListingExecutionSnapshot, error) {
+	if source.CandidateEndpoint == nil || recipe.Status != RecipeActive || recipe.Kind != RecipeListing ||
+		assignment.SourceID != source.SourceID || assignment.Kind != RecipeListing || assignment.RecipeID != recipe.RecipeID ||
+		assignment.RecipeVersion != recipe.Version || assignment.ContractHash != recipe.ContractHash || assignment.AssignmentVersion == 0 {
+		return ListingExecutionSnapshot{}, fmt.Errorf("candidate listing snapshot requires a staged endpoint, active listing recipe, and matching proposed assignment")
+	}
+	endpoint, err := url.Parse(source.CandidateEndpoint.URL)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return ListingExecutionSnapshot{}, fmt.Errorf("candidate listing snapshot endpoint is invalid")
+	}
+	return ListingExecutionSnapshot{
+		Endpoint: *source.CandidateEndpoint, Assignment: assignment,
+		RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, ContentHash: recipe.ContentHash,
+		ContractHash: recipe.ContractHash, Execution: recipe.Execution,
+		Origin: endpoint.Scheme + "://" + endpoint.Host,
+	}, nil
+}
+
 func (s ListingExecutionSnapshot) Validate(sourceID string) error {
 	endpoint, err := url.Parse(s.Endpoint.URL)
 	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" || s.Endpoint.Revision == 0 ||

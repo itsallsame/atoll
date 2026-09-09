@@ -97,7 +97,10 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	  ) OR EXISTS (
 	    SELECT 1 FROM recruiting_listing_runs lr
 	    WHERE lr.work_id = w.work_id AND lr.run_status IN ('queued', 'running')
-	  ))) OR (w.purpose = 'detail_sync' AND EXISTS (
+	  ))) OR (w.purpose = 'source_validation' AND EXISTS (
+	    SELECT 1 FROM recruiting_listing_runs lr
+	    WHERE lr.work_id = w.work_id AND lr.run_mode = 'source_validation' AND lr.run_status IN ('queued', 'running')
+	  )) OR (w.purpose = 'detail_sync' AND EXISTS (
 	    SELECT 1 FROM recruiting_source_jobs j
 	    WHERE j.job_id = w.target_id AND j.job_status IN ('detail_pending', 'update_pending')
 	  )) OR (w.purpose = 'company_import' AND EXISTS (
@@ -200,6 +203,11 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		} else if err == nil {
 			checkpoint, fence, err = loadListingOfferFence(ctx, tx, occurrence, placement.ProfileID)
 		}
+	case "source_validation":
+		listingRun, err = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
+		if err == nil {
+			fence, err = loadSourceValidationOfferFence(ctx, tx, listingRun, placement.ProfileID)
+		}
 	case "detail_sync":
 		detail, fence, err = loadDetailOfferFence(ctx, tx, work, placement)
 	case "company_import":
@@ -279,11 +287,14 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	if !permitExpiresAt.IsZero() {
 		offer.BudgetExpiresAt = permitExpiresAt.Format(time.RFC3339Nano)
 	}
-	if work.Purpose == "listing_sync" {
+	if work.Purpose == "listing_sync" || work.Purpose == "source_validation" {
 		if listingRun.ListingRunID != "" {
 			offer.ListingRun = &listingRun
 		} else {
 			offer.Occurrence = &occurrence
+		}
+		if work.Purpose == "source_validation" {
+			offer.Kind = "listing"
 		}
 	} else if isCompanyImportPurpose(work.Purpose) {
 		offer.CompanyImport = &companyImport
@@ -475,6 +486,45 @@ func loadStandaloneListingOfferFence(ctx context.Context, tx *sql.Tx, run model.
 		fence.ProfileID, fence.ProfileVersion = profile.ProfileID, profile.Version
 	}
 	return run.Checkpoint, fence, nil
+}
+
+func loadSourceValidationOfferFence(ctx context.Context, tx *sql.Tx, run model.ListingRun, profileID string) (model.AttemptFence, error) {
+	if run.Mode != model.ListingRunValidation || run.Checkpoint != nil || run.CheckpointVersion != 0 ||
+		(run.Status != model.ListingRunQueued && run.Status != model.ListingRunRunning) {
+		return model.AttemptFence{}, fmt.Errorf("source validation run is not executable")
+	}
+	current, err := readSourceValidationPreparation(ctx, tx, run.SourceID, run.ListingExecution.RecipeID,
+		run.ListingExecution.RecipeVersion, true)
+	if err != nil {
+		return model.AttemptFence{}, err
+	}
+	if current.Source.ReadinessStatus != model.SourceValidating || current.Source.Version != run.SourceVersion ||
+		current.Company.Version != run.CompanyVersion {
+		return model.AttemptFence{}, fmt.Errorf("source validation run is fenced by changed aggregate state")
+	}
+	execution, err := model.NewCandidateListingExecutionSnapshot(current.Source, current.Recipe,
+		run.ListingExecution.Assignment)
+	if err != nil || !reflect.DeepEqual(execution, run.ListingExecution) {
+		return model.AttemptFence{}, fmt.Errorf("source validation run is fenced by changed endpoint or recipe")
+	}
+	fence := model.AttemptFence{CompanyVersion: run.CompanyVersion, SourceVersion: run.SourceVersion,
+		AssignmentVersion: run.ListingExecution.Assignment.AssignmentVersion, RecipeID: run.ListingExecution.RecipeID,
+		RecipeVersion: run.ListingExecution.RecipeVersion}
+	if profileID != "" {
+		var profileState []byte
+		if err := tx.QueryRowContext(ctx, "SELECT state_json FROM recruiting_profiles WHERE profile_id = ?", profileID).Scan(&profileState); err != nil {
+			return model.AttemptFence{}, fmt.Errorf("load source validation profile: %w", err)
+		}
+		var profile model.BrowserProfile
+		if err := json.Unmarshal(profileState, &profile); err != nil {
+			return model.AttemptFence{}, err
+		}
+		if profile.AuthStatus != model.ProfileReady {
+			return model.AttemptFence{}, fmt.Errorf("source validation profile is not ready")
+		}
+		fence.ProfileID, fence.ProfileVersion = profile.ProfileID, profile.Version
+	}
+	return fence, nil
 }
 
 func loadBaselineOfferFence(ctx context.Context, tx *sql.Tx, work model.Work, placement WorkPlacement) (model.BaselineGeneration, model.AttemptFence, error) {
@@ -874,6 +924,11 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			} else if fenceErr == nil {
 				_, currentFence, fenceErr = loadListingOfferFence(ctx, tx, occurrence, attempt.ProfileID)
 			}
+		case "source_validation":
+			listingRun, fenceErr = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
+			if fenceErr == nil {
+				currentFence, fenceErr = loadSourceValidationOfferFence(ctx, tx, listingRun, attempt.ProfileID)
+			}
 		case "detail_sync":
 			placement, placementErr := getWorkPlacementWith(ctx, tx, work.WorkID)
 			if placementErr != nil {
@@ -935,7 +990,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 				err = updateOccurrenceInTx(ctx, tx, previousOccurrenceVersion, occurrence, businessAt)
 			}
 		}
-		if err == nil && work.Purpose == "listing_sync" && listingRun.Status == model.ListingRunQueued {
+		if err == nil && (work.Purpose == "listing_sync" || work.Purpose == "source_validation") && listingRun.Status == model.ListingRunQueued {
 			previousRunVersion := listingRun.Version
 			listingRun, err = listingRun.Start(listingRun.Version)
 			if err == nil {

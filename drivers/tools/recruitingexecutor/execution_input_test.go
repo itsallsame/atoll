@@ -118,6 +118,27 @@ func diagnosticExecutionOffer(t *testing.T, now time.Time) (executioncontract.Of
 	return offer, spec, raw
 }
 
+func sourceValidationExecutionOffer(t *testing.T, now time.Time) (executioncontract.Offer, recipeabi.Spec, []byte) {
+	t.Helper()
+	offer, spec, raw := diagnosticExecutionOffer(t, now)
+	work, _ := model.NewWork(offer.Work.WorkID, "source", offer.ListingRun.SourceID, "source_validation", "manual")
+	attempt, _ := model.NewAttempt(offer.Attempt.AttemptID, work)
+	attempt, _ = attempt.BindExecutor(offer.Attempt.ExecutorActorID, offer.Attempt.ExecutorIncarnation, offer.Attempt.Capability)
+	attempt, _ = attempt.WithFence(model.AttemptFence{CompanyVersion: offer.ListingRun.CompanyVersion,
+		SourceVersion: offer.ListingRun.SourceVersion, AssignmentVersion: offer.ListingRun.ListingExecution.Assignment.AssignmentVersion,
+		RecipeID: offer.ListingRun.ListingExecution.RecipeID, RecipeVersion: offer.ListingRun.ListingExecution.RecipeVersion})
+	run, err := model.NewListingRun("source-validation-run-1", work.WorkID, model.ListingRunValidation,
+		offer.ListingRun.SourceID, offer.ListingRun.CompanyVersion, offer.ListingRun.SourceVersion, nil,
+		offer.ListingRun.ListingExecution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	permit, _ := model.NewBudgetPermit("permit-source-validation", attempt.AttemptID, run.ListingExecution.Origin, "",
+		attempt.Capability, "company-1", 5)
+	offer.Work, offer.Attempt, offer.ListingRun, offer.Budget = work, attempt, &run, permit
+	return offer, spec, raw
+}
+
 func productionExecutionOffer(t *testing.T, now time.Time) (executioncontract.Offer, recipeabi.Spec, []byte) {
 	t.Helper()
 	offer, spec, raw := listingExecutionOffer(t, now)
@@ -202,6 +223,24 @@ func TestPrepareStandaloneProductionExecutionUsesFrozenCheckpoint(t *testing.T) 
 		prepared.Input.Checkpoint.Version != offer.ListingRun.CheckpointVersion ||
 		prepared.Input.Attempt.WorkID != offer.ListingRun.WorkID {
 		t.Fatalf("unexpected standalone production input: %+v", prepared)
+	}
+}
+
+func TestPrepareSourceValidationUsesCandidateSnapshotWithoutCheckpoint(t *testing.T) {
+	now := time.Date(2026, 9, 9, 10, 30, 0, 0, time.UTC)
+	offer, spec, raw := sourceValidationExecutionOffer(t, now)
+	prepared, err := prepareExecution(recipeReaderStub{outcome: accessdoor.Outcome{Found: true, Value: raw}}, offer, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Recipe.Kind != spec.Kind || prepared.Input.Target.ID != offer.ListingRun.SourceID ||
+		prepared.Input.Endpoint.URL != offer.ListingRun.ListingExecution.Endpoint.URL || prepared.Input.Checkpoint != nil ||
+		prepared.Input.Attempt.SourceVersion != offer.ListingRun.SourceVersion {
+		t.Fatalf("unexpected source validation input: %+v", prepared)
+	}
+	offer.Work.Purpose = "listing_sync"
+	if _, _, _, err := buildRunInput(offer, now); err == nil {
+		t.Fatal("validation run was accepted as ordinary listing work")
 	}
 }
 

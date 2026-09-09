@@ -29,8 +29,8 @@ type DiagnosticResultOutcome struct {
 func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input DiagnosticResult) (DiagnosticResultOutcome, error) {
 	if input.CommandID == "" || input.RequestHash == "" || input.AttemptID == "" || input.ExecutorActorID == "" ||
 		input.ExecutorIncarnation == "" || input.CompletedAt.IsZero() || len(input.Artifacts) == 0 || len(input.Artifacts) > 101 ||
-		input.Quality.ItemCount < 0 || !input.Quality.IdentityComplete || !input.Quality.OrderingContractHeld || !input.Quality.PaginationStable {
-		return DiagnosticResultOutcome{}, fmt.Errorf("diagnostic result requires bounded evidence, complete quality, execution identity, and time")
+		input.Quality.ItemCount < 0 {
+		return DiagnosticResultOutcome{}, fmt.Errorf("evidence result requires bounded artifacts, quality, execution identity, and time")
 	}
 	seen := map[string]bool{}
 	for index, artifact := range input.Artifacts {
@@ -69,8 +69,13 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 	if err != nil {
 		return DiagnosticResultOutcome{}, err
 	}
-	if run.Mode != model.ListingRunDiagnostic || run.Status != model.ListingRunRunning || work.Purpose != "listing_sync" {
+	validation := run.Mode == model.ListingRunValidation && work.Purpose == "source_validation"
+	diagnostic := run.Mode == model.ListingRunDiagnostic && work.Purpose == "listing_sync"
+	if (!validation && !diagnostic) || run.Status != model.ListingRunRunning {
 		return DiagnosticResultOutcome{}, fmt.Errorf("result is not for a running diagnostic listing run")
+	}
+	if diagnostic && (!input.Quality.IdentityComplete || !input.Quality.OrderingContractHeld || !input.Quality.PaginationStable) {
+		return DiagnosticResultOutcome{}, fmt.Errorf("diagnostic result requires complete listing quality")
 	}
 	for _, artifact := range input.Artifacts {
 		if artifact.WorkID != work.WorkID {
@@ -80,7 +85,12 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 	if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, input.CompletedAt); err != nil {
 		return DiagnosticResultOutcome{}, err
 	}
-	_, currentFence, err := loadStandaloneListingOfferFence(ctx, tx, run, attempt.ProfileID)
+	var currentFence model.AttemptFence
+	if validation {
+		currentFence, err = loadSourceValidationOfferFence(ctx, tx, run, attempt.ProfileID)
+	} else {
+		_, currentFence, err = loadStandaloneListingOfferFence(ctx, tx, run, attempt.ProfileID)
+	}
 	if err != nil {
 		return DiagnosticResultOutcome{}, err
 	}
@@ -120,7 +130,11 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 	}
 	payload, _ := json.Marshal(map[string]any{"attempt_id": attempt.AttemptID, "work_id": work.WorkID,
 		"listing_run_id": run.ListingRunID, "artifact_count": len(input.Artifacts), "item_count": input.Quality.ItemCount})
-	event, err := model.NewEventIntent("diagnostic-completed-"+attempt.AttemptID, "listing.diagnostic_completed", "work",
+	eventKind := "listing.diagnostic_completed"
+	if validation {
+		eventKind = "source.validation_evidence_recorded"
+	}
+	event, err := model.NewEventIntent("diagnostic-completed-"+attempt.AttemptID, eventKind, "work",
 		completedWork.WorkID, completedWork.Version, input.CompletedAt.UTC().Format(time.RFC3339Nano), input.CommandID, payload)
 	if err != nil {
 		return DiagnosticResultOutcome{}, err

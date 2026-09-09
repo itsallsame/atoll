@@ -88,7 +88,7 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 			contexts++
 		}
 		if offer.Detail != nil || contexts != 1 ||
-			(work.Purpose != "listing_sync" && work.Purpose != "baseline_listing") || work.TargetType != "source" {
+			(work.Purpose != "listing_sync" && work.Purpose != "source_validation" && work.Purpose != "baseline_listing") || work.TargetType != "source" {
 			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("listing offer must carry exactly one execution context")
 		}
 		var sourceID string
@@ -103,7 +103,8 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 			run := offer.ListingRun
 			sourceID, companyVersion, sourceVersion, snapshot = run.SourceID, run.CompanyVersion, run.SourceVersion, run.ListingExecution
 			if run.WorkID != work.WorkID || (run.Status != model.ListingRunQueued && run.Status != model.ListingRunRunning) ||
-				(run.Mode != model.ListingRunDiagnostic && run.Mode != model.ListingRunProduction) {
+				(run.Mode != model.ListingRunDiagnostic && run.Mode != model.ListingRunProduction && run.Mode != model.ListingRunValidation) ||
+				(run.Mode == model.ListingRunValidation) != (work.Purpose == "source_validation") {
 				return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("standalone listing run is not executable")
 			}
 		} else {

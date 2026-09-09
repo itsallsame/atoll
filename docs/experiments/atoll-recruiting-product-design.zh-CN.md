@@ -189,6 +189,7 @@ Target 是“可调度对象”的统一称呼，不替代这些业务实体。C
 | 单个新增公司 | manual/event | 公司名称、官网等 | company/source discovery | 公司和候选 Source |
 | 批量导入公司 | manual/event | 文件或 Resource | 多个 company discovery | 逐公司成功/失败报告 |
 | 发现岗位列表来源 | 新增公司、URL 失效或人工复核 | Company、官网、历史证据 | source discovery | 新增、确认或拒绝 Source |
+| 校验岗位列表来源 | 候选 Source 被接受或修复后复核 | Candidate Endpoint、active Listing Recipe | source validation | 仅保存页面与 trace 证据，等待发布判断 |
 | 人工维护 Source | manual | 列表 URL、类别、参数 | data maintenance/validation | 新版本 Source |
 | 首次全量初始化 | Source 首次可用 | Source、列表/详情 Recipe | baseline → listing/detail | 当前全部岗位基线和首个 Checkpoint |
 | 第二次全量校准 | 首次基线完成或人工触发 | 已有基线 | reconcile | 验证分页、稳定身份、活动排序和边界 |
@@ -722,6 +723,8 @@ planned → running → completed / completed_with_exceptions
 Company 只有 `onboarding_status=ready` 且 `control_status=active` 才进入正常运行；Source 只有 `readiness_status=ready` 且 `control_status=active` 才属于每日应运行集合。正交状态避免把“用户暂停”和“页面坏了”混成同一个枚举。
 
 Source Discovery 可产生 0、1 或多个候选，候选逐项验证和拒绝，不做整体事务。其幂等代际为 `company_id + discovery_generation`；强制重新发现显式递增 generation。Source `ready` 至少要求归属已确认、生产 Endpoint 已发布、Listing Recipe Assignment 有效，并以真实样本验证分页、稳定岗位键、活动倒序、边界和异常停止。
+
+`source.validate` 不是单纯把状态改为 `validating`：命令必须在同一事务冻结 Candidate Endpoint、active Listing Recipe、Company/Source/Assignment 版本和可选 Browser Profile，创建 `purpose=source_validation` 的 Work、Listing validation run、receipt、事件和 capability dispatch。它复用统一 Executor 与 Listing Recipe 执行面，不增加专用 Worker；成功结果只保存页面/trace Artifact 和客观质量观测，不写 Job、不派生详情、不创建或推进 Checkpoint。人工发布命令再引用这些 Work 证据，对 identity、pagination、ordering、update-retop 分别作判断；发布闸门必须反查证据所属的已完成 validation run，并确认 Endpoint revision、Recipe/contract 和拟发布 Assignment version 完全一致。单次执行不能观察到历史岗位更新时，`update-retop` 必须保持 `unverified`。
 
 Company 有至少一个 active/ready Source，且每个准备投产的 Source 已完成 listing baseline、详情均成功或有用户明确接受的缺口时，才进入 onboarding `ready`。零候选进入 `blocked_no_sources`；部分 Source 成功不阻止其余候选独立失败或等待人工，但用户必须看见未投产项。
 

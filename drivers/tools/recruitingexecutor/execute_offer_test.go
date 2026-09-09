@@ -176,6 +176,33 @@ func TestExecuteOfferSubmitsDiagnosticEvidenceWithoutListingWrites(t *testing.T)
 	}
 }
 
+func TestExecuteOfferSubmitsDistinctSourceValidationEvidence(t *testing.T) {
+	now := time.Date(2026, 9, 8, 10, 30, 0, 0, time.UTC)
+	offer, _, recipe := sourceValidationExecutionOffer(t, now)
+	pageRef := recipeabi.ArtifactRef{ArtifactID: "validation-page", ContentHash: "sha256:validation-page", ObjectRef: "artifact://validation-page"}
+	run := httpdriver.ListingRunResult{Output: recipeabi.RunOutput{ABIVersion: recipeabi.Version, AttemptID: offer.Attempt.AttemptID,
+		Artifacts: []recipeabi.ArtifactRef{pageRef}, Result: json.RawMessage(`{"items":1}`),
+		Quality: recipeabi.QualityProof{IdentityComplete: true, OrderingContractHeld: true, PaginationStable: true, ItemCount: 1}},
+		Pages: []httpdriver.ListingPage{{Sequence: 1, URL: offer.ListingRun.ListingExecution.Endpoint.URL, Terminal: true, Artifact: pageRef}}}
+	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}}, recipe: recipe}
+	control := &executeControlStub{}
+	if err := executeOffer(context.Background(), control, resources, executeDriverStub{listing: run}, offer, executeTestOptions(now)); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"accept", "started", "submit:source_validation"}
+	if len(control.calls) != len(want) {
+		t.Fatalf("source validation lifecycle = %v", control.calls)
+	}
+	for index := range want {
+		if control.calls[index] != want[index] {
+			t.Fatalf("source validation lifecycle = %v", control.calls)
+		}
+	}
+	if control.kind != "source_validation" {
+		t.Fatalf("source validation terminal submission = %q", control.kind)
+	}
+}
+
 func TestExecuteOfferTurnsRecipeResolutionFailureIntoEvidence(t *testing.T) {
 	now := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
 	offer, _, recipe := detailExecutionOffer(t, now)

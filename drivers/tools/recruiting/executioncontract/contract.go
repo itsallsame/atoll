@@ -225,8 +225,9 @@ type ListingCheckpointCandidate struct {
 	FrontierJobKeys    []string `json:"frontier_job_keys,omitempty"`
 }
 
-// DiagnosticResult closes a standalone diagnostic run with evidence only.
-// It intentionally contains no observations or checkpoint candidate.
+// DiagnosticResult is the shared evidence-only envelope used by standalone
+// diagnostics and Source validation. ResultKind preserves their distinct
+// business meaning; neither carries observations or a checkpoint candidate.
 type DiagnosticResult struct {
 	CommandID           string                   `json:"command_id"`
 	ResultKind          string                   `json:"result_kind"`
@@ -284,15 +285,16 @@ type SourceDiscoveryResult struct {
 }
 
 type ResultResponse struct {
-	Status          string          `json:"status"`
-	Reason          string          `json:"reason,omitempty"`
-	ContractVersion string          `json:"contract_version"`
-	CorrelationID   string          `json:"correlation_id"`
-	RequestedBy     string          `json:"requested_by"`
-	Page            json.RawMessage `json:"page,omitempty"`
-	Completion      json.RawMessage `json:"completion,omitempty"`
-	Diagnostic      json.RawMessage `json:"diagnostic,omitempty"`
-	Detail          json.RawMessage `json:"detail,omitempty"`
-	CompanyImport   json.RawMessage `json:"company_import,omitempty"`
-	SourceDiscovery json.RawMessage `json:"source_discovery,omitempty"`
+	Status           string          `json:"status"`
+	Reason           string          `json:"reason,omitempty"`
+	ContractVersion  string          `json:"contract_version"`
+	CorrelationID    string          `json:"correlation_id"`
+	RequestedBy      string          `json:"requested_by"`
+	Page             json.RawMessage `json:"page,omitempty"`
+	Completion       json.RawMessage `json:"completion,omitempty"`
+	Diagnostic       json.RawMessage `json:"diagnostic,omitempty"`
+	SourceValidation json.RawMessage `json:"source_validation,omitempty"`
+	Detail           json.RawMessage `json:"detail,omitempty"`
+	CompanyImport    json.RawMessage `json:"company_import,omitempty"`
+	SourceDiscovery  json.RawMessage `json:"source_discovery,omitempty"`
 }

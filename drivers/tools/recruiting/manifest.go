@@ -32,7 +32,7 @@ func manifest() introspect.Manifest {
 			TypeCompanyList:                    {Description: "seek-page recruiting companies"},
 			TypeSourceAdd:                      {Description: "add a recruitment source owned by one company"},
 			TypeSourceUpdate:                   {Description: "stage a corrected source endpoint with version fencing"},
-			TypeSourceValidate:                 {Description: "begin validation of a staged source endpoint"},
+			TypeSourceValidate:                 {Description: "atomically start a staged source validation Work with a frozen listing Recipe execution"},
 			TypeSourceValidationPublish:        {Description: "atomically publish a validated endpoint, listing assignment, evidence assessment, and audit fact"},
 			TypeSourcePause:                    {Description: "pause one recruitment source with an explicit drain policy"},
 			TypeSourceResume:                   {Description: "resume a paused recruitment source"},

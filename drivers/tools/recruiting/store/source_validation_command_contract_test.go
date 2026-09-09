@@ -11,7 +11,7 @@ import (
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
-func TestPublishSourceValidationCommandIsEvidenceBoundAtomicAndReplayable(t *testing.T) {
+func TestPublishSourceValidationCommandRejectsUnexecutedAndMissingEvidenceAtomically(t *testing.T) {
 	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
 	if dsn == "" {
 		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
@@ -69,20 +69,16 @@ func TestPublishSourceValidationCommandIsEvidenceBoundAtomicAndReplayable(t *tes
 		"sha256:validation-publish", []byte(`{"readiness_status":"ready"}`))
 	event, _ := model.NewEventIntent("validation-publish-event", "source.validation.published", "source",
 		ready.SourceID, ready.Version, now.Format(time.RFC3339Nano), receipt.CommandID, []byte(`{"requested_by":"human:reviewer:1"}`))
-	result, err := repository.ApplyPublishSourceValidationCommand(ctx, validating.Version, 0, ready, assignment,
-		receipt, event, now.Add(time.Second))
-	if err != nil || result.Replayed {
-		t.Fatalf("publish validation = %+v, %v", result, err)
-	}
-	replay, err := repository.ApplyPublishSourceValidationCommand(ctx, validating.Version, 0, ready, assignment,
-		receipt, event, now.Add(time.Second))
-	if err != nil || !replay.Replayed || string(replay.Response) != string(result.Response) {
-		t.Fatalf("publish validation replay = %+v, %v", replay, err)
+	if _, err := repository.ApplyPublishSourceValidationCommand(ctx, validating.Version, 0, ready, assignment,
+		receipt, event, now.Add(time.Second)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unexecuted validation evidence = %v", err)
 	}
 	stored, err := repository.GetSource(ctx, source.SourceID)
-	storedAssignment, assignmentErr := repository.GetAssignment(ctx, source.SourceID, model.RecipeListing)
-	if err != nil || assignmentErr != nil || !stored.HasVerifiedIncrementalContract() || storedAssignment != assignment {
-		t.Fatalf("published validation state = %+v / %+v, %v / %v", stored, storedAssignment, err, assignmentErr)
+	if err != nil || !reflect.DeepEqual(stored, validating) {
+		t.Fatalf("unexecuted evidence changed Source = %+v, %v", stored, err)
+	}
+	if _, found, err := repository.LookupCommand(ctx, receipt.CommandID, receipt.RequestHash); err != nil || found {
+		t.Fatalf("unexecuted evidence retained receipt: found=%v err=%v", found, err)
 	}
 
 	missingSource, _ := model.NewRecruitmentSource("validation-missing-source", company.CompanyID,

@@ -547,7 +547,7 @@ func applyWorkRetryFacts(repository *store.Repository, msg actorbase.Msg, comman
 }
 
 func workCommandDispatch(cfg Config, work model.Work, placement store.WorkPlacement, commandID, causeKind string) (*store.ExecutionDispatchIntent, error) {
-	if work.Purpose != "listing_sync" && work.Purpose != "detail_sync" && work.Purpose != "company_import" &&
+	if work.Purpose != "listing_sync" && work.Purpose != "source_validation" && work.Purpose != "detail_sync" && work.Purpose != "company_import" &&
 		work.Purpose != "company_import_apply" && work.Purpose != "source_discovery" {
 		return nil, nil
 	}

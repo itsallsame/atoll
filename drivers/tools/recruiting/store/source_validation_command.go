@@ -96,11 +96,16 @@ WHERE recipe_id = ? AND recipe_version = ? FOR UPDATE`, assignment.RecipeID, ass
 	for _, artifactID := range assessment.EvidenceArtifactIDs {
 		var kind model.ArtifactKind
 		var rejected bool
-		err := tx.QueryRowContext(ctx, `SELECT artifact.artifact_kind, artifact.rejected
+		var runState, workState, attemptResult []byte
+		err := tx.QueryRowContext(ctx, `SELECT artifact.artifact_kind, artifact.rejected, run.state_json, work.state_json,
+       attempt.execution_result_json
 FROM recruiting_artifacts artifact
 JOIN recruiting_works work ON work.work_id = artifact.work_id
+JOIN recruiting_listing_runs run ON run.work_id = work.work_id
+JOIN recruiting_attempts attempt ON attempt.attempt_id = artifact.attempt_id AND attempt.work_id = work.work_id
 WHERE artifact.artifact_id = ? AND work.target_type = 'source' AND work.target_id = ?
-FOR SHARE`, artifactID, next.SourceID).Scan(&kind, &rejected)
+  AND work.purpose = 'source_validation' AND run.run_mode = 'source_validation'
+FOR SHARE`, artifactID, next.SourceID).Scan(&kind, &rejected, &runState, &workState, &attemptResult)
 		if errors.Is(err, sql.ErrNoRows) {
 			return CommandResult{}, fmt.Errorf("%w: validation evidence Artifact %s", ErrNotFound, artifactID)
 		}
@@ -109,6 +114,31 @@ FOR SHARE`, artifactID, next.SourceID).Scan(&kind, &rejected)
 		}
 		if rejected || kind == model.ArtifactFailure {
 			return CommandResult{}, fmt.Errorf("validation evidence Artifact %s is rejected or failure-only", artifactID)
+		}
+		var evidenceRun model.ListingRun
+		var evidenceWork model.Work
+		var evidenceOutcome DiagnosticResultOutcome
+		if err := json.Unmarshal(runState, &evidenceRun); err != nil {
+			return CommandResult{}, fmt.Errorf("decode validation evidence run: %w", err)
+		}
+		if err := json.Unmarshal(workState, &evidenceWork); err != nil {
+			return CommandResult{}, fmt.Errorf("decode validation evidence Work: %w", err)
+		}
+		if err := json.Unmarshal(attemptResult, &evidenceOutcome); err != nil {
+			return CommandResult{}, fmt.Errorf("decode validation evidence result: %w", err)
+		}
+		if evidenceWork.Status != model.WorkCompleted || evidenceWork.Resolution != model.ResolutionSucceeded ||
+			evidenceRun.Status != model.ListingRunCompleted || evidenceRun.Mode != model.ListingRunValidation ||
+			evidenceOutcome.Work.WorkID != evidenceWork.WorkID || evidenceOutcome.Run.ListingRunID != evidenceRun.ListingRunID ||
+			!evidenceOutcome.Quality.IdentityComplete || !evidenceOutcome.Quality.OrderingContractHeld ||
+			!evidenceOutcome.Quality.PaginationStable ||
+			evidenceRun.SourceID != next.SourceID || evidenceRun.SourceVersion != current.Version ||
+			evidenceRun.ListingExecution.Endpoint.Revision != assessment.EndpointRevision ||
+			evidenceRun.ListingExecution.RecipeID != assignment.RecipeID ||
+			evidenceRun.ListingExecution.RecipeVersion != assignment.RecipeVersion ||
+			evidenceRun.ListingExecution.ContractHash != assignment.ContractHash ||
+			evidenceRun.ListingExecution.Assignment.AssignmentVersion != assignment.AssignmentVersion {
+			return CommandResult{}, fmt.Errorf("validation evidence Artifact %s does not prove the published endpoint and Recipe", artifactID)
 		}
 	}
 	if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {
