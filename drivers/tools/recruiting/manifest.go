@@ -34,6 +34,7 @@ func manifest() introspect.Manifest {
 			TypeSourceUpdate:                   {Description: "stage a corrected source endpoint with version fencing"},
 			TypeSourceValidate:                 {Description: "atomically start a staged source validation Work with a frozen listing Recipe execution"},
 			TypeSourceValidationPublish:        {Description: "atomically publish a validated endpoint, listing assignment, evidence assessment, and audit fact"},
+			TypeSourceValidationReject:         {Description: "reject a staged source candidate while retaining validation evidence and any active endpoint"},
 			TypeSourcePause:                    {Description: "pause one recruitment source with an explicit drain policy"},
 			TypeSourceResume:                   {Description: "resume a paused recruitment source"},
 			TypeSourceArchive:                  {Description: "archive a recruitment source without deleting history"},

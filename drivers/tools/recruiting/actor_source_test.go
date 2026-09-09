@@ -35,8 +35,9 @@ func TestSourceEventVocabularyAndManifest(t *testing.T) {
 	words := map[string]string{
 		TypeSourceAdd: "source.added", TypeSourceUpdate: "source.updated",
 		TypeSourceValidate: "source.validation_started", TypeSourceValidationPublish: "source.validation.published",
-		TypeSourcePause:  "source.paused",
-		TypeSourceResume: "source.resumed", TypeSourceArchive: "source.archived", TypeSourceRestore: "source.restored",
+		TypeSourceValidationReject: "source.validation.rejected",
+		TypeSourcePause:            "source.paused",
+		TypeSourceResume:           "source.resumed", TypeSourceArchive: "source.archived", TypeSourceRestore: "source.restored",
 	}
 	actorManifest := manifest()
 	for word, event := range words {

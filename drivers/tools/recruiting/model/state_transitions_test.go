@@ -233,7 +233,7 @@ func TestSourceReadinessTransitionMatrix(t *testing.T) {
 			t.Fatalf("mark invalid from %q: %v", status, invalidErr)
 		}
 		_, rejectErr := source.RejectCandidate(source.Version)
-		rejectAllowed := status == SourceCandidate || status == SourceValidating
+		rejectAllowed := status == SourceCandidate || status == SourceValidating || status == SourceInvalid || status == SourceRepairing
 		if rejectAllowed != (rejectErr == nil) {
 			t.Fatalf("reject from %q: %v", status, rejectErr)
 		}

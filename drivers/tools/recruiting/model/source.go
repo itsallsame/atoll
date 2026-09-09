@@ -198,7 +198,8 @@ func (s RecruitmentSource) RejectCandidate(expected uint64) (RecruitmentSource, 
 	if err := requireVersion(expected, s.Version); err != nil {
 		return RecruitmentSource{}, err
 	}
-	if s.ReadinessStatus != SourceCandidate && s.ReadinessStatus != SourceValidating {
+	if s.ReadinessStatus != SourceCandidate && s.ReadinessStatus != SourceValidating &&
+		s.ReadinessStatus != SourceInvalid && s.ReadinessStatus != SourceRepairing {
 		return RecruitmentSource{}, &InvalidTransitionError{Entity: "source", From: string(s.ReadinessStatus), Action: "reject candidate"}
 	}
 	if s.ActiveEndpoint != nil {
@@ -234,7 +235,7 @@ func (s RecruitmentSource) StageEndpoint(expected uint64, endpoint, category str
 		revision = s.CandidateEndpoint.Revision + 1
 	}
 	s.CandidateEndpoint = &SourceEndpoint{URL: canonical, Category: strings.TrimSpace(category), CanonicalKey: key, Revision: revision}
-	if s.ReadinessStatus == SourceReady {
+	if s.ReadinessStatus == SourceReady || s.ReadinessStatus == SourceValidating {
 		s.ReadinessStatus = SourceRepairing
 	}
 	s.Version++

@@ -32,6 +32,7 @@ const (
 	TypeSourceUpdate                   = "recruiting.source.update"
 	TypeSourceValidate                 = "recruiting.source.validate"
 	TypeSourceValidationPublish        = "recruiting.source.validation.publish"
+	TypeSourceValidationReject         = "recruiting.source.validation.reject"
 	TypeSourcePause                    = "recruiting.source.pause"
 	TypeSourceResume                   = "recruiting.source.resume"
 	TypeSourceArchive                  = "recruiting.source.archive"

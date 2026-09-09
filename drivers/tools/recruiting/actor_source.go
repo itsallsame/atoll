@@ -350,6 +350,8 @@ func handleSourceMutation(sys actorbase.Sys, repository *store.Repository, msg a
 		next, err = applySourceEndpointUpdate(current, command.ExpectedVersion, update)
 	case TypeSourcePause:
 		next, err = current.Pause(command.ExpectedVersion, pause.PauseMode)
+	case TypeSourceValidationReject:
+		next, err = current.RejectCandidate(command.ExpectedVersion)
 	case TypeSourceResume:
 		next, err = current.Resume(command.ExpectedVersion)
 	case TypeSourceArchive:
@@ -433,6 +435,8 @@ func makeSourceResponse(msg actorbase.Msg, source model.RecruitmentSource) sourc
 		nextAction = "resume_source"
 	case source.ReadinessStatus == model.SourceCandidate || source.ReadinessStatus == model.SourceRepairing:
 		nextAction = "validate_source"
+	case source.ReadinessStatus == model.SourceInvalid:
+		nextAction = "repair_or_reject_source"
 	case source.ReadinessStatus == model.SourceValidating:
 		nextAction = "await_validation"
 	case source.ReadinessStatus == model.SourceReady:
@@ -454,6 +458,8 @@ func sourceEventKind(word string) string {
 		return "source.validation_started"
 	case TypeSourceValidationPublish:
 		return "source.validation.published"
+	case TypeSourceValidationReject:
+		return "source.validation.rejected"
 	case TypeSourcePause:
 		return "source.paused"
 	case TypeSourceResume:

@@ -243,3 +243,91 @@ func TestSourceValidationQualityViolationMarksSourceInvalid(t *testing.T) {
 		t.Fatalf("invalid Source cannot be revalidated: %v", err)
 	}
 }
+
+func TestSourceValidationEndpointCorrectionFencesOldWorkAndAllowsReplacement(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	now := time.Date(2094, 7, 3, 2, 0, 0, 0, time.UTC)
+	company, _ := model.NewCompany("validation-correction-company", "Validation Correction", "https://validation-correction.example.com")
+	if err := repository.CreateCompany(ctx, company, now); err != nil {
+		t.Fatal(err)
+	}
+	source, _ := model.NewRecruitmentSource("validation-correction-source", company.CompanyID,
+		"https://validation-correction.example.com/old-jobs", "all", 1)
+	if err := repository.CreateSource(ctx, source, now); err != nil {
+		t.Fatal(err)
+	}
+	recipe := activeRecipe(t, "validation-correction-recipe", model.RecipeListing,
+		"validation-correction.example.com", 1, "validation-correction-contract")
+	if err := repository.CreateRecipe(ctx, recipe, now); err != nil {
+		t.Fatal(err)
+	}
+	preparation, _ := repository.PrepareSourceValidation(ctx, source.SourceID, recipe.RecipeID, recipe.Version)
+	validating, oldRun, _ := preparation.NewRun("validation-correction-old-run", "validation-correction-old-work", 0,
+		now.Format(time.RFC3339Nano))
+	oldWork, _ := model.NewWork(oldRun.WorkID, "source", source.SourceID, "source_validation", "manual")
+	oldPlacement := WorkPlacement{BusinessKey: "source-validation|" + oldRun.ListingRunID,
+		Capability: oldRun.ListingExecution.Execution.RequiredCapability, Origin: oldRun.ListingExecution.Origin, NotBefore: now}
+	oldReceipt, _ := model.NewCommandReceipt("validation-correction-old-command", "recruiting.source.validate",
+		"sha256:validation-correction-old", json.RawMessage(`{}`))
+	oldEvent, _ := model.NewEventIntent("validation-correction-old-event", "source.validation_started", "source",
+		source.SourceID, validating.Version, now.Format(time.RFC3339Nano), oldReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplySourceValidationCommand(ctx, source.Version, 0, validating, oldRun, oldWork,
+		oldPlacement, oldReceipt, oldEvent, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	corrected, err := validating.StageEndpoint(validating.Version, "https://validation-correction.example.com/new-jobs", "all")
+	if err != nil || corrected.ReadinessStatus != model.SourceRepairing {
+		t.Fatalf("corrected Source = %+v err=%v", corrected, err)
+	}
+	if err := repository.UpdateSourceCAS(ctx, validating.Version, corrected, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "validation-correction-stale-attempt",
+		ExecutorActorID: "tool:validation-correction:1", ExecutorIncarnation: "boot-correction",
+		Capability: oldPlacement.Capability, Origin: oldPlacement.Origin, OfferedAt: now.Add(time.Second),
+		BudgetPolicy: testExecutionBudgetPolicy()}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("stale validation Work was offered after endpoint correction: %v", err)
+	}
+	replacementPreparation, err := repository.PrepareSourceValidation(ctx, source.SourceID, recipe.RecipeID, recipe.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revalidating, replacementRun, err := replacementPreparation.NewRun("validation-correction-new-run",
+		"validation-correction-new-work", 0, now.Add(2*time.Second).Format(time.RFC3339Nano))
+	if err != nil || replacementRun.ListingExecution.Endpoint.URL != corrected.CandidateEndpoint.URL ||
+		replacementRun.ListingExecution.Endpoint.Revision != corrected.CandidateEndpoint.Revision {
+		t.Fatalf("replacement validation = %+v err=%v", replacementRun, err)
+	}
+	replacementWork, _ := model.NewWork(replacementRun.WorkID, "source", source.SourceID, "source_validation", "manual")
+	replacementPlacement := WorkPlacement{BusinessKey: "source-validation|" + replacementRun.ListingRunID,
+		Capability: replacementRun.ListingExecution.Execution.RequiredCapability, Origin: replacementRun.ListingExecution.Origin,
+		NotBefore: now.Add(2 * time.Second)}
+	replacementReceipt, _ := model.NewCommandReceipt("validation-correction-new-command", "recruiting.source.validate",
+		"sha256:validation-correction-new", json.RawMessage(`{}`))
+	replacementEvent, _ := model.NewEventIntent("validation-correction-new-event", "source.validation_started", "source",
+		source.SourceID, revalidating.Version, now.Add(2*time.Second).Format(time.RFC3339Nano), replacementReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplySourceValidationCommand(ctx, corrected.Version, 0, revalidating, replacementRun,
+		replacementWork, replacementPlacement, replacementReceipt, replacementEvent, nil, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "validation-correction-new-attempt",
+		ExecutorActorID: "tool:validation-correction:1", ExecutorIncarnation: "boot-correction",
+		Capability: replacementPlacement.Capability, Origin: replacementPlacement.Origin, OfferedAt: now.Add(2 * time.Second),
+		BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil || offer.Work.WorkID != replacementWork.WorkID || offer.ListingRun == nil ||
+		offer.ListingRun.ListingExecution.Endpoint.Revision != corrected.CandidateEndpoint.Revision {
+		t.Fatalf("replacement validation offer = %+v err=%v", offer, err)
+	}
+}

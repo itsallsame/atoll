@@ -89,6 +89,28 @@ func TestSourcePublishesCandidateAtomicallyAndKeepsOldEndpointDuringRepair(t *te
 	}
 }
 
+func TestChangingEndpointDuringValidationMovesSourceToRepairingAndFencesOldRun(t *testing.T) {
+	source, err := NewRecruitmentSource("source-changing", "company-changing", "https://jobs.example.com/old", "all", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validating, err := source.BeginValidation(source.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := validating.StageEndpoint(validating.Version, "https://jobs.example.com/new", "all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.ReadinessStatus != SourceRepairing || changed.CandidateEndpoint.URL != "https://jobs.example.com/new" ||
+		changed.CandidateEndpoint.Revision != validating.CandidateEndpoint.Revision+1 {
+		t.Fatalf("changed validating Source = %+v", changed)
+	}
+	if _, err := changed.BeginValidation(changed.Version); err != nil {
+		t.Fatalf("corrected Source cannot restart validation: %v", err)
+	}
+}
+
 func TestSourceCannotPublishAnUnverifiedIncrementalContract(t *testing.T) {
 	source, _ := NewRecruitmentSource("source-1", "company-1", "https://jobs.example.com", "all", 1)
 	source, _ = source.BeginValidation(source.Version)

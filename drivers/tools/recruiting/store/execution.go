@@ -99,7 +99,10 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	    WHERE lr.work_id = w.work_id AND lr.run_status IN ('queued', 'running')
 	  ))) OR (w.purpose = 'source_validation' AND EXISTS (
 	    SELECT 1 FROM recruiting_listing_runs lr
+	    JOIN recruiting_sources validation_source ON validation_source.source_id = lr.source_id
 	    WHERE lr.work_id = w.work_id AND lr.run_mode = 'source_validation' AND lr.run_status IN ('queued', 'running')
+	      AND validation_source.readiness_status = 'validating'
+	      AND CAST(JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.source_version')) AS UNSIGNED) = validation_source.version
 	  )) OR (w.purpose = 'detail_sync' AND EXISTS (
 	    SELECT 1 FROM recruiting_source_jobs j
 	    WHERE j.job_id = w.target_id AND j.job_status IN ('detail_pending', 'update_pending')
