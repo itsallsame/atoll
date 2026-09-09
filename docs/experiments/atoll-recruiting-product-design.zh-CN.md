@@ -645,6 +645,8 @@ summary, created_at, updated_at
 
 取消不能只改变 Work 展示状态。对于可执行 baseline，`recruiting.work.cancel` 必须在一个事务内取消 Work 和 BaselineGeneration、提升 acceptance fence、拒绝活动 Attempt、释放 BudgetPermit、写协作事件和容量释放 wake；在途 Executor 的迟到页只能保存为 rejected Artifact，不能建立 Checkpoint。取消后的 generation 是终态历史，不重新打开；Company 可在相同 `initializing` 阶段以新的 Work 和更高 generation 重新开始。
 
+详情失败转人工后，用户拒绝接受缺口时可以用 `terminated` 关闭旧 Work，但这一步不得核算 baseline 成员。后续 `work.retry` 创建新的因果 Work，并在同一事务把仍为 `pending` 的成员账本从旧 Work 重绑到 Retry Work；新 Work 的真实详情成功才将成员计为 `succeeded`。已经 `accepted_gap` 的终态成员不被重绑，避免事后修复改写当时的基线结论。
+
 失败按可审计分类决定下一步：瞬态错误有界重试，确定性 Recipe/数据错误转 repair，认证错误阻塞于 Profile，质量证明不足进入人工。终态 Work 不重新打开；后续恢复或用户再次运行创建带 `cause_work_id` 的新 Work。对于尚未终结的每日列表 `SourceOccurrence`，人工重试必须在同一事务创建新 `listing_sync` Work、把 occurrence 从旧 Work 重绑到新 Work、写入审计事件和执行 dispatch；旧 Work/Attempt 保留为不可变历史，新 Work 才拥有完成该 occurrence 的执行权。已终结 occurrence 不允许通过 retry 重开。日报保留关闭时结论，后续成功只追加恢复关联。
 
 典型业务幂等键包括：每日列表 `source_id + schedule_date + policy_version`；详情 `source_id + source_job_key + refresh_generation + purpose`；基线 `source_id + baseline_generation`；共享修复 `failure_domain + failure_signature + failing_version`。它们与网络重放用的 `command_id` 是两层不同规则。

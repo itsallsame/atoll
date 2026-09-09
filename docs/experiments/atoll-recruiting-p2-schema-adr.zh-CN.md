@@ -63,6 +63,8 @@ Listing Page Progress 以 `(attempt_id, page_sequence)` 唯一，而不是以 Wo
 
 `baseline_generations` 保存 generation 状态和 fencing version；`baseline_staging` 按 `(source_id, generation, source_job_key)` 分块幂等写入，并为每行标记产生它的 `attempt_id`。失败 Attempt 的行不删除，可用于诊断；新 Attempt 必须从第 1 页重扫，同键行会改绑到新 Attempt，旧 Attempt 独有键保持隔离。finalize 只统计当前成功 Attempt 的行，并把该 `listing_attempt_id` 冻结到 generation；后续物化也只读取这个 Attempt 的 staging，因此旧页无法混入基线。游标失效可从头重扫。finalize 锁定 generation、核对当前 Attempt 的实际 staging 数、改变 generation 可见性并建立首个 Checkpoint，不搬运一万行数据；详情 Job/Work 复用上述页提交协议按主键 seek 渐进物化，避免单个超大事务。旧 Attempt staging 的有界保留/清理服从 Artifact 与运行证据保留策略，不进入成功事实热路径。
 
+每个物化出的 baseline 详情成员保存当前负责它的 `detail_work_id` 和独立核算版本。详情失败后若用户不接受缺口而选择修复，关闭旧 Work 不改变 `pending`；创建 Retry Work 的事务同时用旧 `detail_work_id + job_id + pending` CAS 重绑成员。只有重试结果成功或用户明确接受缺口时，才与 BaselineGeneration CAS 一起把成员推进为 `succeeded|accepted_gap`。这样 Work 历史保持不可变，成员又不会错误指向已经终止的执行权。
+
 ### Artifact 与执行结果
 
 Executor 先上传外部对象，再返回不可变引用。接受事务验证 Attempt sender/incarnation 和全部 P1 fence，插入 Artifact metadata、业务事实、Attempt/Work 终态与 outbox。拒绝的迟到结果只允许保存隔离的 rejected Artifact 证据，不能更新聚合或 Checkpoint。

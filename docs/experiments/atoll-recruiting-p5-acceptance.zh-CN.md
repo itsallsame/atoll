@@ -21,21 +21,21 @@
 - 统一 Executor 已能领取 baseline listing，沿用同一个 HTTP/Browser Recipe 执行面；每页最多 500 条，只写带 `attempt_id` 的 generation staging。terminal completion 重新核对 Attempt fence、完整分页/排序/边界证明和仅属于当前 Attempt 的 staging 数量，把成功 `listing_attempt_id` 冻结到 Baseline，然后原子建立首个 Checkpoint并完成 Baseline listing、Attempt 与 Work；命令与结果均可稳定重放。页间失败后的新 Attempt 从第 1 页重扫，旧 Attempt 独有行不会进入 finalize 或物化。
 - finalized staging 已由 Recruiting Actor 的既有有界 reconcile 渐进物化为 Job 和幂等 Detail Work，不增加专用 Worker 类型。BaselineGeneration 保存版本化 `materialization_cursor`、已处理数和完成标记；每批最多 500 条，岗位事实、详情 Work、游标 CAS 和按 capability 聚合的 Executor 唤醒在同一短事务提交。并发协调循环只能有一个推进版本；缺少有效 Detail Recipe 的基线保留等待修复，但不会阻塞其他 Company。
 - 用户取消 `baseline_listing` Work 不走单表状态捷径：专用取消事务同时把 Work 与 BaselineGeneration 置为 canceled、提升 acceptance fence、把活动 Attempt 置为 rejected、释放 Permit/预算计数并产生容量 wake。迟到页只留下 rejected Artifact且不能创建 Checkpoint；原 generation 保留为终态证据，Company 可用新的 Work/generation 重新开始。命令重放不再次改变任何版本或预算。
-- 每个 baseline Detail Work 在物化事务中写入独立成员账本；详情成功事务同时接受 JobDetailVersion、完成 Work/Attempt、释放 Permit、把成员由 pending 变为 succeeded，并以 Baseline CAS 增加核算数。终态异常先进入 `waiting_human`；只有认证用户通过既有 `recruiting.work.resolve` 明确提交 `accepted_gap` 和理由，才在同一命令事务核算缺口，运行中的 Work 不能直接伪装成缺口。Company 不在每条详情事务中加锁；Recruiting Actor 的既有 reconcile 只在所有 active/ready Source 的最新 baseline 均完成或缺口已被接受时，原子推进 `initializing → ready` 并写领域事件。
+- 每个 baseline Detail Work 在物化事务中写入独立成员账本；详情成功事务同时接受 JobDetailVersion、完成 Work/Attempt、释放 Permit、把成员由 pending 变为 succeeded，并以 Baseline CAS 增加核算数。终态异常先进入 `waiting_human`；只有认证用户通过既有 `recruiting.work.resolve` 明确提交 `accepted_gap` 和理由，才在同一命令事务核算缺口，运行中的 Work 不能直接伪装成缺口。用户拒绝缺口并以 `terminated` 结束旧 Work 时，成员仍为 pending；`work.retry` 原子创建因果 Work、重绑该成员和 dispatch，重试的真实详情结果才核算成功。Company 不在每条详情事务中加锁；Recruiting Actor 的既有 reconcile 只在所有 active/ready Source 的最新 baseline 均完成或缺口已被接受时，原子推进 `initializing → ready` 并写领域事件。
 
 ## 已执行证据
 
 - 真实网站：`https://www.mongodb.com/careers`，实际规范入口为 `https://www.mongodb.com/company/careers/see-jobs`。
 - 真实链路：普通用户通过 Atoll Portal/WebSocket 新增 Company；Recruiting Actor 建立 generation；真实 daemon 上的 Recruiting Executor 访问公开页面并保存 Artifact；用户接受候选后回读到归属正确、readiness 为 `candidate` 的 Source；发现与接受命令重放均稳定。
 - 真实 Source 校验：同一普通用户把 MongoDB 的公开 Greenhouse Job Board API 作为确认后的逻辑列表入口，调用 `source.validate` 并重放命令；真实 daemon/Executor 完成 Work 和 Attempt，保存 page/trace Artifact。实际列表不满足 `newest_activity_desc`，系统因此把“执行成功、契约失败”原子落为 Source `invalid`，没有写入任何 Job、ListingObservation 或 Checkpoint。该结果没有被包装成成功发布，也没有进入 baseline；机读证据见 `docs/experiments/evidence/recruiting-live-source-validation-20260909.json`。
-- 隔离数据库：MySQL 8.4；migration 与 runtime 使用不同非 root 账号。合同测试覆盖 discovery 执行、零候选 Company 收口、已有 Source 防误判、候选独立裁决、跨 Company 冲突回滚、validation 原子创建/offer/Attempt/结果、零业务数据副作用、验证证据绑定、发布原子性和命令重放；baseline 覆盖 start、offer、首个 Attempt 页间失败、第二 Attempt 从第 1 页重扫、staging/finalize/物化的 Attempt 隔离、运行中用户取消、Attempt/Permit/容量收口、迟到结果隔离、新 generation 重启、completion、并发物化、持久游标、Job/Detail Work 唯一性和结果重放。当前生产物化器另以 10,000 条 staging 实测：20 个至多 500 条的独立事务形成 10,000 个 Job、10,000 个 Detail Work 和 10,000 条成员账本，最终游标为第 10,000 个来源岗位键；两个匹配 Executor 目标只形成每页两个、共 40 个聚合 dispatch，而不是 10,000 次同时唤醒。窄测试在 race 模式耗时 38.863 秒，完整 store 契约套件耗时 78.609 秒。
+- 隔离数据库：MySQL 8.4；migration 与 runtime 使用不同非 root 账号。合同测试覆盖 discovery 执行、零候选 Company 收口、已有 Source 防误判、候选独立裁决、跨 Company 冲突回滚、validation 原子创建/offer/Attempt/结果、零业务数据副作用、验证证据绑定、发布原子性和命令重放；baseline 覆盖 start、offer、首个 Attempt 页间失败、第二 Attempt 从第 1 页重扫、staging/finalize/物化的 Attempt 隔离、运行中用户取消、Attempt/Permit/容量收口、迟到结果隔离、新 generation 重启、详情部分成功/失败、拒绝 accepted gap、终止旧 Work、成员重绑和详情重试成功、completion、并发物化、持久游标、Job/Detail Work 唯一性和结果重放。当前生产物化器另以 10,000 条 staging 实测：20 个至多 500 条的独立事务形成 10,000 个 Job、10,000 个 Detail Work 和 10,000 条成员账本，最终游标为第 10,000 个来源岗位键；两个匹配 Executor 目标只形成每页两个、共 40 个聚合 dispatch，而不是 10,000 次同时唤醒。窄测试在 race 模式耗时 38.863 秒，完整 store 契约套件耗时 78.609 秒。
 - 工程检查：招聘扩展 race、vet 通过；核心边界脚本以 `a94d2b8d` 为冻结基线通过。
 
 ## 尚未通过的退出项
 
 - Source validation 的专用 Work、统一 Executor 执行、evidence-only 结果协议和质量违反后 `validating → invalid` 已通过隔离 MySQL及上述真实站点；Endpoint/Recipe 变更排除旧 Work、新 revision/Recipe version 再校验、瞬时故障自动重试和人工拒绝已有合同覆盖。人工终止后重试及在途结果与修复命令并发仍需场景验收。
 - MongoDB 单次真实样本不能证明“历史岗位更新后重新置顶”，因此不得把它标记为 `update_retop=verified`，也没有借此发布为每日增量 Source。
-- baseline generation 的有界分页、staging/finalize、首次 Checkpoint、Job/Detail Work 有界物化、详情成功/人工接受缺口核算和 Company ready 已通过隔离 MySQL 合同，但尚未贯通真实站点；详情最终失败后的重试修复和拒绝接受缺口场景仍需完整验收。
-- 零 Source 已通过隔离 MySQL 结果事务合同；仍需普通用户/真实进程旅程。1 万岗位的当前物化路径已经通过上述隔离 MySQL 容量合同；尚未覆盖的是把 1 万条从可执行 listing 分页一直贯通至全部详情终态的端到端负载。baseline 分页执行中断和运行中用户取消已通过隔离 MySQL 合同，仍需真实进程/普通用户旅程；详情部分失败仍需加入 P5 场景验收。
+- baseline generation 的有界分页、staging/finalize、首次 Checkpoint、Job/Detail Work 有界物化、详情成功/人工接受缺口核算、拒绝缺口后的因果 Work 重试修复和 Company ready 已通过隔离 MySQL 合同，但尚未贯通真实站点/进程旅程。
+- 零 Source 已通过隔离 MySQL 结果事务合同；仍需普通用户/真实进程旅程。1 万岗位的当前物化路径已经通过上述隔离 MySQL 容量合同；尚未覆盖的是把 1 万条从可执行 listing 分页一直贯通至全部详情终态的端到端负载。baseline 分页执行中断、运行中用户取消和详情部分失败后人工修复已通过隔离 MySQL 合同，仍需真实进程/普通用户旅程。
 
 只有完成 `discovery → validation → baseline → detail` 的至少一个允许访问的真实站点，并证明同一命令重放不改变岗位数，P5 才能标记完成。

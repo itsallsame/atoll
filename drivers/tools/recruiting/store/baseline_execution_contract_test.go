@@ -154,7 +154,7 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 	}
 	pageArtifact, _ := model.NewArtifactMetadata("executable-baseline-page", model.ArtifactPage, "sha256:baseline-page",
 		"object://baseline/page", work.WorkID, offer.Attempt.AttemptID, "operators", "30d", true)
-	observations := make([]model.ListingObservation, 2)
+	observations := make([]model.ListingObservation, 3)
 	for index := range observations {
 		key := fmt.Sprintf("job-%d", index)
 		observations[index], _ = model.NewListingObservation(model.ListingObservation{ObservationID: "executable-baseline-observation-" + key,
@@ -166,7 +166,7 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 		RequestHash: "sha256:baseline-page-command", AttemptID: offer.Attempt.AttemptID, ExecutorActorID: offer.Attempt.ExecutorActorID,
 		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, PageSequence: 1, Terminal: true, Artifact: pageArtifact,
 		Observations: observations, ObservedAt: now.Add(9 * time.Second)})
-	if err != nil || len(page.Items) != 0 || page.Progress.ItemCount != 2 {
+	if err != nil || len(page.Items) != 0 || page.Progress.ItemCount != 3 {
 		t.Fatalf("stage baseline page=%+v %v", page, err)
 	}
 	var jobs int
@@ -178,7 +178,7 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 		"sha256:baseline-completion", "object://baseline/completion", work.WorkID, offer.Attempt.AttemptID, "operators", "30d", true)
 	completionInput := ListingCompletion{RequestHash: "sha256:baseline-completion-command", AttemptID: offer.Attempt.AttemptID,
 		ExecutorActorID: offer.Attempt.ExecutorActorID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Artifact: completionArtifact,
-		ItemCount: 2, CompletedAt: now.Add(10 * time.Second), CauseCommandID: "executable-baseline-completion-command",
+		ItemCount: 3, CompletedAt: now.Add(10 * time.Second), CauseCommandID: "executable-baseline-completion-command",
 		Progress: model.ListingProgress{IdentityComplete: true, PaginationStable: true, PreviousFrontierReached: true,
 			OverlapCompleted: true, OrderingContractHeld: true, SameTimeGroupCompleted: true,
 			Candidate: model.IncrementalCheckpoint{FrontierActivityAt: now.Format(time.RFC3339)}}}
@@ -196,7 +196,7 @@ WHERE source_id = ? AND baseline_generation = ?`, offer.Attempt.AttemptID, faile
 		source.SourceID, baseline.Generation).Scan(&allStaged, &currentStaged, &staleStaged); err != nil {
 		t.Fatal(err)
 	}
-	if allStaged != 3 || currentStaged != 2 || staleStaged != 1 {
+	if allStaged != 4 || currentStaged != 3 || staleStaged != 1 {
 		t.Fatalf("attempt-scoped baseline staging all=%d current=%d stale=%d", allStaged, currentStaged, staleStaged)
 	}
 	completionReplay, err := repository.AcceptListingCompletion(ctx, completionInput)
@@ -232,13 +232,13 @@ WHERE source_id = ? AND baseline_generation = ?`, offer.Attempt.AttemptID, faile
 			completionCount++
 		}
 	}
-	if processed != 2 || completionCount != 1 || dispatches != 1 {
+	if processed != 3 || completionCount != 1 || dispatches != 1 {
 		t.Fatalf("concurrent materialization processed=%d completed=%d dispatches=%d", processed, completionCount, dispatches)
 	}
 	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_source_jobs WHERE source_id = ?", source.SourceID).Scan(&jobs)
 	var detailWorks int
 	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_works WHERE purpose = 'detail_sync' AND parent_work_id = ?", work.WorkID).Scan(&detailWorks)
-	if jobs != 2 || detailWorks != 2 {
+	if jobs != 3 || detailWorks != 3 {
 		t.Fatalf("materialized jobs=%d detail works=%d", jobs, detailWorks)
 	}
 	var materializationCursor string
@@ -248,11 +248,11 @@ WHERE source_id = ? AND baseline_generation = ?`, offer.Attempt.AttemptID, faile
 		source.SourceID, baseline.Generation).Scan(&materializationCursor, &materializedCount, &materializationCompleted); err != nil {
 		t.Fatal(err)
 	}
-	if materializationCursor != "job-1" || materializedCount != 2 || !materializationCompleted {
+	if materializationCursor != "job-2" || materializedCount != 3 || !materializationCompleted {
 		t.Fatalf("materialization progress cursor=%q count=%d completed=%t",
 			materializationCursor, materializedCount, materializationCompleted)
 	}
-	for index := range 2 {
+	for index := range 3 {
 		detailOffer, err := repository.OfferExecution(ctx, ListingOfferRequest{
 			AttemptID:       fmt.Sprintf("executable-baseline-detail-attempt-%d", index),
 			ExecutorActorID: "tool:detail-executor", ExecutorIncarnation: "boot-detail",
@@ -285,22 +285,132 @@ WHERE source_id = ? AND baseline_generation = ?`, offer.Attempt.AttemptID, faile
 			if err != nil {
 				t.Fatal(err)
 			}
-			resolved, err := currentDetailWork.Complete(currentDetailWork.Version, model.ResolutionAcceptedGap,
-				"human:operator", "source intentionally omits the detail")
+			resolved, err := currentDetailWork.Complete(currentDetailWork.Version, model.ResolutionTerminated,
+				"human:operator", "reject missing-detail gap and repair with a new Work")
 			if err != nil {
 				t.Fatal(err)
 			}
-			receipt, _ := model.NewCommandReceipt("executable-baseline-gap-command", "recruiting.work.resolve",
-				"sha256:baseline-gap-command", []byte("{}"))
-			event, _ := model.NewEventIntent("executable-baseline-gap-event", "work.completed", "work",
+			receipt, _ := model.NewCommandReceipt("executable-baseline-repair-resolution-command", "recruiting.work.resolve",
+				"sha256:baseline-repair-resolution-command", []byte("{}"))
+			event, _ := model.NewEventIntent("executable-baseline-repair-resolution-event", "work.completed", "work",
 				resolved.WorkID, resolved.Version, now.Add(19*time.Second).Format(time.RFC3339Nano),
 				receipt.CommandID, []byte("{}"))
 			if _, err := repository.ApplyWorkCommand(ctx, currentDetailWork.Version, resolved, receipt, event,
 				now.Add(19*time.Second)); err != nil {
 				t.Fatal(err)
 			}
-			gapReplay, err := repository.ApplyWorkCommand(ctx, currentDetailWork.Version, resolved, receipt, event,
+			resolutionReplay, err := repository.ApplyWorkCommand(ctx, currentDetailWork.Version, resolved, receipt, event,
 				now.Add(19*time.Second))
+			if err != nil || !resolutionReplay.Replayed {
+				t.Fatalf("terminated detail replay=%+v %v", resolutionReplay, err)
+			}
+			var accountedBeforeRepair uint64
+			var pendingBeforeRepair int
+			if err := db.QueryRowContext(ctx, `SELECT details_accounted FROM recruiting_baseline_generations
+WHERE source_id = ? AND baseline_generation = ?`, source.SourceID, baseline.Generation).Scan(&accountedBeforeRepair); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_baseline_detail_items
+WHERE source_id = ? AND baseline_generation = ? AND job_id = ? AND accounting_status = 'pending'`,
+				source.SourceID, baseline.Generation, resolved.TargetID).Scan(&pendingBeforeRepair); err != nil {
+				t.Fatal(err)
+			}
+			if accountedBeforeRepair != 1 || pendingBeforeRepair != 1 {
+				t.Fatalf("rejecting the gap changed baseline accounting: accounted=%d pending=%d",
+					accountedBeforeRepair, pendingBeforeRepair)
+			}
+			record, err := repository.GetWorkRecord(ctx, resolved.WorkID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retryWork, err := model.NewRetryWork(resolved, "executable-baseline-detail-retry-work",
+				"human:operator", "message-detail-retry")
+			if err != nil {
+				t.Fatal(err)
+			}
+			retryPlacement := record.Placement
+			retryPlacement.BusinessKey = "retry|" + resolved.WorkID + "|" + retryWork.WorkID
+			retryPlacement.Priority++
+			retryPlacement.NotBefore = now.Add(20 * time.Second)
+			retryReceipt, _ := model.NewCommandReceipt("executable-baseline-detail-retry-command", "recruiting.work.retry",
+				"sha256:baseline-detail-retry-command", []byte("{}"))
+			retryEvent, _ := model.NewEventIntent("executable-baseline-detail-retry-event", "work.retry_created", "work",
+				retryWork.WorkID, retryWork.Version, retryPlacement.NotBefore.Format(time.RFC3339Nano),
+				retryReceipt.CommandID, []byte("{}"))
+			retryDispatch, _ := NewExecutionDispatchIntent("executable-baseline-detail-retry-dispatch", "tool:detail-executor",
+				retryPlacement.Capability, retryPlacement.Origin, retryPlacement.ProfileID, "work_retry_created",
+				retryReceipt.CommandID, retryPlacement.NotBefore)
+			if _, err := repository.ApplyRetryWorkCommandWithDispatch(ctx, resolved.Version, resolved.WorkID, retryWork,
+				retryPlacement, retryReceipt, retryEvent, &retryDispatch, retryPlacement.NotBefore); err != nil {
+				t.Fatal(err)
+			}
+			var boundRetryWork string
+			if err := db.QueryRowContext(ctx, `SELECT detail_work_id FROM recruiting_baseline_detail_items
+WHERE source_id = ? AND baseline_generation = ? AND job_id = ?`, source.SourceID, baseline.Generation,
+				resolved.TargetID).Scan(&boundRetryWork); err != nil || boundRetryWork != retryWork.WorkID {
+				t.Fatalf("baseline member was not rebound to retry Work: work=%q err=%v", boundRetryWork, err)
+			}
+			retryOffer, err := repository.OfferExecution(ctx, ListingOfferRequest{
+				AttemptID: "executable-baseline-detail-retry-attempt", ExecutorActorID: "tool:detail-executor",
+				ExecutorIncarnation: "boot-detail-retry", Capability: retryPlacement.Capability,
+				Origin: retryPlacement.Origin, OfferedAt: now.Add(21 * time.Second), BudgetPolicy: testExecutionBudgetPolicy()})
+			if err != nil || retryOffer.Work.WorkID != retryWork.WorkID {
+				t.Fatalf("offer repaired detail=%+v %v", retryOffer, err)
+			}
+			if _, err := repository.AcceptListingExecution(ctx, retryOffer.Attempt.AttemptID,
+				retryOffer.Attempt.ExecutorActorID, retryOffer.Attempt.ExecutorIncarnation, now.Add(22*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repository.StartListingExecution(ctx, retryOffer.Attempt.AttemptID,
+				retryOffer.Attempt.ExecutorActorID, retryOffer.Attempt.ExecutorIncarnation, now.Add(23*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			repairArtifact, _ := model.NewArtifactMetadata("executable-baseline-detail-repair-artifact",
+				model.ArtifactResponse, "sha256:baseline-detail-repair", "object://baseline/detail/repair",
+				retryWork.WorkID, retryOffer.Attempt.AttemptID, "operators", "30d", true)
+			repaired, err := repository.AcceptDetailResult(ctx, DetailResult{AttemptID: retryOffer.Attempt.AttemptID,
+				ExecutorActorID: retryOffer.Attempt.ExecutorActorID, ExecutorIncarnation: retryOffer.Attempt.ExecutorIncarnation,
+				Artifact: repairArtifact, DetailVersionID: "executable-baseline-detail-repair-version",
+				NormalizedContentHash: "sha256:baseline-detail-repair-normalized",
+				DetailJSON:            json.RawMessage(`{"title":"Repaired Engineer"}`), ObservedAt: now.Add(24 * time.Second),
+				CauseCommandID: "executable-baseline-detail-repair-result",
+				RequestHash:    "sha256:baseline-detail-repair-result"})
+			if err != nil || repaired.Baseline == nil || repaired.Baseline.DetailsAccounted != 2 ||
+				repaired.Baseline.DetailExceptions != 0 || repaired.Baseline.Status != model.BaselineDetailsPending {
+				t.Fatalf("repaired baseline detail=%+v %v", repaired, err)
+			}
+			continue
+		}
+		if index == 2 {
+			failureArtifact, _ := model.NewArtifactMetadata("executable-baseline-detail-gap-failure", model.ArtifactFailure,
+				"sha256:baseline-detail-gap-failure", "object://baseline/detail/gap-failure", detailOffer.Work.WorkID,
+				detailOffer.Attempt.AttemptID, "operators", "30d", true)
+			failure := executioncontract.FailureReport{Class: "parse_error", NeedsRepair: true, Artifact: failureArtifact}
+			if _, err := repository.FailExecutionWithReport(ctx, detailOffer.Attempt.AttemptID,
+				detailOffer.Attempt.ExecutorActorID, detailOffer.Attempt.ExecutorIncarnation, failure.Class, failure,
+				testExecutionFailurePolicy(), now.Add(24*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			currentDetailWork, err := repository.GetWork(ctx, detailOffer.Work.WorkID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			acceptedGap, err := currentDetailWork.Complete(currentDetailWork.Version, model.ResolutionAcceptedGap,
+				"human:operator", "source intentionally omits this detail")
+			if err != nil {
+				t.Fatal(err)
+			}
+			gapReceipt, _ := model.NewCommandReceipt("executable-baseline-gap-command", "recruiting.work.resolve",
+				"sha256:baseline-gap-command", []byte("{}"))
+			gapEvent, _ := model.NewEventIntent("executable-baseline-gap-event", "work.completed", "work",
+				acceptedGap.WorkID, acceptedGap.Version, now.Add(25*time.Second).Format(time.RFC3339Nano),
+				gapReceipt.CommandID, []byte("{}"))
+			if _, err := repository.ApplyWorkCommand(ctx, currentDetailWork.Version, acceptedGap, gapReceipt, gapEvent,
+				now.Add(25*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			gapReplay, err := repository.ApplyWorkCommand(ctx, currentDetailWork.Version, acceptedGap, gapReceipt, gapEvent,
+				now.Add(25*time.Second))
 			if err != nil || !gapReplay.Replayed {
 				t.Fatalf("accepted gap replay=%+v %v", gapReplay, err)
 			}
@@ -331,13 +441,26 @@ WHERE source_id = ? AND baseline_generation = ?`, offer.Attempt.AttemptID, faile
 	if err != nil || readyReplay != nil {
 		t.Fatalf("replay Company promotion=%+v %v", readyReplay, err)
 	}
-	var accountedItems int
+	var accountedItems, acceptedGaps int
+	var finalBaselineStatus model.BaselineStatus
+	var finalExceptions uint64
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_baseline_detail_items WHERE source_id = ? AND baseline_generation = ? AND accounting_status IN ('succeeded', 'accepted_gap')",
 		source.SourceID, baseline.Generation).Scan(&accountedItems); err != nil {
 		t.Fatal(err)
 	}
-	if accountedItems != 2 {
-		t.Fatalf("accounted baseline detail items=%d", accountedItems)
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_baseline_detail_items
+WHERE source_id = ? AND baseline_generation = ? AND accounting_status = 'accepted_gap'`,
+		source.SourceID, baseline.Generation).Scan(&acceptedGaps); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT generation_status, detail_exceptions FROM recruiting_baseline_generations
+WHERE source_id = ? AND baseline_generation = ?`, source.SourceID, baseline.Generation).
+		Scan(&finalBaselineStatus, &finalExceptions); err != nil {
+		t.Fatal(err)
+	}
+	if accountedItems != 3 || acceptedGaps != 1 || finalBaselineStatus != model.BaselineWithExceptions || finalExceptions != 1 {
+		t.Fatalf("final baseline accounting items=%d gaps=%d status=%s exceptions=%d",
+			accountedItems, acceptedGaps, finalBaselineStatus, finalExceptions)
 	}
 	empty, err := repository.MaterializeNextBaselinePage(ctx, 500, now.Add(27*time.Second), nil)
 	if err != nil || empty.Processed != 0 {

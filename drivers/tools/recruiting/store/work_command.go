@@ -236,6 +236,18 @@ func (r *Repository) applyRetryWorkCommand(ctx context.Context, expectedPrevious
 			}
 		}
 	}
+	if retry.Purpose == "detail_sync" && retry.ParentWorkID != "" {
+		result, err := tx.ExecContext(ctx, `UPDATE recruiting_baseline_detail_items
+SET detail_work_id = ?, version = version + 1, updated_at = ?
+WHERE detail_work_id = ? AND job_id = ? AND accounting_status = 'pending'`,
+			retry.WorkID, businessAt.UTC(), previous.WorkID, previous.TargetID)
+		if err != nil {
+			return CommandResult{}, fmt.Errorf("rebind baseline detail retry: %w", err)
+		}
+		if changed, _ := result.RowsAffected(); changed > 1 {
+			return CommandResult{}, fmt.Errorf("baseline detail retry matched multiple members")
+		}
+	}
 	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
 		return CommandResult{}, err
 	}
