@@ -47,3 +47,18 @@ func TestEmptyBaselineCompletesMaterializationWithListing(t *testing.T) {
 		t.Fatalf("empty baseline = %+v %v", baseline, err)
 	}
 }
+
+func TestExecutableBaselineFinalizationBindsSuccessfulAttempt(t *testing.T) {
+	baseline, _ := NewBaselineGeneration("source-1", 1)
+	baseline.WorkID = "baseline-work"
+	if _, err := baseline.FinalizeListing(baseline.Version, 1); err == nil {
+		t.Fatal("executable baseline bypassed successful Attempt binding")
+	}
+	if _, err := baseline.FinalizeListingAttempt(baseline.Version, 1, ""); err == nil {
+		t.Fatal("executable baseline accepted an empty listing attempt")
+	}
+	finalized, err := baseline.FinalizeListingAttempt(baseline.Version, 1, "attempt-2")
+	if err != nil || finalized.ListingAttemptID != "attempt-2" || finalized.Status != BaselineDetailsPending {
+		t.Fatalf("attempt-bound baseline = %+v, %v", finalized, err)
+	}
+}

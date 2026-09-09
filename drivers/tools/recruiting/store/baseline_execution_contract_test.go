@@ -72,7 +72,7 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 	if err := repository.PublishSourceAssignment(ctx, ready.Version, 0, withDetail, detailAssignment, now); err != nil {
 		t.Fatal(err)
 	}
-	defer pauseExecutionSource(t, ctx, repository, source.SourceID, now.Add(30*time.Second))
+	defer pauseExecutionSource(t, ctx, repository, source.SourceID, now.Add(40*time.Second))
 	initializing, _ := discovering.StartInitialization(discovering.Version)
 	work, _ := model.NewWork("executable-baseline-work", "source", source.SourceID, "baseline_listing", "human")
 	work, _ = work.WithCausality("human:baseline:1", "message-baseline", "")
@@ -95,6 +95,10 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 	if err != nil || created.Replayed {
 		t.Fatalf("create executable baseline=%+v %v", created, err)
 	}
+	if _, err := repository.StageBaselineRows(ctx, source.SourceID, baseline.Generation,
+		[]BaselineStageRow{{SourceJobKey: "bypass", ObservationID: "bypass", Value: json.RawMessage(`{}`)}}, now); err == nil {
+		t.Fatal("executable baseline accepted legacy staging bypass")
+	}
 	replayed, err := repository.ApplyCreateBaselineCommand(ctx, discovering.Version, withDetail.Version, initializing,
 		baseline, work, placement, receipt, event, &companyEvent, &dispatch, now)
 	if err != nil || !replayed.Replayed {
@@ -112,6 +116,42 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 	if _, err := repository.StartListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID, offer.Attempt.ExecutorIncarnation, now.Add(3*time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	failedOffer := offer
+	staleArtifact, _ := model.NewArtifactMetadata("executable-baseline-stale-page", model.ArtifactPage,
+		"sha256:baseline-stale-page", "object://baseline/stale-page", work.WorkID, failedOffer.Attempt.AttemptID,
+		"operators", "30d", true)
+	staleObservation, _ := model.NewListingObservation(model.ListingObservation{
+		ObservationID: "executable-baseline-stale-observation", OccurrenceID: work.WorkID,
+		SourceID: source.SourceID, SourceJobKey: "stale-attempt-job",
+		DetailURL: "https://baseline-run.example.com/jobs/stale", ActivityAt: now.Format(time.RFC3339),
+		ListingFingerprint: "sha256:stale-attempt", RecipeID: recipe.RecipeID,
+		RecipeVersion: recipe.Version, ArtifactID: staleArtifact.ArtifactID,
+	})
+	if page, err := repository.AcceptListingPage(ctx, ListingPageResult{CommandID: "executable-baseline-stale-page-command",
+		RequestHash: "sha256:baseline-stale-page-command", AttemptID: failedOffer.Attempt.AttemptID,
+		ExecutorActorID: failedOffer.Attempt.ExecutorActorID, ExecutorIncarnation: failedOffer.Attempt.ExecutorIncarnation,
+		PageSequence: 1, ResumeCursor: "page-2", Artifact: staleArtifact,
+		Observations: []model.ListingObservation{staleObservation}, ObservedAt: now.Add(4 * time.Second)}); err != nil || page.Progress.PageSequence != 1 {
+		t.Fatalf("stage failed baseline attempt page=%+v %v", page, err)
+	}
+	if _, err := repository.FailListingExecution(ctx, failedOffer.Attempt.AttemptID, failedOffer.Attempt.ExecutorActorID,
+		failedOffer.Attempt.ExecutorIncarnation, "executor_crash", now.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	offer, err = repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "executable-baseline-attempt-retry",
+		ExecutorActorID: "tool:baseline-executor:2", ExecutorIncarnation: "boot-baseline-retry", Capability: placement.Capability,
+		Origin: placement.Origin, OfferedAt: now.Add(6 * time.Second), BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil || offer.Attempt.AttemptID == failedOffer.Attempt.AttemptID {
+		t.Fatalf("retry baseline offer=%+v %v", offer, err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+		offer.Attempt.ExecutorIncarnation, now.Add(7*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+		offer.Attempt.ExecutorIncarnation, now.Add(8*time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	pageArtifact, _ := model.NewArtifactMetadata("executable-baseline-page", model.ArtifactPage, "sha256:baseline-page",
 		"object://baseline/page", work.WorkID, offer.Attempt.AttemptID, "operators", "30d", true)
 	observations := make([]model.ListingObservation, 2)
@@ -125,7 +165,7 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 	page, err := repository.AcceptListingPage(ctx, ListingPageResult{CommandID: "executable-baseline-page-command",
 		RequestHash: "sha256:baseline-page-command", AttemptID: offer.Attempt.AttemptID, ExecutorActorID: offer.Attempt.ExecutorActorID,
 		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, PageSequence: 1, Terminal: true, Artifact: pageArtifact,
-		Observations: observations, ObservedAt: now.Add(4 * time.Second)})
+		Observations: observations, ObservedAt: now.Add(9 * time.Second)})
 	if err != nil || len(page.Items) != 0 || page.Progress.ItemCount != 2 {
 		t.Fatalf("stage baseline page=%+v %v", page, err)
 	}
@@ -138,13 +178,26 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 		"sha256:baseline-completion", "object://baseline/completion", work.WorkID, offer.Attempt.AttemptID, "operators", "30d", true)
 	completionInput := ListingCompletion{RequestHash: "sha256:baseline-completion-command", AttemptID: offer.Attempt.AttemptID,
 		ExecutorActorID: offer.Attempt.ExecutorActorID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Artifact: completionArtifact,
-		ItemCount: 2, CompletedAt: now.Add(5 * time.Second), CauseCommandID: "executable-baseline-completion-command",
+		ItemCount: 2, CompletedAt: now.Add(10 * time.Second), CauseCommandID: "executable-baseline-completion-command",
 		Progress: model.ListingProgress{IdentityComplete: true, PaginationStable: true, PreviousFrontierReached: true,
 			OverlapCompleted: true, OrderingContractHeld: true, SameTimeGroupCompleted: true,
 			Candidate: model.IncrementalCheckpoint{FrontierActivityAt: now.Format(time.RFC3339)}}}
 	completed, err := repository.AcceptListingCompletion(ctx, completionInput)
 	if err != nil || completed.Baseline == nil || completed.Baseline.Status != model.BaselineDetailsPending || completed.Checkpoint.Version != 1 || completed.Work.Status != model.WorkCompleted {
 		t.Fatalf("complete baseline=%+v %v", completed, err)
+	}
+	if completed.Baseline.ListingAttemptID != offer.Attempt.AttemptID {
+		t.Fatalf("baseline finalized from wrong Attempt: %+v", completed.Baseline)
+	}
+	var allStaged, currentStaged, staleStaged int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*),
+  SUM(attempt_id = ?), SUM(attempt_id = ?) FROM recruiting_baseline_staging
+WHERE source_id = ? AND baseline_generation = ?`, offer.Attempt.AttemptID, failedOffer.Attempt.AttemptID,
+		source.SourceID, baseline.Generation).Scan(&allStaged, &currentStaged, &staleStaged); err != nil {
+		t.Fatal(err)
+	}
+	if allStaged != 3 || currentStaged != 2 || staleStaged != 1 {
+		t.Fatalf("attempt-scoped baseline staging all=%d current=%d stale=%d", allStaged, currentStaged, staleStaged)
 	}
 	completionReplay, err := repository.AcceptListingCompletion(ctx, completionInput)
 	if err != nil || !completionReplay.Replayed || !reflect.DeepEqual(completionReplay.Checkpoint, completed.Checkpoint) {
@@ -157,7 +210,7 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			result, materializeErr := repository.MaterializeNextBaselinePage(ctx, 500, now.Add(6*time.Second),
+			result, materializeErr := repository.MaterializeNextBaselinePage(ctx, 500, now.Add(11*time.Second),
 				[]ExecutionDispatchTarget{{ActorID: "tool:detail-executor", Capability: detailRecipe.Execution.RequiredCapability}})
 			results <- result
 			materializationErrors <- materializeErr
@@ -204,18 +257,18 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 			AttemptID:       fmt.Sprintf("executable-baseline-detail-attempt-%d", index),
 			ExecutorActorID: "tool:detail-executor", ExecutorIncarnation: "boot-detail",
 			Capability: detailRecipe.Execution.RequiredCapability, Origin: "https://baseline-run.example.com",
-			OfferedAt: now.Add(time.Duration(8+index) * time.Second), BudgetPolicy: testExecutionBudgetPolicy()})
+			OfferedAt: now.Add(time.Duration(13+index) * time.Second), BudgetPolicy: testExecutionBudgetPolicy()})
 		if err != nil || detailOffer.Kind != "detail" {
 			t.Fatalf("offer baseline detail %d=%+v %v", index, detailOffer, err)
 		}
 		if _, err := repository.AcceptListingExecution(ctx, detailOffer.Attempt.AttemptID,
 			detailOffer.Attempt.ExecutorActorID, detailOffer.Attempt.ExecutorIncarnation,
-			now.Add(time.Duration(10+index)*time.Second)); err != nil {
+			now.Add(time.Duration(15+index)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := repository.StartListingExecution(ctx, detailOffer.Attempt.AttemptID,
 			detailOffer.Attempt.ExecutorActorID, detailOffer.Attempt.ExecutorIncarnation,
-			now.Add(time.Duration(12+index)*time.Second)); err != nil {
+			now.Add(time.Duration(17+index)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
 		if index == 1 {
@@ -225,7 +278,7 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 			failure := executioncontract.FailureReport{Class: "parse_error", NeedsRepair: true, Artifact: failureArtifact}
 			if _, err := repository.FailExecutionWithReport(ctx, detailOffer.Attempt.AttemptID,
 				detailOffer.Attempt.ExecutorActorID, detailOffer.Attempt.ExecutorIncarnation, failure.Class, failure,
-				testExecutionFailurePolicy(), now.Add(13*time.Second)); err != nil {
+				testExecutionFailurePolicy(), now.Add(18*time.Second)); err != nil {
 				t.Fatal(err)
 			}
 			currentDetailWork, err := repository.GetWork(ctx, detailOffer.Work.WorkID)
@@ -240,14 +293,14 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 			receipt, _ := model.NewCommandReceipt("executable-baseline-gap-command", "recruiting.work.resolve",
 				"sha256:baseline-gap-command", []byte("{}"))
 			event, _ := model.NewEventIntent("executable-baseline-gap-event", "work.completed", "work",
-				resolved.WorkID, resolved.Version, now.Add(14*time.Second).Format(time.RFC3339Nano),
+				resolved.WorkID, resolved.Version, now.Add(19*time.Second).Format(time.RFC3339Nano),
 				receipt.CommandID, []byte("{}"))
 			if _, err := repository.ApplyWorkCommand(ctx, currentDetailWork.Version, resolved, receipt, event,
-				now.Add(14*time.Second)); err != nil {
+				now.Add(19*time.Second)); err != nil {
 				t.Fatal(err)
 			}
 			gapReplay, err := repository.ApplyWorkCommand(ctx, currentDetailWork.Version, resolved, receipt, event,
-				now.Add(14*time.Second))
+				now.Add(19*time.Second))
 			if err != nil || !gapReplay.Replayed {
 				t.Fatalf("accepted gap replay=%+v %v", gapReplay, err)
 			}
@@ -263,18 +316,18 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 			DetailVersionID:       fmt.Sprintf("executable-baseline-detail-version-%d", index),
 			NormalizedContentHash: fmt.Sprintf("sha256:baseline-normalized-%d", index),
 			DetailJSON:            json.RawMessage([]byte("{\"title\":\"Engineer\"}")),
-			ObservedAt:            now.Add(time.Duration(14+index) * time.Second),
+			ObservedAt:            now.Add(time.Duration(19+index) * time.Second),
 			CauseCommandID:        fmt.Sprintf("executable-baseline-detail-command-%d", index),
 			RequestHash:           fmt.Sprintf("sha256:baseline-detail-command-%d", index)})
 		if err != nil || detailOutcome.Baseline == nil || detailOutcome.Baseline.DetailsAccounted != uint64(index+1) {
 			t.Fatalf("accept baseline detail %d=%+v %v", index, detailOutcome, err)
 		}
 	}
-	readyCompany, err := repository.PromoteNextReadyCompany(ctx, now.Add(20*time.Second))
+	readyCompany, err := repository.PromoteNextReadyCompany(ctx, now.Add(25*time.Second))
 	if err != nil || readyCompany == nil || readyCompany.OnboardingStatus != model.CompanyReady {
 		t.Fatalf("promote baseline Company=%+v %v", readyCompany, err)
 	}
-	readyReplay, err := repository.PromoteNextReadyCompany(ctx, now.Add(21*time.Second))
+	readyReplay, err := repository.PromoteNextReadyCompany(ctx, now.Add(26*time.Second))
 	if err != nil || readyReplay != nil {
 		t.Fatalf("replay Company promotion=%+v %v", readyReplay, err)
 	}
@@ -286,7 +339,7 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 	if accountedItems != 2 {
 		t.Fatalf("accounted baseline detail items=%d", accountedItems)
 	}
-	empty, err := repository.MaterializeNextBaselinePage(ctx, 500, now.Add(7*time.Second), nil)
+	empty, err := repository.MaterializeNextBaselinePage(ctx, 500, now.Add(27*time.Second), nil)
 	if err != nil || empty.Processed != 0 {
 		t.Fatalf("replay materialization=%+v %v", empty, err)
 	}

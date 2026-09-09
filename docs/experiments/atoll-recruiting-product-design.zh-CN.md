@@ -728,6 +728,8 @@ Source Discovery 可产生 0、1 或多个候选，候选逐项验证和拒绝�
 
 Company 有至少一个 active/ready Source，且每个准备投产的 Source 已完成 listing baseline、详情均成功或有用户明确接受的缺口时，才进入 onboarding `ready`。零候选进入 `blocked_no_sources`；部分 Source 成功不阻止其余候选独立失败或等待人工，但用户必须看见未投产项。
 
+首次 baseline 的分页进度与 staging 都必须绑定 Attempt。Executor 在页间退出后，新 Attempt 从第 1 页重扫；旧 Attempt 的 Artifact/页/staging 仍是诊断证据，但 finalize 只冻结成功 Attempt 的 `listing_attempt_id`，只按该 Attempt 核对条目数并建立 Checkpoint，后续 Job/Detail Work 物化也只读取该 Attempt 的行。禁止仅按 generation 汇总多个 Attempt 的 staging，因为这会把不同时间的列表快照拼成一个伪基线。
+
 状态转换规则写在纯 Recruiting domain model 中，输入为当前状态和领域命令，输出为新状态及领域事件。Recruiting Actor 是唯一有权接受转换结果的行为边界：
 
 ```text

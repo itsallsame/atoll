@@ -60,8 +60,9 @@ LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&baselineState)
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT stage.source_job_key, stage.row_json
 FROM recruiting_baseline_staging stage
-WHERE stage.source_id = ? AND stage.baseline_generation = ? AND stage.source_job_key > ?
-ORDER BY stage.source_job_key LIMIT ?`, baseline.SourceID, baseline.Generation, baseline.MaterializationCursor, limit+1)
+WHERE stage.source_id = ? AND stage.baseline_generation = ? AND stage.attempt_id <=> ? AND stage.source_job_key > ?
+ORDER BY stage.source_job_key LIMIT ?`, baseline.SourceID, baseline.Generation, nullableString(baseline.ListingAttemptID),
+		baseline.MaterializationCursor, limit+1)
 	if err != nil {
 		return BaselineMaterializationResult{}, err
 	}

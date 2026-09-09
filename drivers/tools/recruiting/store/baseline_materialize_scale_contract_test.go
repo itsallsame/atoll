@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +115,16 @@ func TestCurrentBaselineMaterializerHandlesTenThousandJobsInBoundedPages(t *test
 	}
 	if err := repository.FinalizeBaselineListing(ctx, baseline.Version, finalized, checkpoint, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
+	}
+	var seekPlan string
+	if err := db.QueryRowContext(ctx, `EXPLAIN FORMAT=JSON SELECT source_job_key, row_json
+FROM recruiting_baseline_staging
+WHERE source_id = ? AND baseline_generation = ? AND attempt_id <=> ? AND source_job_key > ?
+ORDER BY source_job_key LIMIT 501`, source.SourceID, baseline.Generation, nil, "scale-job-00499").Scan(&seekPlan); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(seekPlan, "ix_recruiting_baseline_staging_attempt") {
+		t.Fatalf("attempt-scoped baseline seek did not use its composite index: %s", seekPlan)
 	}
 
 	targets := []ExecutionDispatchTarget{{ActorID: "tool:scale-detail-a", Capability: detailRecipe.Execution.RequiredCapability},

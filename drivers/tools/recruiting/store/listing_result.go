@@ -260,10 +260,11 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 		if execution.Baseline != nil {
 			value, _ := json.Marshal(observation)
 			_, err = tx.ExecContext(ctx, `INSERT INTO recruiting_baseline_staging(
-  source_id, baseline_generation, source_job_key, observation_id, row_json, staged_at
-) VALUES (?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE observation_id = VALUES(observation_id), row_json = VALUES(row_json), staged_at = VALUES(staged_at)`,
-				execution.Baseline.SourceID, execution.Baseline.Generation, observation.SourceJobKey,
+  source_id, baseline_generation, attempt_id, source_job_key, observation_id, row_json, staged_at
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE attempt_id = VALUES(attempt_id), observation_id = VALUES(observation_id),
+  row_json = VALUES(row_json), staged_at = VALUES(staged_at)`,
+				execution.Baseline.SourceID, execution.Baseline.Generation, attempt.AttemptID, observation.SourceJobKey,
 				observation.ObservationID, value, input.ObservedAt.UTC())
 			if err != nil {
 				return ListingPageOutcome{}, nil, fmt.Errorf("stage baseline observation: %w", err)
@@ -430,7 +431,8 @@ SELECT COALESCE(SUM(item_count), 0) FROM recruiting_listing_page_progress WHERE 
 		}
 		var staged int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_baseline_staging
-WHERE source_id = ? AND baseline_generation = ?`, execution.Baseline.SourceID, execution.Baseline.Generation).Scan(&staged); err != nil {
+WHERE source_id = ? AND baseline_generation = ? AND attempt_id = ?`, execution.Baseline.SourceID,
+			execution.Baseline.Generation, attempt.AttemptID).Scan(&staged); err != nil {
 			return ListingCompletionOutcome{}, nil, err
 		}
 		if staged != input.ItemCount {
@@ -447,7 +449,7 @@ WHERE source_id = ? AND baseline_generation = ?`, execution.Baseline.SourceID, e
 		if establishErr != nil {
 			return ListingCompletionOutcome{}, establishErr, nil
 		}
-		finalized, finalizeErr := execution.Baseline.FinalizeListing(execution.Baseline.Version, uint64(staged))
+		finalized, finalizeErr := execution.Baseline.FinalizeListingAttempt(execution.Baseline.Version, uint64(staged), attempt.AttemptID)
 		if finalizeErr != nil {
 			return ListingCompletionOutcome{}, finalizeErr, nil
 		}
@@ -514,11 +516,12 @@ WHERE source_id = ? AND baseline_generation = ?`, execution.Baseline.SourceID, e
 		if err == nil {
 			baselineState, _ := json.Marshal(finalizedBaseline)
 			result, err = tx.ExecContext(ctx, `UPDATE recruiting_baseline_generations
-SET generation_status = ?, listing_finalized = ?, details_expected = ?, details_accounted = ?,
+SET generation_status = ?, listing_finalized = ?, details_expected = ?, details_accounted = ?, listing_attempt_id = ?,
     materialization_cursor = ?, materialized_count = ?, materialization_completed = ?,
     detail_exceptions = ?, version = ?, state_json = ?, updated_at = ?
 WHERE source_id = ? AND baseline_generation = ? AND version = ?`, finalizedBaseline.Status,
 				finalizedBaseline.ListingFinalized, finalizedBaseline.DetailsExpected, finalizedBaseline.DetailsAccounted,
+				nullableString(finalizedBaseline.ListingAttemptID),
 				nullableString(finalizedBaseline.MaterializationCursor), finalizedBaseline.MaterializedCount,
 				finalizedBaseline.MaterializationCompleted, finalizedBaseline.DetailExceptions, finalizedBaseline.Version,
 				baselineState, input.CompletedAt.UTC(),

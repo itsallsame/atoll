@@ -21,6 +21,7 @@ type BaselineGeneration struct {
 	CompanyVersion           uint64                   `json:"company_version,omitempty"`
 	SourceVersion            uint64                   `json:"source_version,omitempty"`
 	ListingExecution         ListingExecutionSnapshot `json:"listing_execution,omitempty"`
+	ListingAttemptID         string                   `json:"listing_attempt_id,omitempty"`
 	CheckpointStrategy       CheckpointStrategy       `json:"checkpoint_strategy,omitempty"`
 	OverlapPages             int                      `json:"overlap_pages,omitempty"`
 	Status                   BaselineStatus           `json:"status"`
@@ -62,6 +63,13 @@ func NewBaselineGeneration(sourceID string, generation uint64) (BaselineGenerati
 }
 
 func (b BaselineGeneration) FinalizeListing(expectedVersion, detailsExpected uint64) (BaselineGeneration, error) {
+	if strings.TrimSpace(b.WorkID) != "" {
+		return BaselineGeneration{}, fmt.Errorf("executable baseline must finalize through its successful attempt")
+	}
+	return b.finalizeListing(expectedVersion, detailsExpected)
+}
+
+func (b BaselineGeneration) finalizeListing(expectedVersion, detailsExpected uint64) (BaselineGeneration, error) {
 	if err := requireVersion(expectedVersion, b.Version); err != nil {
 		return BaselineGeneration{}, err
 	}
@@ -78,6 +86,23 @@ func (b BaselineGeneration) FinalizeListing(expectedVersion, detailsExpected uin
 	}
 	b.Version++
 	return b, nil
+}
+
+// FinalizeListingAttempt binds an executable baseline to the one successful
+// Attempt whose staged rows may become business facts. Failed attempts remain
+// useful evidence but can never leak rows into the finalized generation.
+func (b BaselineGeneration) FinalizeListingAttempt(expectedVersion, detailsExpected uint64,
+	attemptID string) (BaselineGeneration, error) {
+	attemptID = strings.TrimSpace(attemptID)
+	if attemptID == "" || strings.TrimSpace(b.WorkID) == "" {
+		return BaselineGeneration{}, fmt.Errorf("executable baseline finalization requires an attempt")
+	}
+	finalized, err := b.finalizeListing(expectedVersion, detailsExpected)
+	if err != nil {
+		return BaselineGeneration{}, err
+	}
+	finalized.ListingAttemptID = attemptID
+	return finalized, nil
 }
 
 func (b BaselineGeneration) AdvanceMaterialization(expectedVersion uint64, cursor string, count uint64, completed bool) (BaselineGeneration, error) {
