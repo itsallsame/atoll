@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -118,7 +119,7 @@ WHERE source_id = ? AND source_job_key = 'c'`, sourceID).Scan(&cJobID); err != n
 	// must be consumed before the candidate checkpoint is committed.
 	d4Time := d0.Add(96 * time.Hour)
 	d4 := startContinuousDaily(t, ctx, repository, source, "d4", d4Time)
-	checkpoint = acceptContinuousDailyScan(t, ctx, repository, d4, [][]continuousListingItem{
+	checkpoint = acceptContinuousDailyScanAfterExecutorExit(t, ctx, repository, d4, [][]continuousListingItem{
 		{{key: "e", activity: d4Time, fingerprint: "fp-e-v1"}},
 		{{key: "f", activity: d4Time, fingerprint: "fp-f-v1"}, {key: "c", activity: d3Time, fingerprint: "fp-c-v2"}, {key: "d", activity: d2Time, fingerprint: "fp-d-v1"}},
 		{{key: "a", activity: d0, fingerprint: "fp-a-v1"}},
@@ -127,7 +128,7 @@ WHERE source_id = ? AND source_job_key = 'c'`, sourceID).Scan(&cJobID); err != n
 		!slices.Contains(checkpoint.FrontierJobKeys, "e") || !slices.Contains(checkpoint.FrontierJobKeys, "f") {
 		t.Fatalf("D4 split-time checkpoint = %+v", checkpoint)
 	}
-	assertContinuousCounts(t, ctx, db, sourceID, 6, 7, 19)
+	assertContinuousCounts(t, ctx, db, sourceID, 6, 7, 20)
 
 	// D5: two full pages never reach the old boundary. The production Driver
 	// rejects the scan before page submission, so only failure evidence and a
@@ -152,7 +153,7 @@ WHERE source_id = ? AND source_job_key = 'c'`, sourceID).Scan(&cJobID); err != n
 	if failedWork.Status != model.WorkWaitingHuman || checkpointAfterD5.Version != 5 {
 		t.Fatalf("D5 work=%+v checkpoint=%+v", failedWork, checkpointAfterD5)
 	}
-	assertContinuousCounts(t, ctx, db, sourceID, 6, 7, 19)
+	assertContinuousCounts(t, ctx, db, sourceID, 6, 7, 20)
 	var d5Pages, d5Observations int
 	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_listing_page_progress WHERE attempt_id = ?", d5.offer.Attempt.AttemptID).Scan(&d5Pages)
 	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_listing_observations WHERE occurrence_id = ?", d5.occurrence.OccurrenceID).Scan(&d5Observations)
@@ -176,7 +177,7 @@ WHERE source_id = ? AND source_job_key = 'c'`, sourceID).Scan(&cJobID); err != n
 		checkpoint.LastOccurrenceID != d5.occurrence.OccurrenceID {
 		t.Fatalf("D6 recovered checkpoint = %+v", checkpoint)
 	}
-	assertContinuousCounts(t, ctx, db, sourceID, 8, 9, 25)
+	assertContinuousCounts(t, ctx, db, sourceID, 8, 9, 26)
 	assertContinuousJourneyFinal(t, ctx, db, sourceID, d5.occurrence.OccurrenceID, failedWork.WorkID, retry.WorkID)
 }
 
@@ -621,6 +622,165 @@ func acceptContinuousDailyScan(t *testing.T, ctx context.Context, repository *Re
 	return completed.Checkpoint
 }
 
+func acceptContinuousDailyScanAfterExecutorExit(t *testing.T, ctx context.Context, repository *Repository,
+	execution continuousDailyExecution, pages [][]continuousListingItem) model.IncrementalCheckpoint {
+	t.Helper()
+	if len(pages) < 2 {
+		t.Fatal("executor-exit journey requires more than one page")
+	}
+	scan := newContinuousScan(t, execution.offer.Checkpoint, len(pages)+2)
+	for index, items := range pages {
+		if err := scan.AddPage(continuousDocument(items, true)); err != nil {
+			t.Fatalf("executor-exit scan page %d: %v", index+1, err)
+		}
+	}
+	if !scan.Complete() || scan.StopReason() != "safe_boundary" || !scan.Quality().MayAdvanceCheckpoint() {
+		t.Fatalf("executor-exit scan complete=%v reason=%s quality=%+v", scan.Complete(), scan.StopReason(), scan.Quality())
+	}
+	candidate, err := scan.CheckpointCandidate()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The first executor has already proved the whole scan safe in memory and
+	// commits page one, but exits before it can submit the remaining pages or
+	// completion. Replaying this page models a lost database acknowledgement.
+	firstArtifact := mustResultArtifact(t, execution.occurrence.OccurrenceID+"-exit-page-1", model.ArtifactPage,
+		execution.offer.Work.WorkID, execution.offer.Attempt.AttemptID)
+	firstPage := ListingPageResult{CommandID: execution.occurrence.OccurrenceID + "-exit-page-command-1",
+		RequestHash: "sha256:" + execution.occurrence.OccurrenceID + "-exit-page-1",
+		AttemptID:   execution.offer.Attempt.AttemptID, ExecutorActorID: execution.offer.Attempt.ExecutorActorID,
+		ExecutorIncarnation: execution.offer.Attempt.ExecutorIncarnation, PageSequence: 1, ResumeCursor: "page-2",
+		Artifact: firstArtifact, ObservedAt: execution.at.Add(time.Second),
+		Observations: continuousObservations(t, pages[0], execution.occurrence.OccurrenceID,
+			execution.occurrence.SourceID, execution.offer.Attempt, firstArtifact.ArtifactID,
+			execution.occurrence.OccurrenceID+"-exit-p1")}
+	accepted, err := repository.AcceptListingPage(ctx, firstPage)
+	if err != nil || accepted.Replayed || accepted.Progress.PageSequence != 1 {
+		t.Fatalf("executor-exit first page = %+v err=%v", accepted, err)
+	}
+	if replay, err := repository.AcceptListingPage(ctx, firstPage); err != nil || !replay.Replayed {
+		t.Fatalf("executor-exit first page lost-reply replay = %+v err=%v", replay, err)
+	}
+
+	staleBefore := firstPage.ObservedAt.Add(time.Microsecond)
+	recoveredAt := staleBefore.Add(time.Second)
+	if _, err := repository.RecoverStaleAttempts(ctx, staleBefore, 500, recoveredAt); err != nil {
+		t.Fatal(err)
+	}
+	abandonedAttempt, _ := repository.GetAttempt(ctx, execution.offer.Attempt.AttemptID)
+	waitingWork, _ := repository.GetWork(ctx, execution.offer.Work.WorkID)
+	runningOccurrence, _ := repository.GetOccurrence(ctx, execution.occurrence.OccurrenceID)
+	var abandonedPermit model.BudgetPermitStatus
+	permitErr := repository.db.QueryRowContext(ctx, `SELECT permit_status FROM recruiting_budget_permits WHERE attempt_id = ?`,
+		execution.offer.Attempt.AttemptID).Scan(&abandonedPermit)
+	if abandonedAttempt.Status != model.AttemptExpired || waitingWork.Status != model.WorkWaitingRetry ||
+		runningOccurrence.Status != model.OccurrenceRunning || permitErr != nil || abandonedPermit != model.PermitExpired {
+		t.Fatalf("executor-exit recovery attempt=%+v work=%+v occurrence=%+v permit=%s err=%v",
+			abandonedAttempt, waitingWork, runningOccurrence, abandonedPermit, permitErr)
+	}
+
+	// A message buffered by the dead incarnation cannot fill the missing page;
+	// only its Artifact survives as rejected diagnostic evidence.
+	lateArtifact := mustResultArtifact(t, execution.occurrence.OccurrenceID+"-late-page-2", model.ArtifactPage,
+		execution.offer.Work.WorkID, execution.offer.Attempt.AttemptID)
+	latePage := ListingPageResult{AttemptID: execution.offer.Attempt.AttemptID,
+		ExecutorActorID:     execution.offer.Attempt.ExecutorActorID,
+		ExecutorIncarnation: execution.offer.Attempt.ExecutorIncarnation, PageSequence: 2,
+		Artifact: lateArtifact, ObservedAt: recoveredAt.Add(time.Second)}
+	if _, err := repository.AcceptListingPage(ctx, latePage); !errors.Is(err, ErrResultFenced) {
+		t.Fatalf("expired executor late page was not fenced: %v", err)
+	}
+
+	retryAt := recoveredAt.Add(2 * time.Second)
+	retryOffer, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
+		AttemptID:       execution.occurrence.OccurrenceID + "-retry-attempt",
+		ExecutorActorID: "tool:continuous-listing:2", ExecutorIncarnation: execution.occurrence.OccurrenceID + "-retry-boot",
+		Capability: "http.fetch", Origin: "https://continuous.example.com", OfferedAt: retryAt,
+		BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil || retryOffer.Work.WorkID != execution.offer.Work.WorkID || retryOffer.Occurrence == nil ||
+		retryOffer.Occurrence.OccurrenceID != execution.occurrence.OccurrenceID ||
+		retryOffer.Checkpoint == nil || retryOffer.Checkpoint.Version != execution.offer.Checkpoint.Version {
+		t.Fatalf("executor-exit retry offer = %+v err=%v", retryOffer, err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, retryOffer.Attempt.AttemptID, retryOffer.Attempt.ExecutorActorID,
+		retryOffer.Attempt.ExecutorIncarnation, retryAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, retryOffer.Attempt.AttemptID, retryOffer.Attempt.ExecutorActorID,
+		retryOffer.Attempt.ExecutorIncarnation, retryAt); err != nil {
+		t.Fatal(err)
+	}
+
+	itemCount := 0
+	for index, items := range pages {
+		artifact := mustResultArtifact(t, fmt.Sprintf("%s-retry-page-%d", execution.occurrence.OccurrenceID, index+1),
+			model.ArtifactPage, retryOffer.Work.WorkID, retryOffer.Attempt.AttemptID)
+		observations := continuousObservations(t, items, execution.occurrence.OccurrenceID,
+			execution.occurrence.SourceID, retryOffer.Attempt, artifact.ArtifactID,
+			fmt.Sprintf("%s-retry-p%d", execution.occurrence.OccurrenceID, index+1))
+		input := ListingPageResult{CommandID: fmt.Sprintf("%s-retry-page-command-%d", execution.occurrence.OccurrenceID, index+1),
+			RequestHash: fmt.Sprintf("sha256:%s-retry-page-%d", execution.occurrence.OccurrenceID, index+1),
+			AttemptID:   retryOffer.Attempt.AttemptID, ExecutorActorID: retryOffer.Attempt.ExecutorActorID,
+			ExecutorIncarnation: retryOffer.Attempt.ExecutorIncarnation, PageSequence: uint64(index + 1),
+			ResumeCursor: fmt.Sprintf("page-%d", index+2), Terminal: index == len(pages)-1,
+			Artifact: artifact, Observations: observations, ObservedAt: retryAt.Add(time.Duration(index+1) * time.Second)}
+		page, err := repository.AcceptListingPage(ctx, input)
+		if err != nil || page.Replayed || page.Progress.PageSequence != uint64(index+1) {
+			t.Fatalf("executor-exit retry page %d = %+v err=%v", index+1, page, err)
+		}
+		if replay, err := repository.AcceptListingPage(ctx, input); err != nil || !replay.Replayed {
+			t.Fatalf("executor-exit retry page %d replay = %+v err=%v", index+1, replay, err)
+		}
+		itemCount += len(observations)
+	}
+	quality := scan.Quality()
+	completionArtifact := mustResultArtifact(t, execution.occurrence.OccurrenceID+"-retry-completion",
+		model.ArtifactListingDelta, retryOffer.Work.WorkID, retryOffer.Attempt.AttemptID)
+	completion := ListingCompletion{RequestHash: "sha256:" + execution.occurrence.OccurrenceID + "-retry-completion",
+		AttemptID: retryOffer.Attempt.AttemptID, ExecutorActorID: retryOffer.Attempt.ExecutorActorID,
+		ExecutorIncarnation: retryOffer.Attempt.ExecutorIncarnation, Artifact: completionArtifact,
+		ItemCount: itemCount, CompletedAt: retryAt.Add(time.Duration(len(pages)+2) * time.Second),
+		CauseCommandID: execution.occurrence.OccurrenceID + "-retry-completion-command", Progress: model.ListingProgress{
+			IdentityComplete: quality.IdentityComplete, PaginationStable: quality.PaginationStable,
+			PreviousFrontierReached: quality.PreviousFrontierReached, OverlapCompleted: quality.OverlapCompleted,
+			OrderingContractHeld: quality.OrderingContractHeld, SameTimeGroupCompleted: quality.PreviousFrontierReached,
+			Candidate: model.IncrementalCheckpoint{FrontierActivityAt: candidate.LastActivityAt,
+				FrontierJobKeys: append([]string(nil), candidate.FrontierKeys...)}}}
+	completed, err := repository.AcceptListingCompletion(ctx, completion)
+	if err != nil || completed.Replayed || completed.Work.Status != model.WorkCompleted || completed.Occurrence == nil ||
+		completed.Occurrence.Status != model.OccurrenceCompleted {
+		t.Fatalf("executor-exit retry completion = %+v err=%v", completed, err)
+	}
+	if replay, err := repository.AcceptListingCompletion(ctx, completion); err != nil || !replay.Replayed ||
+		replay.Checkpoint.Version != completed.Checkpoint.Version {
+		t.Fatalf("executor-exit retry completion lost-reply replay = %+v err=%v", replay, err)
+	}
+	var abandonedPages, retryPages, rejectedLate, eJobs, eDetails int
+	queries := []struct {
+		query string
+		args  []any
+		out   *int
+	}{
+		{"SELECT COUNT(*) FROM recruiting_listing_page_progress WHERE attempt_id = ?", []any{execution.offer.Attempt.AttemptID}, &abandonedPages},
+		{"SELECT COUNT(*) FROM recruiting_listing_page_progress WHERE attempt_id = ?", []any{retryOffer.Attempt.AttemptID}, &retryPages},
+		{"SELECT COUNT(*) FROM recruiting_artifacts WHERE artifact_id = ? AND rejected = TRUE", []any{lateArtifact.ArtifactID}, &rejectedLate},
+		{"SELECT COUNT(*) FROM recruiting_source_jobs WHERE source_id = ? AND source_job_key = 'e'", []any{execution.occurrence.SourceID}, &eJobs},
+		{`SELECT COUNT(*) FROM recruiting_works work JOIN recruiting_source_jobs job ON job.job_id = work.target_id
+WHERE job.source_id = ? AND job.source_job_key = 'e' AND work.purpose = 'detail_sync'`, []any{execution.occurrence.SourceID}, &eDetails},
+	}
+	for _, query := range queries {
+		if err := repository.db.QueryRowContext(ctx, query.query, query.args...).Scan(query.out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if abandonedPages != 1 || retryPages != len(pages) || rejectedLate != 1 || eJobs != 1 || eDetails != 1 {
+		t.Fatalf("executor-exit facts abandoned_pages=%d retry_pages=%d rejected_late=%d e_jobs=%d e_details=%d",
+			abandonedPages, retryPages, rejectedLate, eJobs, eDetails)
+	}
+	return completed.Checkpoint
+}
+
 func assertContinuousUnsafeScan(t *testing.T, checkpoint *model.IncrementalCheckpoint,
 	pages [][]continuousListingItem) {
 	t.Helper()
@@ -800,7 +960,7 @@ func assertContinuousJourneyFinal(t *testing.T, ctx context.Context, db *sql.DB,
 	if err != nil {
 		t.Fatal(err)
 	}
-	if checkpointVersion != 6 || occurrenceCount != 5 || completedOccurrences != 5 || pageProgress != 13 ||
+	if checkpointVersion != 6 || occurrenceCount != 5 || completedOccurrences != 5 || pageProgress != 14 ||
 		failedStatus != string(model.WorkCompleted) || failedResolution != string(model.ResolutionTerminated) ||
 		retryStatus != string(model.WorkCompleted) || retryResolution != string(model.ResolutionSucceeded) ||
 		occurrenceWorkID != retryWorkID || grantedPermits != 0 {
