@@ -15,11 +15,12 @@ func TestPrepareFailureReportUsesPersistedEvidenceMetadata(t *testing.T) {
 		ObjectRef: "artifact://failure", Kind: "failure"}
 	offer := executioncontract.Offer{Attempt: model.Attempt{AttemptID: "attempt-1"}}
 	output := recipeabi.RunOutput{ABIVersion: recipeabi.Version, AttemptID: "attempt-1", Artifacts: []recipeabi.ArtifactRef{response, artifact},
-		Failure: &recipeabi.Failure{Class: "contract_violated", Artifact: artifact, NeedsRepair: true}}
+		Failure: &recipeabi.Failure{Class: "contract_violated", Signature: "detail.contract_violated", Artifact: artifact, NeedsRepair: true}}
 	sink := &atollArtifactSink{config: artifactSinkConfig{WorkID: "work-1", AttemptID: "attempt-1", AccessScope: "operators", Retention: "30d", Redacted: true}}
 	report, err := prepareFailureReport(offer, output, sink)
 	if err != nil || report.Artifact.Kind != model.ArtifactFailure || report.Artifact.ObjectRef != artifact.ObjectRef ||
-		len(report.Artifacts) != 2 || report.Artifacts[0].Kind != model.ArtifactResponse || !report.NeedsRepair {
+		len(report.Artifacts) != 2 || report.Artifacts[0].Kind != model.ArtifactResponse || !report.NeedsRepair ||
+		report.Signature != "detail.contract_violated" {
 		t.Fatalf("failure report = %+v err=%v", report, err)
 	}
 	output.Artifacts = nil

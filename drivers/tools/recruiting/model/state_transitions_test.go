@@ -67,8 +67,9 @@ func TestWorkRecordsVersionedRetryAndHumanFailureDecisions(t *testing.T) {
 	}
 	retry, _ = retry.Start(retry.Version)
 	human, err := retry.ApplyExecutionFailure(retry.Version, ExecutionFailureDecision{PolicyVersion: 4, AttemptCount: 2,
-		FailureClass: "parse_error", Route: FailureHuman})
-	if err != nil || human.Status != WorkWaitingHuman || human.RetryPolicyVersion != 4 || human.AutomaticAttempts != 2 || human.RetryNotBefore != "" {
+		FailureClass: "parse_error", Route: FailureHuman, RepairWorkID: "repair-work-1"})
+	if err != nil || human.Status != WorkWaitingHuman || human.RetryPolicyVersion != 4 || human.AutomaticAttempts != 2 ||
+		human.RetryNotBefore != "" || human.BlockedByRepairWorkID != "repair-work-1" {
 		t.Fatalf("human decision = %+v err=%v", human, err)
 	}
 	if _, err := work.ApplyExecutionFailure(work.Version, ExecutionFailureDecision{PolicyVersion: 3, AttemptCount: 2,

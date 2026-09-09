@@ -64,6 +64,12 @@ Listing Page Progress 以 `(attempt_id, page_sequence)` 唯一，而不是以 Wo
 
 DailyRun 与 SourceOccurrence 在窗口关闭后不可改写。需要补跑时，用户创建普通 production ListingRun，并把 `recovery_of_occurrence_id` 冻结进其执行上下文；创建事务反查该 occurrence 属于同一 Source、结论为 exception/excluded，且 DailyRun 已关闭。migration 21 对该关联建立外键和唯一键，因此失败后的机器重试继续复用同一 ListingRun/Work 谱系，并发命令不能为同一缺口制造两个补偿头。只有 ListingRun 成功提交新 Checkpoint 后，查询投影才把它计入 `recovered` 并原子追加 `daily_occurrence.recovered` 事件；原日报的 `uncovered`、summary 和 occurrence outcome 保持原值。
 
+### 共享故障单飞
+
+migration 22 让失败 Work 以 `blocked_by_repair_work_id` 自引用同一张 Work 表，并让 RepairIncident 唯一关联一个确定性 Repair Work。故障域不是 Executor 输入：控制面根据冻结的 Attempt、Work placement、Recipe/Profile/refresh/policy 版本推导 `origin|recipe_version|profile|single_target` 及 failing version；Executor 只可提供不超过 191 字节、字符受限的低基数 `failure_signature`，旧版本缺省时退化为受控 failure class，原始错误、URL 和响应正文不能进入单飞键。
+
+受影响成员的权威集合是 `recruiting_repair_affected_works`，Incident JSON 只保留首次种子，不随 1,000/10,000 个失败 Work 膨胀或反复重写热点行。首个转入 `waiting_human` 的失败事务原子创建 Incident、Repair Work、成员关联、Work 阻塞指针和一条 `repair.opened` 聚合事件；后续失败只增加幂等成员关联，瞬态退避不创建人工修复。Incident→Repair Work 不建立反向外键，以避免单飞头和自引用 Work 的循环插入顺序；Repository 对确定性身份做内容校验，Work→Repair Work 的阻塞关系仍由数据库外键保证。单 Recruiting Actor 的 Repository 对相同 repair key 使用有界哈希锁消除本进程热点死锁，多进程竞争继续由数据库唯一键和 context 有界的 1213/1205 事务重试收敛。
+
 ### 首次基线
 
 `baseline_generations` 保存 generation 状态和 fencing version；`baseline_staging` 按 `(source_id, generation, source_job_key)` 分块幂等写入，并为每行标记产生它的 `attempt_id`。失败 Attempt 的行不删除，可用于诊断；新 Attempt 必须从第 1 页重扫，同键行会改绑到新 Attempt，旧 Attempt 独有键保持隔离。finalize 只统计当前成功 Attempt 的行，并把该 `listing_attempt_id` 冻结到 generation；后续物化也只读取这个 Attempt 的 staging，因此旧页无法混入基线。游标失效可从头重扫。finalize 锁定 generation、核对当前 Attempt 的实际 staging 数、改变 generation 可见性并建立首个 Checkpoint，不搬运一万行数据；详情 Job/Work 复用上述页提交协议按主键 seek 渐进物化，避免单个超大事务。旧 Attempt staging 的有界保留/清理服从 Artifact 与运行证据保留策略，不进入成功事实热路径。

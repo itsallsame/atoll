@@ -153,12 +153,17 @@ func TestRunOutputRequiresArtifactEvidenceAndClassifiedFailure(t *testing.T) {
 	if err := success.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	failure := RunOutput{ABIVersion: Version, AttemptID: "attempt-1", Failure: &Failure{Class: "captcha", Artifact: artifact, NeedsRepair: true}}
+	failure := RunOutput{ABIVersion: Version, AttemptID: "attempt-1", Failure: &Failure{Class: "captcha", Signature: "profile.captcha", Artifact: artifact, NeedsRepair: true}}
 	if err := failure.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	failure.Failure.Class = "raw error text"
 	if err := failure.Validate(); err == nil {
 		t.Fatal("unclassified executor failure was accepted")
+	}
+	failure.Failure.Class = "captcha"
+	failure.Failure.Signature = "raw https://secret.example"
+	if err := failure.Validate(); err == nil {
+		t.Fatal("raw failure detail was accepted as a signature")
 	}
 }

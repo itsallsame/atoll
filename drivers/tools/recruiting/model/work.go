@@ -29,26 +29,27 @@ const (
 )
 
 type Work struct {
-	WorkID             string         `json:"work_id"`
-	ParentWorkID       string         `json:"parent_work_id,omitempty"`
-	InitiatorActorID   string         `json:"initiator_actor_id,omitempty"`
-	CauseMessageID     string         `json:"cause_message_id,omitempty"`
-	CauseWorkID        string         `json:"cause_work_id,omitempty"`
-	TargetType         string         `json:"target_type"`
-	TargetID           string         `json:"target_id"`
-	Purpose            string         `json:"purpose"`
-	Trigger            string         `json:"trigger"`
-	Status             WorkStatus     `json:"work_status"`
-	WaitingReason      string         `json:"waiting_reason,omitempty"`
-	Resolution         WorkResolution `json:"resolution,omitempty"`
-	ResolutionActorID  string         `json:"resolution_actor_id,omitempty"`
-	ResolutionReason   string         `json:"resolution_reason,omitempty"`
-	AcceptanceVersion  uint64         `json:"acceptance_version"`
-	Version            uint64         `json:"version"`
-	RetryPolicyVersion uint64         `json:"retry_policy_version,omitempty"`
-	AutomaticAttempts  uint64         `json:"automatic_attempts,omitempty"`
-	LastFailureClass   string         `json:"last_failure_class,omitempty"`
-	RetryNotBefore     string         `json:"retry_not_before,omitempty"`
+	WorkID                string         `json:"work_id"`
+	ParentWorkID          string         `json:"parent_work_id,omitempty"`
+	InitiatorActorID      string         `json:"initiator_actor_id,omitempty"`
+	CauseMessageID        string         `json:"cause_message_id,omitempty"`
+	CauseWorkID           string         `json:"cause_work_id,omitempty"`
+	TargetType            string         `json:"target_type"`
+	TargetID              string         `json:"target_id"`
+	Purpose               string         `json:"purpose"`
+	Trigger               string         `json:"trigger"`
+	Status                WorkStatus     `json:"work_status"`
+	WaitingReason         string         `json:"waiting_reason,omitempty"`
+	Resolution            WorkResolution `json:"resolution,omitempty"`
+	ResolutionActorID     string         `json:"resolution_actor_id,omitempty"`
+	ResolutionReason      string         `json:"resolution_reason,omitempty"`
+	AcceptanceVersion     uint64         `json:"acceptance_version"`
+	Version               uint64         `json:"version"`
+	RetryPolicyVersion    uint64         `json:"retry_policy_version,omitempty"`
+	AutomaticAttempts     uint64         `json:"automatic_attempts,omitempty"`
+	LastFailureClass      string         `json:"last_failure_class,omitempty"`
+	RetryNotBefore        string         `json:"retry_not_before,omitempty"`
+	BlockedByRepairWorkID string         `json:"blocked_by_repair_work_id,omitempty"`
 }
 
 type FailureRoute string
@@ -64,6 +65,7 @@ type ExecutionFailureDecision struct {
 	FailureClass   string
 	Route          FailureRoute
 	RetryNotBefore string
+	RepairWorkID   string
 }
 
 // ApplyExecutionFailure records the control plane's versioned decision on the
@@ -82,17 +84,21 @@ func (w Work) ApplyExecutionFailure(expected uint64, decision ExecutionFailureDe
 		if strings.TrimSpace(decision.RetryNotBefore) == "" {
 			return Work{}, fmt.Errorf("retry failure decision requires not-before time")
 		}
+		if decision.RepairWorkID != "" {
+			return Work{}, fmt.Errorf("retry failure decision cannot carry a repair Work")
+		}
 		if _, err := time.Parse(time.RFC3339Nano, decision.RetryNotBefore); err != nil {
 			return Work{}, fmt.Errorf("retry failure decision requires RFC3339 not-before time")
 		}
 		w.Status = WorkWaitingRetry
 		w.RetryNotBefore = strings.TrimSpace(decision.RetryNotBefore)
 	case FailureHuman:
-		if strings.TrimSpace(decision.RetryNotBefore) != "" {
+		if strings.TrimSpace(decision.RetryNotBefore) != "" || strings.TrimSpace(decision.RepairWorkID) != decision.RepairWorkID {
 			return Work{}, fmt.Errorf("human failure decision cannot carry retry time")
 		}
 		w.Status = WorkWaitingHuman
 		w.RetryNotBefore = ""
+		w.BlockedByRepairWorkID = decision.RepairWorkID
 	default:
 		return Work{}, fmt.Errorf("unknown failure route %q", decision.Route)
 	}

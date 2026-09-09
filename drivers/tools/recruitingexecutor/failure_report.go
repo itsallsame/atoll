@@ -46,7 +46,7 @@ func prepareFailureReport(offer executioncontract.Offer, output recipeabi.RunOut
 			metadata = converted
 		}
 	}
-	report := executioncontract.FailureReport{Class: output.Failure.Class, Retryable: output.Failure.Retryable,
+	report := executioncontract.FailureReport{Class: output.Failure.Class, Signature: output.Failure.Signature, Retryable: output.Failure.Retryable,
 		NeedsRepair: output.Failure.NeedsRepair, Artifact: metadata, Artifacts: artifacts}
 	if err := report.Validate(offer.Attempt.AttemptID); err != nil {
 		return executioncontract.FailureReport{}, err

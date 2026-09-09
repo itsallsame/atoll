@@ -99,6 +99,7 @@ type TransitionRequest struct {
 // transports it without interpreting recruiting failure classes.
 type FailureReport struct {
 	Class       string                   `json:"class"`
+	Signature   string                   `json:"failure_signature,omitempty"`
 	Retryable   bool                     `json:"retryable"`
 	NeedsRepair bool                     `json:"needs_repair"`
 	Artifact    model.ArtifactMetadata   `json:"artifact"`
@@ -120,6 +121,9 @@ func (f FailureReport) Validate(attemptID string) error {
 	}
 	if f.NeedsRepair != repairExpected {
 		return fmt.Errorf("execution failure repair classification does not match class %q", f.Class)
+	}
+	if f.Signature != "" && !validFailureSignature(f.Signature) {
+		return fmt.Errorf("execution failure signature must be a normalized low-cardinality key")
 	}
 	validated, err := model.NewArtifactMetadata(f.Artifact.ArtifactID, f.Artifact.Kind, f.Artifact.ContentHash, f.Artifact.ObjectRef,
 		f.Artifact.WorkID, f.Artifact.AttemptID, f.Artifact.AccessScope, f.Artifact.Retention, f.Artifact.Redacted)
@@ -145,6 +149,30 @@ func (f FailureReport) Validate(attemptID string) error {
 		return fmt.Errorf("execution failure supporting Artifacts must contain the primary failure Artifact")
 	}
 	return nil
+}
+
+// StableSignature preserves wire compatibility with older executors while
+// allowing newer Drivers to distinguish stable failure stages without sending
+// raw error text, URLs, or response data into single-flight identities.
+func (f FailureReport) StableSignature() string {
+	if f.Signature != "" {
+		return f.Signature
+	}
+	return f.Class
+}
+
+func validFailureSignature(value string) bool {
+	if value == "" || len(value) > 191 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') ||
+			character == '.' || character == '_' || character == '-' || character == ':' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // EvidenceArtifacts preserves compatibility with reports created before the

@@ -405,6 +405,7 @@ func (q QualityProof) MayAdvanceCheckpoint() bool {
 
 type Failure struct {
 	Class       string      `json:"class"`
+	Signature   string      `json:"failure_signature,omitempty"`
 	Retryable   bool        `json:"retryable"`
 	Artifact    ArtifactRef `json:"artifact"`
 	NeedsRepair bool        `json:"needs_repair"`
@@ -464,10 +465,27 @@ func (failure Failure) Validate() error {
 	default:
 		return fmt.Errorf("unsupported failure class %q", failure.Class)
 	}
+	if failure.Signature != "" && !validFailureSignature(failure.Signature) {
+		return fmt.Errorf("failure signature must be a normalized low-cardinality key")
+	}
 	if failure.Artifact.Kind != "" && failure.Artifact.Kind != "failure" {
 		return fmt.Errorf("failure evidence Artifact must have failure kind")
 	}
 	return failure.Artifact.Validate()
+}
+
+func validFailureSignature(value string) bool {
+	if value == "" || len(value) > 191 || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') ||
+			character == '.' || character == '_' || character == '-' || character == ':' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func blank(values ...string) bool {

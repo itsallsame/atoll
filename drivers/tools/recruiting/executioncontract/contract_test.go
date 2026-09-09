@@ -34,9 +34,22 @@ func TestFailureReportBindsClassificationAndArtifactToAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	report := FailureReport{Class: "parse_error", NeedsRepair: true, Artifact: artifact}
+	report := FailureReport{Class: "parse_error", Signature: "listing.parse_error", NeedsRepair: true, Artifact: artifact}
 	if err := report.Validate("attempt-1"); err != nil {
 		t.Fatal(err)
+	}
+	if report.StableSignature() != "listing.parse_error" {
+		t.Fatalf("stable signature = %q", report.StableSignature())
+	}
+	legacy := report
+	legacy.Signature = ""
+	if legacy.StableSignature() != legacy.Class || legacy.Validate("attempt-1") != nil {
+		t.Fatal("legacy failure did not fall back to its bounded class")
+	}
+	invalidSignature := report
+	invalidSignature.Signature = "raw URL https://secret.example/path"
+	if err := invalidSignature.Validate("attempt-1"); err == nil {
+		t.Fatal("raw failure detail was accepted as a single-flight signature")
 	}
 	report.NeedsRepair = false
 	if err := report.Validate("attempt-1"); err == nil {

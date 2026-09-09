@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	mysql "github.com/go-sql-driver/mysql"
@@ -15,7 +16,8 @@ import (
 )
 
 type Repository struct {
-	db *sql.DB
+	db            *sql.DB
+	repairStripes [256]sync.Mutex
 }
 
 func NewRepository(db *sql.DB) (*Repository, error) {

@@ -44,6 +44,13 @@ func TestRepairIncidentCoalescesSameFailure(t *testing.T) {
 	if err != nil || second.Version != first.Version+1 || second.AffectedWorkIDs[0] != "work-1" {
 		t.Fatalf("affected works not deterministically aggregated: %+v %v", second, err)
 	}
+	withWork, err := first.WithRepairWork("repair-work-1")
+	if err != nil || withWork.RepairWorkID != "repair-work-1" {
+		t.Fatalf("repair Work was not frozen: %+v %v", withWork, err)
+	}
+	if _, err := withWork.WithRepairWork("repair-work-2"); err == nil {
+		t.Fatal("repair incident was rebound to a different repair Work")
+	}
 }
 
 func TestBudgetPermitHasOneTerminalDisposition(t *testing.T) {

@@ -41,13 +41,13 @@ INSERT INTO recruiting_works(
 	  work_id, parent_work_id, initiator_actor_id, cause_message_id, cause_work_id,
 	  business_key, target_type, target_id, purpose,
 	  trigger_kind, status, resolution, priority, capability, origin, profile_id,
-	  not_before, deadline_at, acceptance_version, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	  blocked_by_repair_work_id, not_before, deadline_at, acceptance_version, version, state_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		work.WorkID, nullableString(work.ParentWorkID), nullableString(work.InitiatorActorID), nullableString(work.CauseMessageID), nullableString(work.CauseWorkID),
 		nullableString(placement.BusinessKey), work.TargetType, work.TargetID,
 		work.Purpose, work.Trigger, work.Status, nullableString(string(work.Resolution)), placement.Priority,
 		nullableString(placement.Capability), nullableString(placement.Origin), nullableString(placement.ProfileID),
-		placement.NotBefore.UTC(), nullableTimePointer(placement.DeadlineAt), work.AcceptanceVersion, work.Version,
+		nullableString(work.BlockedByRepairWorkID), placement.NotBefore.UTC(), nullableTimePointer(placement.DeadlineAt), work.AcceptanceVersion, work.Version,
 		state, businessAt.UTC(), businessAt.UTC())
 	if err == nil {
 		return nil
@@ -116,9 +116,9 @@ func (r *Repository) UpdateWorkCAS(ctx context.Context, expectedVersion uint64, 
 	state, _ := json.Marshal(work)
 	result, err := r.db.ExecContext(ctx, `
 UPDATE recruiting_works
-SET status = ?, resolution = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
+SET status = ?, resolution = ?, blocked_by_repair_work_id = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
 WHERE work_id = ? AND version = ?`,
-		work.Status, nullableString(string(work.Resolution)), work.AcceptanceVersion, work.Version, state,
+		work.Status, nullableString(string(work.Resolution)), nullableString(work.BlockedByRepairWorkID), work.AcceptanceVersion, work.Version, state,
 		businessAt.UTC(), work.WorkID, expectedVersion)
 	if err != nil {
 		return fmt.Errorf("update work: %w", err)

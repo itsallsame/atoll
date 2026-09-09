@@ -30,6 +30,7 @@ type RepairIncident struct {
 	DomainKey        string        `json:"domain_key"`
 	FailureSignature string        `json:"failure_signature"`
 	FailingVersion   string        `json:"failing_version"`
+	RepairWorkID     string        `json:"repair_work_id,omitempty"`
 	AffectedWorkIDs  []string      `json:"affected_work_ids"`
 	Status           RepairStatus  `json:"repair_status"`
 	Resolution       string        `json:"resolution,omitempty"`
@@ -57,6 +58,15 @@ func NewRepairIncident(id string, domain FailureDomain, domainKey, signature, fa
 		return RepairIncident{}, fmt.Errorf("incident and first affected work are required")
 	}
 	return RepairIncident{IncidentID: id, RepairKey: key, Domain: domain, DomainKey: domainKey, FailureSignature: signature, FailingVersion: failingVersion, AffectedWorkIDs: []string{firstWorkID}, Status: RepairOpen, Version: 1}, nil
+}
+
+func (r RepairIncident) WithRepairWork(workID string) (RepairIncident, error) {
+	workID = strings.TrimSpace(workID)
+	if r.Version != 1 || r.Status != RepairOpen || r.RepairWorkID != "" || workID == "" {
+		return RepairIncident{}, fmt.Errorf("new open repair incident and repair Work are required")
+	}
+	r.RepairWorkID = workID
+	return r, nil
 }
 
 func (r RepairIncident) AddAffectedWork(expected uint64, workID string) (RepairIncident, error) {

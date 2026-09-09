@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	mysql "github.com/go-sql-driver/mysql"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
@@ -797,6 +798,11 @@ func (r *Repository) ApplyExecutionTransitionCommand(ctx context.Context, comman
 	}
 	var response json.RawMessage
 	replayed := false
+	unlockRepair, err := r.lockRepairFailureCommand(ctx, command, businessAt)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	defer unlockRepair()
 	hooks := &executionTransitionHooks{
 		before: func(tx *sql.Tx) (bool, error) {
 			stored, found, err := readCommandReceipt(ctx, tx, command.CommandID, command.RequestHash)
@@ -859,8 +865,17 @@ func (r *Repository) ApplyExecutionTransitionCommand(ctx context.Context, comman
 			return nil
 		},
 	}
-	_, err := r.transitionListingExecution(ctx, command.AttemptID, command.RequestedBy, command.ExecutorIncarnation,
-		command.Action, command.Reason, command.Failure, failurePolicyPointer(command), businessAt, hooks)
+	err = nil
+	for transactionAttempt := 0; transactionAttempt < 32; transactionAttempt++ {
+		_, err = r.transitionListingExecution(ctx, command.AttemptID, command.RequestedBy, command.ExecutorIncarnation,
+			command.Action, command.Reason, command.Failure, failurePolicyPointer(command), businessAt, hooks)
+		if !isMySQLTransactionContention(err) {
+			break
+		}
+		if waitErr := waitForTransactionRetry(ctx, transactionAttempt); waitErr != nil {
+			return CommandResult{}, waitErr
+		}
+	}
 	if errors.Is(err, ErrCommandConflict) {
 		return r.replayCommittedCommand(ctx, command.CommandID, command.RequestHash)
 	}
@@ -875,6 +890,23 @@ func (r *Repository) ApplyExecutionTransitionCommand(ctx context.Context, comman
 		return CommandResult{}, err
 	}
 	return CommandResult{Response: append(json.RawMessage(nil), response...), Replayed: replayed}, nil
+}
+
+func isMySQLTransactionContention(err error) bool {
+	var driverError *mysql.MySQLError
+	return errors.As(err, &driverError) && (driverError.Number == 1213 || driverError.Number == 1205)
+}
+
+func waitForTransactionRetry(ctx context.Context, attempt int) error {
+	delay := time.Millisecond << min(attempt, 6)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, executorActorID, executorIncarnation, action, reason string,
@@ -1037,6 +1069,19 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			} else {
 				var decision model.ExecutionFailureDecision
 				decision, err = failurePolicy.Decide(work, *report, businessAt)
+				if err == nil && decision.Route == model.FailureHuman {
+					var placement WorkPlacement
+					placement, err = getWorkPlacementWith(ctx, tx, work.WorkID)
+					if err == nil {
+						var failure repairFailure
+						failure, err = newRepairFailure(work, attempt, placement, *report, failurePolicy.Version, businessAt)
+						if err == nil {
+							var incident model.RepairIncident
+							incident, _, err = openOrJoinRepairFailureTx(ctx, tx, failure, work.WorkID, attempt.AttemptID, businessAt)
+							decision.RepairWorkID = incident.RepairWorkID
+						}
+					}
+				}
 				if err == nil {
 					work, err = work.ApplyExecutionFailure(work.Version, decision)
 				}
@@ -1105,9 +1150,9 @@ func updateFailedWorkTx(ctx context.Context, tx *sql.Tx, expected uint64, work m
 	state, _ := json.Marshal(work)
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_works
-SET status = ?, resolution = ?, acceptance_version = ?, version = ?, state_json = ?, not_before = ?, updated_at = ?
-WHERE work_id = ? AND version = ?`, work.Status, nullableString(string(work.Resolution)), work.AcceptanceVersion,
-		work.Version, state, notBefore.UTC(), businessAt.UTC(), work.WorkID, expected)
+SET status = ?, resolution = ?, blocked_by_repair_work_id = ?, acceptance_version = ?, version = ?, state_json = ?, not_before = ?, updated_at = ?
+WHERE work_id = ? AND version = ?`, work.Status, nullableString(string(work.Resolution)), nullableString(work.BlockedByRepairWorkID),
+		work.AcceptanceVersion, work.Version, state, notBefore.UTC(), businessAt.UTC(), work.WorkID, expected)
 	if err != nil {
 		return err
 	}

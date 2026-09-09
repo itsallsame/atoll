@@ -223,7 +223,7 @@ func failLocalExecution(ctx context.Context, control executionControl, sink *ato
 		return errors.Join(fmt.Errorf("%s: %w", stage, cause), fmt.Errorf("save local failure evidence: %w", artifactErr))
 	}
 	output := recipeabi.RunOutput{ABIVersion: recipeabi.Version, AttemptID: offer.Attempt.AttemptID,
-		Artifacts: []recipeabi.ArtifactRef{ref}, Failure: &recipeabi.Failure{Class: class, Artifact: ref,
+		Artifacts: []recipeabi.ArtifactRef{ref}, Failure: &recipeabi.Failure{Class: class, Signature: class + "." + stage, Artifact: ref,
 			NeedsRepair: class == "parse_error" || class == "quality_rejected" || class == "contract_violated"}}
 	if err := failRunExecution(ctx, control, sink, offer, output); err != nil {
 		return errors.Join(fmt.Errorf("%s: %w", stage, cause), err)

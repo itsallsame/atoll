@@ -85,7 +85,11 @@ func failedDiscoveryResult(input recipeabi.RunInput, artifacts []recipeabi.Artif
 	if errors.As(err, &fetchErr) {
 		class, retryable = fetchErr.Class, fetchErr.Retryable
 	}
+	signature := class
+	if class == "parse_error" || class == "quality_rejected" || class == "contract_violated" {
+		signature = "discovery." + class
+	}
 	return DiscoveryRunResult{Output: recipeabi.RunOutput{ABIVersion: recipeabi.Version, AttemptID: input.Attempt.AttemptID,
-		Artifacts: artifacts, Failure: &recipeabi.Failure{Class: class, Retryable: retryable,
+		Artifacts: artifacts, Failure: &recipeabi.Failure{Class: class, Signature: signature, Retryable: retryable,
 			Artifact: evidence, NeedsRepair: class == "parse_error" || class == "quality_rejected" || class == "contract_violated"}}}
 }
