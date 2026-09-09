@@ -27,17 +27,31 @@ const (
 // listing run. Daily coverage continues to use SourceOccurrence; keeping the
 // two facts separate prevents diagnostic work from entering a DailyRun.
 type ListingRun struct {
-	ListingRunID      string                   `json:"listing_run_id"`
-	WorkID            string                   `json:"work_id"`
-	Mode              ListingRunMode           `json:"run_mode"`
-	SourceID          string                   `json:"source_id"`
-	CompanyVersion    uint64                   `json:"company_version"`
-	SourceVersion     uint64                   `json:"source_version"`
-	Checkpoint        *IncrementalCheckpoint   `json:"checkpoint,omitempty"`
-	CheckpointVersion uint64                   `json:"checkpoint_version,omitempty"`
-	ListingExecution  ListingExecutionSnapshot `json:"listing_execution"`
-	Status            ListingRunStatus         `json:"listing_run_status"`
-	Version           uint64                   `json:"version"`
+	ListingRunID      string                 `json:"listing_run_id"`
+	WorkID            string                 `json:"work_id"`
+	Mode              ListingRunMode         `json:"run_mode"`
+	SourceID          string                 `json:"source_id"`
+	CompanyVersion    uint64                 `json:"company_version"`
+	SourceVersion     uint64                 `json:"source_version"`
+	Checkpoint        *IncrementalCheckpoint `json:"checkpoint,omitempty"`
+	CheckpointVersion uint64                 `json:"checkpoint_version,omitempty"`
+	// RecoveryOfOccurrenceID links a successful production catch-up to the
+	// immutable exception/exclusion in a closed DailyRun. The original report
+	// is never rewritten; this ListingRun becomes its compensation fact.
+	RecoveryOfOccurrenceID string                   `json:"recovery_of_occurrence_id,omitempty"`
+	ListingExecution       ListingExecutionSnapshot `json:"listing_execution"`
+	Status                 ListingRunStatus         `json:"listing_run_status"`
+	Version                uint64                   `json:"version"`
+}
+
+func (r ListingRun) WithRecoveryOfOccurrence(occurrenceID string) (ListingRun, error) {
+	occurrenceID = strings.TrimSpace(occurrenceID)
+	if r.Version != 1 || r.Status != ListingRunQueued || r.Mode != ListingRunProduction ||
+		occurrenceID == "" || r.RecoveryOfOccurrenceID != "" {
+		return ListingRun{}, fmt.Errorf("queued production listing run and original occurrence are required")
+	}
+	r.RecoveryOfOccurrenceID = occurrenceID
+	return r, nil
 }
 
 func NewListingRun(id, workID string, mode ListingRunMode, sourceID string, companyVersion, sourceVersion uint64,

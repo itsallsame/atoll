@@ -94,6 +94,14 @@ func (p ListingRunPreparation) NewRun(runID, workID string, mode model.ListingRu
 	return model.NewListingRun(runID, workID, mode, p.Source.SourceID, p.Company.Version, p.Source.Version, p.Checkpoint, execution)
 }
 
+func (p ListingRunPreparation) NewRecoveryRun(runID, workID, occurrenceID string) (model.ListingRun, error) {
+	run, err := p.NewRun(runID, workID, model.ListingRunProduction)
+	if err != nil {
+		return model.ListingRun{}, err
+	}
+	return run.WithRecoveryOfOccurrence(occurrenceID)
+}
+
 func (r *Repository) ApplyListingRunCommand(ctx context.Context, expectedSourceVersion uint64, run model.ListingRun,
 	work model.Work, placement WorkPlacement, receipt model.CommandReceipt, event model.EventIntent,
 	dispatch *ExecutionDispatchIntent, businessAt time.Time) (CommandResult, error) {
@@ -124,9 +132,20 @@ func (r *Repository) ApplyListingRunCommand(ctx context.Context, expectedSourceV
 	if run.Mode == model.ListingRunProduction && (current.Checkpoint == nil || !current.Source.EligibleForDailyRun(current.Company)) {
 		return CommandResult{}, fmt.Errorf("production listing run requires a daily-eligible source with an established checkpoint")
 	}
+	if run.RecoveryOfOccurrenceID != "" {
+		if err := validateListingRunRecoveryTarget(ctx, tx, run); err != nil {
+			return CommandResult{}, err
+		}
+	}
 	expectedRun, err := current.NewRun(run.ListingRunID, run.WorkID, run.Mode)
 	if err != nil {
 		return CommandResult{}, err
+	}
+	if run.RecoveryOfOccurrenceID != "" {
+		expectedRun, err = expectedRun.WithRecoveryOfOccurrence(run.RecoveryOfOccurrenceID)
+		if err != nil {
+			return CommandResult{}, err
+		}
 	}
 	if !reflect.DeepEqual(expectedRun, run) {
 		return CommandResult{}, fmt.Errorf("standalone listing run snapshot changed before commit")
@@ -147,9 +166,13 @@ func (r *Repository) ApplyListingRunCommand(ctx context.Context, expectedSourceV
 	}
 	state, _ := json.Marshal(run)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO recruiting_listing_runs(
-listing_run_id, work_id, source_id, run_mode, run_status, checkpoint_version, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, run.ListingRunID, run.WorkID, run.SourceID, run.Mode, run.Status,
-		run.CheckpointVersion, run.Version, state, businessAt.UTC(), businessAt.UTC()); err != nil {
+listing_run_id, work_id, source_id, run_mode, run_status, checkpoint_version, recovery_of_occurrence_id,
+version, state_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, run.ListingRunID, run.WorkID, run.SourceID, run.Mode, run.Status,
+		run.CheckpointVersion, nullableString(run.RecoveryOfOccurrenceID), run.Version, state, businessAt.UTC(), businessAt.UTC()); err != nil {
+		if isDuplicateKey(err) {
+			return CommandResult{}, fmt.Errorf("%w: listing run, Work, or daily recovery occurrence", ErrBusinessKeyExists)
+		}
 		return CommandResult{}, fmt.Errorf("create standalone listing run: %w", err)
 	}
 	eventAt, err := time.Parse(time.RFC3339, event.BusinessAt)
@@ -166,6 +189,48 @@ listing_run_id, work_id, source_id, run_mode, run_status, checkpoint_version, ve
 		return CommandResult{}, fmt.Errorf("commit standalone listing run: %w", err)
 	}
 	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
+}
+
+func validateListingRunRecoveryTarget(ctx context.Context, queryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, run model.ListingRun) error {
+	if run.Mode != model.ListingRunProduction || run.RecoveryOfOccurrenceID == "" {
+		return fmt.Errorf("daily recovery requires a production listing run and occurrence")
+	}
+	var existingRunID string
+	err := queryer.QueryRowContext(ctx, `SELECT listing_run_id FROM recruiting_listing_runs
+WHERE recovery_of_occurrence_id = ?`, run.RecoveryOfOccurrenceID).Scan(&existingRunID)
+	if err == nil {
+		return fmt.Errorf("%w: occurrence already has recovery run %s", ErrBusinessKeyExists, existingRunID)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var occurrenceState, dailyState []byte
+	err = queryer.QueryRowContext(ctx, `SELECT occurrence.state_json, daily.state_json
+FROM recruiting_source_occurrences occurrence
+JOIN recruiting_daily_runs daily ON daily.daily_run_id = occurrence.daily_run_id
+WHERE occurrence.occurrence_id = ?`, run.RecoveryOfOccurrenceID).Scan(&occurrenceState, &dailyState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("daily recovery occurrence was not found")
+	}
+	if err != nil {
+		return err
+	}
+	var occurrence model.SourceOccurrence
+	var daily model.DailyRun
+	if err := json.Unmarshal(occurrenceState, &occurrence); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(dailyState, &daily); err != nil {
+		return err
+	}
+	if occurrence.SourceID != run.SourceID ||
+		(occurrence.Status != model.OccurrenceException && occurrence.Status != model.OccurrenceExcluded) ||
+		(daily.Status != model.DailyRunCompleted && daily.Status != model.DailyRunCompletedWithExceptions) {
+		return fmt.Errorf("daily recovery must target this source's uncovered occurrence in a closed run")
+	}
+	return nil
 }
 
 func getListingRunByWorkWith(ctx context.Context, queryer interface {

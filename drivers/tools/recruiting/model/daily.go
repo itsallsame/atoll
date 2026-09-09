@@ -203,7 +203,7 @@ func (d DailyRun) Close(expected uint64, summary CoverageSummary) (DailyRun, err
 	if summary.DetailSucceeded+summary.DetailAcceptedGap+summary.DetailExceptions != summary.DetailExpected {
 		return DailyRun{}, fmt.Errorf("not all detail work is accounted for")
 	}
-	if summary.ListingExceptions == 0 && summary.DetailAcceptedGap == 0 && summary.DetailExceptions == 0 {
+	if summary.ListingExceptions == 0 && summary.Excluded == 0 && summary.DetailAcceptedGap == 0 && summary.DetailExceptions == 0 {
 		d.Status = DailyRunCompleted
 	} else {
 		d.Status = DailyRunCompletedWithExceptions

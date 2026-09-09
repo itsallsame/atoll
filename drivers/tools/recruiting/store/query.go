@@ -222,12 +222,16 @@ type DailyRunProgress struct {
 	ExpectedSources int `json:"expected_sources"`
 	Materialized    int `json:"materialized"`
 	Missing         int `json:"missing"`
-	Planned         int `json:"planned"`
-	Queued          int `json:"queued"`
-	Running         int `json:"running"`
-	Completed       int `json:"completed"`
-	Exceptions      int `json:"completed_with_exceptions"`
-	Excluded        int `json:"excluded"`
+	// Uncovered is the immutable daily denominator minus successful listing
+	// occurrences. Recovered is reported separately and never rewrites it.
+	Uncovered  int `json:"uncovered"`
+	Recovered  int `json:"recovered"`
+	Planned    int `json:"planned"`
+	Queued     int `json:"queued"`
+	Running    int `json:"running"`
+	Completed  int `json:"completed"`
+	Exceptions int `json:"completed_with_exceptions"`
+	Excluded   int `json:"excluded"`
 }
 
 func (r *Repository) GetDailyRunProgress(ctx context.Context, dailyRunID string) (model.DailyRun, DailyRunProgress, error) {
@@ -240,13 +244,17 @@ func (r *Repository) GetDailyRunProgress(ctx context.Context, dailyRunID string)
 SELECT d.state_json, d.expected_sources, COUNT(o.occurrence_id),
        COALESCE(SUM(o.status = 'planned'), 0), COALESCE(SUM(o.status = 'queued'), 0), COALESCE(SUM(o.status = 'running'), 0),
        COALESCE(SUM(o.status = 'completed'), 0), COALESCE(SUM(o.status = 'completed_with_exceptions'), 0),
-       COALESCE(SUM(o.status = 'excluded'), 0)
+       COALESCE(SUM(o.status = 'excluded'), 0),
+       (SELECT COUNT(*) FROM recruiting_listing_runs recovery
+          JOIN recruiting_source_occurrences original
+            ON original.occurrence_id = recovery.recovery_of_occurrence_id
+        WHERE original.daily_run_id = d.daily_run_id AND recovery.run_status = 'completed')
 FROM recruiting_daily_runs d
 LEFT JOIN recruiting_source_occurrences o ON o.daily_run_id = d.daily_run_id
 WHERE d.daily_run_id = ?
 GROUP BY d.daily_run_id, d.state_json, d.expected_sources`, dailyRunID).Scan(
 		&state, &storedExpected, &progress.Materialized, &progress.Planned, &progress.Queued, &progress.Running,
-		&progress.Completed, &progress.Exceptions, &progress.Excluded)
+		&progress.Completed, &progress.Exceptions, &progress.Excluded, &progress.Recovered)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.DailyRun{}, DailyRunProgress{}, ErrNotFound
 	}
@@ -261,8 +269,9 @@ GROUP BY d.daily_run_id, d.state_json, d.expected_sources`, dailyRunID).Scan(
 	}
 	progress.ExpectedSources = storedExpected
 	progress.Missing = progress.ExpectedSources - progress.Materialized
-	if progress.Missing < 0 {
-		return model.DailyRun{}, DailyRunProgress{}, fmt.Errorf("daily run has more occurrences than its cutoff count")
+	progress.Uncovered = progress.ExpectedSources - progress.Completed
+	if progress.Missing < 0 || progress.Uncovered < 0 || progress.Recovered > progress.Uncovered {
+		return model.DailyRun{}, DailyRunProgress{}, fmt.Errorf("daily run progress counts are inconsistent")
 	}
 	return run, progress, nil
 }

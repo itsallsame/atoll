@@ -27,6 +27,7 @@
 - SourceJob 使用 `(source_id, source_job_key)` 唯一，详情接受同时比较聚合 `version` 和 `refresh_generation`；
 - DetailVersion 使用 `(job_id, detail_version)` 和 `(job_id, content_hash)` 唯一，重复内容不会产生新有效版本；
 - SourceOccurrence 使用 `(source_id, schedule_date, schedule_policy_version)` 唯一；
+- 日报关闭后的补跑不修改原 SourceOccurrence 或 DailyRun；production ListingRun 可携带 `recovery_of_occurrence_id`，该外键全局唯一，使一个未覆盖 occurrence 只有一条可重试的补偿谱系；
 - Work 的非空 `business_key` 唯一，`command_id` 不代替该约束；
 - RepairIncident 使用 `repair_key` 唯一，使相同故障域、签名和失败版本单飞；
 - command receipt 以 `command_id` 唯一，并保存 request hash；同 ID 不同请求拒绝；
@@ -58,6 +59,10 @@ WHERE id = ? AND version = ?
 扫描到旧边界、完成重叠、排序契约成立且同时间组完整后，独立最终事务比较旧 Checkpoint version，写入新边界和 occurrence 结论并产生 outbox。失败或崩溃只会留下可重放 Observation/Work，不会产生虚假的新 Checkpoint。
 
 Listing Page Progress 以 `(attempt_id, page_sequence)` 唯一，而不是以 Work 为分页序列边界；`work_id` 仅保留作业务查询和审计关联。旧 Attempt 已接受的页面与 Artifact 不删除，新 Attempt 必须从第 1 页建立自己的连续序列，completion 也只汇总本 Attempt 的页面。这样既允许页面事实幂等保留，也不会让执行器在页间崩溃后把旧 Attempt 的游标或条目数带入重试。
+
+### 日报补偿
+
+DailyRun 与 SourceOccurrence 在窗口关闭后不可改写。需要补跑时，用户创建普通 production ListingRun，并把 `recovery_of_occurrence_id` 冻结进其执行上下文；创建事务反查该 occurrence 属于同一 Source、结论为 exception/excluded，且 DailyRun 已关闭。migration 21 对该关联建立外键和唯一键，因此失败后的机器重试继续复用同一 ListingRun/Work 谱系，并发命令不能为同一缺口制造两个补偿头。只有 ListingRun 成功提交新 Checkpoint 后，查询投影才把它计入 `recovered` 并原子追加 `daily_occurrence.recovered` 事件；原日报的 `uncovered`、summary 和 occurrence outcome 保持原值。
 
 ### 首次基线
 

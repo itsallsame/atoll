@@ -52,11 +52,12 @@ type workCommandResponse struct {
 
 type listingRunPayload struct {
 	MutationCommand
-	RunID      string `json:"run_id"`
-	WorkID     string `json:"work_id"`
-	ProfileID  string `json:"profile_id,omitempty"`
-	Priority   int    `json:"priority,omitempty"`
-	DeadlineAt string `json:"deadline_at,omitempty"`
+	RunID                  string `json:"run_id"`
+	WorkID                 string `json:"work_id"`
+	RecoveryOfOccurrenceID string `json:"recovery_of_occurrence_id,omitempty"`
+	ProfileID              string `json:"profile_id,omitempty"`
+	Priority               int    `json:"priority,omitempty"`
+	DeadlineAt             string `json:"deadline_at,omitempty"`
 }
 
 func handleWorkMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -195,7 +196,17 @@ func handleStandaloneListingRun(sys actorbase.Sys, cfg Config, repository *store
 	if mode == RunProduction {
 		runMode = model.ListingRunProduction
 	}
-	run, err := preparation.NewRun(strings.TrimSpace(payload.RunID), strings.TrimSpace(payload.WorkID), runMode)
+	var run model.ListingRun
+	if strings.TrimSpace(payload.RecoveryOfOccurrenceID) != "" {
+		if mode != RunProduction {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "only production runs may recover a closed daily occurrence")
+			return
+		}
+		run, err = preparation.NewRecoveryRun(strings.TrimSpace(payload.RunID), strings.TrimSpace(payload.WorkID),
+			strings.TrimSpace(payload.RecoveryOfOccurrenceID))
+	} else {
+		run, err = preparation.NewRun(strings.TrimSpace(payload.RunID), strings.TrimSpace(payload.WorkID), runMode)
+	}
 	if err != nil {
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
 		return

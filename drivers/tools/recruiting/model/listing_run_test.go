@@ -25,3 +25,25 @@ func TestStandaloneListingRunHasAnIndependentLifecycle(t *testing.T) {
 		t.Fatalf("rebound run = %+v err=%v", rebound, err)
 	}
 }
+
+func TestOnlyQueuedProductionRunCanLinkDailyRecovery(t *testing.T) {
+	execution := testListingExecution("source-1")
+	checkpoint := IncrementalCheckpoint{Version: 4, FrontierJobKeys: []string{"old"}}
+	production, err := NewListingRun("run-recovery", "work-recovery", ListingRunProduction,
+		"source-1", 2, 3, &checkpoint, execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := production.WithRecoveryOfOccurrence("occurrence-1")
+	if err != nil || recovery.RecoveryOfOccurrenceID != "occurrence-1" || recovery.Version != production.Version {
+		t.Fatalf("recovery run = %+v err=%v", recovery, err)
+	}
+	if _, err := recovery.WithRecoveryOfOccurrence("occurrence-2"); err == nil {
+		t.Fatal("recovery run was rebound to another occurrence")
+	}
+	diagnostic, _ := NewListingRun("run-diagnostic", "work-diagnostic", ListingRunDiagnostic,
+		"source-1", 2, 3, &checkpoint, execution)
+	if _, err := diagnostic.WithRecoveryOfOccurrence("occurrence-1"); err == nil {
+		t.Fatal("diagnostic run accepted a daily recovery link")
+	}
+}

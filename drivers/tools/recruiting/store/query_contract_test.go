@@ -111,7 +111,8 @@ ORDER BY schedule_date, daily_run_id LIMIT 2`, "2091-09-07", "2091-09-07", "curs
 		t.Fatalf("daily run seek query did not use intended index: %s", explain)
 	}
 	run, progress, err := repository.GetDailyRunProgress(ctx, "query-daily-2091-09-08")
-	if err != nil || run.ExpectedSources != 1 || progress.Materialized != 1 || progress.Planned != 1 || progress.Missing != 0 {
+	if err != nil || run.ExpectedSources != 1 || progress.Materialized != 1 || progress.Planned != 1 || progress.Missing != 0 ||
+		progress.Uncovered != 1 || progress.Recovered != 0 {
 		t.Fatalf("daily progress run=%+v progress=%+v err=%v", run, progress, err)
 	}
 	occurrences, err := repository.ListOccurrences(ctx, run.DailyRunID, "", 1)

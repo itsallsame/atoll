@@ -287,6 +287,21 @@ func TestDailyRunDoesNotHideAcceptedGaps(t *testing.T) {
 	}
 }
 
+func TestDailyRunDoesNotCountExcludedSourceAsCoverageSuccess(t *testing.T) {
+	run, err := NewDailyRun("daily-excluded", "2026-09-07", 1, DailySchedule{
+		PolicyVersion: 3, CutoffAt: "2026-09-07T00:00:00Z",
+		WindowStartAt: "2026-09-07T00:00:00Z", WindowEndAt: "2026-09-07T06:00:00Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _ = run.Start(run.Version)
+	run, err = run.Close(run.Version, CoverageSummary{Excluded: 1})
+	if err != nil || run.Status != DailyRunCompletedWithExceptions {
+		t.Fatalf("excluded source was hidden as coverage success: %+v err=%v", run, err)
+	}
+}
+
 func TestDailyScheduleAndOccurrenceDueTimeAreNormalizedAndBounded(t *testing.T) {
 	run, err := NewDailyRun("daily-normalized", "2026-09-07", 1, DailySchedule{
 		PolicyVersion: 4, CutoffAt: "2026-09-07T08:00:00.123456789+08:00",

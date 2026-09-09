@@ -82,6 +82,177 @@ func TestProductionListingRunPublishesPagesAndAdvancesFrozenCheckpoint(t *testin
 	}
 }
 
+func TestProductionRecoveryAppendsCompensationWithoutRewritingClosedDailyRun(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	now := time.Date(2088, 7, 3, 0, 0, 0, 0, time.UTC)
+	company := persistExecutionReadyCompany(t, ctx, repository, "production-recovery", now)
+	source := persistExecutionReadySource(t, ctx, repository, company, "production-recovery", "production-recovery-source", now)
+	preparation, err := repository.PrepareListingRun(ctx, source.SourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := model.NewListingExecutionSnapshot(preparation.Source, preparation.Recipe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daily, _ := model.NewDailyRun("production-recovery-daily", "2088-07-03", 1, testDailySchedule("2088-07-03"))
+	if err := repository.CreateDailyRun(ctx, daily, now); err != nil {
+		t.Fatal(err)
+	}
+	runningDaily, _ := daily.Start(daily.Version)
+	if err := repository.StartDailyRunCAS(ctx, daily.Version, runningDaily, now); err != nil {
+		t.Fatal(err)
+	}
+	dueAt := now.Add(time.Hour)
+	original, err := model.NewSourceOccurrence("production-recovery-occurrence", daily.DailyRunID, source.SourceID,
+		daily.ScheduleDate, daily.SchedulePolicyVersion, preparation.Company.Version, preparation.Source.Version,
+		dueAt.Format(time.RFC3339Nano), execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.MaterializeOccurrences(ctx, []ScheduledOccurrence{{Occurrence: original, DueAt: dueAt}}, now); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := repository.CloseDailyRunAtWindow(ctx, daily.DailyRunID, now.Add(6*time.Hour), "production-recovery-close")
+	if err != nil || closed.Run.Status != model.DailyRunCompletedWithExceptions ||
+		closed.Run.Summary.ListingExceptions != 1 {
+		t.Fatalf("closed uncovered daily = %+v err=%v", closed, err)
+	}
+	original, _ = repository.GetOccurrence(ctx, original.OccurrenceID)
+	if original.Status != model.OccurrenceException {
+		t.Fatalf("original occurrence was not preserved as an exception: %+v", original)
+	}
+	_, before, err := repository.GetDailyRunProgress(ctx, daily.DailyRunID)
+	if err != nil || before.Uncovered != 1 || before.Recovered != 0 {
+		t.Fatalf("daily progress before recovery = %+v err=%v", before, err)
+	}
+
+	recoveryAt := now.Add(7 * time.Hour)
+	preparation, _ = repository.PrepareListingRun(ctx, source.SourceID)
+	recoveryRun, err := preparation.NewRecoveryRun("production-recovery-run", "production-recovery-work", original.OccurrenceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryWork, _ := model.NewWork(recoveryRun.WorkID, "source", source.SourceID, "listing_sync", "manual")
+	recoveryWork, _ = recoveryWork.WithCausality("human:production-recovery:1", "message-production-recovery", "")
+	placement := WorkPlacement{BusinessKey: "manual-listing|" + recoveryRun.ListingRunID, Priority: 200,
+		Capability: recoveryRun.ListingExecution.Execution.RequiredCapability,
+		Origin:     recoveryRun.ListingExecution.Origin, NotBefore: recoveryAt}
+	receipt, _ := model.NewCommandReceipt("create-production-recovery-run", "recruiting.run.production",
+		"sha256:create-production-recovery-run", json.RawMessage(`{"recovery":true}`))
+	event, _ := model.NewEventIntent("event-production-recovery-run", "work.created", "work", recoveryWork.WorkID,
+		recoveryWork.Version, recoveryAt.Format(time.RFC3339Nano), receipt.CommandID, json.RawMessage(`{}`))
+	created, err := repository.ApplyListingRunCommand(ctx, source.Version, recoveryRun, recoveryWork, placement,
+		receipt, event, nil, recoveryAt)
+	if err != nil || created.Replayed {
+		t.Fatalf("create recovery run = %+v err=%v", created, err)
+	}
+	if replay, err := repository.ApplyListingRunCommand(ctx, source.Version, recoveryRun, recoveryWork, placement,
+		receipt, event, nil, recoveryAt.Add(time.Second)); err != nil || !replay.Replayed {
+		t.Fatalf("recovery run create replay = %+v err=%v", replay, err)
+	}
+
+	// A fresh repository instance represents the Recruiting Actor restarting
+	// after the recovery intent committed but before any execution was offered.
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, _ = NewRepository(db)
+	offerAt := recoveryAt.Add(2 * time.Second)
+	offer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "production-recovery-attempt",
+		ExecutorActorID: "tool:production-recovery:1", ExecutorIncarnation: "production-recovery-boot",
+		Capability: placement.Capability, Origin: placement.Origin, OfferedAt: offerAt,
+		BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil || offer.ListingRun == nil || offer.ListingRun.RecoveryOfOccurrenceID != original.OccurrenceID {
+		t.Fatalf("recovery offer after actor restart = %+v err=%v", offer, err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+		offer.Attempt.ExecutorIncarnation, offerAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+		offer.Attempt.ExecutorIncarnation, offerAt); err != nil {
+		t.Fatal(err)
+	}
+	pageArtifact := mustResultArtifact(t, "production-recovery-page", model.ArtifactPage,
+		offer.Work.WorkID, offer.Attempt.AttemptID)
+	if _, err := repository.AcceptListingPage(ctx, ListingPageResult{CommandID: "production-recovery-page-command",
+		RequestHash: "sha256:production-recovery-page", AttemptID: offer.Attempt.AttemptID,
+		ExecutorActorID: offer.Attempt.ExecutorActorID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation,
+		PageSequence: 1, Terminal: true, Artifact: pageArtifact, ObservedAt: offerAt.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	candidate := *offer.Checkpoint
+	candidate.FrontierActivityAt = recoveryAt.Format(time.RFC3339)
+	completionArtifact := mustResultArtifact(t, "production-recovery-completion", model.ArtifactListingDelta,
+		offer.Work.WorkID, offer.Attempt.AttemptID)
+	completion := ListingCompletion{RequestHash: "sha256:production-recovery-completion",
+		AttemptID: offer.Attempt.AttemptID, ExecutorActorID: offer.Attempt.ExecutorActorID,
+		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Artifact: completionArtifact, ItemCount: 0,
+		CompletedAt: offerAt.Add(2 * time.Second), CauseCommandID: "production-recovery-completion-command",
+		Progress: model.ListingProgress{IdentityComplete: true, PaginationStable: true, PreviousFrontierReached: true,
+			OverlapCompleted: true, OrderingContractHeld: true, SameTimeGroupCompleted: true, Candidate: candidate}}
+	completed, err := repository.AcceptListingCompletion(ctx, completion)
+	if err != nil || completed.ListingRun == nil ||
+		completed.ListingRun.RecoveryOfOccurrenceID != original.OccurrenceID {
+		t.Fatalf("complete recovery = %+v err=%v", completed, err)
+	}
+	if replay, err := repository.AcceptListingCompletion(ctx, completion); err != nil || !replay.Replayed {
+		t.Fatalf("recovery completion replay = %+v err=%v", replay, err)
+	}
+
+	storedDaily, progress, err := repository.GetDailyRunProgress(ctx, daily.DailyRunID)
+	storedOriginal, occurrenceErr := repository.GetOccurrence(ctx, original.OccurrenceID)
+	if err != nil || occurrenceErr != nil || storedDaily != closed.Run || storedOriginal != original ||
+		progress.Uncovered != 1 || progress.Recovered != 1 || progress.Exceptions != 1 || progress.Completed != 0 {
+		t.Fatalf("compensated daily facts daily=%+v progress=%+v occurrence=%+v errors=%v/%v",
+			storedDaily, progress, storedOriginal, err, occurrenceErr)
+	}
+	var recoveryEvents int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_event_outbox
+WHERE event_kind = 'daily_occurrence.recovered' AND aggregate_id = ?`, recoveryRun.ListingRunID).Scan(&recoveryEvents); err != nil || recoveryEvents != 1 {
+		t.Fatalf("daily recovery events=%d err=%v", recoveryEvents, err)
+	}
+
+	preparation, _ = repository.PrepareListingRun(ctx, source.SourceID)
+	duplicateRun, _ := preparation.NewRecoveryRun("production-recovery-duplicate-run",
+		"production-recovery-duplicate-work", original.OccurrenceID)
+	duplicateWork, _ := model.NewWork(duplicateRun.WorkID, "source", source.SourceID, "listing_sync", "manual")
+	duplicateWork, _ = duplicateWork.WithCausality("human:production-recovery:2", "message-production-recovery-duplicate", "")
+	duplicateAt := offerAt.Add(3 * time.Second)
+	duplicatePlacement := WorkPlacement{BusinessKey: "manual-listing|" + duplicateRun.ListingRunID, Priority: 200,
+		Capability: duplicateRun.ListingExecution.Execution.RequiredCapability,
+		Origin:     duplicateRun.ListingExecution.Origin, NotBefore: duplicateAt}
+	duplicateReceipt, _ := model.NewCommandReceipt("create-production-recovery-duplicate",
+		"recruiting.run.production", "sha256:create-production-recovery-duplicate", json.RawMessage(`{}`))
+	duplicateEvent, _ := model.NewEventIntent("event-production-recovery-duplicate", "work.created", "work",
+		duplicateWork.WorkID, duplicateWork.Version, duplicateAt.Format(time.RFC3339Nano),
+		duplicateReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyListingRunCommand(ctx, source.Version, duplicateRun, duplicateWork,
+		duplicatePlacement, duplicateReceipt, duplicateEvent, nil, duplicateAt); !errors.Is(err, ErrBusinessKeyExists) {
+		t.Fatalf("second recovery lineage was accepted: %v", err)
+	}
+	if _, err := repository.GetWork(ctx, duplicateWork.WorkID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("rejected duplicate recovery left a Work: %v", err)
+	}
+}
+
 func TestProductionListingRunLosesCheckpointCASWithoutCompleting(t *testing.T) {
 	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
 	if dsn == "" {

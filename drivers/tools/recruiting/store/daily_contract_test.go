@@ -183,7 +183,7 @@ WHERE cause_id = 'timer:daily-work' AND target_actor_id = 'tool:http-executor-a'
 		t.Fatal(err)
 	}
 	stored, err := repository.GetDailyRun(ctx, run.DailyRunID)
-	if err != nil || stored.Status != model.DailyRunCompleted || stored.Summary != summary {
+	if err != nil || stored.Status != model.DailyRunCompletedWithExceptions || stored.Summary != summary {
 		t.Fatalf("closed daily run = %+v err=%v", stored, err)
 	}
 	if err := repository.CloseDailyRunCAS(ctx, running.Version, closed, now.Add(6*time.Hour)); err == nil {

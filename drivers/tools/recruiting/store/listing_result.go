@@ -579,6 +579,22 @@ WHERE source_id = ? AND checkpoint_version = ?`, committedCheckpoint.Version, co
 	if err := appendEventIntent(ctx, tx, event, input.CompletedAt, input.CompletedAt); err != nil {
 		return ListingCompletionOutcome{}, nil, err
 	}
+	if outcome.ListingRun != nil && outcome.ListingRun.RecoveryOfOccurrenceID != "" {
+		recoveryPayload, _ := json.Marshal(map[string]any{
+			"occurrence_id":  outcome.ListingRun.RecoveryOfOccurrenceID,
+			"listing_run_id": outcome.ListingRun.ListingRunID,
+			"work_id":        completedWork.WorkID, "checkpoint_version": committedCheckpoint.Version,
+		})
+		recoveryEvent, err := model.NewEventIntent("daily-occurrence-recovered-"+outcome.ListingRun.ListingRunID,
+			"daily_occurrence.recovered", "listing_run", outcome.ListingRun.ListingRunID,
+			outcome.ListingRun.Version, input.CompletedAt.UTC().Format(time.RFC3339Nano), input.CauseCommandID, recoveryPayload)
+		if err != nil {
+			return ListingCompletionOutcome{}, nil, err
+		}
+		if err := appendEventIntent(ctx, tx, recoveryEvent, input.CompletedAt, input.CompletedAt); err != nil {
+			return ListingCompletionOutcome{}, nil, err
+		}
+	}
 	if err := appendAttemptDispatch(ctx, tx, succeededAttempt.AttemptID, succeededAttempt.ExecutorActorID, succeededAttempt.Capability, "",
 		"capacity_released", input.CauseCommandID, input.CompletedAt, input.CompletedAt); err != nil {
 		return ListingCompletionOutcome{}, nil, err
