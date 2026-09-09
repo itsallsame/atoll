@@ -163,12 +163,19 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	if got := nestedNumberField(t, updatedSource, "source", "version"); got != 2 {
 		t.Fatalf("updated source version=%v: %v", got, updatedSource)
 	}
+	seedPublishedRecruitingRecipe(t, runtimeDSN, "e2e-source-validation-recipe", "jobs.example.com", time.Now().UTC())
 	validatingSource := recovered.request(homeID, "recruiting.source.validate", controlID, map[string]any{
 		"command_id": "e2e-source-validate", "target": map[string]any{"target_type": "source", "target_id": "e2e-source-a"},
 		"expected_version": 2, "reason": "validate corrected endpoint",
+		"recipe_id": "e2e-source-validation-recipe", "recipe_version": 1, "expected_assignment_version": 0,
+		"run_id": "e2e-source-validation-run", "work_id": "e2e-source-validation-work",
 	})
 	if got := nestedStringField(t, validatingSource, "source", "readiness_status"); got != "validating" {
 		t.Fatalf("validating source status=%q: %v", got, validatingSource)
+	}
+	if nestedStringField(t, validatingSource, "validation_run", "listing_run_id") != "e2e-source-validation-run" ||
+		nestedStringField(t, validatingSource, "validation_work", "work_id") != "e2e-source-validation-work" {
+		t.Fatalf("source validation omitted its durable run/work: %v", validatingSource)
 	}
 	pausedSource := recovered.request(homeID, "recruiting.source.pause", controlID, map[string]any{
 		"command_id": "e2e-source-pause", "target": map[string]any{"target_type": "source", "target_id": "e2e-source-a"},
@@ -312,12 +319,13 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 		"due_at": "2099-01-01T00:00:00Z", "capability": "http.fetch", "limit": 10,
 	})
 	works, _ := runnable["works"].([]any)
-	if len(works) != 1 {
-		t.Fatalf("runnable retry work missing: %v", runnable)
+	var foundRetry bool
+	for _, raw := range works {
+		work, _ := raw.(map[string]any)
+		foundRetry = foundRetry || stringField(t, work, "work_id") == "e2e-work-repair-retry"
 	}
-	runnableWork, _ := works[0].(map[string]any)
-	if got := stringField(t, runnableWork, "work_id"); got != "e2e-work-repair-retry" {
-		t.Fatalf("runnable work=%q: %v", got, runnable)
+	if !foundRetry {
+		t.Fatalf("runnable retry work missing: %v", runnable)
 	}
 	operational := recovered.request(homeID, "recruiting.work.list", controlID, map[string]any{
 		"view": "operational", "status": "open", "purpose": "repair",
@@ -587,6 +595,36 @@ frontier_keys_json, last_occurrence_id, state_json, updated_at) VALUES (?, ?, ?,
 		now.Add(-time.Hour), checkpoint.LastOccurrenceID, checkpointState, now); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func seedPublishedRecruitingRecipe(t *testing.T, dsn, recipeID, origin string, now time.Time) model.Recipe {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repository, _ := store.NewRepository(db)
+	execution := model.RecipeExecution{ABIVersion: model.RecipeABIVersion, ContentRef: "recipe://" + recipeID,
+		RequiredCapability: "http.fetch", Transport: model.RecipeTransportHTTPJSON}
+	recipe, err := model.NewRecipe(recipeID, model.RecipeListing, origin, 1,
+		"sha256:"+recipeID+"-content", "sha256:"+recipeID+"-contract", execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipe, err = recipe.BeginValidation(recipe.StateVersion)
+	if err == nil {
+		recipe, err = recipe.Publish(recipe.StateVersion)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := repository.CreateRecipe(ctx, recipe, now); err != nil {
+		t.Fatal(err)
+	}
+	return recipe
 }
 
 func startRecruitingMySQL(t *testing.T) string {
