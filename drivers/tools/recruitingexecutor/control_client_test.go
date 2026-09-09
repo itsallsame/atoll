@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -115,7 +116,7 @@ func TestMessageExecutionControlCarriesFailureEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	request, ok := caller.payload.(executioncontract.TransitionRequest)
-	if !ok || request.Reason != report.Class || request.Failure == nil || *request.Failure != report {
+	if !ok || request.Reason != report.Class || request.Failure == nil || !reflect.DeepEqual(*request.Failure, report) {
 		t.Fatalf("failed transition payload = %#v", caller.payload)
 	}
 }

@@ -217,7 +217,9 @@ func TestExecutionTransitionCommandsReplayAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	failureArtifact := mustResultArtifact(t, "execution-command-failure", model.ArtifactFailure, offer.Work.WorkID, offer.Attempt.AttemptID)
-	report := executioncontract.FailureReport{Class: "transport_timeout", Retryable: true, Artifact: failureArtifact}
+	responseArtifact := mustResultArtifact(t, "execution-command-response", model.ArtifactResponse, offer.Work.WorkID, offer.Attempt.AttemptID)
+	report := executioncontract.FailureReport{Class: "transport_timeout", Retryable: true, Artifact: failureArtifact,
+		Artifacts: []model.ArtifactMetadata{responseArtifact, failureArtifact}}
 	command = ExecutionTransitionCommand{CommandID: "execution-command-fail", Word: executioncontract.TypeFailed,
 		RequestHash: "sha256:fail", CorrelationID: "correlation-fail", RequestedBy: offer.Attempt.ExecutorActorID,
 		AttemptID: offer.Attempt.AttemptID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Action: "fail",
@@ -229,7 +231,8 @@ func TestExecutionTransitionCommandsReplayAtomically(t *testing.T) {
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id LIKE 'execution-command-%'").Scan(&receipts); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_artifacts WHERE artifact_id = ?", failureArtifact.ArtifactID).Scan(&artifacts); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_artifacts WHERE artifact_id IN (?, ?)",
+		responseArtifact.ArtifactID, failureArtifact.ArtifactID).Scan(&artifacts); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = ? AND event_kind = 'work.retry_scheduled'",
@@ -242,7 +245,7 @@ func TestExecutionTransitionCommandsReplayAtomically(t *testing.T) {
 	}
 	storedAttempt, _ := repository.GetAttempt(ctx, offer.Attempt.AttemptID)
 	work, _ := repository.GetWork(ctx, offer.Work.WorkID)
-	if receipts != 3 || artifacts != 1 || events != 1 || dispatches != 2 || storedAttempt.Status != model.AttemptFailed || work.Status != model.WorkWaitingRetry {
+	if receipts != 3 || artifacts != 2 || events != 1 || dispatches != 2 || storedAttempt.Status != model.AttemptFailed || work.Status != model.WorkWaitingRetry {
 		t.Fatalf("execution command facts receipts=%d artifacts=%d events=%d dispatches=%d attempt=%s work=%s",
 			receipts, artifacts, events, dispatches, storedAttempt.Status, work.Status)
 	}

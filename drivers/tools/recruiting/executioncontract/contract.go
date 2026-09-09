@@ -98,10 +98,11 @@ type TransitionRequest struct {
 // that closes execution authority. It remains an application contract; Atoll
 // transports it without interpreting recruiting failure classes.
 type FailureReport struct {
-	Class       string                 `json:"class"`
-	Retryable   bool                   `json:"retryable"`
-	NeedsRepair bool                   `json:"needs_repair"`
-	Artifact    model.ArtifactMetadata `json:"artifact"`
+	Class       string                   `json:"class"`
+	Retryable   bool                     `json:"retryable"`
+	NeedsRepair bool                     `json:"needs_repair"`
+	Artifact    model.ArtifactMetadata   `json:"artifact"`
+	Artifacts   []model.ArtifactMetadata `json:"artifacts,omitempty"`
 }
 
 func (f FailureReport) Validate(attemptID string) error {
@@ -125,7 +126,34 @@ func (f FailureReport) Validate(attemptID string) error {
 	if err != nil || validated != f.Artifact || f.Artifact.Kind != model.ArtifactFailure || f.Artifact.AttemptID != strings.TrimSpace(attemptID) {
 		return fmt.Errorf("execution failure requires normalized failure Artifact metadata bound to its Attempt")
 	}
+	seen, primary := map[string]struct{}{}, false
+	for _, artifact := range f.EvidenceArtifacts() {
+		validated, err := model.NewArtifactMetadata(artifact.ArtifactID, artifact.Kind, artifact.ContentHash, artifact.ObjectRef,
+			artifact.WorkID, artifact.AttemptID, artifact.AccessScope, artifact.Retention, artifact.Redacted)
+		if err != nil || validated != artifact || artifact.AttemptID != f.Artifact.AttemptID || artifact.WorkID != f.Artifact.WorkID {
+			return fmt.Errorf("execution failure supporting Artifacts must be normalized and bound to the same Work and Attempt")
+		}
+		if _, duplicate := seen[artifact.ArtifactID]; duplicate {
+			return fmt.Errorf("execution failure supporting Artifact IDs must be unique")
+		}
+		seen[artifact.ArtifactID] = struct{}{}
+		if artifact == f.Artifact {
+			primary = true
+		}
+	}
+	if !primary {
+		return fmt.Errorf("execution failure supporting Artifacts must contain the primary failure Artifact")
+	}
 	return nil
+}
+
+// EvidenceArtifacts preserves compatibility with reports created before the
+// supporting evidence list was added while giving stores one normalized view.
+func (f FailureReport) EvidenceArtifacts() []model.ArtifactMetadata {
+	if len(f.Artifacts) == 0 {
+		return []model.ArtifactMetadata{f.Artifact}
+	}
+	return append([]model.ArtifactMetadata(nil), f.Artifacts...)
 }
 
 // Offer is the immutable input accepted by one executor. Kind selects the

@@ -387,6 +387,7 @@ type ArtifactRef struct {
 	ArtifactID  string `json:"artifact_id"`
 	ContentHash string `json:"content_hash"`
 	ObjectRef   string `json:"object_ref"`
+	Kind        string `json:"kind,omitempty"`
 }
 
 type QualityProof struct {
@@ -446,6 +447,13 @@ func (artifact ArtifactRef) Validate() error {
 	if blank(artifact.ArtifactID, artifact.ContentHash, artifact.ObjectRef) || !strings.HasPrefix(artifact.ContentHash, "sha256:") {
 		return fmt.Errorf("artifact requires identity, sha256 hash, and object reference")
 	}
+	if artifact.Kind != "" {
+		switch artifact.Kind {
+		case "page", "response", "failure", "listing_delta", "trace":
+		default:
+			return fmt.Errorf("artifact kind %q is not supported by the Recipe ABI", artifact.Kind)
+		}
+	}
 	return nil
 }
 
@@ -455,6 +463,9 @@ func (failure Failure) Validate() error {
 		"upstream_5xx", "unexpected_status", "auth_expired", "captcha", "parse_error", "quality_rejected", "contract_violated", "budget_revoked":
 	default:
 		return fmt.Errorf("unsupported failure class %q", failure.Class)
+	}
+	if failure.Artifact.Kind != "" && failure.Artifact.Kind != "failure" {
+		return fmt.Errorf("failure evidence Artifact must have failure kind")
 	}
 	return failure.Artifact.Validate()
 }

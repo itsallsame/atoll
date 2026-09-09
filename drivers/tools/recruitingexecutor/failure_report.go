@@ -27,12 +27,27 @@ func prepareFailureReport(offer executioncontract.Offer, output recipeabi.RunOut
 	if !found {
 		return executioncontract.FailureReport{}, errors.New("failure evidence is not present in run artifacts")
 	}
-	metadata, err := sink.metadata(output.Failure.Artifact, model.ArtifactFailure)
-	if err != nil {
-		return executioncontract.FailureReport{}, err
+	artifacts := make([]model.ArtifactMetadata, 0, len(output.Artifacts))
+	var metadata model.ArtifactMetadata
+	for _, reference := range output.Artifacts {
+		kind := model.ArtifactKind(reference.Kind)
+		if reference == output.Failure.Artifact {
+			kind = model.ArtifactFailure
+		}
+		if kind == "" {
+			return executioncontract.FailureReport{}, errors.New("supporting failure Artifact kind is required")
+		}
+		converted, err := sink.metadata(reference, kind)
+		if err != nil {
+			return executioncontract.FailureReport{}, err
+		}
+		artifacts = append(artifacts, converted)
+		if reference == output.Failure.Artifact {
+			metadata = converted
+		}
 	}
 	report := executioncontract.FailureReport{Class: output.Failure.Class, Retryable: output.Failure.Retryable,
-		NeedsRepair: output.Failure.NeedsRepair, Artifact: metadata}
+		NeedsRepair: output.Failure.NeedsRepair, Artifact: metadata, Artifacts: artifacts}
 	if err := report.Validate(offer.Attempt.AttemptID); err != nil {
 		return executioncontract.FailureReport{}, err
 	}

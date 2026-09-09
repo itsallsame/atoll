@@ -101,7 +101,8 @@ func (s *atollArtifactSink) Put(ctx context.Context, write httpdriver.ArtifactWr
 	if err != nil {
 		return recipeabi.ArtifactRef{}, err
 	}
-	return recipeabi.ArtifactRef{ArtifactID: metadata.ArtifactID, ContentHash: metadata.ContentHash, ObjectRef: metadata.ObjectRef}, nil
+	return recipeabi.ArtifactRef{ArtifactID: metadata.ArtifactID, ContentHash: metadata.ContentHash,
+		ObjectRef: metadata.ObjectRef, Kind: string(metadata.Kind)}, nil
 }
 
 func artifactKind(value string) (model.ArtifactKind, error) {

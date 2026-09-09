@@ -306,6 +306,15 @@ func (r *Repository) saveRejectedArtifact(ctx context.Context, artifact model.Ar
 	return err
 }
 
+func (r *Repository) saveRejectedArtifacts(ctx context.Context, artifacts []model.ArtifactMetadata, at time.Time) error {
+	for _, artifact := range artifacts {
+		if err := r.saveRejectedArtifact(ctx, artifact, at); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func mergeDetailEvidence(detail, version json.RawMessage) json.RawMessage {
 	return json.RawMessage(fmt.Sprintf(`{"detail":%s,"version":%s}`, detail, version))
 }

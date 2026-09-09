@@ -866,7 +866,7 @@ func (r *Repository) ApplyExecutionTransitionCommand(ctx context.Context, comman
 	}
 	if command.Action == "fail" && command.Failure != nil &&
 		(errors.Is(err, ErrAttemptConflict) || errors.Is(err, ErrResultFenced)) {
-		if artifactErr := r.saveRejectedArtifact(ctx, command.Failure.Artifact, businessAt); artifactErr != nil {
+		if artifactErr := r.saveRejectedArtifacts(ctx, command.Failure.EvidenceArtifacts(), businessAt); artifactErr != nil {
 			return CommandResult{}, fmt.Errorf("%w; also failed to retain rejected failure artifact: %v", err, artifactErr)
 		}
 		return CommandResult{}, fmt.Errorf("%w: late execution failure was fenced", ErrResultFenced)
@@ -1049,7 +1049,11 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			err = releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitReleased, businessAt)
 		}
 		if err == nil && report != nil {
-			err = insertArtifact(ctx, tx, report.Artifact, false, businessAt)
+			for _, artifact := range report.EvidenceArtifacts() {
+				if err = insertArtifact(ctx, tx, artifact, false, businessAt); err != nil {
+					break
+				}
+			}
 		}
 	default:
 		err = fmt.Errorf("unknown execution transition %q", action)

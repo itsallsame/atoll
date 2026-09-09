@@ -46,4 +46,8 @@ func TestFailureReportBindsClassificationAndArtifactToAttempt(t *testing.T) {
 	if err := report.Validate("attempt-2"); err == nil {
 		t.Fatal("failure Artifact was accepted for another Attempt")
 	}
+	report.Artifacts = []model.ArtifactMetadata{artifact, artifact}
+	if err := report.Validate("attempt-1"); err == nil {
+		t.Fatal("duplicate supporting failure Artifact was accepted")
+	}
 }
