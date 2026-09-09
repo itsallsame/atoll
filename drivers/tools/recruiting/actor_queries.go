@@ -51,6 +51,17 @@ type dailyRunSummaryPayload struct {
 	PageRequest
 }
 
+type repairGetPayload struct {
+	ID             string `json:"id"`
+	AffectedCursor string `json:"affected_cursor,omitempty"`
+	AffectedLimit  int    `json:"affected_limit,omitempty"`
+}
+
+type repairListPayload struct {
+	Status model.RepairStatus `json:"status,omitempty"`
+	PageRequest
+}
+
 type operationalStatusPayload struct {
 	Limit int `json:"limit,omitempty"`
 }
@@ -82,6 +93,14 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 	}
 	if msg.Type == TypeDailyRunSummary {
 		handleDailyRunSummaryQuery(sys, repository, msg)
+		return
+	}
+	if msg.Type == TypeRepairGet {
+		handleRepairGetQuery(sys, repository, msg)
+		return
+	}
+	if msg.Type == TypeRepairList {
+		handleRepairListQuery(sys, repository, msg)
 		return
 	}
 	if msg.Type == TypeSystemStatus || msg.Type == TypeCapacityStatus {
@@ -122,6 +141,70 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		return
 	}
 	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "entity": value})
+}
+
+func handleRepairListQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload repairListPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if err := payload.PageRequest.Validate(500); err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	switch payload.Status {
+	case "", model.RepairOpen, model.RepairValidating, model.RepairResolved:
+	default:
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, fmt.Sprintf("unknown repair status %q", payload.Status))
+		return
+	}
+	if payload.Limit == 0 {
+		payload.Limit = 50
+	}
+	page, err := repository.ListRepairIncidents(msg.Ctx(), payload.Status, payload.Cursor, payload.Limit)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "repairs": page.Items,
+		"page": PageInfo{NextCursor: page.NextCursor, HasMore: page.HasMore}})
+}
+
+func handleRepairGetQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload repairGetPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.ID = strings.TrimSpace(payload.ID)
+	if payload.ID == "" || payload.AffectedLimit < 0 || payload.AffectedLimit > 500 {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "id is required and affected_limit must be in [0,500]")
+		return
+	}
+	if payload.AffectedLimit == 0 {
+		payload.AffectedLimit = 50
+	}
+	incident, err := repository.GetRepairIncident(msg.Ctx(), payload.ID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	var repairWork any
+	if incident.Incident.RepairWorkID != "" {
+		value, err := repository.GetWorkRecord(msg.Ctx(), incident.Incident.RepairWorkID)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+		repairWork = value
+	}
+	affected, err := repository.ListRepairAffectedWorks(msg.Ctx(), payload.ID, payload.AffectedCursor, payload.AffectedLimit)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "repair": incident,
+		"repair_work": repairWork, "affected_works": affected.Items,
+		"affected_page": PageInfo{NextCursor: affected.NextCursor, HasMore: affected.HasMore}})
 }
 
 func handleSourceDiscoveryCandidateListQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

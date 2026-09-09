@@ -123,6 +123,29 @@ func TestRecruitingLiveDetailRecipeRepairThroughAtoll(t *testing.T) {
 	if failed.Status != model.WorkWaitingHuman || failed.Resolution != "" || failedAttemptStatus != string(model.AttemptFailed) {
 		t.Fatalf("real bad Recipe did not wait for human: work=%+v attempt=%s", failed, failedAttemptStatus)
 	}
+	if failed.BlockedByRepairWorkID == "" {
+		t.Fatalf("real bad Recipe did not join a shared repair: work=%+v", failed)
+	}
+	repairList := ws.request(homeID, "recruiting.repair.list", controlID, map[string]any{"status": "open", "limit": 10})
+	repairItems, _ := repairList["repairs"].([]any)
+	var repairIncidentID string
+	for _, item := range repairItems {
+		summary, _ := item.(map[string]any)
+		incident, _ := summary["incident"].(map[string]any)
+		if incident["repair_work_id"] == failed.BlockedByRepairWorkID {
+			repairIncidentID, _ = incident["incident_id"].(string)
+			break
+		}
+	}
+	if repairIncidentID == "" {
+		t.Fatalf("real failure repair is not operator-visible: work=%+v repairs=%v", failed, repairList)
+	}
+	repairDetail := ws.request(homeID, "recruiting.repair.get", controlID, map[string]any{"id": repairIncidentID, "affected_limit": 10})
+	visibleAffected, _ := repairDetail["affected_works"].([]any)
+	if numberField(t, repairDetail["repair"].(map[string]any), "affected_count") != 1 || len(visibleAffected) != 1 ||
+		nestedStringField(t, visibleAffected[0].(map[string]any), "work", "work_id") != failed.WorkID {
+		t.Fatalf("real failure repair detail lost its affected Work: %v", repairDetail)
+	}
 	failedAttemptID, failedArtifacts := liveDetailAttemptEvidence(t, runtimeDSN, failed.WorkID, "failed")
 	assertLiveDetailArtifacts(t, daemonHome, deviceID, qualifiedChannel, failedAttemptID, failedArtifacts)
 

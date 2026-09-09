@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -174,6 +175,35 @@ updated_at = VALUES(updated_at)`,
 		if err != nil || stored.BlockedByRepairWorkID != repairWorkID || stored.Status != model.WorkWaitingHuman {
 			t.Fatalf("affected sample %d = %+v err=%v repair=%s", sample, stored, err, repairWorkID)
 		}
+	}
+
+	var incidentID string
+	if err := db.QueryRowContext(ctx, "SELECT incident_id FROM recruiting_repair_incidents WHERE repair_work_id = ?", repairWorkID).Scan(&incidentID); err != nil {
+		t.Fatal(err)
+	}
+	overview, err := repository.GetRepairIncident(ctx, incidentID)
+	if err != nil || overview.Incident.RepairWorkID != repairWorkID || overview.AffectedCount != total ||
+		overview.WaitingHumanCount != total || len(overview.Incident.AffectedWorkIDs) != 0 {
+		t.Fatalf("repair overview = %+v err=%v", overview, err)
+	}
+	firstAffected, err := repository.ListRepairAffectedWorks(ctx, incidentID, "", 400)
+	if err != nil || len(firstAffected.Items) != 400 || !firstAffected.HasMore || firstAffected.NextCursor == "" {
+		t.Fatalf("first affected page items=%d more=%v cursor=%q err=%v", len(firstAffected.Items), firstAffected.HasMore, firstAffected.NextCursor, err)
+	}
+	secondAffected, err := repository.ListRepairAffectedWorks(ctx, incidentID, firstAffected.NextCursor, 500)
+	if err != nil || len(secondAffected.Items) != 500 || !secondAffected.HasMore {
+		t.Fatalf("second affected page items=%d more=%v err=%v", len(secondAffected.Items), secondAffected.HasMore, err)
+	}
+	thirdAffected, err := repository.ListRepairAffectedWorks(ctx, incidentID, secondAffected.NextCursor, 500)
+	if err != nil || len(thirdAffected.Items) != 100 || thirdAffected.HasMore || thirdAffected.NextCursor != "" {
+		t.Fatalf("third affected page items=%d more=%v cursor=%q err=%v", len(thirdAffected.Items), thirdAffected.HasMore, thirdAffected.NextCursor, err)
+	}
+	listed, err := repository.ListRepairIncidents(ctx, model.RepairOpen, "", 1)
+	if err != nil || len(listed.Items) != 1 || listed.Items[0].Incident.IncidentID != incidentID || listed.Items[0].AffectedCount != total {
+		t.Fatalf("repair list = %+v err=%v", listed, err)
+	}
+	if _, err := repository.ListRepairAffectedWorks(ctx, "another-incident", firstAffected.NextCursor, 10); !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("cross-incident cursor err=%v", err)
 	}
 
 	first := fixtures[0]

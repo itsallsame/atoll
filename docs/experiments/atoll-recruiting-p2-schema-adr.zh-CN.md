@@ -70,6 +70,8 @@ migration 22 让失败 Work 以 `blocked_by_repair_work_id` 自引用同一张 W
 
 受影响成员的权威集合是 `recruiting_repair_affected_works`，Incident JSON 只保留首次种子，不随 1,000/10,000 个失败 Work 膨胀或反复重写热点行。首个转入 `waiting_human` 的失败事务原子创建 Incident、Repair Work、成员关联、Work 阻塞指针和一条 `repair.opened` 聚合事件；后续失败只增加幂等成员关联，瞬态退避不创建人工修复。Incident→Repair Work 不建立反向外键，以避免单飞头和自引用 Work 的循环插入顺序；Repository 对确定性身份做内容校验，Work→Repair Work 的阻塞关系仍由数据库外键保证。单 Recruiting Actor 的 Repository 对相同 repair key 使用有界哈希锁消除本进程热点死锁，多进程竞争继续由数据库唯一键和 context 有界的 1213/1205 事务重试收敛。
 
+migration 23 为 RepairIncident 的无状态筛选增加 `(updated_at, incident_id)` 索引；已有 `(repair_status, updated_at, incident_id)` 索引服务按状态筛选。公开的 `recruiting.repair.list/get` 只返回有界投影：Incident JSON 中的种子 `affected_work_ids` 不作为成员清单输出，成员总数和待人工数由规范化关系计算，具体 Work 按 `incident_id + work_id` seek 分页。Repair Work 也通过 Actor 查询投影返回，运营端不直连数据库。列表游标绑定 repair status，成员游标绑定 incident ID，不能跨筛选条件复用。
+
 ### 首次基线
 
 `baseline_generations` 保存 generation 状态和 fencing version；`baseline_staging` 按 `(source_id, generation, source_job_key)` 分块幂等写入，并为每行标记产生它的 `attempt_id`。失败 Attempt 的行不删除，可用于诊断；新 Attempt 必须从第 1 页重扫，同键行会改绑到新 Attempt，旧 Attempt 独有键保持隔离。finalize 只统计当前成功 Attempt 的行，并把该 `listing_attempt_id` 冻结到 generation；后续物化也只读取这个 Attempt 的 staging，因此旧页无法混入基线。游标失效可从头重扫。finalize 锁定 generation、核对当前 Attempt 的实际 staging 数、改变 generation 可见性并建立首个 Checkpoint，不搬运一万行数据；详情 Job/Work 复用上述页提交协议按主键 seek 渐进物化，避免单个超大事务。旧 Attempt staging 的有界保留/清理服从 Artifact 与运行证据保留策略，不进入成功事实热路径。

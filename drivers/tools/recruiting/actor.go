@@ -185,7 +185,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleExecutionControlMessage(sys, cfg, repository, msg)
 		case TypeSourceGet, TypeSourceList, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
 			TypeJobGet, TypeJobList, TypeWorkGet, TypeWorkList,
-			TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary, TypeSystemStatus, TypeCapacityStatus:
+			TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary, TypeRepairGet, TypeRepairList,
+			TypeSystemStatus, TypeCapacityStatus:
 			handleResourceQuery(sys, cfg, repository, msg)
 		case TypeSystemReconcile:
 			handleOutboxReconcile(sys, cfg, repository, msg)

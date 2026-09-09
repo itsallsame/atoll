@@ -80,6 +80,8 @@ const (
 	TypeDailyRunGet     = "recruiting.daily_run.get"
 	TypeDailyRunList    = "recruiting.daily_run.list"
 	TypeDailyRunSummary = "recruiting.daily_run.summary"
+	TypeRepairGet       = "recruiting.repair.get"
+	TypeRepairList      = "recruiting.repair.list"
 	TypeJobsSearch      = "recruiting.jobs.search"
 	TypeSystemStatus    = "recruiting.system.status"
 	TypeSystemReconcile = "recruiting.system.reconcile"

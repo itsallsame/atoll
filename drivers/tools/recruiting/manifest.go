@@ -69,6 +69,8 @@ func manifest() introspect.Manifest {
 			TypeDailyRunGet:                    {Description: "get one immutable daily coverage run"},
 			TypeDailyRunList:                   {Description: "seek-page immutable daily coverage runs"},
 			TypeDailyRunSummary:                {Description: "inspect live coverage counts and seek-page source occurrences"},
+			TypeRepairGet:                      {Description: "inspect one shared repair incident and seek-page its affected operational work"},
+			TypeRepairList:                     {Description: "seek-page shared repair incidents by lifecycle status"},
 			TypeSystemStatus:                   {Description: "inspect a coherent operational snapshot of work, attempts, daily runs, repairs, and delivery backlogs"},
 			TypeCapacityStatus:                 {Description: "inspect runnable queue pressure, active budget usage, configured limits, and executor fleet capacity"},
 			TypeSystemReconcile:                {Description: "deliver one bounded batch of recruiting outbox events to the Atoll ledger"},
