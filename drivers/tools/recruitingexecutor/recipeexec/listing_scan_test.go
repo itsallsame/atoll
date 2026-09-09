@@ -3,7 +3,9 @@ package recipeexec
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
@@ -149,5 +151,41 @@ func TestListingScanReleasesStreamedBodiesButRetainsDedupeProof(t *testing.T) {
 	}
 	if scan.Quality().PaginationStable {
 		t.Fatal("changed duplicate was not detected after its body was released")
+	}
+}
+
+func TestBaselineScanStreamsTenThousandItemsWithOnePageBuffered(t *testing.T) {
+	spec := scanSpec()
+	spec.Listing.MaxPages = 20
+	spec.Listing.MaxItemsPerPage = 500
+	scan, err := NewListingScan(spec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	maxBuffered := 0
+	for page := range 20 {
+		rows := make([]map[string]json.RawMessage, 500)
+		for item := range rows {
+			ordinal := page*500 + item
+			rows[item] = scanItem("job-"+strconv.Itoa(ordinal), latest.Add(-time.Duration(ordinal)*time.Second).Format(time.RFC3339),
+				"title-"+strconv.Itoa(ordinal))
+		}
+		next := ""
+		if page < 19 {
+			next = "page-" + strconv.Itoa(page+2)
+		}
+		if err := scan.AddPage(scanPage(next, rows...)); err != nil {
+			t.Fatalf("page %d: %v", page+1, err)
+		}
+		if buffered := scan.BufferedItemCount(); buffered > maxBuffered {
+			maxBuffered = buffered
+		}
+		scan.DiscardBufferedItems()
+	}
+	if !scan.Complete() || !scan.Quality().MayAdvanceCheckpoint() || scan.ItemCount() != 10_000 ||
+		maxBuffered != 500 || scan.BufferedItemCount() != 0 {
+		t.Fatalf("10K streaming scan complete=%v quality=%+v total=%d max_buffered=%d remaining=%d",
+			scan.Complete(), scan.Quality(), scan.ItemCount(), maxBuffered, scan.BufferedItemCount())
 	}
 }
