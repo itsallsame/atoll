@@ -14,7 +14,7 @@
 - `recruiting.baseline.start` 已建立首个可执行列表基线：命令把 Company `discovering_sources → initializing`、不可变 BaselineGeneration、Work、receipt、两类事件和 capability dispatch 原子提交。Baseline 冻结 Company/Source/Assignment/Recipe/Endpoint 版本，以及从已验证 Source 契约复制的 Checkpoint strategy/overlap。
 - 统一 Executor 已能领取 baseline listing，沿用同一个 HTTP/Browser Recipe 执行面；每页最多 500 条，只写 generation staging。terminal completion 重新核对 Attempt fence、完整分页/排序/边界证明和 staging 数量，然后原子建立首个 Checkpoint并完成 Baseline listing、Attempt 与 Work；命令与结果均可稳定重放。
 - finalized staging 已由 Recruiting Actor 的既有有界 reconcile 渐进物化为 Job 和幂等 Detail Work，不增加专用 Worker 类型。BaselineGeneration 保存版本化 `materialization_cursor`、已处理数和完成标记；每批最多 500 条，岗位事实、详情 Work、游标 CAS 和按 capability 聚合的 Executor 唤醒在同一短事务提交。并发协调循环只能有一个推进版本；缺少有效 Detail Recipe 的基线保留等待修复，但不会阻塞其他 Company。
-- 每个 baseline Detail Work 在物化事务中写入独立成员账本；详情成功事务同时接受 JobDetailVersion、完成 Work/Attempt、释放 Permit、把成员由 pending 变为 succeeded，并以 Baseline CAS 增加核算数。Company 不在每条详情事务中加锁；Recruiting Actor 的既有 reconcile 只在所有 active/ready Source 的最新 baseline 均成功完成时，原子推进 `initializing → ready` 并写领域事件。
+- 每个 baseline Detail Work 在物化事务中写入独立成员账本；详情成功事务同时接受 JobDetailVersion、完成 Work/Attempt、释放 Permit、把成员由 pending 变为 succeeded，并以 Baseline CAS 增加核算数。终态异常先进入 `waiting_human`；只有认证用户通过既有 `recruiting.work.resolve` 明确提交 `accepted_gap` 和理由，才在同一命令事务核算缺口，运行中的 Work 不能直接伪装成缺口。Company 不在每条详情事务中加锁；Recruiting Actor 的既有 reconcile 只在所有 active/ready Source 的最新 baseline 均完成或缺口已被接受时，原子推进 `initializing → ready` 并写领域事件。
 
 ## 已执行证据
 
@@ -27,7 +27,7 @@
 
 - 尚未实现 Source validation Work 的专用创建、执行与结果协议；当前 publish 只接受已经存在且正确归属的证据，不能替代验证执行。
 - MongoDB 单次真实样本不能证明“历史岗位更新后重新置顶”，因此不得把它标记为 `update_retop=verified`，也没有借此发布为每日增量 Source。
-- baseline generation 的有界分页、staging/finalize、首次 Checkpoint、Job/Detail Work 有界物化、详情成功核算和 Company ready 已通过隔离 MySQL 合同，但尚未贯通真实站点；人工接受缺口、详情最终失败后的修复/结案仍未接通。
+- baseline generation 的有界分页、staging/finalize、首次 Checkpoint、Job/Detail Work 有界物化、详情成功/人工接受缺口核算和 Company ready 已通过隔离 MySQL 合同，但尚未贯通真实站点；详情最终失败后的重试修复和拒绝接受缺口场景仍需完整验收。
 - 零 Source、1 万岗位、baseline 分页中断、详情部分失败和用户取消仍需加入 P5 场景验收。
 
 只有完成 `discovery → validation → baseline → detail` 的至少一个允许访问的真实站点，并证明同一命令重放不改变岗位数，P5 才能标记完成。

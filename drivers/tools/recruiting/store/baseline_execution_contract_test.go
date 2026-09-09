@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
@@ -217,6 +218,41 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 			now.Add(time.Duration(12+index)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
+		if index == 1 {
+			failureArtifact, _ := model.NewArtifactMetadata("executable-baseline-detail-failure", model.ArtifactFailure,
+				"sha256:baseline-detail-failure", "object://baseline/detail/failure", detailOffer.Work.WorkID,
+				detailOffer.Attempt.AttemptID, "operators", "30d", true)
+			failure := executioncontract.FailureReport{Class: "parse_error", NeedsRepair: true, Artifact: failureArtifact}
+			if _, err := repository.FailExecutionWithReport(ctx, detailOffer.Attempt.AttemptID,
+				detailOffer.Attempt.ExecutorActorID, detailOffer.Attempt.ExecutorIncarnation, failure.Class, failure,
+				testExecutionFailurePolicy(), now.Add(13*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			currentDetailWork, err := repository.GetWork(ctx, detailOffer.Work.WorkID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := currentDetailWork.Complete(currentDetailWork.Version, model.ResolutionAcceptedGap,
+				"human:operator", "source intentionally omits the detail")
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt, _ := model.NewCommandReceipt("executable-baseline-gap-command", "recruiting.work.resolve",
+				"sha256:baseline-gap-command", []byte("{}"))
+			event, _ := model.NewEventIntent("executable-baseline-gap-event", "work.completed", "work",
+				resolved.WorkID, resolved.Version, now.Add(14*time.Second).Format(time.RFC3339Nano),
+				receipt.CommandID, []byte("{}"))
+			if _, err := repository.ApplyWorkCommand(ctx, currentDetailWork.Version, resolved, receipt, event,
+				now.Add(14*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			gapReplay, err := repository.ApplyWorkCommand(ctx, currentDetailWork.Version, resolved, receipt, event,
+				now.Add(14*time.Second))
+			if err != nil || !gapReplay.Replayed {
+				t.Fatalf("accepted gap replay=%+v %v", gapReplay, err)
+			}
+			continue
+		}
 		artifact, _ := model.NewArtifactMetadata(fmt.Sprintf("executable-baseline-detail-artifact-%d", index),
 			model.ArtifactResponse, fmt.Sprintf("sha256:baseline-detail-%d", index),
 			fmt.Sprintf("object://baseline/detail/%d", index), detailOffer.Work.WorkID, detailOffer.Attempt.AttemptID,
@@ -242,13 +278,13 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 	if err != nil || readyReplay != nil {
 		t.Fatalf("replay Company promotion=%+v %v", readyReplay, err)
 	}
-	var succeededItems int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_baseline_detail_items WHERE source_id = ? AND baseline_generation = ? AND accounting_status = 'succeeded'",
-		source.SourceID, baseline.Generation).Scan(&succeededItems); err != nil {
+	var accountedItems int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_baseline_detail_items WHERE source_id = ? AND baseline_generation = ? AND accounting_status IN ('succeeded', 'accepted_gap')",
+		source.SourceID, baseline.Generation).Scan(&accountedItems); err != nil {
 		t.Fatal(err)
 	}
-	if succeededItems != 2 {
-		t.Fatalf("succeeded baseline detail items=%d", succeededItems)
+	if accountedItems != 2 {
+		t.Fatalf("accounted baseline detail items=%d", accountedItems)
 	}
 	empty, err := repository.MaterializeNextBaselinePage(ctx, 500, now.Add(7*time.Second), nil)
 	if err != nil || empty.Processed != 0 {

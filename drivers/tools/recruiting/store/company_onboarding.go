@@ -43,7 +43,7 @@ WHERE company.onboarding_status = 'initializing'
             SELECT MAX(latest.baseline_generation) FROM recruiting_baseline_generations latest
             WHERE latest.source_id = source.source_id
           )
-          AND baseline.generation_status = 'completed'
+          AND baseline.generation_status IN ('completed', 'completed_with_exceptions')
       ))
   )
 ORDER BY company.updated_at, company.company_id

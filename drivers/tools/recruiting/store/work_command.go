@@ -88,6 +88,18 @@ func (r *Repository) ApplyWorkCommand(ctx context.Context, expectedVersion uint6
 	} else if found {
 		return CommandResult{Response: replay, Replayed: true}, nil
 	}
+	if work.Resolution == model.ResolutionAcceptedGap {
+		current, currentErr := getWorkWith(ctx, tx, work.WorkID, true)
+		if currentErr != nil {
+			return CommandResult{}, currentErr
+		}
+		if current.Version != expectedVersion {
+			return CommandResult{}, &model.VersionConflictError{Expected: expectedVersion, Actual: current.Version}
+		}
+		if current.Status != model.WorkWaitingHuman {
+			return CommandResult{}, &model.InvalidTransitionError{Entity: "work", From: string(current.Status), Action: "accept gap"}
+		}
+	}
 	if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {
 		if errors.Is(err, ErrCommandConflict) {
 			_ = tx.Rollback()
@@ -117,6 +129,15 @@ WHERE work_id = ? AND version = ?`, work.Status, nullableString(string(work.Reso
 			return CommandResult{}, fmt.Errorf("read work version after failed CAS: %w", readErr)
 		}
 		return CommandResult{}, &model.VersionConflictError{Expected: expectedVersion, Actual: actual}
+	}
+	if work.Resolution == model.ResolutionAcceptedGap {
+		accounting, accountingErr := loadBaselineDetailAccountingTx(ctx, tx, work)
+		if accountingErr != nil {
+			return CommandResult{}, accountingErr
+		}
+		if _, accountingErr := accountBaselineDetailAcceptedGapTx(ctx, tx, accounting, work.TargetID, businessAt); accountingErr != nil {
+			return CommandResult{}, accountingErr
+		}
 	}
 	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
 		return CommandResult{}, err

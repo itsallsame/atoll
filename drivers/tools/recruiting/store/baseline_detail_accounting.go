@@ -43,10 +43,20 @@ FOR UPDATE`, work.TargetID, work.ParentWorkID).Scan(&baselineState, &itemVersion
 
 func accountBaselineDetailSuccessTx(ctx context.Context, tx *sql.Tx, accounting *baselineDetailAccounting,
 	jobID string, at time.Time) (*model.BaselineGeneration, error) {
+	return accountBaselineDetailTx(ctx, tx, accounting, jobID, "succeeded", 1, 0, 0, at)
+}
+
+func accountBaselineDetailAcceptedGapTx(ctx context.Context, tx *sql.Tx, accounting *baselineDetailAccounting,
+	jobID string, at time.Time) (*model.BaselineGeneration, error) {
+	return accountBaselineDetailTx(ctx, tx, accounting, jobID, "accepted_gap", 0, 1, 0, at)
+}
+
+func accountBaselineDetailTx(ctx context.Context, tx *sql.Tx, accounting *baselineDetailAccounting,
+	jobID, accountingStatus string, succeeded, acceptedGaps, failed uint64, at time.Time) (*model.BaselineGeneration, error) {
 	if accounting == nil {
 		return nil, nil
 	}
-	advanced, err := accounting.Baseline.AccountDetails(accounting.Baseline.Version, 1, 0, 0)
+	advanced, err := accounting.Baseline.AccountDetails(accounting.Baseline.Version, succeeded, acceptedGaps, failed)
 	if err != nil {
 		return nil, err
 	}
@@ -69,9 +79,9 @@ WHERE source_id = ? AND baseline_generation = ? AND version = ?`, advanced.Statu
 		return nil, ErrProgressConflict
 	}
 	result, err = tx.ExecContext(ctx, `UPDATE recruiting_baseline_detail_items
-SET accounting_status = 'succeeded', version = version + 1, updated_at = ?
+SET accounting_status = ?, version = version + 1, updated_at = ?
 WHERE source_id = ? AND baseline_generation = ? AND job_id = ? AND accounting_status = 'pending' AND version = ?`,
-		at.UTC(), advanced.SourceID, advanced.Generation, jobID, accounting.ItemVersion)
+		accountingStatus, at.UTC(), advanced.SourceID, advanced.Generation, jobID, accounting.ItemVersion)
 	if err != nil {
 		return nil, fmt.Errorf("complete baseline detail item: %w", err)
 	}
