@@ -40,6 +40,8 @@ func manifest() introspect.Manifest {
 			TypeSourceDiscover:            {Description: "explicitly start one version-fenced source discovery generation for a company"},
 			TypeSourceDiscoveryGet:        {Description: "get one durable source discovery generation"},
 			TypeSourceDiscoveryCandidates: {Description: "seek-page independently reviewable candidates from one source discovery"},
+			TypeSourceDiscoveryCandidateAccept: {Description: "independently accept one discovered candidate and atomically create its candidate Source"},
+			TypeSourceDiscoveryCandidateReject: {Description: "independently reject one discovered candidate with an audited reason"},
 			TypeSourceGet:                 {Description: "get one recruitment source"},
 			TypeSourceList:                {Description: "seek-page sources globally or for one company"},
 			TypeJobGet:                    {Description: "get one source job"},

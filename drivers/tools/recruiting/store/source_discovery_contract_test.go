@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -104,6 +105,78 @@ func TestSourceDiscoveryRepositoryContract(t *testing.T) {
 	secondPage, err := repository.ListSourceDiscoveryCandidates(ctx, discovery.DiscoveryID, firstPage.NextCursor, 1)
 	if err != nil || len(secondPage.Items) != 1 || secondPage.HasMore {
 		t.Fatalf("second candidate page = %+v, %v", secondPage, err)
+	}
+	acceptedCandidate, err := candidateA.Accept(candidateA.Version, "discovered-source-a", "human:reviewer:1", "confirmed company-owned listing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptedSource, _ := model.NewRecruitmentSource(acceptedCandidate.SourceID, company.CompanyID, candidateA.FinalURL,
+		candidateA.Category, discovery.Generation)
+	acceptReceipt, _ := model.NewCommandReceipt("candidate-accept-command", "recruiting.source.discovery.candidate.accept",
+		"sha256:candidate-accept", []byte(`{"candidate_id":"accepted"}`))
+	acceptAggregateID, _ := model.SourceDiscoveryCandidateAggregateID(discovery.DiscoveryID, candidateA.CandidateID)
+	acceptEvent, _ := model.NewEventIntent("candidate-accept-event", "source.discovery.candidate.accepted",
+		"source_discovery_candidate", acceptAggregateID, acceptedCandidate.Version, now.Format(time.RFC3339Nano),
+		acceptReceipt.CommandID, []byte(`{"requested_by":"human:reviewer:1"}`))
+	acceptedResult, err := repository.ApplySourceDiscoveryCandidateDecisionCommand(ctx, discovery.DiscoveryID,
+		candidateA.Version, acceptedCandidate, &acceptedSource, acceptReceipt, acceptEvent, now.Add(5*time.Second))
+	if err != nil || acceptedResult.Replayed {
+		t.Fatalf("accept candidate = %+v, %v", acceptedResult, err)
+	}
+	acceptedReplay, err := repository.ApplySourceDiscoveryCandidateDecisionCommand(ctx, discovery.DiscoveryID,
+		candidateA.Version, acceptedCandidate, &acceptedSource, acceptReceipt, acceptEvent, now.Add(5*time.Second))
+	if err != nil || !acceptedReplay.Replayed || string(acceptedReplay.Response) != string(acceptedResult.Response) {
+		t.Fatalf("accept candidate replay = %+v, %v", acceptedReplay, err)
+	}
+	storedCandidate, err := repository.GetSourceDiscoveryCandidate(ctx, discovery.DiscoveryID, candidateA.CandidateID)
+	storedSource, sourceErr := repository.GetSource(ctx, acceptedSource.SourceID)
+	if err != nil || sourceErr != nil || storedCandidate != acceptedCandidate || !reflect.DeepEqual(storedSource, acceptedSource) {
+		t.Fatalf("accepted candidate/source = %+v / %+v, %v / %v", storedCandidate, storedSource, err, sourceErr)
+	}
+
+	otherCompany, _ := model.NewCompany("discovery-other-company", "Other", "https://other-discovery.example.com")
+	if err := repository.CreateCompany(ctx, otherCompany, now); err != nil {
+		t.Fatal(err)
+	}
+	ownedElsewhere, _ := model.NewRecruitmentSource("other-company-source", otherCompany.CompanyID, candidateB.FinalURL,
+		candidateB.Category, 1)
+	if err := repository.CreateSource(ctx, ownedElsewhere, now); err != nil {
+		t.Fatal(err)
+	}
+	conflictingCandidate, _ := candidateB.Accept(candidateB.Version, "conflicting-source", "human:reviewer:1", "candidate appears usable")
+	conflictingSource, _ := model.NewRecruitmentSource(conflictingCandidate.SourceID, company.CompanyID, candidateB.FinalURL,
+		candidateB.Category, discovery.Generation)
+	conflictReceipt, _ := model.NewCommandReceipt("candidate-conflict-command", "recruiting.source.discovery.candidate.accept",
+		"sha256:candidate-conflict", []byte(`{}`))
+	conflictAggregateID, _ := model.SourceDiscoveryCandidateAggregateID(discovery.DiscoveryID, candidateB.CandidateID)
+	conflictEvent, _ := model.NewEventIntent("candidate-conflict-event", "source.discovery.candidate.accepted",
+		"source_discovery_candidate", conflictAggregateID, conflictingCandidate.Version, now.Format(time.RFC3339Nano),
+		conflictReceipt.CommandID, []byte(`{}`))
+	if _, err := repository.ApplySourceDiscoveryCandidateDecisionCommand(ctx, discovery.DiscoveryID, candidateB.Version,
+		conflictingCandidate, &conflictingSource, conflictReceipt, conflictEvent, now.Add(6*time.Second)); !errors.Is(err, ErrBusinessKeyExists) {
+		t.Fatalf("cross-company candidate ownership = %v", err)
+	}
+	pending, err := repository.GetSourceDiscoveryCandidate(ctx, discovery.DiscoveryID, candidateB.CandidateID)
+	if err != nil || pending != candidateB {
+		t.Fatalf("ownership conflict mutated candidate = %+v, %v", pending, err)
+	}
+	if _, found, err := repository.LookupCommand(ctx, conflictReceipt.CommandID, conflictReceipt.RequestHash); err != nil || found {
+		t.Fatalf("ownership conflict retained command receipt: found=%v err=%v", found, err)
+	}
+
+	rejectedCandidate, _ := candidateB.Reject(candidateB.Version, "human:reviewer:2", "not an independently operated listing")
+	rejectReceipt, _ := model.NewCommandReceipt("candidate-reject-command", "recruiting.source.discovery.candidate.reject",
+		"sha256:candidate-reject", []byte(`{"candidate_id":"rejected"}`))
+	rejectEvent, _ := model.NewEventIntent("candidate-reject-event", "source.discovery.candidate.rejected",
+		"source_discovery_candidate", conflictAggregateID, rejectedCandidate.Version, now.Format(time.RFC3339Nano),
+		rejectReceipt.CommandID, []byte(`{"requested_by":"human:reviewer:2"}`))
+	if _, err := repository.ApplySourceDiscoveryCandidateDecisionCommand(ctx, discovery.DiscoveryID, candidateB.Version,
+		rejectedCandidate, nil, rejectReceipt, rejectEvent, now.Add(7*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	rejectedStored, err := repository.GetSourceDiscoveryCandidate(ctx, discovery.DiscoveryID, candidateB.CandidateID)
+	if err != nil || rejectedStored != rejectedCandidate {
+		t.Fatalf("rejected candidate = %+v, %v", rejectedStored, err)
 	}
 	completed := outcome.Discovery
 	stored, err := repository.GetSourceDiscovery(ctx, discovery.DiscoveryID)

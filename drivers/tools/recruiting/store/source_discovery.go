@@ -184,6 +184,10 @@ func (r *Repository) GetSourceDiscovery(ctx context.Context, discoveryID string)
 	return getSourceDiscoveryWith(ctx, r.db, discoveryID, false)
 }
 
+func (r *Repository) GetSourceDiscoveryCandidate(ctx context.Context, discoveryID, candidateID string) (model.SourceDiscoveryCandidate, error) {
+	return getSourceDiscoveryCandidateWith(ctx, r.db, discoveryID, candidateID, false)
+}
+
 // ListSourceDiscoveryCandidates uses an aggregate-bound seek cursor, so a
 // cursor cannot be replayed against another discovery generation.
 func (r *Repository) ListSourceDiscoveryCandidates(ctx context.Context, discoveryID, cursor string, limit int) (SourceDiscoveryCandidatePage, error) {
@@ -264,6 +268,33 @@ func getSourceDiscoveryWith(ctx context.Context, query interface {
 		return model.SourceDiscovery{}, fmt.Errorf("decode source discovery: %w", err)
 	}
 	return discovery, nil
+}
+
+func getSourceDiscoveryCandidateWith(ctx context.Context, query interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, discoveryID, candidateID string, lock bool) (model.SourceDiscoveryCandidate, error) {
+	discoveryID, candidateID = strings.TrimSpace(discoveryID), strings.TrimSpace(candidateID)
+	if discoveryID == "" || candidateID == "" {
+		return model.SourceDiscoveryCandidate{}, fmt.Errorf("source discovery and candidate identity are required")
+	}
+	suffix := ""
+	if lock {
+		suffix = " FOR UPDATE"
+	}
+	var state []byte
+	err := query.QueryRowContext(ctx, `SELECT state_json FROM recruiting_source_discovery_candidates
+WHERE discovery_id = ? AND candidate_id = ?`+suffix, discoveryID, candidateID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.SourceDiscoveryCandidate{}, ErrNotFound
+	}
+	if err != nil {
+		return model.SourceDiscoveryCandidate{}, fmt.Errorf("get source discovery candidate: %w", err)
+	}
+	var candidate model.SourceDiscoveryCandidate
+	if err := json.Unmarshal(state, &candidate); err != nil {
+		return model.SourceDiscoveryCandidate{}, fmt.Errorf("decode source discovery candidate: %w", err)
+	}
+	return candidate, nil
 }
 
 func (r *Repository) StartSourceDiscovery(ctx context.Context, discoveryID string, expectedVersion uint64, at time.Time) (model.SourceDiscovery, error) {

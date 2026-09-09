@@ -34,6 +34,120 @@ type sourceDiscoveryCommandResponse struct {
 	NextAction      string                `json:"next_action"`
 }
 
+type sourceDiscoveryCandidateDecisionPayload struct {
+	MutationCommand
+	DiscoveryID string `json:"discovery_id"`
+	SourceID    string `json:"source_id,omitempty"`
+}
+
+type sourceDiscoveryCandidateDecisionResponse struct {
+	ContractVersion string                           `json:"contract_version"`
+	CorrelationID   string                           `json:"correlation_id"`
+	RequestedBy     string                           `json:"requested_by"`
+	Candidate       model.SourceDiscoveryCandidate   `json:"candidate"`
+	Source          *model.RecruitmentSource         `json:"source,omitempty"`
+	Target          Target                           `json:"target"`
+	NextAction      string                           `json:"next_action"`
+}
+
+func handleSourceDiscoveryMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
+	if msg.Type == TypeSourceDiscover {
+		handleSourceDiscover(sys, cfg, repository, msg)
+		return
+	}
+	handleSourceDiscoveryCandidateDecision(sys, repository, msg)
+}
+
+func handleSourceDiscoveryCandidateDecision(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	if repository == nil {
+		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
+		return
+	}
+	var payload sourceDiscoveryCandidateDecisionPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	commandContext, err := NewCommandContext(payload.MutationCommand, string(msg.Sender.ID))
+	accepting := msg.Type == TypeSourceDiscoveryCandidateAccept
+	if err != nil || payload.Target.Type != "source_discovery_candidate" || strings.TrimSpace(payload.DiscoveryID) == "" ||
+		(accepting && strings.TrimSpace(payload.SourceID) == "") || (!accepting && strings.TrimSpace(payload.SourceID) != "") {
+		if err == nil {
+			err = fmt.Errorf("candidate target, discovery_id, and an accept-only source_id are required")
+		}
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	requestHash := commandRequestHash(msg)
+	if replay, found, lookupErr := repository.LookupCommand(msg.Ctx(), payload.CommandID, requestHash); lookupErr != nil {
+		failStoreError(sys, msg, lookupErr)
+		return
+	} else if found {
+		_, _ = sys.Reply(msg, json.RawMessage(replay.Response))
+		return
+	}
+	discovery, err := repository.GetSourceDiscovery(msg.Ctx(), strings.TrimSpace(payload.DiscoveryID))
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	current, err := repository.GetSourceDiscoveryCandidate(msg.Ctx(), discovery.DiscoveryID, strings.TrimSpace(payload.Target.ID))
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	var next model.SourceDiscoveryCandidate
+	var source *model.RecruitmentSource
+	if accepting {
+		next, err = current.Accept(payload.ExpectedVersion, strings.TrimSpace(payload.SourceID), commandContext.RequestedBy, payload.Reason)
+		if err == nil {
+			created, createErr := model.NewRecruitmentSource(next.SourceID, discovery.CompanyID, current.FinalURL,
+				current.Category, discovery.Generation)
+			err, source = createErr, &created
+		}
+	} else {
+		next, err = current.Reject(payload.ExpectedVersion, commandContext.RequestedBy, payload.Reason)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	nextAction := "candidate_rejected"
+	if accepting {
+		nextAction = "validate_source"
+	}
+	response := sourceDiscoveryCandidateDecisionResponse{ContractVersion: ContractVersion,
+		CorrelationID: string(msg.CorrelationID), RequestedBy: commandContext.RequestedBy, Candidate: next,
+		Source: source, Target: Target{Type: "source_discovery_candidate", ID: next.CandidateID}, NextAction: nextAction}
+	responseBytes, _ := json.Marshal(response)
+	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, requestHash, responseBytes)
+	aggregateID, aggregateErr := model.SourceDiscoveryCandidateAggregateID(discovery.DiscoveryID, next.CandidateID)
+	if err == nil {
+		err = aggregateErr
+	}
+	auditPayload, _ := json.Marshal(map[string]any{"requested_by": commandContext.RequestedBy, "reason": payload.Reason,
+		"discovery_id": discovery.DiscoveryID, "candidate_id": next.CandidateID, "source_id": next.SourceID})
+	var event model.EventIntent
+	if err == nil {
+		kind := "source.discovery.candidate.rejected"
+		if accepting {
+			kind = "source.discovery.candidate.accepted"
+		}
+		event, err = model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|"+kind), kind,
+			"source_discovery_candidate", aggregateID, next.Version, time.UnixMilli(msg.TS).UTC().Format(time.RFC3339Nano),
+			payload.CommandID, auditPayload)
+	}
+	var result store.CommandResult
+	if err == nil {
+		result, err = repository.ApplySourceDiscoveryCandidateDecisionCommand(msg.Ctx(), discovery.DiscoveryID,
+			payload.ExpectedVersion, next, source, receipt, event, time.UnixMilli(msg.TS).UTC())
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
+}
+
 func handleSourceDiscover(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	if repository == nil {
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")

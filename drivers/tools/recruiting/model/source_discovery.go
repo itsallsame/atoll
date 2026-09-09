@@ -141,6 +141,15 @@ func NewSourceDiscoveryCandidate(endpoint, category, finalURL, confidenceBasis, 
 		Disposition: SourceCandidatePending, Version: 1}, nil
 }
 
+func SourceDiscoveryCandidateAggregateID(discoveryID, candidateID string) (string, error) {
+	discoveryID, candidateID = strings.TrimSpace(discoveryID), strings.TrimSpace(candidateID)
+	if discoveryID == "" || candidateID == "" {
+		return "", fmt.Errorf("source discovery and candidate identity are required")
+	}
+	sum := sha256.Sum256([]byte("recruiting.source.discovery.candidate.v1\n" + discoveryID + "\n" + candidateID))
+	return "source-candidate-" + hex.EncodeToString(sum[:16]), nil
+}
+
 func (c SourceDiscoveryCandidate) Accept(expected uint64, sourceID, actorID, reason string) (SourceDiscoveryCandidate, error) {
 	return c.decide(expected, SourceCandidateAccepted, sourceID, actorID, reason)
 }

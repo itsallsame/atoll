@@ -30,17 +30,23 @@ func (r *Repository) CreateSource(ctx context.Context, source model.RecruitmentS
 	if err != nil || parsed.Hostname() == "" {
 		return fmt.Errorf("source origin is invalid")
 	}
+	return insertSourceWith(ctx, r.db, source, endpoint, parsed.Hostname(), businessAt)
+}
+
+func insertSourceWith(ctx context.Context, executor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, source model.RecruitmentSource, endpoint *model.SourceEndpoint, origin string, businessAt time.Time) error {
 	state, err := json.Marshal(source)
 	if err != nil {
 		return fmt.Errorf("encode source: %w", err)
 	}
-	_, err = r.db.ExecContext(ctx, `
+	_, err = executor.ExecContext(ctx, `
 INSERT INTO recruiting_sources(
   source_id, company_id, canonical_source_key, origin, readiness_status,
   control_status, health_status, discovery_generation, version, state_json,
   created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		source.SourceID, source.CompanyID, endpoint.CanonicalKey, parsed.Hostname(), source.ReadinessStatus,
+		source.SourceID, source.CompanyID, endpoint.CanonicalKey, origin, source.ReadinessStatus,
 		source.ControlStatus, source.HealthStatus, source.DiscoveryGeneration, source.Version, state,
 		businessAt.UTC(), businessAt.UTC())
 	if err == nil {

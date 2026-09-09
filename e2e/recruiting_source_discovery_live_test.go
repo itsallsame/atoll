@@ -135,6 +135,24 @@ func TestRecruitingLiveSourceDiscoveryThroughAtoll(t *testing.T) {
 		stringField(t, first, "evidence_artifact_id") == "" {
 		t.Fatalf("live discovery candidate lacks canonical URL or evidence: %v", first)
 	}
+	decision := map[string]any{
+		"command_id": "e2e-live-source-candidate-accept", "discovery_id": "e2e-live-source-discovery-1",
+		"source_id": "e2e-live-mongodb-source", "target": map[string]any{
+			"target_type": "source_discovery_candidate", "target_id": stringField(t, first, "candidate_id")},
+		"expected_version": numberField(t, first, "version"), "reason": "operator confirms the published MongoDB jobs entry",
+	}
+	accepted := ws.request(homeID, "recruiting.source.discovery.candidate.accept", controlID, decision)
+	acceptedReplay := ws.request(homeID, "recruiting.source.discovery.candidate.accept", controlID, decision)
+	if nestedStringField(t, accepted, "candidate", "disposition") != "accepted" ||
+		nestedStringField(t, accepted, "source", "readiness_status") != "candidate" ||
+		nestedStringField(t, acceptedReplay, "source", "source_id") != "e2e-live-mongodb-source" {
+		t.Fatalf("live candidate acceptance/replay=%v / %v", accepted, acceptedReplay)
+	}
+	sourceView := ws.request(homeID, "recruiting.source.get", controlID, map[string]any{"id": "e2e-live-mongodb-source"})
+	if nestedStringField(t, sourceView, "entity", "company_id") != "e2e-live-discovery-mongodb" ||
+		nestedStringField(t, sourceView, "entity", "readiness_status") != "candidate" {
+		t.Fatalf("accepted live Source=%v", sourceView)
+	}
 	workView := ws.request(homeID, "recruiting.work.get", controlID, map[string]any{"id": "e2e-live-source-discovery-work"})
 	if nestedStringField(t, workView, "entity", "work_status") != "completed" {
 		t.Fatalf("live source discovery Work=%v", workView)

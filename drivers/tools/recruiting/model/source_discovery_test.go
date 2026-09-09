@@ -51,3 +51,15 @@ func TestSourceDiscoveryCandidateRequiresExplicitIndependentDecision(t *testing.
 		t.Fatal("terminal source candidate decision was rewritten")
 	}
 }
+
+func TestSourceDiscoveryCandidateAggregateIdentityIncludesGeneration(t *testing.T) {
+	first, err := SourceDiscoveryCandidateAggregateID("discovery-1", "candidate-1")
+	if err != nil || first == "" {
+		t.Fatalf("aggregate ID = %q, %v", first, err)
+	}
+	replay, _ := SourceDiscoveryCandidateAggregateID("discovery-1", "candidate-1")
+	nextGeneration, _ := SourceDiscoveryCandidateAggregateID("discovery-2", "candidate-1")
+	if replay != first || nextGeneration == first {
+		t.Fatalf("candidate aggregate identity is not stable and generation-bound: %q %q %q", first, replay, nextGeneration)
+	}
+}
