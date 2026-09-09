@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -54,10 +55,26 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 	if err := repository.PublishSourceAssignment(ctx, validating.Version, 0, ready, assignment, now); err != nil {
 		t.Fatal(err)
 	}
+	detailRecipe := activeRecipe(t, "executable-baseline-detail-recipe", model.RecipeDetail, "baseline-run.example.com", 1, "baseline-detail-contract")
+	if err := repository.CreateRecipe(ctx, detailRecipe, now); err != nil {
+		t.Fatal(err)
+	}
+	detailAssignment, err := model.NewSourceRecipeAssignment(source.SourceID, model.RecipeDetail, detailRecipe.RecipeID,
+		detailRecipe.Version, detailRecipe.ContractHash, now.Format(time.RFC3339Nano))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withDetail, err := ready.AssignRecipe(ready.Version, detailAssignment, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.PublishSourceAssignment(ctx, ready.Version, 0, withDetail, detailAssignment, now); err != nil {
+		t.Fatal(err)
+	}
 	initializing, _ := discovering.StartInitialization(discovering.Version)
 	work, _ := model.NewWork("executable-baseline-work", "source", source.SourceID, "baseline_listing", "human")
 	work, _ = work.WithCausality("human:baseline:1", "message-baseline", "")
-	baseline, err := model.NewExecutableBaselineGeneration(work.WorkID, initializing, ready, 1, recipe)
+	baseline, err := model.NewExecutableBaselineGeneration(work.WorkID, initializing, withDetail, 1, recipe)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,12 +88,12 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 		initializing.CompanyID, initializing.Version, now.Format(time.RFC3339Nano), receipt.CommandID, []byte(`{}`))
 	dispatch, _ := NewExecutionDispatchIntent("executable-baseline-dispatch", "tool:baseline-executor", placement.Capability,
 		placement.Origin, "", "baseline_created", receipt.CommandID, now)
-	created, err := repository.ApplyCreateBaselineCommand(ctx, discovering.Version, ready.Version, initializing,
+	created, err := repository.ApplyCreateBaselineCommand(ctx, discovering.Version, withDetail.Version, initializing,
 		baseline, work, placement, receipt, event, &companyEvent, &dispatch, now)
 	if err != nil || created.Replayed {
 		t.Fatalf("create executable baseline=%+v %v", created, err)
 	}
-	replayed, err := repository.ApplyCreateBaselineCommand(ctx, discovering.Version, ready.Version, initializing,
+	replayed, err := repository.ApplyCreateBaselineCommand(ctx, discovering.Version, withDetail.Version, initializing,
 		baseline, work, placement, receipt, event, &companyEvent, &dispatch, now)
 	if err != nil || !replayed.Replayed {
 		t.Fatalf("replay baseline start=%+v %v", replayed, err)
@@ -130,5 +147,58 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 	completionReplay, err := repository.AcceptListingCompletion(ctx, completionInput)
 	if err != nil || !completionReplay.Replayed || !reflect.DeepEqual(completionReplay.Checkpoint, completed.Checkpoint) {
 		t.Fatalf("replay baseline completion=%+v %v", completionReplay, err)
+	}
+	results := make(chan BaselineMaterializationResult, 2)
+	materializationErrors := make(chan error, 2)
+	var group sync.WaitGroup
+	for range 2 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			result, materializeErr := repository.MaterializeNextBaselinePage(ctx, 500, now.Add(6*time.Second),
+				[]ExecutionDispatchTarget{{ActorID: "tool:detail-executor", Capability: detailRecipe.Execution.RequiredCapability}})
+			results <- result
+			materializationErrors <- materializeErr
+		}()
+	}
+	group.Wait()
+	close(results)
+	close(materializationErrors)
+	for materializeErr := range materializationErrors {
+		if materializeErr != nil {
+			t.Fatal(materializeErr)
+		}
+	}
+	var processed, completionCount, dispatches int
+	for result := range results {
+		processed += result.Processed
+		dispatches += result.Dispatches
+		if result.Completed {
+			completionCount++
+		}
+	}
+	if processed != 2 || completionCount != 1 || dispatches != 1 {
+		t.Fatalf("concurrent materialization processed=%d completed=%d dispatches=%d", processed, completionCount, dispatches)
+	}
+	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_source_jobs WHERE source_id = ?", source.SourceID).Scan(&jobs)
+	var detailWorks int
+	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_works WHERE purpose = 'detail_sync' AND parent_work_id = ?", work.WorkID).Scan(&detailWorks)
+	if jobs != 2 || detailWorks != 2 {
+		t.Fatalf("materialized jobs=%d detail works=%d", jobs, detailWorks)
+	}
+	var materializationCursor string
+	var materializedCount uint64
+	var materializationCompleted bool
+	if err := db.QueryRowContext(ctx, "SELECT materialization_cursor, materialized_count, materialization_completed FROM recruiting_baseline_generations WHERE source_id = ? AND baseline_generation = ?",
+		source.SourceID, baseline.Generation).Scan(&materializationCursor, &materializedCount, &materializationCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if materializationCursor != "job-1" || materializedCount != 2 || !materializationCompleted {
+		t.Fatalf("materialization progress cursor=%q count=%d completed=%t",
+			materializationCursor, materializedCount, materializationCompleted)
+	}
+	empty, err := repository.MaterializeNextBaselinePage(ctx, 500, now.Add(7*time.Second), nil)
+	if err != nil || empty.Processed != 0 {
+		t.Fatalf("replay materialization=%+v %v", empty, err)
 	}
 }

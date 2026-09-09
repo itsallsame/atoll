@@ -13,19 +13,20 @@
 - 验证证据必须属于以目标 Source 为 target 的 Work，并且 Artifact 未被拒绝、不是 failure-only；引用缺失或串线证据时整个事务回滚。
 - `recruiting.baseline.start` 已建立首个可执行列表基线：命令把 Company `discovering_sources → initializing`、不可变 BaselineGeneration、Work、receipt、两类事件和 capability dispatch 原子提交。Baseline 冻结 Company/Source/Assignment/Recipe/Endpoint 版本，以及从已验证 Source 契约复制的 Checkpoint strategy/overlap。
 - 统一 Executor 已能领取 baseline listing，沿用同一个 HTTP/Browser Recipe 执行面；每页最多 500 条，只写 generation staging。terminal completion 重新核对 Attempt fence、完整分页/排序/边界证明和 staging 数量，然后原子建立首个 Checkpoint并完成 Baseline listing、Attempt 与 Work；命令与结果均可稳定重放。
+- finalized staging 已由 Recruiting Actor 的既有有界 reconcile 渐进物化为 Job 和幂等 Detail Work，不增加专用 Worker 类型。BaselineGeneration 保存版本化 `materialization_cursor`、已处理数和完成标记；每批最多 500 条，岗位事实、详情 Work、游标 CAS 和按 capability 聚合的 Executor 唤醒在同一短事务提交。并发协调循环只能有一个推进版本；缺少有效 Detail Recipe 的基线保留等待修复，但不会阻塞其他 Company。
 
 ## 已执行证据
 
 - 真实网站：`https://www.mongodb.com/careers`，实际规范入口为 `https://www.mongodb.com/company/careers/see-jobs`。
 - 真实链路：普通用户通过 Atoll Portal/WebSocket 新增 Company；Recruiting Actor 建立 generation；真实 daemon 上的 Recruiting Executor 访问公开页面并保存 Artifact；用户接受候选后回读到归属正确、readiness 为 `candidate` 的 Source；发现与接受命令重放均稳定。
-- 隔离数据库：MySQL 8.4；migration 与 runtime 使用不同非 root 账号。合同测试覆盖 discovery 执行、候选独立裁决、跨 Company 冲突回滚、验证证据绑定、发布原子性和命令重放。
+- 隔离数据库：MySQL 8.4；migration 与 runtime 使用不同非 root 账号。合同测试覆盖 discovery 执行、候选独立裁决、跨 Company 冲突回滚、验证证据绑定、发布原子性和命令重放；baseline 覆盖 start、offer、page staging、completion、并发物化、持久游标、Job/Detail Work 唯一性和结果重放。
 - 工程检查：招聘扩展 race、vet 通过；核心边界脚本以 `a94d2b8d` 为冻结基线通过。
 
 ## 尚未通过的退出项
 
 - 尚未实现 Source validation Work 的专用创建、执行与结果协议；当前 publish 只接受已经存在且正确归属的证据，不能替代验证执行。
 - MongoDB 单次真实样本不能证明“历史岗位更新后重新置顶”，因此不得把它标记为 `update_retop=verified`，也没有借此发布为每日增量 Source。
-- baseline generation 的有界分页、staging/finalize 和首次 Checkpoint 已通过隔离 MySQL 合同，但尚未贯通真实站点；staging 到 Job/幂等 Detail Work 的有界物化、详情核算和 Company ready 尚未接通。
+- baseline generation 的有界分页、staging/finalize、首次 Checkpoint，以及 staging 到 Job/幂等 Detail Work 的有界物化已通过隔离 MySQL 合同，但尚未贯通真实站点；详情执行结果核算和 Company ready 尚未接通。
 - 零 Source、1 万岗位、baseline 分页中断、详情部分失败和用户取消仍需加入 P5 场景验收。
 
 只有完成 `discovery → validation → baseline → detail` 的至少一个允许访问的真实站点，并证明同一命令重放不改变岗位数，P5 才能标记完成。

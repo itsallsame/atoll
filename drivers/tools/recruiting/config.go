@@ -34,6 +34,7 @@ type Config struct {
 	DailySchedulePolicyVersion   uint64                 `json:"daily_schedule_policy_version"`
 	DailyWorkMaterializeLimit    int                    `json:"daily_work_materialize_limit"`
 	CompanyImportApplyLimit      int                    `json:"company_import_apply_limit"`
+	BaselineMaterializeLimit     int                    `json:"baseline_materialize_limit"`
 	BudgetPolicyVersion          uint64                 `json:"budget_policy_version"`
 	BudgetMaxActive              int                    `json:"budget_max_active"`
 	BudgetMaxPerCapability       int                    `json:"budget_max_per_capability"`
@@ -99,6 +100,9 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 	if cfg.CompanyImportApplyLimit < 1 || cfg.CompanyImportApplyLimit > 500 {
 		return Config{}, fmt.Errorf("recruiting config: company_import_apply_limit must be in [1,500]")
 	}
+	if cfg.BaselineMaterializeLimit < 1 || cfg.BaselineMaterializeLimit > 500 {
+		return Config{}, fmt.Errorf("recruiting config: baseline_materialize_limit must be in [1,500]")
+	}
 	budget := cfg.executionBudgetPolicy()
 	if budget.Version == 0 || budget.MaxActive < 1 || budget.MaxActive > 100_000 ||
 		budget.MaxPerCapability < 1 || budget.MaxPerCapability > budget.MaxActive ||
@@ -134,6 +138,7 @@ func defaultConfig() Config {
 		DailyWindowStartDelayMinutes: 0, DailyWindowDurationMinutes: 480, DailySchedulePolicyVersion: 1,
 		DailyWorkMaterializeLimit: 100,
 		CompanyImportApplyLimit:   100,
+		BaselineMaterializeLimit:  100,
 		BudgetPolicyVersion:       1, BudgetMaxActive: 1_000, BudgetMaxPerCapability: 1_000,
 		BudgetMaxPerOrigin: 8, BudgetMaxPerCompany: 50, BudgetMaxPerProfile: 1, BudgetPermitTTLMS: 900_000,
 		RetryPolicyVersion: 1, RetryMaxAutomaticAttempts: 4, RetryBaseDelayMS: 30_000,
@@ -195,6 +200,7 @@ const ConfigSchema = `{
     "daily_schedule_policy_version":{"type":"integer","minimum":1},
     "daily_work_materialize_limit":{"type":"integer","minimum":1,"maximum":500}
 	,"company_import_apply_limit":{"type":"integer","minimum":1,"maximum":500}
+	,"baseline_materialize_limit":{"type":"integer","minimum":1,"maximum":500}
 	,"budget_policy_version":{"type":"integer","minimum":1}
 	,"budget_max_active":{"type":"integer","minimum":1,"maximum":100000}
 	,"budget_max_per_capability":{"type":"integer","minimum":1,"maximum":100000}

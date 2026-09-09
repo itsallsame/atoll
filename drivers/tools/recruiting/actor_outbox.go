@@ -30,21 +30,26 @@ type outboxReconcilePayload struct {
 }
 
 type outboxReconcileResponse struct {
-	ContractVersion   string `json:"contract_version"`
-	Scanned           int    `json:"scanned"`
-	Delivered         int    `json:"delivered"`
-	RetryScheduled    int    `json:"retry_scheduled"`
-	Exhausted         int    `json:"exhausted"`
-	Conflicts         int    `json:"conflicts"`
-	CheckpointError   int    `json:"checkpoint_error"`
-	AttemptsScanned   int    `json:"attempts_scanned"`
-	AttemptsExpired   int    `json:"attempts_expired"`
-	WorksRetryQueued  int    `json:"works_retry_queued"`
-	AttemptConflicts  int    `json:"attempt_conflicts"`
-	DispatchScanned   int    `json:"dispatch_scanned"`
-	DispatchPosted    int    `json:"dispatch_posted"`
-	DispatchRetries   int    `json:"dispatch_retries"`
-	DispatchExhausted int    `json:"dispatch_exhausted"`
+	ContractVersion       string `json:"contract_version"`
+	Scanned               int    `json:"scanned"`
+	Delivered             int    `json:"delivered"`
+	RetryScheduled        int    `json:"retry_scheduled"`
+	Exhausted             int    `json:"exhausted"`
+	Conflicts             int    `json:"conflicts"`
+	CheckpointError       int    `json:"checkpoint_error"`
+	AttemptsScanned       int    `json:"attempts_scanned"`
+	AttemptsExpired       int    `json:"attempts_expired"`
+	WorksRetryQueued      int    `json:"works_retry_queued"`
+	AttemptConflicts      int    `json:"attempt_conflicts"`
+	DispatchScanned       int    `json:"dispatch_scanned"`
+	DispatchPosted        int    `json:"dispatch_posted"`
+	DispatchRetries       int    `json:"dispatch_retries"`
+	DispatchExhausted     int    `json:"dispatch_exhausted"`
+	BaselineSourceID      string `json:"baseline_source_id,omitempty"`
+	BaselineGeneration    uint64 `json:"baseline_generation,omitempty"`
+	BaselineMaterialized  int    `json:"baseline_materialized"`
+	BaselineDispatches    int    `json:"baseline_dispatches"`
+	BaselinePageCompleted bool   `json:"baseline_page_completed"`
 }
 
 type outboxReconcileDuePayload struct {
@@ -85,6 +90,15 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 	}
 	response.AttemptsScanned, response.AttemptsExpired = recovery.Scanned, recovery.Expired
 	response.WorksRetryQueued, response.AttemptConflicts = recovery.RetryQueued, recovery.Conflicts
+	materialized, err := repository.MaterializeNextBaselinePage(msg.Ctx(), cfg.BaselineMaterializeLimit, now,
+		cfg.executionDispatchTargets())
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response.BaselineSourceID, response.BaselineGeneration = materialized.SourceID, materialized.Generation
+	response.BaselineMaterialized, response.BaselinePageCompleted = materialized.Processed, materialized.Completed
+	response.BaselineDispatches = materialized.Dispatches
 	dispatch, err := reconcileExecutionDispatches(msg.Ctx(), sys, repository, payload.Limit, now,
 		time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond)
 	if err != nil {
@@ -222,6 +236,8 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 		now := time.Now().UTC()
 		_, _ = repository.RecoverStaleAttempts(msg.Ctx(), now.Add(-time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond), cfg.AttemptRecoveryLimit, now)
 		_, _ = reconcileOutbox(msg.Ctx(), sys, repository, defaultReconcileLimit, now)
+		_, _ = repository.MaterializeNextBaselinePage(msg.Ctx(), cfg.BaselineMaterializeLimit, now,
+			cfg.executionDispatchTargets())
 		_, _ = reconcileExecutionDispatches(msg.Ctx(), sys, repository, defaultReconcileLimit, now,
 			time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond)
 	}

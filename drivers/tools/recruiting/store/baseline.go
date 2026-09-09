@@ -37,11 +37,13 @@ func insertBaselineWith(ctx context.Context, executor interface {
 	_, err = executor.ExecContext(ctx, `
 INSERT INTO recruiting_baseline_generations(
   source_id, work_id, baseline_generation, company_version, source_version, generation_status, listing_finalized,
-  details_expected, details_accounted, detail_exceptions, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  details_expected, materialization_cursor, materialized_count, materialization_completed,
+  details_accounted, detail_exceptions, version, state_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		baseline.SourceID, nullableString(baseline.WorkID), baseline.Generation, nullableUint(baseline.CompanyVersion),
 		nullableUint(baseline.SourceVersion), baseline.Status, baseline.ListingFinalized,
-		baseline.DetailsExpected, baseline.DetailsAccounted, baseline.DetailExceptions, baseline.Version, state,
+		baseline.DetailsExpected, nullableString(baseline.MaterializationCursor), baseline.MaterializedCount,
+		baseline.MaterializationCompleted, baseline.DetailsAccounted, baseline.DetailExceptions, baseline.Version, state,
 		businessAt.UTC(), businessAt.UTC())
 	if err == nil {
 		return nil
@@ -197,9 +199,11 @@ WHERE source_id = ? AND baseline_generation = ?`, baseline.SourceID, baseline.Ge
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_baseline_generations
 SET generation_status = ?, listing_finalized = ?, details_expected = ?,
+    materialization_cursor = ?, materialized_count = ?, materialization_completed = ?,
     details_accounted = ?, detail_exceptions = ?, version = ?, state_json = ?, updated_at = ?
 WHERE source_id = ? AND baseline_generation = ? AND version = ?`,
-		baseline.Status, baseline.ListingFinalized, baseline.DetailsExpected, baseline.DetailsAccounted, baseline.DetailExceptions,
+		baseline.Status, baseline.ListingFinalized, baseline.DetailsExpected, nullableString(baseline.MaterializationCursor),
+		baseline.MaterializedCount, baseline.MaterializationCompleted, baseline.DetailsAccounted, baseline.DetailExceptions,
 		baseline.Version, baselineState, businessAt.UTC(), baseline.SourceID, baseline.Generation, expectedVersion)
 	if err != nil {
 		return fmt.Errorf("finalize baseline generation: %w", err)

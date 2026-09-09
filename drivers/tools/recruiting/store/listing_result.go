@@ -515,10 +515,13 @@ WHERE source_id = ? AND baseline_generation = ?`, execution.Baseline.SourceID, e
 			baselineState, _ := json.Marshal(finalizedBaseline)
 			result, err = tx.ExecContext(ctx, `UPDATE recruiting_baseline_generations
 SET generation_status = ?, listing_finalized = ?, details_expected = ?, details_accounted = ?,
+    materialization_cursor = ?, materialized_count = ?, materialization_completed = ?,
     detail_exceptions = ?, version = ?, state_json = ?, updated_at = ?
 WHERE source_id = ? AND baseline_generation = ? AND version = ?`, finalizedBaseline.Status,
 				finalizedBaseline.ListingFinalized, finalizedBaseline.DetailsExpected, finalizedBaseline.DetailsAccounted,
-				finalizedBaseline.DetailExceptions, finalizedBaseline.Version, baselineState, input.CompletedAt.UTC(),
+				nullableString(finalizedBaseline.MaterializationCursor), finalizedBaseline.MaterializedCount,
+				finalizedBaseline.MaterializationCompleted, finalizedBaseline.DetailExceptions, finalizedBaseline.Version,
+				baselineState, input.CompletedAt.UTC(),
 				finalizedBaseline.SourceID, finalizedBaseline.Generation, execution.Baseline.Version)
 			if err == nil {
 				if changed, _ := result.RowsAffected(); changed != 1 {
