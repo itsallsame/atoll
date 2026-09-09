@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -85,6 +86,7 @@ func TestDailyIncrementalD0ThroughD6PreservesBoundaryAndRefreshInvariants(t *tes
 		t.Fatalf("D2 checkpoint = %+v", checkpoint)
 	}
 	assertContinuousCounts(t, ctx, db, sourceID, 4, 4, 10)
+	completeContinuousIncrementalDetail(t, ctx, repository, "d", d2.at.Add(10*time.Second))
 
 	// D3: historical job C changes and is re-topped. It remains one Job but
 	// advances refresh_generation and creates exactly one new Detail Work.
@@ -110,6 +112,7 @@ WHERE source_id = ? AND source_job_key = 'c'`, sourceID).Scan(&cJobID); err != n
 	if cJob.RefreshGeneration != 2 || cJob.ListingFingerprint != "fp-c-v2" {
 		t.Fatalf("D3 historical update refresh=%d fingerprint=%s", cJob.RefreshGeneration, cJob.ListingFingerprint)
 	}
+	failContinuousRefreshDetail(t, ctx, repository, cJob, checkpoint, d3.at.Add(10*time.Second))
 
 	// D4: the newest activity-time group is split across pages. Both E and F
 	// must be consumed before the candidate checkpoint is committed.
@@ -175,6 +178,87 @@ WHERE source_id = ? AND source_job_key = 'c'`, sourceID).Scan(&cJobID); err != n
 	}
 	assertContinuousCounts(t, ctx, db, sourceID, 8, 9, 25)
 	assertContinuousJourneyFinal(t, ctx, db, sourceID, d5.occurrence.OccurrenceID, failedWork.WorkID, retry.WorkID)
+}
+
+func completeContinuousIncrementalDetail(t *testing.T, ctx context.Context, repository *Repository,
+	wantSourceJobKey string, at time.Time) {
+	t.Helper()
+	offer := startContinuousDetail(t, ctx, repository, "continuous-"+wantSourceJobKey+"-detail", wantSourceJobKey, at)
+	artifact := mustResultArtifact(t, "continuous-"+wantSourceJobKey+"-detail-response", model.ArtifactResponse,
+		offer.Work.WorkID, offer.Attempt.AttemptID)
+	result := DetailResult{AttemptID: offer.Attempt.AttemptID, ExecutorActorID: offer.Attempt.ExecutorActorID,
+		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Artifact: artifact,
+		DetailVersionID:       "continuous-" + wantSourceJobKey + "-detail-version",
+		NormalizedContentHash: "sha256:continuous-" + wantSourceJobKey + "-detail",
+		DetailJSON:            []byte(fmt.Sprintf(`{"source_job_key":%q}`, wantSourceJobKey)),
+		ObservedAt:            at.Add(time.Second), CauseCommandID: "continuous-" + wantSourceJobKey + "-detail-result",
+		RequestHash: "sha256:continuous-" + wantSourceJobKey + "-detail-result"}
+	accepted, err := repository.AcceptDetailResult(ctx, result)
+	if err != nil || accepted.Replayed || accepted.Job.Status != model.JobAvailable {
+		t.Fatalf("incremental detail %s = %+v err=%v", wantSourceJobKey, accepted, err)
+	}
+	if replay, err := repository.AcceptDetailResult(ctx, result); err != nil || !replay.Replayed || replay.Job != accepted.Job {
+		t.Fatalf("incremental detail %s replay = %+v err=%v", wantSourceJobKey, replay, err)
+	}
+}
+
+func failContinuousRefreshDetail(t *testing.T, ctx context.Context, repository *Repository,
+	updated model.SourceJob, committedCheckpoint model.IncrementalCheckpoint, at time.Time) {
+	t.Helper()
+	if updated.DetailVersion != 1 || updated.DetailContentHash == "" || updated.Status != model.JobUpdatePending {
+		t.Fatalf("updated job lost its last usable detail before refresh: %+v", updated)
+	}
+	previousHash := updated.DetailContentHash
+	offer := startContinuousDetail(t, ctx, repository, "continuous-c-refresh-detail", updated.SourceJobKey, at)
+	failureArtifact := mustResultArtifact(t, "continuous-c-refresh-failure", model.ArtifactFailure,
+		offer.Work.WorkID, offer.Attempt.AttemptID)
+	report := executioncontract.FailureReport{Class: "parse_error", NeedsRepair: true, Artifact: failureArtifact}
+	command := ExecutionTransitionCommand{CommandID: "continuous-c-refresh-failed-command",
+		Word: executioncontract.TypeFailed, RequestHash: "sha256:continuous-c-refresh-failed-command",
+		CorrelationID: "continuous-c-refresh-correlation", RequestedBy: offer.Attempt.ExecutorActorID,
+		AttemptID: offer.Attempt.AttemptID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation,
+		Action: "fail", Reason: report.Class, Failure: &report,
+		FailurePolicy: ExecutionFailurePolicy{Version: 1, MaxAutomaticAttempts: 3, BaseDelay: time.Second,
+			MaxDelay: time.Minute, ThrottledDelay: time.Minute}}
+	first, err := repository.ApplyExecutionTransitionCommand(ctx, command, at.Add(time.Second))
+	if err != nil || first.Replayed {
+		t.Fatalf("refresh detail failure = %+v err=%v", first, err)
+	}
+	replay, err := repository.ApplyExecutionTransitionCommand(ctx, command, at.Add(2*time.Second))
+	if err != nil || !replay.Replayed || string(replay.Response) != string(first.Response) {
+		t.Fatalf("refresh detail failure lost-reply replay = %+v err=%v", replay, err)
+	}
+	job, jobErr := repository.GetJob(ctx, updated.JobID)
+	work, workErr := repository.GetWork(ctx, offer.Work.WorkID)
+	checkpoint, checkpointErr := repository.GetCheckpoint(ctx, updated.SourceID)
+	if jobErr != nil || workErr != nil || checkpointErr != nil || work.Status != model.WorkWaitingHuman ||
+		job.Status != model.JobUpdatePending || job.RefreshGeneration != updated.RefreshGeneration ||
+		job.DetailVersion != updated.DetailVersion || job.DetailContentHash != previousHash ||
+		!reflect.DeepEqual(checkpoint, committedCheckpoint) {
+		t.Fatalf("failed refresh changed accepted facts job=%+v work=%+v checkpoint=%+v errors=%v/%v/%v",
+			job, work, checkpoint, jobErr, workErr, checkpointErr)
+	}
+}
+
+func startContinuousDetail(t *testing.T, ctx context.Context, repository *Repository, prefix, wantSourceJobKey string,
+	at time.Time) ExecutionOffer {
+	t.Helper()
+	offer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: prefix + "-attempt",
+		ExecutorActorID: "tool:continuous-detail:2", ExecutorIncarnation: prefix + "-boot",
+		Capability: "http.detail", Origin: "https://continuous.example.com", OfferedAt: at,
+		BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil || offer.Detail == nil || offer.Detail.Job.SourceJobKey != wantSourceJobKey {
+		t.Fatalf("detail offer %s = %+v err=%v", wantSourceJobKey, offer, err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+		offer.Attempt.ExecutorIncarnation, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+		offer.Attempt.ExecutorIncarnation, at); err != nil {
+		t.Fatal(err)
+	}
+	return offer
 }
 
 // The MySQL contract runner intentionally shares one migrated schema across
