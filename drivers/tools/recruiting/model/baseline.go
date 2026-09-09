@@ -12,6 +12,7 @@ const (
 	BaselineDetailsPending BaselineStatus = "details_pending"
 	BaselineCompleted      BaselineStatus = "completed"
 	BaselineWithExceptions BaselineStatus = "completed_with_exceptions"
+	BaselineCanceled       BaselineStatus = "canceled"
 )
 
 type BaselineGeneration struct {
@@ -103,6 +104,18 @@ func (b BaselineGeneration) FinalizeListingAttempt(expectedVersion, detailsExpec
 	}
 	finalized.ListingAttemptID = attemptID
 	return finalized, nil
+}
+
+func (b BaselineGeneration) Cancel(expectedVersion uint64) (BaselineGeneration, error) {
+	if err := requireVersion(expectedVersion, b.Version); err != nil {
+		return BaselineGeneration{}, err
+	}
+	if b.Status != BaselineListing || b.ListingFinalized {
+		return BaselineGeneration{}, &InvalidTransitionError{Entity: "baseline", From: string(b.Status), Action: "cancel"}
+	}
+	b.Status = BaselineCanceled
+	b.Version++
+	return b, nil
 }
 
 func (b BaselineGeneration) AdvanceMaterialization(expectedVersion uint64, cursor string, count uint64, completed bool) (BaselineGeneration, error) {

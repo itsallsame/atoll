@@ -338,6 +338,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 进展补充（2026-09-09，baseline 中断隔离）：migration 20 为 staging 行增加 `attempt_id`，并让 finalized BaselineGeneration 冻结唯一成功的 `listing_attempt_id`。页间退出后新 Attempt 从第 1 页重扫；completion 只统计当前 Attempt，物化也只读取被冻结 Attempt 的行，旧 Attempt 的独有岗位键不能混入基线或 Checkpoint。隔离 MySQL 合同已用“旧 Attempt 留 1 行、重试 Attempt 产生 2 个不同岗位”的不利场景证明最终只物化后者；10,000 条 legacy/fixture staging 路径仍保持 20 个短事务。真实 Executor 进程退出切点仍待补齐。
 
+进展补充（2026-09-09，baseline 用户取消）：通用 `recruiting.work.cancel` 对 `baseline_listing` 进入领域感知事务，而不是只改 Work 行。运行中取消会原子终结 Baseline、拒绝 Attempt、释放非 root MySQL 中的 Permit/全部预算维度、追加 work/baseline 事件和容量 wake；在途迟到页只保存 rejected Artifact，不产生 Checkpoint。同一命令重放保持所有版本和计数不变，后续可创建更高 baseline generation。隔离 MySQL 已覆盖；普通用户通过真实 server/daemon 取消在途 Executor 的切点仍待完成。
+
 按以下顺序交付一个真正可用的切片：
 
 ```text

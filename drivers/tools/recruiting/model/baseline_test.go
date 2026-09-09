@@ -62,3 +62,17 @@ func TestExecutableBaselineFinalizationBindsSuccessfulAttempt(t *testing.T) {
 		t.Fatalf("attempt-bound baseline = %+v, %v", finalized, err)
 	}
 }
+
+func TestBaselineCancellationIsTerminalBeforeListingFinalize(t *testing.T) {
+	baseline, _ := NewBaselineGeneration("source-1", 1)
+	canceled, err := baseline.Cancel(baseline.Version)
+	if err != nil || canceled.Status != BaselineCanceled || canceled.Version != 2 {
+		t.Fatalf("cancel baseline = %+v, %v", canceled, err)
+	}
+	if _, err := canceled.FinalizeListing(canceled.Version, 0); err == nil {
+		t.Fatal("canceled baseline was finalized")
+	}
+	if _, err := canceled.Cancel(canceled.Version); err == nil {
+		t.Fatal("canceled baseline was canceled twice")
+	}
+}

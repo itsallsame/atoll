@@ -534,6 +534,9 @@ func applyWorkMutationFacts(repository *store.Repository, msg actorbase.Msg, com
 	if err != nil {
 		return store.CommandResult{}, err
 	}
+	if msg.Type == TypeWorkCancel && work.Purpose == "baseline_listing" {
+		return repository.ApplyCancelBaselineWorkCommand(msg.Ctx(), expected, work, receipt, event, businessAt)
+	}
 	return repository.ApplyWorkCommand(msg.Ctx(), expected, work, receipt, event, businessAt)
 }
 
