@@ -141,6 +141,8 @@ type Offer struct {
 	CompanyImportItems  []CompanyImportApplyItem     `json:"company_import_items,omitempty"`
 	Checkpoint          *model.IncrementalCheckpoint `json:"checkpoint,omitempty"`
 	Detail              *DetailInput                 `json:"detail,omitempty"`
+	Discovery           *model.SourceDiscovery       `json:"discovery,omitempty"`
+	Recipe              *model.Recipe                `json:"recipe,omitempty"`
 	Budget              model.BudgetPermit           `json:"budget"`
 	BudgetExpiresAt     string                       `json:"budget_expires_at"`
 	RequestedCapability string                       `json:"requested_capability"`
@@ -271,6 +273,15 @@ type DetailResult struct {
 	Detail                json.RawMessage        `json:"detail"`
 }
 
+type SourceDiscoveryResult struct {
+	CommandID           string                           `json:"command_id"`
+	ResultKind          string                           `json:"result_kind"`
+	AttemptID           string                           `json:"attempt_id"`
+	ExecutorIncarnation string                           `json:"executor_incarnation"`
+	Artifact            model.ArtifactMetadata           `json:"artifact"`
+	Candidates          []model.SourceDiscoveryCandidate `json:"candidates"`
+}
+
 type ResultResponse struct {
 	Status          string          `json:"status"`
 	Reason          string          `json:"reason,omitempty"`
@@ -282,4 +293,5 @@ type ResultResponse struct {
 	Diagnostic      json.RawMessage `json:"diagnostic,omitempty"`
 	Detail          json.RawMessage `json:"detail,omitempty"`
 	CompanyImport   json.RawMessage `json:"company_import,omitempty"`
+	SourceDiscovery json.RawMessage `json:"source_discovery,omitempty"`
 }

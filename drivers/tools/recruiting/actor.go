@@ -167,6 +167,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleCompanyMessage(sys, repository, msg)
 		case TypeSourceAdd, TypeSourceUpdate, TypeSourceValidate, TypeSourcePause, TypeSourceResume, TypeSourceArchive, TypeSourceRestore:
 			handleSourceMessage(sys, repository, msg)
+		case TypeSourceDiscover:
+			handleSourceDiscover(sys, cfg, repository, msg)
 		case TypeWorkCreate, TypeWorkPause, TypeWorkResume, TypeWorkRetry, TypeWorkCancel, TypeWorkResolve:
 			handleWorkMessage(sys, cfg, repository, msg)
 		case TypeRunJoinOccurrence:
@@ -177,7 +179,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleStandaloneListingRun(sys, cfg, repository, msg, RunProduction)
 		case TypeExecutionOffer, TypeExecutionAccept, TypeExecutionStarted, TypeExecutionFailed, TypeExecutionWakeCompleted:
 			handleExecutionControlMessage(sys, cfg, repository, msg)
-		case TypeSourceGet, TypeSourceList, TypeJobGet, TypeJobList, TypeWorkGet, TypeWorkList,
+		case TypeSourceGet, TypeSourceList, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
+			TypeJobGet, TypeJobList, TypeWorkGet, TypeWorkList,
 			TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary, TypeSystemStatus, TypeCapacityStatus:
 			handleResourceQuery(sys, cfg, repository, msg)
 		case TypeSystemReconcile:

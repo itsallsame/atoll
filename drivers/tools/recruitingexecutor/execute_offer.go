@@ -23,6 +23,10 @@ type executionHTTPDriver interface {
 	RunDetail(context.Context, recipeabi.Spec, recipeabi.RunInput, httpdriver.ComplianceEvidence, httpdriver.ArtifactSink) (httpdriver.DetailRunResult, error)
 }
 
+type executionDiscoveryHTTPDriver interface {
+	RunDiscovery(context.Context, recipeabi.Spec, recipeabi.RunInput, httpdriver.ComplianceEvidence, httpdriver.ArtifactSink) (httpdriver.DiscoveryRunResult, error)
+}
+
 type executionControl interface {
 	Accept(context.Context, executioncontract.Offer) error
 	Started(context.Context, executioncontract.Offer) error
@@ -119,6 +123,28 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 			return fmt.Errorf("submit detail result: %w", err)
 		}
 		return nil
+
+	case "source_discovery":
+		discoveryDriver, ok := driver.(executionDiscoveryHTTPDriver)
+		if !ok {
+			return failLocalExecution(ctx, control, sink, offer, "contract_violated", "discovery_driver",
+				errors.New("configured HTTP driver does not implement source discovery"))
+		}
+		run, runErr := discoveryDriver.RunDiscovery(ctx, spec, input, options.Compliance, sink)
+		if runErr != nil {
+			return failLocalExecution(ctx, control, sink, offer, "unexpected_status", "discovery_driver", runErr)
+		}
+		if run.Output.Failure != nil {
+			return failRunExecution(ctx, control, sink, offer, run.Output)
+		}
+		submission, err := prepareSourceDiscoverySubmission(offer, run, sink)
+		if err != nil {
+			return failLocalExecution(ctx, control, sink, offer, "contract_violated", "source_discovery_result", err)
+		}
+		if err := control.Submit(ctx, "source_discovery", submission); err != nil {
+			return fmt.Errorf("submit source discovery result: %w", err)
+		}
+		return nil
 	default:
 		return failLocalExecution(ctx, control, sink, offer, "contract_violated", "offer_kind",
 			fmt.Errorf("unsupported execution offer kind %q", offer.Kind))
@@ -163,6 +189,9 @@ func executionTargetURL(offer executioncontract.Offer) string {
 	}
 	if offer.ListingRun != nil {
 		return offer.ListingRun.ListingExecution.Endpoint.URL
+	}
+	if offer.Discovery != nil {
+		return offer.Discovery.SeedURL
 	}
 	return ""
 }

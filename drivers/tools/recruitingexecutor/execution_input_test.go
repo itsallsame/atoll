@@ -23,6 +23,10 @@ func executionSpec(t *testing.T, kind recipeabi.Kind) (recipeabi.Spec, []byte, s
 		spec.Listing = &recipeabi.ListingContract{IdentityField: "id", DetailURLField: "detail_url", BoundaryMode: "frontier_keys", Ordering: "newest_activity_desc",
 			UpdateRetop: true, OverlapPages: 1, MaxPages: 10, MaxItemsPerPage: 100, MaxTotalBytes: 1 << 20, FrontierWidth: 3}
 	}
+	if kind == recipeabi.KindDiscovery {
+		spec.Extraction.Collection = "/links"
+		spec.Extraction.Fields = map[string]string{"endpoint": "/url", "confidence_basis": "/label"}
+	}
 	raw, err := json.Marshal(spec)
 	if err != nil {
 		t.Fatal(err)
@@ -32,6 +36,36 @@ func executionSpec(t *testing.T, kind recipeabi.Kind) (recipeabi.Spec, []byte, s
 		t.Fatal(err)
 	}
 	return spec, raw, hash
+}
+
+func sourceDiscoveryExecutionOffer(t *testing.T, now time.Time) (executioncontract.Offer, recipeabi.Spec, []byte) {
+	t.Helper()
+	spec, raw, hash := executionSpec(t, recipeabi.KindDiscovery)
+	execution := model.RecipeExecution{ABIVersion: model.RecipeABIVersion, ContentRef: "recipe://discovery/company/1",
+		RequiredCapability: "http.public", Transport: model.RecipeTransportHTTPJSON}
+	recipe, err := model.NewRecipe("recipe-discovery", model.RecipeDiscovery, "company.example", 1, hash, "sha256:discovery-contract", execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipe, _ = recipe.BeginValidation(recipe.StateVersion)
+	recipe, _ = recipe.Publish(recipe.StateVersion)
+	company, _ := model.NewCompany("company-discovery", "Discovery Company", "https://company.example")
+	work, _ := model.NewWork("work-discovery", "company", company.CompanyID, "source_discovery", "human")
+	discovery, err := model.NewSourceDiscovery("discovery-1", work.WorkID, company, 2, company.Website, recipe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, _ := model.NewAttempt("attempt-discovery", work)
+	attempt, _ = attempt.BindExecutor("executor-1", "boot-1", "http.public")
+	attempt, err = attempt.WithDiscoveryFence(model.AttemptFence{CompanyVersion: company.Version,
+		DiscoveryGeneration: discovery.Generation, RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version})
+	if err != nil {
+		t.Fatal(err)
+	}
+	permit, _ := model.NewBudgetPermit("permit-discovery", attempt.AttemptID, "https://company.example", "",
+		attempt.Capability, company.CompanyID, 5)
+	return executioncontract.Offer{Kind: "source_discovery", Attempt: attempt, Work: work, Discovery: &discovery, Recipe: &recipe,
+		Budget: permit, BudgetExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano), RequestedCapability: attempt.Capability}, spec, raw
 }
 
 func listingExecutionOffer(t *testing.T, now time.Time) (executioncontract.Offer, recipeabi.Spec, []byte) {
@@ -139,6 +173,20 @@ func TestPrepareListingExecutionBuildsFencedRunInputAndResolvesRecipe(t *testing
 		prepared.Input.Endpoint.Version != offer.Occurrence.ListingExecution.Endpoint.Revision || prepared.Input.Checkpoint == nil ||
 		prepared.Input.Checkpoint.Version != offer.Checkpoint.Version || prepared.Input.Budget.PermitID != offer.Budget.PermitID {
 		t.Fatalf("unexpected prepared listing execution: %+v", prepared)
+	}
+}
+
+func TestPrepareSourceDiscoveryUsesCompanyRecipeWithoutFakeSourceAssignment(t *testing.T) {
+	now := time.Date(2026, 9, 9, 11, 0, 0, 0, time.UTC)
+	offer, spec, raw := sourceDiscoveryExecutionOffer(t, now)
+	prepared, err := prepareExecution(recipeReaderStub{outcome: accessdoor.Outcome{Found: true, Value: raw}}, offer, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Recipe.Kind != spec.Kind || prepared.Input.Target.Kind != "company" || prepared.Input.Recipe == nil ||
+		prepared.Input.Recipe.RecipeID != offer.Recipe.RecipeID || prepared.Input.Assignment != (recipeabi.AssignmentRef{}) ||
+		prepared.Input.Attempt.SourceVersion != 0 || prepared.Input.Attempt.DiscoveryGeneration != offer.Discovery.Generation {
+		t.Fatalf("unexpected prepared discovery input: %+v", prepared)
 	}
 }
 

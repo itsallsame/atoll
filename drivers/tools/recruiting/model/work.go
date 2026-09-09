@@ -298,19 +298,21 @@ type Attempt struct {
 	ProfileID           string        `json:"profile_id,omitempty"`
 	ProfileVersion      uint64        `json:"profile_version,omitempty"`
 	BatchVersion        uint64        `json:"batch_version,omitempty"`
+	DiscoveryGeneration uint64        `json:"discovery_generation,omitempty"`
 }
 
 type AttemptFence struct {
-	CompanyVersion    uint64
-	SourceVersion     uint64
-	AssignmentVersion uint64
-	RecipeID          string
-	RecipeVersion     uint64
-	CheckpointVersion uint64
-	RefreshGeneration uint64
-	ProfileID         string
-	ProfileVersion    uint64
-	BatchVersion      uint64
+	CompanyVersion      uint64
+	SourceVersion       uint64
+	AssignmentVersion   uint64
+	RecipeID            string
+	RecipeVersion       uint64
+	CheckpointVersion   uint64
+	RefreshGeneration   uint64
+	ProfileID           string
+	ProfileVersion      uint64
+	BatchVersion        uint64
+	DiscoveryGeneration uint64
 }
 
 // WithBatchFence binds an Attempt to a version of an extension-owned batch
@@ -322,6 +324,25 @@ func (a Attempt) WithBatchFence(batchVersion uint64) (Attempt, error) {
 		return Attempt{}, fmt.Errorf("offered unfenced attempt and batch version are required")
 	}
 	a.BatchVersion = batchVersion
+	return a, nil
+}
+
+// WithDiscoveryFence binds source discovery to its Company, immutable Recipe
+// version, aggregate generation state, and optional authenticated profile. It
+// deliberately leaves Source and Assignment versions empty: neither exists
+// before a candidate is accepted.
+func (a Attempt) WithDiscoveryFence(f AttemptFence) (Attempt, error) {
+	if a.Status != AttemptOffered || f.CompanyVersion == 0 || f.DiscoveryGeneration == 0 ||
+		strings.TrimSpace(f.RecipeID) == "" || f.RecipeVersion == 0 || f.SourceVersion != 0 ||
+		f.AssignmentVersion != 0 || f.CheckpointVersion != 0 || f.RefreshGeneration != 0 || f.BatchVersion != 0 {
+		return Attempt{}, fmt.Errorf("offered attempt and company/discovery/recipe fence are required")
+	}
+	if (f.ProfileID == "") != (f.ProfileVersion == 0) {
+		return Attempt{}, fmt.Errorf("profile identity and version must be supplied together")
+	}
+	a.CompanyVersion, a.DiscoveryGeneration = f.CompanyVersion, f.DiscoveryGeneration
+	a.RecipeID, a.RecipeVersion = f.RecipeID, f.RecipeVersion
+	a.ProfileID, a.ProfileVersion = f.ProfileID, f.ProfileVersion
 	return a, nil
 }
 
@@ -375,7 +396,8 @@ func (a Attempt) CanAcceptResult(work Work, current AttemptFence, executorActorI
 	if current.CompanyVersion != a.CompanyVersion || current.SourceVersion != a.SourceVersion ||
 		current.AssignmentVersion != a.AssignmentVersion || current.RecipeID != a.RecipeID || current.RecipeVersion != a.RecipeVersion ||
 		current.CheckpointVersion != a.CheckpointVersion || current.RefreshGeneration != a.RefreshGeneration ||
-		current.ProfileID != a.ProfileID || current.ProfileVersion != a.ProfileVersion {
+		current.ProfileID != a.ProfileID || current.ProfileVersion != a.ProfileVersion ||
+		current.DiscoveryGeneration != a.DiscoveryGeneration {
 		return fmt.Errorf("attempt result fenced by changed domain version")
 	}
 	return nil

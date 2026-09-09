@@ -36,6 +36,7 @@ type RunInput struct {
 	Target     TargetRef      `json:"target"`
 	Endpoint   EndpointRef    `json:"endpoint"`
 	Assignment AssignmentRef  `json:"assignment"`
+	Recipe     *RecipeRef     `json:"recipe,omitempty"`
 	Checkpoint *CheckpointRef `json:"checkpoint,omitempty"`
 	ProfileRef string         `json:"profile_ref,omitempty"`
 	Budget     BudgetRef      `json:"budget"`
@@ -59,6 +60,12 @@ type AssignmentRef struct {
 	ContractHash      string `json:"contract_hash"`
 }
 
+type RecipeRef struct {
+	RecipeID      string `json:"recipe_id"`
+	RecipeVersion uint64 `json:"recipe_version"`
+	ContractHash  string `json:"contract_hash"`
+}
+
 type CheckpointRef struct {
 	Version        uint64   `json:"version"`
 	FrontierKeys   []string `json:"frontier_keys,omitempty"`
@@ -71,22 +78,32 @@ type BudgetRef struct {
 }
 
 type AttemptFence struct {
-	WorkID            string `json:"work_id"`
-	AttemptID         string `json:"attempt_id"`
-	AcceptanceVersion uint64 `json:"acceptance_version"`
-	CompanyVersion    uint64 `json:"company_version"`
-	SourceVersion     uint64 `json:"source_version"`
-	ProfileVersion    uint64 `json:"profile_version,omitempty"`
+	WorkID              string `json:"work_id"`
+	AttemptID           string `json:"attempt_id"`
+	AcceptanceVersion   uint64 `json:"acceptance_version"`
+	CompanyVersion      uint64 `json:"company_version"`
+	SourceVersion       uint64 `json:"source_version"`
+	ProfileVersion      uint64 `json:"profile_version,omitempty"`
+	DiscoveryGeneration uint64 `json:"discovery_generation,omitempty"`
 }
 
 func (in RunInput) Validate() error {
 	if in.ABIVersion != Version {
 		return fmt.Errorf("unsupported recipe ABI %q", in.ABIVersion)
 	}
-	if blank(in.Target.Kind, in.Target.ID) || in.Endpoint.Version == 0 || blank(in.Assignment.RecipeID, in.Assignment.ContractHash) ||
-		in.Assignment.RecipeVersion == 0 || in.Assignment.AssignmentVersion == 0 || blank(in.Budget.PermitID) || in.Budget.PolicyVersion == 0 ||
-		blank(in.Attempt.WorkID, in.Attempt.AttemptID) || in.Attempt.AcceptanceVersion == 0 || in.Attempt.CompanyVersion == 0 || in.Attempt.SourceVersion == 0 {
-		return fmt.Errorf("complete target, endpoint, assignment, budget, and attempt fence are required")
+	if blank(in.Target.Kind, in.Target.ID) || in.Endpoint.Version == 0 || blank(in.Budget.PermitID) || in.Budget.PolicyVersion == 0 ||
+		blank(in.Attempt.WorkID, in.Attempt.AttemptID) || in.Attempt.AcceptanceVersion == 0 || in.Attempt.CompanyVersion == 0 {
+		return fmt.Errorf("complete target, endpoint, budget, and attempt fence are required")
+	}
+	if in.Target.Kind == "company" {
+		if in.Recipe == nil || blank(in.Recipe.RecipeID, in.Recipe.ContractHash) || in.Recipe.RecipeVersion == 0 ||
+			in.Attempt.DiscoveryGeneration == 0 || in.Attempt.SourceVersion != 0 || in.Assignment != (AssignmentRef{}) || in.Checkpoint != nil {
+			return fmt.Errorf("company discovery input requires Recipe and generation without Source or Assignment")
+		}
+	} else if in.Recipe != nil || blank(in.Assignment.RecipeID, in.Assignment.ContractHash) ||
+		in.Assignment.RecipeVersion == 0 || in.Assignment.AssignmentVersion == 0 || in.Attempt.SourceVersion == 0 ||
+		in.Attempt.DiscoveryGeneration != 0 {
+		return fmt.Errorf("source and job inputs require Assignment and Source fence without discovery Recipe")
 	}
 	endpoint, err := url.Parse(in.Endpoint.URL)
 	if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" || endpoint.User != nil || endpoint.Fragment != "" {
@@ -261,6 +278,17 @@ func (s Spec) Validate() error {
 		}
 	} else if s.Listing != nil {
 		return fmt.Errorf("listing contract is only valid for listing recipes")
+	}
+	if s.Kind == KindDiscovery {
+		if strings.TrimSpace(s.Extraction.Collection) == "" {
+			return fmt.Errorf("discovery recipe requires a bounded candidate collection")
+		}
+		if _, ok := s.Extraction.Fields["endpoint"]; !ok {
+			return fmt.Errorf("discovery recipe requires an endpoint extraction field")
+		}
+		if _, ok := s.Extraction.Fields["confidence_basis"]; !ok {
+			return fmt.Errorf("discovery recipe requires a confidence_basis extraction field")
+		}
 	}
 	return nil
 }

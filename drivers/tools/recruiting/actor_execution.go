@@ -20,17 +20,18 @@ type listingOfferPayload = executioncontract.OfferRequest
 type executionTransitionPayload = executioncontract.TransitionRequest
 
 type executionControlResponse struct {
-	ContractVersion string                            `json:"contract_version"`
-	CorrelationID   string                            `json:"correlation_id"`
-	RequestedBy     string                            `json:"requested_by"`
-	Available       bool                              `json:"available,omitempty"`
-	Offer           *store.ExecutionOffer             `json:"offer,omitempty"`
-	Attempt         *model.Attempt                    `json:"attempt,omitempty"`
-	Page            *store.ListingPageOutcome         `json:"page,omitempty"`
-	Completion      *store.ListingCompletionOutcome   `json:"completion,omitempty"`
-	Diagnostic      *store.DiagnosticResultOutcome    `json:"diagnostic,omitempty"`
-	Detail          *store.DetailResultOutcome        `json:"detail,omitempty"`
-	CompanyImport   *store.CompanyImportResultOutcome `json:"company_import,omitempty"`
+	ContractVersion string                              `json:"contract_version"`
+	CorrelationID   string                              `json:"correlation_id"`
+	RequestedBy     string                              `json:"requested_by"`
+	Available       bool                                `json:"available,omitempty"`
+	Offer           *store.ExecutionOffer               `json:"offer,omitempty"`
+	Attempt         *model.Attempt                      `json:"attempt,omitempty"`
+	Page            *store.ListingPageOutcome           `json:"page,omitempty"`
+	Completion      *store.ListingCompletionOutcome     `json:"completion,omitempty"`
+	Diagnostic      *store.DiagnosticResultOutcome      `json:"diagnostic,omitempty"`
+	Detail          *store.DetailResultOutcome          `json:"detail,omitempty"`
+	CompanyImport   *store.CompanyImportResultOutcome   `json:"company_import,omitempty"`
+	SourceDiscovery *store.SourceDiscoveryResultOutcome `json:"source_discovery,omitempty"`
 }
 
 type listingPageResultPayload = executioncontract.ListingPageResult
@@ -42,6 +43,7 @@ type detailResultPayload = executioncontract.DetailResult
 type companyImportPreviewChunkPayload = executioncontract.CompanyImportPreviewChunkResult
 type companyImportPreviewCompletionPayload = executioncontract.CompanyImportPreviewCompletionResult
 type companyImportApplyPayload = executioncontract.CompanyImportApplyResult
+type sourceDiscoveryResultPayload = executioncontract.SourceDiscoveryResult
 
 func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, state *storedState, msg actorbase.Msg) {
 	var discriminator struct {
@@ -68,6 +70,8 @@ func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, s
 		handleDiagnosticResult(sys, repository, msg)
 	case "detail":
 		handleDetailResult(sys, repository, msg)
+	case "source_discovery":
+		handleSourceDiscoveryResult(sys, repository, msg)
 	case "company_import_preview_chunk":
 		handleCompanyImportPreviewChunk(sys, repository, msg)
 	case "company_import_preview_completion":
@@ -77,6 +81,29 @@ func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, s
 	default:
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "unknown execution result_kind")
 	}
+}
+
+func handleSourceDiscoveryResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload sourceDiscoveryResultPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if strings.TrimSpace(payload.CommandID) == "" || payload.ResultKind != "source_discovery" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "source discovery command_id and result_kind are required")
+		return
+	}
+	outcome, err := repository.AcceptSourceDiscoveryResult(msg.Ctx(), store.SourceDiscoveryResult{
+		CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), AttemptID: payload.AttemptID,
+		ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
+		Artifact: payload.Artifact, Candidates: payload.Candidates, ObservedAt: time.UnixMilli(msg.TS).UTC(),
+	})
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := executionControlResponse{ContractVersion: executioncontract.Version, CorrelationID: string(msg.CorrelationID),
+		RequestedBy: string(msg.Sender.ID), SourceDiscovery: &outcome}
+	_, _ = sys.Reply(msg, response)
 }
 
 func handleCompanyImportApply(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

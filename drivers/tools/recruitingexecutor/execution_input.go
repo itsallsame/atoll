@@ -45,8 +45,7 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 		strings.TrimSpace(offer.RequestedCapability) == "" || attempt.Capability != offer.RequestedCapability ||
 		permit.AttemptID != attempt.AttemptID || permit.Capability != attempt.Capability || permit.PolicyVersion == 0 ||
 		permit.Origin == "" || permit.CompanyID == "" || permit.Version == 0 ||
-		attempt.CompanyVersion == 0 || attempt.SourceVersion == 0 || attempt.AssignmentVersion == 0 ||
-		attempt.RecipeID == "" || attempt.RecipeVersion == 0 {
+		attempt.CompanyVersion == 0 || attempt.RecipeID == "" || attempt.RecipeVersion == 0 {
 		return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("execution offer identity, lifecycle, budget, or fence is incomplete")
 	}
 	if offer.RequestedOrigin != "" && offer.RequestedOrigin != permit.Origin {
@@ -67,6 +66,7 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 		Attempt: recipeabi.AttemptFence{
 			WorkID: work.WorkID, AttemptID: attempt.AttemptID, AcceptanceVersion: attempt.AcceptanceVersion,
 			CompanyVersion: attempt.CompanyVersion, SourceVersion: attempt.SourceVersion, ProfileVersion: attempt.ProfileVersion,
+			DiscoveryGeneration: attempt.DiscoveryGeneration,
 		},
 	}
 	if attempt.ProfileID != "" {
@@ -152,6 +152,33 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 		contentRef = detail.Recipe.Execution.ContentRef
 		expectation = recipeExpectation{ContentHash: detail.Recipe.ContentHash, Kind: recipeabi.KindDetail,
 			Capability: detail.Recipe.Execution.RequiredCapability, Transport: recipeabi.Transport(detail.Recipe.Execution.Transport)}
+
+	case "source_discovery":
+		if offer.Discovery == nil || offer.Recipe == nil || offer.Detail != nil || offer.Occurrence != nil ||
+			offer.ListingRun != nil || offer.Checkpoint != nil || work.Purpose != "source_discovery" || work.TargetType != "company" {
+			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("source discovery offer shape does not match its company work")
+		}
+		discovery, recipe := offer.Discovery, offer.Recipe
+		if discovery.DiscoveryID == "" || discovery.WorkID != work.WorkID || discovery.CompanyID != work.TargetID ||
+			(discovery.Status != model.SourceDiscoveryQueued && discovery.Status != model.SourceDiscoveryRunning) ||
+			discovery.CompanyVersion != attempt.CompanyVersion || discovery.Generation != attempt.DiscoveryGeneration ||
+			discovery.RecipeID != attempt.RecipeID || discovery.RecipeVersion != attempt.RecipeVersion ||
+			recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDiscovery || recipe.RecipeID != attempt.RecipeID ||
+			recipe.Version != attempt.RecipeVersion || recipe.ContentHash != discovery.RecipeContentHash ||
+			recipe.ContractHash != discovery.ContractHash || recipe.Execution != discovery.Execution ||
+			recipe.Execution.RequiredCapability != attempt.Capability || permit.CompanyID != discovery.CompanyID {
+			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("source discovery offer snapshot does not match its Attempt, Recipe, or permit")
+		}
+		origin, err := endpointOrigin(discovery.SeedURL)
+		if err != nil || origin != permit.Origin {
+			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("source discovery seed origin does not match its permit")
+		}
+		input.Target = recipeabi.TargetRef{Kind: "company", ID: discovery.CompanyID}
+		input.Endpoint = recipeabi.EndpointRef{URL: discovery.SeedURL, Version: discovery.CompanyVersion}
+		input.Recipe = &recipeabi.RecipeRef{RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, ContractHash: recipe.ContractHash}
+		contentRef = recipe.Execution.ContentRef
+		expectation = recipeExpectation{ContentHash: recipe.ContentHash, Kind: recipeabi.KindDiscovery,
+			Capability: recipe.Execution.RequiredCapability, Transport: recipeabi.Transport(recipe.Execution.Transport)}
 
 	default:
 		return recipeabi.RunInput{}, recipeExpectation{}, "", fmt.Errorf("unsupported execution offer kind %q", offer.Kind)

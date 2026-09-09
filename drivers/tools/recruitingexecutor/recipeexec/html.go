@@ -37,6 +37,12 @@ func ExecuteHTML(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 	if spec.Kind == recipeabi.KindListing && len(rows) > spec.Listing.MaxItemsPerPage {
 		return DocumentResult{}, fmt.Errorf("listing page contains %d items, limit is %d", len(rows), spec.Listing.MaxItemsPerPage)
 	}
+	if spec.Kind == recipeabi.KindDiscovery && len(rows) > 500 {
+		return DocumentResult{}, fmt.Errorf("discovery page contains %d candidates, limit is 500", len(rows))
+	}
+	if spec.Kind == recipeabi.KindDiscovery && len(rows) > 500 {
+		return DocumentResult{}, fmt.Errorf("discovery page contains %d candidates, limit is 500", len(rows))
+	}
 	fieldSelectors := make(map[string]cascadia.Selector, len(spec.Extraction.Fields))
 	for field, expression := range spec.Extraction.Fields {
 		selector, err := cascadia.Compile(expression)

@@ -384,6 +384,10 @@ func handleWorkRetry(sys actorbase.Sys, cfg Config, repository *store.Repository
 		failStoreError(sys, msg, err)
 		return
 	}
+	if record.Work.Purpose == "source_discovery" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "source discovery retries require an explicit new discovery generation")
+		return
+	}
 	if payload.ExpectedVersion != record.Work.Version {
 		failStoreError(sys, msg, &model.VersionConflictError{Expected: payload.ExpectedVersion, Actual: record.Work.Version})
 		return
@@ -424,11 +428,11 @@ func validateManualWorkPurpose(target Target, purpose string) error {
 		return fmt.Errorf("purpose %q requires a dedicated run command with explicit execution semantics", purpose)
 	}
 	allowed := map[string]map[string]bool{
-		"company_discovery": {"company": true}, "source_discovery": {"company": true},
-		"baseline":         {"source": true},
-		"reconcile":        {"company": true, "source": true},
-		"repair":           {"company": true, "source": true, "job": true, "profile": true, "origin": true, "recipe": true},
-		"data_maintenance": {"company": true, "source": true, "job": true},
+		"company_discovery": {"company": true},
+		"baseline":          {"source": true},
+		"reconcile":         {"company": true, "source": true},
+		"repair":            {"company": true, "source": true, "job": true, "profile": true, "origin": true, "recipe": true},
+		"data_maintenance":  {"company": true, "source": true, "job": true},
 	}
 	targets, exists := allowed[purpose]
 	if !exists || !targets[target.Type] {
@@ -543,7 +547,8 @@ func applyWorkRetryFacts(repository *store.Repository, msg actorbase.Msg, comman
 }
 
 func workCommandDispatch(cfg Config, work model.Work, placement store.WorkPlacement, commandID, causeKind string) (*store.ExecutionDispatchIntent, error) {
-	if work.Purpose != "listing_sync" && work.Purpose != "detail_sync" && work.Purpose != "company_import" && work.Purpose != "company_import_apply" {
+	if work.Purpose != "listing_sync" && work.Purpose != "detail_sync" && work.Purpose != "company_import" &&
+		work.Purpose != "company_import_apply" && work.Purpose != "source_discovery" {
 		return nil, nil
 	}
 	target, found := cfg.executionDispatchTarget(placement.Capability, commandID+"\n"+work.WorkID)

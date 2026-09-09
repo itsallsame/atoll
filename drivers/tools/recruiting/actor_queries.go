@@ -36,6 +36,11 @@ type sourceListPayload struct {
 	PageRequest
 }
 
+type sourceDiscoveryCandidateListPayload struct {
+	DiscoveryID string `json:"discovery_id"`
+	PageRequest
+}
+
 type jobListPayload struct {
 	SourceID string `json:"source_id"`
 	PageRequest
@@ -61,6 +66,10 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 	}
 	if msg.Type == TypeSourceList {
 		handleSourceListQuery(sys, repository, msg)
+		return
+	}
+	if msg.Type == TypeSourceDiscoveryCandidates {
+		handleSourceDiscoveryCandidateListQuery(sys, repository, msg)
 		return
 	}
 	if msg.Type == TypeJobList {
@@ -93,6 +102,8 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 	switch msg.Type {
 	case TypeSourceGet:
 		value, err = repository.GetSource(msg.Ctx(), payload.ID)
+	case TypeSourceDiscoveryGet:
+		value, err = repository.GetSourceDiscovery(msg.Ctx(), payload.ID)
 	case TypeJobGet:
 		value, err = repository.GetJob(msg.Ctx(), payload.ID)
 	case TypeWorkGet:
@@ -111,6 +122,30 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		return
 	}
 	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "entity": value})
+}
+
+func handleSourceDiscoveryCandidateListQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload sourceDiscoveryCandidateListPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if err := payload.PageRequest.Validate(500); err != nil || strings.TrimSpace(payload.DiscoveryID) == "" {
+		if err == nil {
+			err = fmt.Errorf("discovery_id is required")
+		}
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	if payload.Limit == 0 {
+		payload.Limit = 50
+	}
+	page, err := repository.ListSourceDiscoveryCandidates(msg.Ctx(), payload.DiscoveryID, payload.Cursor, payload.Limit)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "items": page.Items,
+		"next_cursor": page.NextCursor, "has_more": page.HasMore})
 }
 
 func handleOperationalStatusQuery(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {

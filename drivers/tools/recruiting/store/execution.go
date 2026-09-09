@@ -106,6 +106,9 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	  )) OR (w.purpose = 'company_import_apply' AND EXISTS (
 	    SELECT 1 FROM recruiting_company_imports ci
 	    WHERE ci.import_id = w.target_id AND ci.import_status IN ('running', 'canceling')
+	  )) OR (w.purpose = 'source_discovery' AND EXISTS (
+	    SELECT 1 FROM recruiting_source_discoveries sd
+	    WHERE sd.work_id = w.work_id AND sd.discovery_status IN ('queued', 'running')
 	  )))
   AND NOT EXISTS (
     SELECT 1 FROM recruiting_attempts a
@@ -179,6 +182,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	var detail *DetailExecutionInput
 	var companyImport model.CompanyImport
 	var companyImportItems []executioncontract.CompanyImportApplyItem
+	var discovery model.SourceDiscovery
+	var discoveryRecipe model.Recipe
 	var fence model.AttemptFence
 	switch work.Purpose {
 	case "listing_sync":
@@ -208,6 +213,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 			companyImportItems, err = listPendingCompanyImportApplyItemsWith(ctx, tx, companyImport.ImportID, limit)
 			fence.BatchVersion = companyImport.Version
 		}
+	case "source_discovery":
+		discovery, discoveryRecipe, fence, err = loadSourceDiscoveryOfferFence(ctx, tx, work, placement)
 	default:
 		err = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)
 	}
@@ -222,7 +229,9 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		sourceID = detail.Job.SourceID
 	}
 	var companyID string
-	if !isCompanyImportPurpose(work.Purpose) {
+	if work.Purpose == "source_discovery" {
+		companyID = discovery.CompanyID
+	} else if !isCompanyImportPurpose(work.Purpose) {
 		if err := tx.QueryRowContext(ctx, "SELECT company_id FROM recruiting_sources WHERE source_id = ?", sourceID).Scan(&companyID); err != nil {
 			return ExecutionOffer{}, fmt.Errorf("load execution company: %w", err)
 		}
@@ -234,6 +243,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	if err == nil {
 		if isCompanyImportPurpose(work.Purpose) {
 			attempt, err = attempt.WithBatchFence(fence.BatchVersion)
+		} else if work.Purpose == "source_discovery" {
+			attempt, err = attempt.WithDiscoveryFence(fence)
 		} else {
 			attempt, err = attempt.WithFence(fence)
 		}
@@ -268,6 +279,9 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	} else if isCompanyImportPurpose(work.Purpose) {
 		offer.CompanyImport = &companyImport
 		offer.CompanyImportItems = companyImportItems
+	} else if work.Purpose == "source_discovery" {
+		offer.Discovery = &discovery
+		offer.Recipe = &discoveryRecipe
 	}
 	offerState, err := json.Marshal(offer)
 	if err != nil {
@@ -516,6 +530,63 @@ WHERE s.source_id = ?`, job.SourceID).Scan(&companyState, &sourceState, &assignm
 	return &DetailExecutionInput{Job: job, Assignment: assignment, Recipe: recipe}, fence, nil
 }
 
+func loadSourceDiscoveryOfferFence(ctx context.Context, tx *sql.Tx, work model.Work, placement WorkPlacement) (model.SourceDiscovery, model.Recipe, model.AttemptFence, error) {
+	if work.TargetType != "company" || work.Purpose != "source_discovery" {
+		return model.SourceDiscovery{}, model.Recipe{}, model.AttemptFence{}, fmt.Errorf("source discovery requires company work")
+	}
+	var discoveryState []byte
+	if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_source_discoveries WHERE work_id = ? FOR UPDATE`, work.WorkID).Scan(&discoveryState); err != nil {
+		return model.SourceDiscovery{}, model.Recipe{}, model.AttemptFence{}, fmt.Errorf("load source discovery: %w", err)
+	}
+	var discovery model.SourceDiscovery
+	if err := json.Unmarshal(discoveryState, &discovery); err != nil {
+		return model.SourceDiscovery{}, model.Recipe{}, model.AttemptFence{}, err
+	}
+	var companyState, recipeState []byte
+	if err := tx.QueryRowContext(ctx, `
+SELECT c.state_json, r.state_json
+FROM recruiting_companies c
+JOIN recruiting_recipes r ON r.recipe_id = ? AND r.recipe_version = ?
+WHERE c.company_id = ?`, discovery.RecipeID, discovery.RecipeVersion, discovery.CompanyID).Scan(&companyState, &recipeState); err != nil {
+		return model.SourceDiscovery{}, model.Recipe{}, model.AttemptFence{}, fmt.Errorf("load source discovery dependencies: %w", err)
+	}
+	var company model.Company
+	var recipe model.Recipe
+	if err := json.Unmarshal(companyState, &company); err != nil {
+		return model.SourceDiscovery{}, model.Recipe{}, model.AttemptFence{}, err
+	}
+	if err := json.Unmarshal(recipeState, &recipe); err != nil {
+		return model.SourceDiscovery{}, model.Recipe{}, model.AttemptFence{}, err
+	}
+	origin, err := canonicalOrigin(discovery.SeedURL)
+	if err != nil || discovery.WorkID != work.WorkID || discovery.CompanyID != work.TargetID ||
+		(discovery.Status != model.SourceDiscoveryQueued && discovery.Status != model.SourceDiscoveryRunning) ||
+		company.Version != discovery.CompanyVersion || company.ControlStatus == model.ControlArchived || company.Website != discovery.SeedURL ||
+		recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDiscovery || recipe.RecipeID != discovery.RecipeID ||
+		recipe.Version != discovery.RecipeVersion || recipe.ContentHash != discovery.RecipeContentHash ||
+		recipe.ContractHash != discovery.ContractHash || recipe.Execution != discovery.Execution ||
+		placement.Capability != recipe.Execution.RequiredCapability || placement.Origin != origin {
+		return model.SourceDiscovery{}, model.Recipe{}, model.AttemptFence{}, fmt.Errorf("source discovery is fenced by changed Company, Recipe, or placement")
+	}
+	fence := model.AttemptFence{CompanyVersion: company.Version, DiscoveryGeneration: discovery.Generation,
+		RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version}
+	if placement.ProfileID != "" {
+		var profileState []byte
+		if err := tx.QueryRowContext(ctx, "SELECT state_json FROM recruiting_profiles WHERE profile_id = ?", placement.ProfileID).Scan(&profileState); err != nil {
+			return model.SourceDiscovery{}, model.Recipe{}, model.AttemptFence{}, fmt.Errorf("load source discovery profile: %w", err)
+		}
+		var profile model.BrowserProfile
+		if err := json.Unmarshal(profileState, &profile); err != nil {
+			return model.SourceDiscovery{}, model.Recipe{}, model.AttemptFence{}, err
+		}
+		if profile.AuthStatus != model.ProfileReady {
+			return model.SourceDiscovery{}, model.Recipe{}, model.AttemptFence{}, fmt.Errorf("source discovery profile is not ready")
+		}
+		fence.ProfileID, fence.ProfileVersion = profile.ProfileID, profile.Version
+	}
+	return discovery, recipe, fence, nil
+}
+
 // AcceptListingExecution records that the bound executor accepted an offer.
 // The name is retained for API compatibility; it accepts both executable
 // purposes selected by OfferExecution.
@@ -719,6 +790,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 	}
 	var occurrence model.SourceOccurrence
 	var listingRun model.ListingRun
+	var currentDiscovery model.SourceDiscovery
 	var currentFence model.AttemptFence
 	// A failure closes execution authority but does not publish business data,
 	// so it remains safe to record after a domain configuration change. Accept
@@ -756,6 +828,13 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			if fenceErr == nil {
 				currentFence.BatchVersion = batch.Version
 			}
+		case "source_discovery":
+			placement, placementErr := getWorkPlacementWith(ctx, tx, work.WorkID)
+			if placementErr != nil {
+				fenceErr = placementErr
+			} else {
+				currentDiscovery, _, currentFence, fenceErr = loadSourceDiscoveryOfferFence(ctx, tx, work, placement)
+			}
 		default:
 			fenceErr = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)
 		}
@@ -789,6 +868,16 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			listingRun, err = listingRun.Start(listingRun.Version)
 			if err == nil {
 				err = updateListingRunInTx(ctx, tx, previousRunVersion, listingRun, businessAt)
+			}
+		}
+		if err == nil && work.Purpose == "source_discovery" {
+			if currentDiscovery.Status == model.SourceDiscoveryQueued {
+				next, transitionErr := currentDiscovery.Start(currentDiscovery.Version)
+				if transitionErr != nil {
+					err = transitionErr
+				} else {
+					err = updateSourceDiscoveryCAS(ctx, tx, currentDiscovery.Version, next, businessAt)
+				}
 			}
 		}
 	case "fail":
@@ -907,7 +996,8 @@ func sameAttemptFence(attempt model.Attempt, current model.AttemptFence) bool {
 		attempt.AssignmentVersion == current.AssignmentVersion && attempt.RecipeID == current.RecipeID &&
 		attempt.RecipeVersion == current.RecipeVersion && attempt.CheckpointVersion == current.CheckpointVersion &&
 		attempt.RefreshGeneration == current.RefreshGeneration && attempt.ProfileID == current.ProfileID &&
-		attempt.ProfileVersion == current.ProfileVersion && attempt.BatchVersion == current.BatchVersion
+		attempt.ProfileVersion == current.ProfileVersion && attempt.BatchVersion == current.BatchVersion &&
+		attempt.DiscoveryGeneration == current.DiscoveryGeneration
 }
 
 func updateWorkTx(ctx context.Context, tx *sql.Tx, expected uint64, work model.Work, businessAt time.Time) error {
