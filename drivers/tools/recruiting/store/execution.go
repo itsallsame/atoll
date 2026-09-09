@@ -100,9 +100,15 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	  ))) OR (w.purpose = 'source_validation' AND EXISTS (
 	    SELECT 1 FROM recruiting_listing_runs lr
 	    JOIN recruiting_sources validation_source ON validation_source.source_id = lr.source_id
+	    JOIN recruiting_recipes validation_recipe
+	      ON validation_recipe.recipe_id = JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.listing_execution.recipe_id'))
+	     AND validation_recipe.recipe_version = CAST(JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.listing_execution.recipe_version')) AS UNSIGNED)
 	    WHERE lr.work_id = w.work_id AND lr.run_mode = 'source_validation' AND lr.run_status IN ('queued', 'running')
 	      AND validation_source.readiness_status = 'validating'
 	      AND CAST(JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.source_version')) AS UNSIGNED) = validation_source.version
+	      AND validation_recipe.status = 'active'
+	      AND validation_recipe.content_hash = JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.listing_execution.content_hash'))
+	      AND validation_recipe.contract_hash = JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.listing_execution.contract_hash'))
 	  )) OR (w.purpose = 'detail_sync' AND EXISTS (
 	    SELECT 1 FROM recruiting_source_jobs j
 	    WHERE j.job_id = w.target_id AND j.job_status IN ('detail_pending', 'update_pending')

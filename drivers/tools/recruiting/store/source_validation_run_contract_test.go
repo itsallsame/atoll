@@ -287,6 +287,19 @@ func TestSourceValidationEndpointCorrectionFencesOldWorkAndAllowsReplacement(t *
 		oldPlacement, oldReceipt, oldEvent, nil, now); err != nil {
 		t.Fatal(err)
 	}
+	quarantined, err := recipe.Quarantine(recipe.StateVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateRecipeCAS(ctx, recipe.StateVersion, quarantined, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "validation-correction-quarantined-attempt",
+		ExecutorActorID: "tool:validation-correction:1", ExecutorIncarnation: "boot-correction",
+		Capability: oldPlacement.Capability, Origin: oldPlacement.Origin, OfferedAt: now.Add(time.Second),
+		BudgetPolicy: testExecutionBudgetPolicy()}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("validation Work with quarantined Recipe was offered: %v", err)
+	}
 	corrected, err := validating.StageEndpoint(validating.Version, "https://validation-correction.example.com/new-jobs", "all")
 	if err != nil || corrected.ReadinessStatus != model.SourceRepairing {
 		t.Fatalf("corrected Source = %+v err=%v", corrected, err)
@@ -300,14 +313,20 @@ func TestSourceValidationEndpointCorrectionFencesOldWorkAndAllowsReplacement(t *
 		BudgetPolicy: testExecutionBudgetPolicy()}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("stale validation Work was offered after endpoint correction: %v", err)
 	}
-	replacementPreparation, err := repository.PrepareSourceValidation(ctx, source.SourceID, recipe.RecipeID, recipe.Version)
+	replacementRecipe := activeRecipe(t, recipe.RecipeID, model.RecipeListing, recipe.Scope, 2,
+		"validation-correction-contract-v2")
+	if err := repository.CreateRecipe(ctx, replacementRecipe, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	replacementPreparation, err := repository.PrepareSourceValidation(ctx, source.SourceID, replacementRecipe.RecipeID, replacementRecipe.Version)
 	if err != nil {
 		t.Fatal(err)
 	}
 	revalidating, replacementRun, err := replacementPreparation.NewRun("validation-correction-new-run",
 		"validation-correction-new-work", 0, now.Add(2*time.Second).Format(time.RFC3339Nano))
 	if err != nil || replacementRun.ListingExecution.Endpoint.URL != corrected.CandidateEndpoint.URL ||
-		replacementRun.ListingExecution.Endpoint.Revision != corrected.CandidateEndpoint.Revision {
+		replacementRun.ListingExecution.Endpoint.Revision != corrected.CandidateEndpoint.Revision ||
+		replacementRun.ListingExecution.RecipeVersion != replacementRecipe.Version {
 		t.Fatalf("replacement validation = %+v err=%v", replacementRun, err)
 	}
 	replacementWork, _ := model.NewWork(replacementRun.WorkID, "source", source.SourceID, "source_validation", "manual")
@@ -329,5 +348,44 @@ func TestSourceValidationEndpointCorrectionFencesOldWorkAndAllowsReplacement(t *
 	if err != nil || offer.Work.WorkID != replacementWork.WorkID || offer.ListingRun == nil ||
 		offer.ListingRun.ListingExecution.Endpoint.Revision != corrected.CandidateEndpoint.Revision {
 		t.Fatalf("replacement validation offer = %+v err=%v", offer, err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+		offer.Attempt.ExecutorIncarnation, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+		offer.Attempt.ExecutorIncarnation, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	failureArtifact := mustResultArtifact(t, "validation-correction-timeout", model.ArtifactFailure,
+		replacementWork.WorkID, offer.Attempt.AttemptID)
+	report := executioncontract.FailureReport{Class: "transport_timeout", Retryable: true, Artifact: failureArtifact}
+	failureCommand := ExecutionTransitionCommand{CommandID: "validation-correction-failure", Word: executioncontract.TypeFailed,
+		RequestHash: "sha256:validation-correction-failure", CorrelationID: "validation-correction-failure-correlation",
+		RequestedBy: offer.Attempt.ExecutorActorID, AttemptID: offer.Attempt.AttemptID,
+		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Action: "fail", Reason: report.Class,
+		Failure: &report, FailurePolicy: testExecutionFailurePolicy()}
+	if _, err := repository.ApplyExecutionTransitionCommand(ctx, failureCommand, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	failedWork, err := repository.GetWork(ctx, replacementWork.WorkID)
+	if err != nil || failedWork.Status != model.WorkWaitingRetry || failedWork.AutomaticAttempts != 1 || failedWork.RetryNotBefore == "" {
+		t.Fatalf("validation transient failure Work = %+v err=%v", failedWork, err)
+	}
+	stillValidating, err := repository.GetSource(ctx, source.SourceID)
+	if err != nil || stillValidating.ReadinessStatus != model.SourceValidating || stillValidating.Version != revalidating.Version {
+		t.Fatalf("transient execution failure changed Source = %+v err=%v", stillValidating, err)
+	}
+	retryAt, err := time.Parse(time.RFC3339Nano, failedWork.RetryNotBefore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryOffer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "validation-correction-retry-attempt",
+		ExecutorActorID: "tool:validation-correction:1", ExecutorIncarnation: "boot-correction-retry",
+		Capability: replacementPlacement.Capability, Origin: replacementPlacement.Origin, OfferedAt: retryAt,
+		BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil || retryOffer.Work.WorkID != replacementWork.WorkID || retryOffer.ListingRun == nil ||
+		retryOffer.ListingRun.ListingRunID != replacementRun.ListingRunID {
+		t.Fatalf("validation automatic retry offer = %+v err=%v", retryOffer, err)
 	}
 }

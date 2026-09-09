@@ -13,6 +13,7 @@
 - validation result 保存有界页面 Artifact、trace 和客观质量观测，完成 Work/Attempt 并释放预算；它不写 Job、Listing Observation 或 Checkpoint，也不代替人工判断 `update-retop`。
 - identity、ordering 或 pagination 的客观质量证明不成立时，结果与证据仍被接受，并在同一事务把 Source 从 `validating` 推进到 `invalid`、写失败事件；操作者修正后可从保留的 Candidate 再次启动校验，不会以超时恢复代替业务失败。
 - 校验中修改 Endpoint 会进入 `repairing` 并提升 Source/Endpoint 版本；旧 validation Work 被领取查询排除，在途结果仍由版本 fence 拒绝，新 Work 冻结修正后的 revision。`source.validation.reject` 允许用户显式放弃 candidate；已有 active Endpoint 时回到旧 ready 版本，否则进入 rejected，证据不删除。
+- validation run 引用的 Recipe 被 quarantine/disable/supersede 后，旧 Work 同样从领取集合排除；新 active Recipe version 必须创建新的 validation run。瞬时执行错误按版本化失败策略把原 Work 放入 `waiting_retry`，保留 Source `validating` 和同一不可变 run；到达 `retry_not_before` 后新 Attempt 才能再次领取。确定性质量违反走上面的 `invalid` 业务结果，不消耗自动重试次数。
 - `recruiting.source.validation.publish` 是独立的证据发布闸门。它重新锁定 validating Source、active Listing Recipe、当前 Assignment 版本和全部证据 Artifact，验证四项契约结论均为 `verified` 后，原子发布 active Endpoint、Listing Assignment、SourceContractAssessment、receipt 与事件。
 - 验证证据必须属于目标 Source 已成功完成的 `source_validation` Work/run，且 Endpoint revision、Recipe/contract、拟发布 Assignment version 完全一致；Artifact 还必须未被拒绝、不是 failure-only。引用缺失、伪造的普通 Work、旧 Endpoint/Recipe 或串线证据时整个事务回滚。
 - `recruiting.baseline.start` 已建立首个可执行列表基线：命令把 Company `discovering_sources → initializing`、不可变 BaselineGeneration、Work、receipt、两类事件和 capability dispatch 原子提交。Baseline 冻结 Company/Source/Assignment/Recipe/Endpoint 版本，以及从已验证 Source 契约复制的 Checkpoint strategy/overlap。
@@ -30,7 +31,7 @@
 
 ## 尚未通过的退出项
 
-- Source validation 的专用 Work、统一 Executor 执行、evidence-only 结果协议和质量违反后 `validating → invalid` 已通过隔离 MySQL及上述真实站点；Endpoint 变更排除旧 Work、新 revision 再校验和人工拒绝已有合同覆盖。执行失败后的自动/人工重试和 Recipe 变更围栏仍需场景验收。
+- Source validation 的专用 Work、统一 Executor 执行、evidence-only 结果协议和质量违反后 `validating → invalid` 已通过隔离 MySQL及上述真实站点；Endpoint/Recipe 变更排除旧 Work、新 revision/Recipe version 再校验、瞬时故障自动重试和人工拒绝已有合同覆盖。人工终止后重试及在途结果与修复命令并发仍需场景验收。
 - MongoDB 单次真实样本不能证明“历史岗位更新后重新置顶”，因此不得把它标记为 `update_retop=verified`，也没有借此发布为每日增量 Source。
 - baseline generation 的有界分页、staging/finalize、首次 Checkpoint、Job/Detail Work 有界物化、详情成功/人工接受缺口核算和 Company ready 已通过隔离 MySQL 合同，但尚未贯通真实站点；详情最终失败后的重试修复和拒绝接受缺口场景仍需完整验收。
 - 零 Source、1 万岗位、baseline 分页中断、详情部分失败和用户取消仍需加入 P5 场景验收。
