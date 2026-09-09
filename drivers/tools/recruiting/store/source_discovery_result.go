@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -25,6 +26,7 @@ type SourceDiscoveryResult struct {
 type SourceDiscoveryResultOutcome struct {
 	Discovery model.SourceDiscovery `json:"discovery"`
 	Work      model.Work            `json:"work"`
+	Company   *model.Company        `json:"company,omitempty"`
 	Replayed  bool                  `json:"replayed"`
 }
 
@@ -138,6 +140,17 @@ func (r *Repository) acceptSourceDiscoveryResultTx(ctx context.Context, input So
 	if err := updateWorkTx(ctx, tx, work.Version, completedWork, input.ObservedAt); err != nil {
 		return SourceDiscoveryResultOutcome{}, nil, err
 	}
+	var blockedCompany *model.Company
+	if len(input.Candidates) == 0 {
+		blockedCompany, err = markCompanyWithoutSourcesTx(ctx, tx, discovery, input.CommandID, input.ObservedAt)
+		if err != nil {
+			var conflict *model.VersionConflictError
+			if errors.As(err, &conflict) || errors.Is(err, ErrProgressConflict) {
+				return SourceDiscoveryResultOutcome{}, err, nil
+			}
+			return SourceDiscoveryResultOutcome{}, nil, err
+		}
+	}
 	if err := releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitReleased, input.ObservedAt); err != nil {
 		return SourceDiscoveryResultOutcome{}, nil, err
 	}
@@ -155,7 +168,7 @@ func (r *Repository) acceptSourceDiscoveryResultTx(ctx context.Context, input So
 		succeededAttempt.Capability, "", "capacity_released", input.CommandID, input.ObservedAt, input.ObservedAt); err != nil {
 		return SourceDiscoveryResultOutcome{}, nil, err
 	}
-	outcome := SourceDiscoveryResultOutcome{Discovery: next, Work: completedWork}
+	outcome := SourceDiscoveryResultOutcome{Discovery: next, Work: completedWork, Company: blockedCompany}
 	if err := reserveResultReceipt(ctx, tx, input.CommandID, executioncontract.TypeResult, input.RequestHash, outcome, input.ObservedAt); err != nil {
 		return SourceDiscoveryResultOutcome{}, nil, err
 	}
@@ -163,4 +176,62 @@ func (r *Repository) acceptSourceDiscoveryResultTx(ctx context.Context, input So
 		return SourceDiscoveryResultOutcome{}, nil, err
 	}
 	return outcome, nil, nil
+}
+
+// markCompanyWithoutSourcesTx closes the zero-candidate onboarding branch in
+// the same transaction as the discovery result. Locking the Company before
+// checking Sources also serializes with Source insertion through its foreign
+// key, so a concurrent accepted/manual Source cannot be hidden by a false
+// blocked_no_sources state.
+func markCompanyWithoutSourcesTx(ctx context.Context, tx *sql.Tx, discovery model.SourceDiscovery,
+	causeCommandID string, at time.Time) (*model.Company, error) {
+	var state []byte
+	if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_companies
+WHERE company_id = ? FOR UPDATE`, discovery.CompanyID).Scan(&state); err != nil {
+		return nil, fmt.Errorf("lock zero-source Company: %w", err)
+	}
+	var company model.Company
+	if err := json.Unmarshal(state, &company); err != nil {
+		return nil, fmt.Errorf("decode zero-source Company: %w", err)
+	}
+	if company.Version != discovery.CompanyVersion {
+		return nil, &model.VersionConflictError{Expected: discovery.CompanyVersion, Actual: company.Version}
+	}
+	if company.OnboardingStatus != model.CompanyDiscoveringSources {
+		return nil, nil
+	}
+	var sourceCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_sources
+WHERE company_id = ? AND control_status <> 'archived'`, company.CompanyID).Scan(&sourceCount); err != nil {
+		return nil, fmt.Errorf("count zero-source Company Sources: %w", err)
+	}
+	if sourceCount != 0 {
+		return nil, nil
+	}
+	blocked, err := company.MarkNoSources(company.Version)
+	if err != nil {
+		return nil, err
+	}
+	blockedState, _ := json.Marshal(blocked)
+	result, err := tx.ExecContext(ctx, `UPDATE recruiting_companies
+SET onboarding_status = ?, version = ?, state_json = ?, updated_at = ?
+WHERE company_id = ? AND version = ?`, blocked.OnboardingStatus, blocked.Version, blockedState,
+		at.UTC(), blocked.CompanyID, company.Version)
+	if err != nil {
+		return nil, fmt.Errorf("mark zero-source Company: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return nil, ErrProgressConflict
+	}
+	payload, _ := json.Marshal(map[string]any{"discovery_id": discovery.DiscoveryID, "reason": "no_candidates"})
+	event, err := model.NewEventIntent("company-no-sources-"+discovery.DiscoveryID,
+		"company.onboarding.blocked_no_sources", "company", blocked.CompanyID, blocked.Version,
+		at.UTC().Format(time.RFC3339Nano), causeCommandID, payload)
+	if err != nil {
+		return nil, err
+	}
+	if err := appendEventIntent(ctx, tx, event, at, at); err != nil {
+		return nil, err
+	}
+	return &blocked, nil
 }
