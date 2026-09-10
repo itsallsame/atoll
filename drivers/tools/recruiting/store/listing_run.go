@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
@@ -252,6 +253,13 @@ func getListingRunByWorkWith(ctx context.Context, queryer interface {
 		return model.ListingRun{}, err
 	}
 	return run, nil
+}
+
+func (r *Repository) GetListingRunByWork(ctx context.Context, workID string) (model.ListingRun, error) {
+	if strings.TrimSpace(workID) == "" {
+		return model.ListingRun{}, fmt.Errorf("work ID is required")
+	}
+	return getListingRunByWorkWith(ctx, r.db, workID, false)
 }
 
 func updateListingRunInTx(ctx context.Context, tx *sql.Tx, expected uint64, run model.ListingRun, businessAt time.Time) error {

@@ -185,16 +185,19 @@ func TestRecipeRolloutItemsFreezeVersionsAndBindDeterministicCanaryOrder(t *test
 		t.Fatal("preview accepted a duplicate Source")
 	}
 
-	applied, err := canonicalA[0].MarkApplied(canonicalA[0].Version, canonicalA[0].ExpectedSourceVersion+1,
-		canonicalA[0].ExpectedAssignmentVersion+1, "2026-09-10T01:00:00Z")
+	planned, err := canonicalA[0].PlanApply(canonicalA[0].Version, "2026-09-10T01:00:00Z")
 	// Canonical items intentionally erase persistence state; actual stored items
 	// are created again with version 1 after ordering.
-	if err == nil || applied.Version != 0 {
-		t.Fatalf("canonical hash projection unexpectedly acted as mutable item: %+v err=%v", applied, err)
+	if err == nil || planned.Version != 0 {
+		t.Fatalf("canonical hash projection unexpectedly acted as mutable item: %+v err=%v", planned, err)
 	}
 	stored := items[0]
-	applied, err = stored.MarkApplied(stored.Version, stored.ExpectedSourceVersion+1,
-		stored.ExpectedAssignmentVersion+1, "2026-09-10T01:00:00Z")
+	planned, err = stored.PlanApply(stored.Version, "2026-09-10T01:00:00Z")
+	if err != nil || planned.Status != RecipeRolloutItemApplying {
+		t.Fatalf("planned item=%+v err=%v", planned, err)
+	}
+	applied, err := planned.MarkApplied(planned.Version, stored.ExpectedSourceVersion+1,
+		stored.ExpectedAssignmentVersion+1)
 	if err != nil || applied.Status != RecipeRolloutItemAwaitingValidation {
 		t.Fatalf("applied item=%+v err=%v", applied, err)
 	}
@@ -215,7 +218,7 @@ func TestRecipeRolloutItemsFreezeVersionsAndBindDeterministicCanaryOrder(t *test
 		retried.AppliedAssignmentVersion != applied.AppliedAssignmentVersion {
 		t.Fatalf("post-application retry=%+v err=%v", retried, err)
 	}
-	preApplyFailed, err := stored.MarkFailed(stored.Version, "version_conflict")
+	preApplyFailed, err := planned.MarkFailed(planned.Version, "version_conflict")
 	if err != nil {
 		t.Fatal(err)
 	}

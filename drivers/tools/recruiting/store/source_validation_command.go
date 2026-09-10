@@ -12,6 +12,69 @@ import (
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
+type CompletedSourceValidation struct {
+	Work        model.Work
+	Run         model.ListingRun
+	Outcome     DiagnosticResultOutcome
+	ArtifactIDs []string
+	CompletedAt time.Time
+}
+
+func (r *Repository) GetCompletedSourceValidation(ctx context.Context,
+	workID string) (CompletedSourceValidation, error) {
+	var workState, runState, resultState []byte
+	var attemptID string
+	var completedAt time.Time
+	err := r.db.QueryRowContext(ctx, `SELECT w.state_json, lr.state_json, a.attempt_id,
+       a.execution_result_json, a.updated_at
+FROM recruiting_works w
+JOIN recruiting_listing_runs lr ON lr.work_id = w.work_id
+JOIN recruiting_attempts a ON a.work_id = w.work_id AND a.attempt_status = 'succeeded'
+WHERE w.work_id = ? AND w.purpose = 'source_validation'
+ORDER BY a.updated_at DESC, a.attempt_id DESC LIMIT 1`, workID).Scan(
+		&workState, &runState, &attemptID, &resultState, &completedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return CompletedSourceValidation{}, ErrNotFound
+	}
+	if err != nil {
+		return CompletedSourceValidation{}, fmt.Errorf("read completed Source validation: %w", err)
+	}
+	var value CompletedSourceValidation
+	if err := json.Unmarshal(workState, &value.Work); err != nil {
+		return CompletedSourceValidation{}, err
+	}
+	if err := json.Unmarshal(runState, &value.Run); err != nil {
+		return CompletedSourceValidation{}, err
+	}
+	if err := json.Unmarshal(resultState, &value.Outcome); err != nil {
+		return CompletedSourceValidation{}, err
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT artifact_id FROM recruiting_artifacts
+WHERE work_id = ? AND attempt_id = ? AND rejected = FALSE AND artifact_kind <> ?
+ORDER BY artifact_id`, workID, attemptID, model.ArtifactFailure)
+	if err != nil {
+		return CompletedSourceValidation{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var artifactID string
+		if err := rows.Scan(&artifactID); err != nil {
+			return CompletedSourceValidation{}, err
+		}
+		value.ArtifactIDs = append(value.ArtifactIDs, artifactID)
+	}
+	if err := rows.Err(); err != nil {
+		return CompletedSourceValidation{}, err
+	}
+	if value.Work.Status != model.WorkCompleted || value.Work.Resolution != model.ResolutionSucceeded ||
+		value.Run.Status != model.ListingRunCompleted || value.Outcome.Work.WorkID != value.Work.WorkID ||
+		value.Outcome.Run.ListingRunID != value.Run.ListingRunID || len(value.ArtifactIDs) < 2 {
+		return CompletedSourceValidation{}, fmt.Errorf("Source validation has no complete successful evidence")
+	}
+	value.CompletedAt = completedAt.UTC()
+	return value, nil
+}
+
 // ApplyPublishSourceValidationCommand is the evidence gate that makes a
 // validating Source production-ready. The Endpoint, listing Assignment,
 // assessment, command receipt, and event are committed together.
@@ -20,7 +83,8 @@ func (r *Repository) ApplyPublishSourceValidationCommand(ctx context.Context, ex
 	receipt model.CommandReceipt, event model.EventIntent, businessAt time.Time) (CommandResult, error) {
 	if expectedSourceVersion == 0 || next.Version != expectedSourceVersion+1 || next.SourceID == "" ||
 		assignment.SourceID != next.SourceID || assignment.Kind != model.RecipeListing ||
-		assignment.AssignmentVersion != expectedAssignmentVersion+1 || next.ContractAssessment == nil ||
+		(assignment.AssignmentVersion != expectedAssignmentVersion &&
+			assignment.AssignmentVersion != expectedAssignmentVersion+1) || next.ContractAssessment == nil ||
 		receipt.CommandID == "" || event.AggregateType != "source" || event.AggregateID != next.SourceID ||
 		event.AggregateVersion != next.Version || event.CauseCommandID != receipt.CommandID || businessAt.IsZero() {
 		return CommandResult{}, fmt.Errorf("source validation publication facts are inconsistent")
@@ -57,10 +121,16 @@ func (r *Repository) ApplyPublishSourceValidationCommand(ctx context.Context, ex
 		if lockedAssignment.AssignmentVersion != expectedAssignmentVersion {
 			return CommandResult{}, ErrAssignmentConflict
 		}
-		derived, replaceErr := lockedAssignment.Replace(expectedAssignmentVersion, assignment.RecipeID,
-			assignment.RecipeVersion, assignment.ContractHash, assignment.EffectiveAt)
-		if replaceErr != nil || derived != assignment {
-			return CommandResult{}, ErrAssignmentConflict
+		if assignment.AssignmentVersion == expectedAssignmentVersion {
+			if lockedAssignment != assignment {
+				return CommandResult{}, ErrAssignmentConflict
+			}
+		} else {
+			derived, replaceErr := lockedAssignment.Replace(expectedAssignmentVersion, assignment.RecipeID,
+				assignment.RecipeVersion, assignment.ContractHash, assignment.EffectiveAt)
+			if replaceErr != nil || derived != assignment {
+				return CommandResult{}, ErrAssignmentConflict
+			}
 		}
 	} else {
 		derived, createErr := model.NewSourceRecipeAssignment(next.SourceID, model.RecipeListing, assignment.RecipeID,
@@ -167,12 +237,13 @@ WHERE source_id = ? AND version = ?`, endpoint.CanonicalKey, origin, next.Readin
 	}
 	assignmentState, _ := json.Marshal(assignment)
 	effectiveAt, _ := time.Parse(time.RFC3339, assignment.EffectiveAt)
+	reusesAssignment := expectedAssignmentVersion > 0 && assignment.AssignmentVersion == expectedAssignmentVersion
 	if expectedAssignmentVersion == 0 {
 		_, err = tx.ExecContext(ctx, `INSERT INTO recruiting_source_assignments(
   source_id, recipe_kind, recipe_id, recipe_version, contract_hash, effective_at, assignment_version, state_json
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, assignment.SourceID, assignment.Kind, assignment.RecipeID,
 			assignment.RecipeVersion, assignment.ContractHash, effectiveAt.UTC(), assignment.AssignmentVersion, assignmentState)
-	} else {
+	} else if !reusesAssignment {
 		result, err = tx.ExecContext(ctx, `UPDATE recruiting_source_assignments
 SET recipe_id = ?, recipe_version = ?, contract_hash = ?, effective_at = ?, assignment_version = ?, state_json = ?
 WHERE source_id = ? AND recipe_kind = ? AND assignment_version = ?`, assignment.RecipeID, assignment.RecipeVersion,
@@ -190,8 +261,10 @@ WHERE source_id = ? AND recipe_kind = ? AND assignment_version = ?`, assignment.
 		}
 		return CommandResult{}, fmt.Errorf("publish source validation assignment: %w", err)
 	}
-	if err := appendAssignmentVersion(ctx, tx, assignment, businessAt); err != nil {
-		return CommandResult{}, err
+	if !reusesAssignment {
+		if err := appendAssignmentVersion(ctx, tx, assignment, businessAt); err != nil {
+			return CommandResult{}, err
+		}
 	}
 	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
 		return CommandResult{}, err

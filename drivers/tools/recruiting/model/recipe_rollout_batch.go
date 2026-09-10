@@ -60,6 +60,7 @@ type RecipeRolloutWaveProgress struct {
 	From               int `json:"from"`
 	Through            int `json:"through"`
 	Pending            int `json:"pending"`
+	Applying           int `json:"applying"`
 	AwaitingValidation int `json:"awaiting_validation"`
 	Succeeded          int `json:"succeeded"`
 	Failed             int `json:"failed"`
@@ -69,6 +70,7 @@ type RecipeRolloutItemStatus string
 
 const (
 	RecipeRolloutItemPending            RecipeRolloutItemStatus = "pending"
+	RecipeRolloutItemApplying           RecipeRolloutItemStatus = "applying"
 	RecipeRolloutItemAwaitingValidation RecipeRolloutItemStatus = "awaiting_validation"
 	RecipeRolloutItemSucceeded          RecipeRolloutItemStatus = "succeeded"
 	RecipeRolloutItemFailed             RecipeRolloutItemStatus = "failed"
@@ -86,6 +88,7 @@ type RecipeRolloutBatchItem struct {
 	PreviousCheckpointStrategy CheckpointStrategy      `json:"previous_checkpoint_strategy,omitempty"`
 	PreviousOverlapPages       int                     `json:"previous_overlap_pages,omitempty"`
 	PreviousAssessmentVersion  uint64                  `json:"previous_assessment_version,omitempty"`
+	ApplyRequestedAt           string                  `json:"apply_requested_at,omitempty"`
 	AppliedSourceVersion       uint64                  `json:"applied_source_version,omitempty"`
 	AppliedAssignmentVersion   uint64                  `json:"applied_assignment_version,omitempty"`
 	AppliedAt                  string                  `json:"applied_at,omitempty"`
@@ -135,17 +138,29 @@ func NewRecipeRolloutBatchItem(batchID string, ordinal int, source RecruitmentSo
 	return item, nil
 }
 
-func (i RecipeRolloutBatchItem) MarkApplied(expected uint64, sourceVersion, assignmentVersion uint64,
-	appliedAt string) (RecipeRolloutBatchItem, error) {
+func (i RecipeRolloutBatchItem) PlanApply(expected uint64, requestedAt string) (RecipeRolloutBatchItem, error) {
 	if err := requireVersion(expected, i.Version); err != nil {
 		return RecipeRolloutBatchItem{}, err
 	}
-	if i.Status != RecipeRolloutItemPending || sourceVersion != i.ExpectedSourceVersion+1 ||
-		assignmentVersion != i.ExpectedAssignmentVersion+1 || !validRFC3339(appliedAt) {
-		return RecipeRolloutBatchItem{}, fmt.Errorf("pending rollout item and exact applied Source/Assignment versions are required")
+	if i.Status != RecipeRolloutItemPending || !validRFC3339(requestedAt) {
+		return RecipeRolloutBatchItem{}, fmt.Errorf("pending rollout item and application request time are required")
+	}
+	i.ApplyRequestedAt = strings.TrimSpace(requestedAt)
+	i.Status = RecipeRolloutItemApplying
+	i.Version++
+	return i, nil
+}
+
+func (i RecipeRolloutBatchItem) MarkApplied(expected uint64, sourceVersion, assignmentVersion uint64) (RecipeRolloutBatchItem, error) {
+	if err := requireVersion(expected, i.Version); err != nil {
+		return RecipeRolloutBatchItem{}, err
+	}
+	if i.Status != RecipeRolloutItemApplying || sourceVersion != i.ExpectedSourceVersion+1 ||
+		assignmentVersion != i.ExpectedAssignmentVersion+1 || !validRFC3339(i.ApplyRequestedAt) {
+		return RecipeRolloutBatchItem{}, fmt.Errorf("applying rollout item and exact applied Source/Assignment versions are required")
 	}
 	i.AppliedSourceVersion, i.AppliedAssignmentVersion = sourceVersion, assignmentVersion
-	i.AppliedAt = strings.TrimSpace(appliedAt)
+	i.AppliedAt = i.ApplyRequestedAt
 	i.Status = RecipeRolloutItemAwaitingValidation
 	i.Version++
 	return i, nil
@@ -198,6 +213,8 @@ func (i RecipeRolloutBatchItem) Retry(expected uint64) (RecipeRolloutBatchItem, 
 		// An item which already switched Assignment retries only its evidence
 		// validation. Re-applying would create a second Assignment version.
 		i.Status = RecipeRolloutItemAwaitingValidation
+	} else {
+		i.ApplyRequestedAt = ""
 	}
 	i.ValidationWorkID, i.ValidationRunID, i.ValidatedAt = "", "", ""
 	i.Version++
@@ -209,7 +226,8 @@ func (i RecipeRolloutBatchItem) MarkFailed(expected uint64, code string) (Recipe
 		return RecipeRolloutBatchItem{}, err
 	}
 	code = strings.TrimSpace(code)
-	if (i.Status != RecipeRolloutItemPending && i.Status != RecipeRolloutItemAwaitingValidation) ||
+	if (i.Status != RecipeRolloutItemPending && i.Status != RecipeRolloutItemApplying &&
+		i.Status != RecipeRolloutItemAwaitingValidation) ||
 		code == "" || len(code) > 128 {
 		return RecipeRolloutBatchItem{}, fmt.Errorf("active rollout item and bounded failure code are required")
 	}
@@ -240,6 +258,7 @@ func CanonicalRecipeRolloutItems(batchID string, items []RecipeRolloutBatchItem)
 		canonical[index].Ordinal = index + 1
 		canonical[index].BatchID = batchID
 		canonical[index].Status = ""
+		canonical[index].ApplyRequestedAt = ""
 		canonical[index].AppliedSourceVersion = 0
 		canonical[index].AppliedAssignmentVersion = 0
 		canonical[index].AppliedAt = ""
@@ -365,7 +384,7 @@ func (b RecipeRolloutBatch) ObserveWave(expected uint64, progress RecipeRolloutW
 	activeCount := b.ActiveThrough - b.ActiveFrom + 1
 	if progress.From != b.ActiveFrom || progress.Through != b.ActiveThrough || activeCount < 1 ||
 		progress.Pending < 0 || progress.AwaitingValidation < 0 || progress.Succeeded < 0 || progress.Failed < 0 ||
-		progress.Pending+progress.AwaitingValidation+progress.Succeeded+progress.Failed != activeCount {
+		progress.Pending+progress.Applying+progress.AwaitingValidation+progress.Succeeded+progress.Failed != activeCount {
 		return RecipeRolloutBatch{}, fmt.Errorf("Recipe rollout progress does not match the active wave")
 	}
 	if progress.Failed > 0 {
@@ -374,7 +393,7 @@ func (b RecipeRolloutBatch) ObserveWave(expected uint64, progress RecipeRolloutW
 		b.Version++
 		return b, nil
 	}
-	if progress.Pending > 0 || progress.AwaitingValidation > 0 {
+	if progress.Pending > 0 || progress.Applying > 0 || progress.AwaitingValidation > 0 {
 		return b, nil
 	}
 	if progress.Succeeded != activeCount {

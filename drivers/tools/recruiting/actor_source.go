@@ -251,8 +251,15 @@ func handleSourceValidationPublish(sys actorbase.Sys, repository *store.Reposito
 		var existing model.SourceRecipeAssignment
 		existing, err = repository.GetAssignment(msg.Ctx(), current.SourceID, model.RecipeListing)
 		if err == nil {
-			assignment, err = existing.Replace(payload.ExpectedAssignmentVersion, recipe.RecipeID, recipe.Version,
-				recipe.ContractHash, businessAt.Format(time.RFC3339Nano))
+			if existing.AssignmentVersion != payload.ExpectedAssignmentVersion {
+				err = &model.VersionConflictError{Expected: payload.ExpectedAssignmentVersion, Actual: existing.AssignmentVersion}
+			} else if existing.RecipeID == recipe.RecipeID && existing.RecipeVersion == recipe.Version &&
+				existing.ContractHash == recipe.ContractHash {
+				assignment = existing
+			} else {
+				assignment, err = existing.Replace(payload.ExpectedAssignmentVersion, recipe.RecipeID, recipe.Version,
+					recipe.ContractHash, businessAt.Format(time.RFC3339Nano))
+			}
 		}
 	}
 	assessmentVersion := uint64(1)

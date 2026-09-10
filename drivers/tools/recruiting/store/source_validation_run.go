@@ -97,6 +97,12 @@ func (p SourceValidationPreparation) NewRun(runID, workID string, expectedAssign
 			p.Recipe.Version, p.Recipe.ContractHash, effectiveAt)
 	} else if p.Source.ListingAssignment == nil || p.Source.ListingAssignment.AssignmentVersion != expectedAssignmentVersion {
 		return model.RecruitmentSource{}, model.ListingRun{}, ErrAssignmentConflict
+	} else if p.Source.ListingAssignment.RecipeID == p.Recipe.RecipeID &&
+		p.Source.ListingAssignment.RecipeVersion == p.Recipe.Version &&
+		p.Source.ListingAssignment.ContractHash == p.Recipe.ContractHash {
+		// Recalibration of an already selected Recipe changes Source evidence,
+		// not the Recipe selection. Preserve the Assignment identity/version.
+		assignment = *p.Source.ListingAssignment
 	} else {
 		assignment, err = p.Source.ListingAssignment.Replace(expectedAssignmentVersion, p.Recipe.RecipeID,
 			p.Recipe.Version, p.Recipe.ContractHash, effectiveAt)
@@ -122,7 +128,7 @@ func (r *Repository) ApplySourceValidationCommand(ctx context.Context, expectedS
 	if expectedSourceVersion == 0 || nextSource.Version != expectedSourceVersion+1 || run.Mode != model.ListingRunValidation ||
 		run.Status != model.ListingRunQueued || run.SourceID != nextSource.SourceID || run.SourceVersion != nextSource.Version ||
 		run.WorkID != work.WorkID || work.Version != 1 || work.Status != model.WorkOpen || work.Purpose != "source_validation" ||
-		work.Trigger != "manual" || work.TargetType != "source" || work.TargetID != nextSource.SourceID || receipt.CommandID == "" ||
+		(work.Trigger != "manual" && work.Trigger != "event") || work.TargetType != "source" || work.TargetID != nextSource.SourceID || receipt.CommandID == "" ||
 		event.AggregateType != "source" || event.AggregateID != nextSource.SourceID || event.AggregateVersion != nextSource.Version ||
 		event.CauseCommandID != receipt.CommandID || businessAt.IsZero() {
 		return CommandResult{}, fmt.Errorf("source validation command facts are inconsistent")

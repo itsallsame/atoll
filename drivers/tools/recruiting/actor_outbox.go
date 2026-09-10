@@ -259,6 +259,7 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 		_, _ = repository.MaterializeNextBaselinePage(msg.Ctx(), cfg.BaselineMaterializeLimit, now,
 			cfg.executionDispatchTargets())
 		_, _ = repository.PromoteNextReadyCompany(msg.Ctx(), now)
+		_, _ = reconcileRecipeRolloutBatches(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
 		_, _ = reconcileExecutionDispatches(msg.Ctx(), sys, repository, defaultReconcileLimit, now,
 			time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond)
 	}

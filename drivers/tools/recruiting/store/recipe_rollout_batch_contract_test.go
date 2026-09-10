@@ -233,9 +233,13 @@ WHERE active_batch_key IS NOT NULL AND batch_id = ?`, batch.BatchID).Scan(&activ
 		t.Fatal(err)
 	}
 	applyAt := now.Add(11 * time.Second)
-	claimed, _ := item.MarkApplied(item.Version, item.ExpectedSourceVersion+1,
-		item.ExpectedAssignmentVersion+1, applyAt.Format(time.RFC3339Nano))
-	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, item.Version, claimed, applyAt); err == nil {
+	planned, _ := item.PlanApply(item.Version, applyAt.Format(time.RFC3339Nano))
+	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, item.Version, planned, applyAt); err != nil {
+		t.Fatal(err)
+	}
+	claimed, _ := planned.MarkApplied(planned.Version, item.ExpectedSourceVersion+1,
+		item.ExpectedAssignmentVersion+1)
+	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, planned.Version, claimed, applyAt); err == nil {
 		t.Fatal("rollout member accepted an application claim before Source/Assignment cutover")
 	}
 	currentSource, _ := repository.GetSource(ctx, item.SourceID)
@@ -252,10 +256,10 @@ WHERE active_batch_key IS NOT NULL AND batch_id = ?`, batch.BatchID).Scan(&activ
 		currentAssignment.AssignmentVersion, nextSource, nextAssignment, applyReceipt, applyEvent, applyAt); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, item.Version, claimed, applyAt); err != nil {
+	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, planned.Version, claimed, applyAt); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, item.Version, claimed, applyAt); err == nil {
+	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, planned.Version, claimed, applyAt); err == nil {
 		t.Fatal("stale rollout member transition won twice")
 	}
 	_, progress, err := repository.GetRecipeRolloutWaveProgress(ctx, transitionBatch.BatchID)

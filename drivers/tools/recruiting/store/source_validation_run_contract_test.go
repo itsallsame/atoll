@@ -155,7 +155,7 @@ func TestSourceValidationCreatesFencedExecutionAndEvidenceForPublish(t *testing.
 	}
 	_, repairRun, err := repairPreparation.NewRun("source-validation-repair", "source-validation-repair-work",
 		assignment.AssignmentVersion, now.Add(3*time.Second).Format(time.RFC3339Nano))
-	if err != nil || repairRun.ListingExecution.Assignment.AssignmentVersion != assignment.AssignmentVersion+1 {
+	if err != nil || repairRun.ListingExecution.Assignment != assignment {
 		t.Fatalf("repair validation assignment fence = %+v err=%v", repairRun.ListingExecution.Assignment, err)
 	}
 }
