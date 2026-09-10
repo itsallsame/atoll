@@ -98,6 +98,8 @@ migration 13 为 Work Center 增加全局 `(updated_at, work_id)` 以及 status�
 
 migration 14 新增 `recruiting_listing_runs`，保存独立人工列表运行的一对一 Work 关联、Source、run mode、状态、冻结 Checkpoint 版本和完整无秘密执行快照。该表不进入 DailyRun 外键或 coverage 分母；`work_id` 唯一约束防止一个 Work 获得多个运行语义，Source/创建时间索引用于后续运维下钻。诊断结果仍复用 Artifact、Attempt、Permit、receipt 和 outbox 表，不复制执行队列。
 
+migration 30 为 Recipe 批量灰度增加 `recruiting_recipe_rollout_batches` 和规范化成员表。父批次持有唯一活动 `kind+scope` 键、目标 Recipe 不可变身份、输入 Artifact/hash、preview hash、canary/wave 大小、当前开放 ordinal 范围和版本；成员冻结 Source/Assignment 版本及切换前 Assignment，不在父 JSON 中嵌入无界 Source 列表。预览按每块至多 500 项提交并保存 `next_chunk_sequence`，完成后才写最终 source count/preview hash；Source ID 以 `sha256(batch_id|source_id)` 确定性排序，使 canary 样本不依赖上传行序，同时 preview hash 绑定该顺序和全部版本。确认后一次只开放 canary 或一个至多 500 项的 wave；未全部重新验证为 ready 前不扩大，任一失败暂停。父 Work 是 Recruiting Actor 推进的控制面事实，不进入 Executor runnable 队列；各 Source 的真实校准仍复用已有 validation Work 和唯一 Executor class。
+
 ## migration 与权限
 
 - migration 从空 schema 开始，不识别、不导入也不删除 Staircase 旧表；

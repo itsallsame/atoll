@@ -443,6 +443,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 执行状态补充（2026-09-10，Listing Recipe 逐 Source 灰度）：公开 `recruiting.recipe.rollout` 已从 Detail 扩展到 Listing，但仍坚持一个命令只切换一个 Source。目标必须是已经 active 的同 kind Recipe；Repository 在锁内再次验证 scope、contract hash 和 Executor capability 与当前 Recipe 完全兼容。若 Source 已有 Checkpoint，事务提升其 fencing version并重绑定 Recipe ID/version，但保持 frontier、同时间组、overlap 和最后 occurrence 不变；Assignment 历史、Source 投影、receipt 与 `source.listing_recipe_rolled_out` 事件在同一事务提交。Source 随即进入 `repairing` 并清空旧校准，操作者必须完成 Source validation 才能恢复每日调度。非 root MySQL 合同覆盖带 Checkpoint 的 rollout→rollback 水位不移动；普通用户真实 server E2E 覆盖 Listing rollout、历史 rollback 及两条命令在 server restart 后重放。该能力是批量升级协调器可复用的安全逐项原语，不等于批量 canary 已完成。
 
+执行状态补充（2026-09-10，Recipe 批量灰度领域与 schema 基础）：新增纯领域 `RecipeRolloutBatch`/item 状态机和 migration 30。批次采用持久父 Work、规范化成员、确定性 canary 顺序、每块/每 wave 至多 500 项；`previewing` 可按 chunk sequence 从中断处续跑，最终 preview hash 绑定输入 Artifact、目标 Recipe 和每个 Source/Assignment 版本。确认后先只开放 canary，所有成员重新验证成功才开放下一 wave；等待验证不推进版本，任一失败把固定 wave 原地暂停，不能扩散到后续 Source，恢复必须显式执行。父 Work 不进入 Executor runnable 队列，不增加 Worker 类型。当前提交只冻结领域/schema 契约；Resource 预览、Repository 协调事务、公开查询/控制词与 reconcile 尚待后续切片接通，因此不把 S22 标记完成。
+
 ## 13. P8：25 场景验收矩阵
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。
