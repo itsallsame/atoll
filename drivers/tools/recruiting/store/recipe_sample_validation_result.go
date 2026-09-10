@@ -36,10 +36,14 @@ func (r *Repository) AcceptRecipeSampleValidationResult(ctx context.Context,
 	input RecipeSampleValidationResult) (RecipeSampleValidationOutcome, error) {
 	if input.CommandID == "" || input.RequestHash == "" || input.AttemptID == "" ||
 		input.ExecutorActorID == "" || input.ExecutorIncarnation == "" ||
-		input.ResultKind != "recipe_sample_validation" || input.RecipeKind != model.RecipeDetail ||
-		len(input.Artifacts) != 2 || input.RecordCount != 1 || input.ExtractedFieldCount < 1 ||
+		input.ResultKind != "recipe_sample_validation" ||
+		(input.RecipeKind != model.RecipeDetail && input.RecipeKind != model.RecipeDiscovery) ||
+		len(input.Artifacts) != 2 || input.RecordCount < 0 || input.RecordCount > 500 || input.ExtractedFieldCount < 1 ||
 		!strings.HasPrefix(input.NormalizedContentHash, "sha256:") || input.CompletedAt.IsZero() {
 		return RecipeSampleValidationOutcome{}, fmt.Errorf("Recipe sample validation result is incomplete")
+	}
+	if input.RecipeKind == model.RecipeDetail && input.RecordCount != 1 {
+		return RecipeSampleValidationOutcome{}, fmt.Errorf("Detail Recipe sample validation must produce exactly one record")
 	}
 	seen := map[string]bool{}
 	for index, artifact := range input.Artifacts {

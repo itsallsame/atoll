@@ -163,10 +163,10 @@ WHERE recipe_id = ? AND recipe_version = ? AND state_version = ?`, nextRecipe.St
 func insertRecipeSampleValidation(ctx context.Context, tx *sql.Tx, run model.RecipeSampleValidation, at time.Time) error {
 	state, _ := json.Marshal(run)
 	_, err := tx.ExecContext(ctx, `INSERT INTO recruiting_recipe_validation_runs(
-validation_run_id, work_id, source_id, recipe_id, recipe_version, recipe_kind, sample_job_id,
+validation_run_id, work_id, company_id, source_id, recipe_id, recipe_version, recipe_kind, sample_job_id,
 run_status, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, run.ValidationRunID, run.WorkID, run.SourceID,
-		run.Candidate.RecipeID, run.Candidate.Version, run.RecipeKind, run.SampleJobID, run.Status,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, run.ValidationRunID, run.WorkID, run.CompanyID, nullableString(run.SourceID),
+		run.Candidate.RecipeID, run.Candidate.Version, run.RecipeKind, nullableString(run.SampleJobID), run.Status,
 		run.Version, state, at.UTC(), at.UTC())
 	if err != nil {
 		return fmt.Errorf("create Recipe sample validation run: %w", err)

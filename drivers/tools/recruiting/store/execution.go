@@ -138,6 +138,16 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	      AND CAST(JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.sample_job_version')) AS UNSIGNED) = sample_job.version
 	      AND candidate_recipe.content_hash = JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.candidate.content_hash'))
 	      AND candidate_recipe.contract_hash = JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.candidate.contract_hash'))
+	  ) OR EXISTS (
+	    SELECT 1 FROM recruiting_recipe_validation_runs rv
+	    JOIN recruiting_companies sample_company ON sample_company.company_id = rv.company_id
+	    JOIN recruiting_recipes candidate_recipe
+	      ON candidate_recipe.recipe_id = rv.recipe_id AND candidate_recipe.recipe_version = rv.recipe_version
+	    WHERE rv.work_id = w.work_id AND rv.recipe_kind = 'discovery' AND rv.run_status IN ('queued', 'running')
+	      AND sample_company.control_status = 'active' AND candidate_recipe.status = 'validating'
+	      AND CAST(JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.company_version')) AS UNSIGNED) = sample_company.version
+	      AND candidate_recipe.content_hash = JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.candidate.content_hash'))
+	      AND candidate_recipe.contract_hash = JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.candidate.contract_hash'))
 	  ))) OR (w.purpose = 'detail_sync' AND EXISTS (
 	    SELECT 1 FROM recruiting_source_jobs j
 	    WHERE j.job_id = w.target_id AND j.job_status IN ('detail_pending', 'update_pending')
@@ -298,7 +308,9 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		sourceID = recipeSampleValidation.SourceID
 	}
 	var companyID string
-	if work.Purpose == "source_discovery" {
+	if recipeSampleValidation.RecipeKind == model.RecipeDiscovery {
+		companyID = recipeSampleValidation.CompanyID
+	} else if work.Purpose == "source_discovery" {
 		companyID = discovery.CompanyID
 	} else if !isCompanyImportPurpose(work.Purpose) {
 		if err := tx.QueryRowContext(ctx, "SELECT company_id FROM recruiting_sources WHERE source_id = ?", sourceID).Scan(&companyID); err != nil {
@@ -314,6 +326,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 			attempt, err = attempt.WithBatchFence(fence.BatchVersion)
 		} else if work.Purpose == "source_discovery" {
 			attempt, err = attempt.WithDiscoveryFence(fence)
+		} else if work.Purpose == "recipe_validation" && recipeSampleValidation.RecipeKind == model.RecipeDiscovery {
+			attempt, err = attempt.WithCompanyRecipeFence(fence)
 		} else {
 			attempt, err = attempt.WithFence(fence)
 		}
@@ -651,6 +665,9 @@ func loadRecipeSampleValidationOfferFence(ctx context.Context, tx *sql.Tx, run m
 		run.Status != model.RecipeSampleValidationRunning) {
 		return model.AttemptFence{}, fmt.Errorf("Recipe sample validation run is not executable")
 	}
+	if run.RecipeKind == model.RecipeDiscovery {
+		return loadDiscoveryRecipeValidationOfferFence(ctx, tx, run, profileID)
+	}
 	var companyState, sourceState, assignmentState, recipeState, jobState []byte
 	err := tx.QueryRowContext(ctx, `SELECT c.state_json, s.state_json, a.state_json, r.state_json, j.state_json
 FROM recruiting_sources s
@@ -703,6 +720,42 @@ WHERE s.source_id = ? FOR UPDATE`, run.Candidate.RecipeID, run.Candidate.Version
 		var profile model.BrowserProfile
 		if err := json.Unmarshal(profileState, &profile); err != nil || profile.AuthStatus != model.ProfileReady {
 			return model.AttemptFence{}, fmt.Errorf("Recipe sample validation Profile is not ready")
+		}
+		fence.ProfileID, fence.ProfileVersion = profile.ProfileID, profile.Version
+	}
+	return fence, nil
+}
+
+func loadDiscoveryRecipeValidationOfferFence(ctx context.Context, tx *sql.Tx, run model.RecipeSampleValidation,
+	profileID string) (model.AttemptFence, error) {
+	var companyState, recipeState []byte
+	if err := tx.QueryRowContext(ctx, `SELECT c.state_json, r.state_json FROM recruiting_companies c
+JOIN recruiting_recipes r ON r.recipe_id = ? AND r.recipe_version = ?
+WHERE c.company_id = ? FOR UPDATE`, run.Candidate.RecipeID, run.Candidate.Version, run.CompanyID).Scan(
+		&companyState, &recipeState); err != nil {
+		return model.AttemptFence{}, fmt.Errorf("load Discovery Recipe validation fence: %w", err)
+	}
+	var company model.Company
+	var recipe model.Recipe
+	if err := json.Unmarshal(companyState, &company); err != nil {
+		return model.AttemptFence{}, err
+	}
+	if err := json.Unmarshal(recipeState, &recipe); err != nil {
+		return model.AttemptFence{}, err
+	}
+	if company.Version != run.CompanyVersion || company.ControlStatus != model.ControlActive ||
+		company.Website != run.EndpointURL || recipe != run.Candidate || recipe.Status != model.RecipeValidating {
+		return model.AttemptFence{}, fmt.Errorf("Discovery Recipe validation is fenced by changed Company or candidate")
+	}
+	fence := model.AttemptFence{CompanyVersion: company.Version, RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version}
+	if profileID != "" {
+		var profileState []byte
+		if err := tx.QueryRowContext(ctx, "SELECT state_json FROM recruiting_profiles WHERE profile_id = ?", profileID).Scan(&profileState); err != nil {
+			return model.AttemptFence{}, fmt.Errorf("load Discovery Recipe validation Profile: %w", err)
+		}
+		var profile model.BrowserProfile
+		if err := json.Unmarshal(profileState, &profile); err != nil || profile.AuthStatus != model.ProfileReady {
+			return model.AttemptFence{}, fmt.Errorf("Discovery Recipe validation Profile is not ready")
 		}
 		fence.ProfileID, fence.ProfileVersion = profile.ProfileID, profile.Version
 	}

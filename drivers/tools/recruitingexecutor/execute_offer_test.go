@@ -38,9 +38,10 @@ func (s *executeResourceStub) Open(id resource.ResourceID, mode access.Operation
 }
 
 type executeDriverStub struct {
-	listing httpdriver.ListingRunResult
-	detail  httpdriver.DetailRunResult
-	err     error
+	listing   httpdriver.ListingRunResult
+	detail    httpdriver.DetailRunResult
+	discovery httpdriver.DiscoveryRunResult
+	err       error
 }
 
 func (d executeDriverStub) RunListing(context.Context, recipeabi.Spec, recipeabi.RunInput,
@@ -75,6 +76,11 @@ func (d executeDriverStub) RunListingValidation(context.Context, recipeabi.Spec,
 func (d executeDriverStub) RunDetail(context.Context, recipeabi.Spec, recipeabi.RunInput,
 	httpdriver.ComplianceEvidence, httpdriver.ArtifactSink) (httpdriver.DetailRunResult, error) {
 	return d.detail, d.err
+}
+
+func (d executeDriverStub) RunDiscovery(context.Context, recipeabi.Spec, recipeabi.RunInput,
+	httpdriver.ComplianceEvidence, httpdriver.ArtifactSink) (httpdriver.DiscoveryRunResult, error) {
+	return d.discovery, d.err
 }
 
 type executeControlStub struct {
@@ -145,7 +151,8 @@ func TestExecuteOfferSubmitsDetailRecipeValidationEvidenceOnly(t *testing.T) {
 	work, _ := model.NewWork("detail-recipe-validation-work", "recipe",
 		candidate.RecipeID+"@4", "recipe_validation", "manual")
 	run := model.RecipeSampleValidation{ValidationRunID: "detail-recipe-validation-run", WorkID: work.WorkID,
-		RecipeKind: model.RecipeDetail, SourceID: base.Detail.Job.SourceID, CompanyVersion: 4, SourceVersion: 6,
+		RecipeKind: model.RecipeDetail, CompanyID: "company-2", SourceID: base.Detail.Job.SourceID,
+		CompanyVersion: 4, SourceVersion: 6,
 		Candidate: candidate, ProposedAssignment: proposed, SampleJobID: base.Detail.Job.JobID,
 		SampleJobVersion: base.Detail.Job.Version, ExpectedFieldCount: len(spec.Extraction.Fields),
 		EndpointURL: base.Detail.Job.DetailURL, EndpointVersion: base.Detail.Job.Version,
@@ -189,6 +196,62 @@ func TestExecuteOfferSubmitsDetailRecipeValidationEvidenceOnly(t *testing.T) {
 	if !ok || submission.RecordCount != 1 || submission.ExtractedFieldCount != run.ExpectedFieldCount ||
 		len(submission.Artifacts) != 2 {
 		t.Fatalf("validation submission=%#v", control.submissions)
+	}
+}
+
+func TestExecuteOfferSubmitsDiscoveryRecipeValidationEvidenceOnly(t *testing.T) {
+	now := time.Date(2026, 9, 10, 11, 0, 0, 0, time.UTC)
+	base, spec, raw := sourceDiscoveryExecutionOffer(t, now)
+	candidate, _ := model.NewRecipe("candidate-discovery", model.RecipeDiscovery, "company.example", 2,
+		base.Recipe.ContentHash, base.Recipe.ContractHash, base.Recipe.Execution)
+	candidate, _ = candidate.BeginValidation(candidate.StateVersion)
+	work, _ := model.NewWork("discovery-recipe-validation-work", "recipe", candidate.RecipeID+"@2",
+		"recipe_validation", "manual")
+	run := model.RecipeSampleValidation{ValidationRunID: "discovery-recipe-validation-run", WorkID: work.WorkID,
+		RecipeKind: model.RecipeDiscovery, CompanyID: base.Discovery.CompanyID,
+		CompanyVersion: base.Discovery.CompanyVersion, Candidate: candidate,
+		ExpectedFieldCount: len(spec.Extraction.Fields), EndpointURL: base.Discovery.SeedURL,
+		EndpointVersion: base.Discovery.CompanyVersion, Origin: "https://company.example",
+		Status: model.RecipeSampleValidationRunning, Version: 2}
+	if err := run.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	attempt, _ := model.NewAttempt("discovery-recipe-validation-attempt", work)
+	attempt, _ = attempt.BindExecutor("executor-1", "boot-1", "http.public")
+	attempt, _ = attempt.WithCompanyRecipeFence(model.AttemptFence{CompanyVersion: run.CompanyVersion,
+		RecipeID: candidate.RecipeID, RecipeVersion: candidate.Version})
+	permit, _ := model.NewBudgetPermit("discovery-recipe-validation-permit", attempt.AttemptID, run.Origin, "",
+		attempt.Capability, run.CompanyID, 5)
+	offer := executioncontract.Offer{Kind: "discovery", Attempt: attempt, Work: work, RecipeValidation: &run,
+		Budget: permit, BudgetExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano),
+		RequestedCapability: attempt.Capability}
+	ref := recipeabi.ArtifactRef{ArtifactID: "discovery-validation-response", ContentHash: "sha256:response",
+		ObjectRef: "artifact://discovery-validation-response"}
+	items := []map[string]json.RawMessage{{"endpoint": json.RawMessage(`"/careers"`),
+		"confidence_basis": json.RawMessage(`"careers link"`)}}
+	resultBody, _ := json.Marshal(map[string]any{"candidates": items, "final_url": run.EndpointURL})
+	driverResult := httpdriver.DiscoveryRunResult{ResponseArtifact: ref, FinalURL: run.EndpointURL, Items: items,
+		Output: recipeabi.RunOutput{ABIVersion: recipeabi.Version, AttemptID: attempt.AttemptID,
+			Artifacts: []recipeabi.ArtifactRef{ref}, Result: resultBody, Quality: recipeabi.QualityProof{ItemCount: 1}}}
+	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}}, recipe: raw}
+	control := &executeControlStub{}
+	if err := executeOffer(context.Background(), control, resources, executeDriverStub{discovery: driverResult},
+		offer, executeTestOptions(now)); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"accept", "started", "submit:recipe_sample_validation"}
+	if len(control.calls) != len(want) {
+		t.Fatalf("Discovery validation lifecycle=%v", control.calls)
+	}
+	for index := range want {
+		if control.calls[index] != want[index] {
+			t.Fatalf("Discovery validation lifecycle=%v", control.calls)
+		}
+	}
+	submission, ok := control.submissions[0].(executioncontract.RecipeSampleValidationResult)
+	if !ok || submission.RecipeKind != model.RecipeDiscovery || submission.RecordCount != 1 ||
+		submission.ExtractedFieldCount != run.ExpectedFieldCount || len(submission.Artifacts) != 2 {
+		t.Fatalf("Discovery validation submission=%#v", control.submissions)
 	}
 }
 

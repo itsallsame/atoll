@@ -157,6 +157,9 @@ func validateRecipeApprovalEvidence(ctx context.Context, tx *sql.Tx, recipe mode
 	if recipe.Kind == model.RecipeDetail {
 		return validateDetailRecipeApprovalEvidence(ctx, tx, recipe, workID, aggregateID)
 	}
+	if recipe.Kind == model.RecipeDiscovery {
+		return validateDiscoveryRecipeApprovalEvidence(ctx, tx, recipe, workID, aggregateID)
+	}
 	var runState, workState []byte
 	err := tx.QueryRowContext(ctx, `SELECT lr.state_json, w.state_json
 FROM recruiting_listing_runs lr JOIN recruiting_works w ON w.work_id = lr.work_id
@@ -196,6 +199,48 @@ WHERE work_id = ? AND attempt_status = 'succeeded'`, workID).Scan(&successCount)
 		return fmt.Errorf("%w: approval requires one complete successful real-sample validation", ErrRecipeValidationRejected)
 	}
 	return requireRecipeValidationArtifacts(ctx, tx, workID, attemptID, outcome.Artifacts, "page", "trace")
+}
+
+func validateDiscoveryRecipeApprovalEvidence(ctx context.Context, tx *sql.Tx, recipe model.Recipe,
+	workID, aggregateID string) error {
+	var runState, workState []byte
+	err := tx.QueryRowContext(ctx, `SELECT rv.state_json, w.state_json
+FROM recruiting_recipe_validation_runs rv JOIN recruiting_works w ON w.work_id = rv.work_id
+WHERE w.work_id = ? AND w.target_type = 'recipe' AND w.target_id = ?
+  AND w.purpose = 'recipe_validation' AND rv.recipe_kind = 'discovery' FOR SHARE`,
+		workID, aggregateID).Scan(&runState, &workState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: Recipe validation Work", ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("read Discovery Recipe validation evidence: %w", err)
+	}
+	var run model.RecipeSampleValidation
+	var work model.Work
+	if json.Unmarshal(runState, &run) != nil || json.Unmarshal(workState, &work) != nil ||
+		work.Status != model.WorkCompleted || work.Resolution != model.ResolutionSucceeded ||
+		run.Status != model.RecipeSampleValidationCompleted || run.Candidate != recipe {
+		return fmt.Errorf("%w: Work does not prove this candidate version", ErrRecipeValidationRejected)
+	}
+	var attemptID string
+	var state []byte
+	if err := tx.QueryRowContext(ctx, `SELECT attempt_id, execution_result_json FROM recruiting_attempts
+WHERE work_id = ? AND attempt_status = 'succeeded' FOR SHARE`, workID).Scan(&attemptID, &state); err != nil {
+		return fmt.Errorf("%w: approval requires exactly one successful Attempt", ErrRecipeValidationRejected)
+	}
+	var successCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_attempts
+WHERE work_id = ? AND attempt_status = 'succeeded'`, workID).Scan(&successCount); err != nil || successCount != 1 {
+		return fmt.Errorf("%w: approval requires exactly one successful Attempt", ErrRecipeValidationRejected)
+	}
+	var outcome RecipeSampleValidationOutcome
+	if json.Unmarshal(state, &outcome) != nil || outcome.Work.WorkID != work.WorkID ||
+		outcome.Run.ValidationRunID != run.ValidationRunID || outcome.Artifacts != 2 ||
+		outcome.RecordCount < 1 || outcome.RecordCount > 500 || outcome.ExtractedFieldCount != run.ExpectedFieldCount ||
+		!strings.HasPrefix(outcome.NormalizedHash, "sha256:") {
+		return fmt.Errorf("%w: Discovery approval requires at least one valid real-sample candidate", ErrRecipeValidationRejected)
+	}
+	return requireRecipeValidationArtifacts(ctx, tx, workID, attemptID, 2, "response", "trace")
 }
 
 func validateDetailRecipeApprovalEvidence(ctx context.Context, tx *sql.Tx, recipe model.Recipe,
@@ -342,8 +387,11 @@ WHERE recipe_id = ? AND recipe_version = ? AND state_version = ?`, next.Status, 
 func lockRecipeValidationOwnership(ctx context.Context, tx *sql.Tx, recipe model.Recipe,
 	workID, aggregateID string) (model.Work, error) {
 	table, alias, kindClause := "recruiting_listing_runs", "lr", " AND lr.run_mode = 'recipe_validation'"
-	if recipe.Kind == model.RecipeDetail {
+	if recipe.Kind == model.RecipeDetail || recipe.Kind == model.RecipeDiscovery {
 		table, alias, kindClause = "recruiting_recipe_validation_runs", "rv", " AND rv.recipe_kind = 'detail'"
+		if recipe.Kind == model.RecipeDiscovery {
+			kindClause = " AND rv.recipe_kind = 'discovery'"
+		}
 	}
 	query := `SELECT ` + alias + `.state_json, w.state_json FROM ` + table + ` ` + alias + `
 JOIN recruiting_works w ON w.work_id = ` + alias + `.work_id
@@ -361,7 +409,7 @@ WHERE w.work_id = ? AND w.target_type = 'recipe' AND w.target_id = ?
 		return model.Work{}, fmt.Errorf("decode Recipe validation Work: %w", err)
 	}
 	owned := false
-	if recipe.Kind == model.RecipeDetail {
+	if recipe.Kind == model.RecipeDetail || recipe.Kind == model.RecipeDiscovery {
 		var run model.RecipeSampleValidation
 		if json.Unmarshal(runState, &run) == nil {
 			owned = run.Candidate == recipe

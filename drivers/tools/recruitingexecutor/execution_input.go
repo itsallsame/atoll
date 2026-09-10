@@ -235,6 +235,31 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 		expectation = recipeExpectation{ContentHash: recipe.ContentHash, Kind: recipeabi.KindDiscovery,
 			Capability: recipe.Execution.RequiredCapability, Transport: recipeabi.Transport(recipe.Execution.Transport)}
 
+	case "discovery":
+		run := offer.RecipeValidation
+		if run == nil || offer.Discovery != nil || offer.Recipe != nil || offer.Detail != nil || offer.Occurrence != nil ||
+			offer.ListingRun != nil || offer.Checkpoint != nil || work.Purpose != "recipe_validation" ||
+			work.TargetType != "recipe" || work.TargetID != fmt.Sprintf("%s@%d", run.Candidate.RecipeID, run.Candidate.Version) ||
+			run.WorkID != work.WorkID || run.RecipeKind != model.RecipeDiscovery ||
+			(run.Status != model.RecipeSampleValidationQueued && run.Status != model.RecipeSampleValidationRunning) ||
+			run.CompanyVersion != attempt.CompanyVersion || run.Candidate.RecipeID != attempt.RecipeID ||
+			run.Candidate.Version != attempt.RecipeVersion || run.Candidate.Execution.RequiredCapability != attempt.Capability ||
+			run.Origin != permit.Origin || permit.CompanyID != run.CompanyID {
+			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("Discovery Recipe validation offer is inconsistent")
+		}
+		if err := run.Validate(); err != nil {
+			return recipeabi.RunInput{}, recipeExpectation{}, "", err
+		}
+		input.Attempt.RecipeValidation = true
+		input.Target = recipeabi.TargetRef{Kind: "company", ID: run.CompanyID}
+		input.Endpoint = recipeabi.EndpointRef{URL: run.EndpointURL, Version: run.EndpointVersion}
+		input.Recipe = &recipeabi.RecipeRef{RecipeID: run.Candidate.RecipeID, RecipeVersion: run.Candidate.Version,
+			ContractHash: run.Candidate.ContractHash}
+		contentRef = run.Candidate.Execution.ContentRef
+		expectation = recipeExpectation{ContentHash: run.Candidate.ContentHash, Kind: recipeabi.KindDiscovery,
+			Capability: run.Candidate.Execution.RequiredCapability,
+			Transport:  recipeabi.Transport(run.Candidate.Execution.Transport)}
+
 	default:
 		return recipeabi.RunInput{}, recipeExpectation{}, "", fmt.Errorf("unsupported execution offer kind %q", offer.Kind)
 	}

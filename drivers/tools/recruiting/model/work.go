@@ -370,6 +370,23 @@ func (a Attempt) WithDiscoveryFence(f AttemptFence) (Attempt, error) {
 	return a, nil
 }
 
+// WithCompanyRecipeFence binds evidence-only validation of a company-scoped
+// Discovery Recipe. It has neither a Source/Assignment nor a production
+// discovery generation and must not invent either identity.
+func (a Attempt) WithCompanyRecipeFence(f AttemptFence) (Attempt, error) {
+	if a.Status != AttemptOffered || f.CompanyVersion == 0 || strings.TrimSpace(f.RecipeID) == "" ||
+		f.RecipeVersion == 0 || f.SourceVersion != 0 || f.AssignmentVersion != 0 || f.CheckpointVersion != 0 ||
+		f.RefreshGeneration != 0 || f.SampleVersion != 0 || f.BatchVersion != 0 || f.DiscoveryGeneration != 0 {
+		return Attempt{}, fmt.Errorf("offered attempt and company/recipe validation fence are required")
+	}
+	if (f.ProfileID == "") != (f.ProfileVersion == 0) {
+		return Attempt{}, fmt.Errorf("profile identity and version must be supplied together")
+	}
+	a.CompanyVersion, a.RecipeID, a.RecipeVersion = f.CompanyVersion, f.RecipeID, f.RecipeVersion
+	a.ProfileID, a.ProfileVersion = f.ProfileID, f.ProfileVersion
+	return a, nil
+}
+
 func NewAttempt(id string, work Work) (Attempt, error) {
 	if strings.TrimSpace(id) == "" || work.WorkID == "" || work.Terminal() {
 		return Attempt{}, fmt.Errorf("attempt requires a non-terminal work and identity")

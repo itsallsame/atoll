@@ -31,3 +31,19 @@ func TestDetailRecipeSampleValidationFreezesCandidateAndJob(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDiscoveryRecipeSampleValidationHasNoFakeSourceFence(t *testing.T) {
+	company, _ := NewCompany("company-discovery", "Company", "https://company.example/careers")
+	candidate, _ := NewRecipe("discovery-new", RecipeDiscovery, "company.example", 2, "content", "contract",
+		RecipeExecution{ABIVersion: RecipeABIVersion, ContentRef: "recipe://discovery/new",
+			RequiredCapability: "http.fetch", Transport: RecipeTransportHTTPHTML})
+	candidate, _ = candidate.BeginValidation(candidate.StateVersion)
+	run, err := NewDiscoveryRecipeSampleValidation("validation-discovery", "work-discovery", company, candidate, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.SourceID != "" || run.SourceVersion != 0 || run.SampleJobID != "" ||
+		run.ProposedAssignment != (SourceRecipeAssignment{}) || run.EndpointVersion != company.Version {
+		t.Fatalf("Discovery validation invented Source facts: %+v", run)
+	}
+}

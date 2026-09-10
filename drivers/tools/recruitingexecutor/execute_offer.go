@@ -186,7 +186,7 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 		}
 		return nil
 
-	case "source_discovery":
+	case "source_discovery", "discovery":
 		discoveryDriver, ok := driver.(executionDiscoveryHTTPDriver)
 		if !ok {
 			return failLocalExecution(ctx, control, sink, offer, "contract_violated", "discovery_driver",
@@ -198,6 +198,16 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 		}
 		if run.Output.Failure != nil {
 			return failRunExecution(ctx, control, sink, offer, run.Output)
+		}
+		if offer.RecipeValidation != nil {
+			submission, err := prepareDiscoveryRecipeValidationSubmission(ctx, offer, spec, run, sink)
+			if err != nil {
+				return failLocalExecution(ctx, control, sink, offer, "contract_violated", "recipe_validation_result", err)
+			}
+			if err := control.Submit(ctx, submission.ResultKind, submission); err != nil {
+				return fmt.Errorf("submit Discovery Recipe validation result: %w", err)
+			}
+			return nil
 		}
 		submission, err := prepareSourceDiscoverySubmission(offer, run, sink)
 		if err != nil {

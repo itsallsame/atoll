@@ -21,13 +21,14 @@ type RecipeSampleValidation struct {
 	ValidationRunID    string                       `json:"validation_run_id"`
 	WorkID             string                       `json:"work_id"`
 	RecipeKind         RecipeKind                   `json:"recipe_kind"`
-	SourceID           string                       `json:"source_id"`
+	CompanyID          string                       `json:"company_id"`
+	SourceID           string                       `json:"source_id,omitempty"`
 	CompanyVersion     uint64                       `json:"company_version"`
-	SourceVersion      uint64                       `json:"source_version"`
+	SourceVersion      uint64                       `json:"source_version,omitempty"`
 	Candidate          Recipe                       `json:"candidate"`
 	ProposedAssignment SourceRecipeAssignment       `json:"proposed_assignment"`
-	SampleJobID        string                       `json:"sample_job_id"`
-	SampleJobVersion   uint64                       `json:"sample_job_version"`
+	SampleJobID        string                       `json:"sample_job_id,omitempty"`
+	SampleJobVersion   uint64                       `json:"sample_job_version,omitempty"`
 	ExpectedFieldCount int                          `json:"expected_field_count"`
 	EndpointURL        string                       `json:"endpoint_url"`
 	EndpointVersion    uint64                       `json:"endpoint_version"`
@@ -59,7 +60,7 @@ func NewDetailRecipeSampleValidation(id, workID string, company Company, source 
 		return RecipeSampleValidation{}, fmt.Errorf("Detail Recipe validation sample URL does not match candidate scope")
 	}
 	run := RecipeSampleValidation{ValidationRunID: id, WorkID: workID, RecipeKind: RecipeDetail,
-		SourceID: source.SourceID, CompanyVersion: company.Version, SourceVersion: source.Version,
+		CompanyID: company.CompanyID, SourceID: source.SourceID, CompanyVersion: company.Version, SourceVersion: source.Version,
 		Candidate: candidate, ProposedAssignment: proposed, SampleJobID: job.JobID, SampleJobVersion: job.Version,
 		ExpectedFieldCount: expectedFieldCount,
 		EndpointURL:        job.DetailURL, EndpointVersion: job.Version, Origin: endpoint.Scheme + "://" + endpoint.Host,
@@ -67,16 +68,48 @@ func NewDetailRecipeSampleValidation(id, workID string, company Company, source 
 	return run, run.Validate()
 }
 
+func NewDiscoveryRecipeSampleValidation(id, workID string, company Company, candidate Recipe,
+	expectedFieldCount int) (RecipeSampleValidation, error) {
+	id, workID = strings.TrimSpace(id), strings.TrimSpace(workID)
+	if id == "" || workID == "" || company.CompanyID == "" || company.Version == 0 ||
+		company.ControlStatus != ControlActive || candidate.Kind != RecipeDiscovery ||
+		candidate.Status != RecipeValidating || expectedFieldCount < 1 {
+		return RecipeSampleValidation{}, fmt.Errorf("Discovery Recipe validation requires an active Company and validating candidate")
+	}
+	endpoint, err := url.Parse(company.Website)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" || endpoint.User != nil || endpoint.Fragment != "" ||
+		!strings.EqualFold(candidate.Scope, endpoint.Hostname()) {
+		return RecipeSampleValidation{}, fmt.Errorf("Discovery Recipe validation sample does not match Company scope")
+	}
+	run := RecipeSampleValidation{ValidationRunID: id, WorkID: workID, RecipeKind: RecipeDiscovery,
+		CompanyID: company.CompanyID, CompanyVersion: company.Version, Candidate: candidate,
+		ExpectedFieldCount: expectedFieldCount, EndpointURL: company.Website, EndpointVersion: company.Version,
+		Origin: endpoint.Scheme + "://" + endpoint.Host, Status: RecipeSampleValidationQueued, Version: 1}
+	return run, run.Validate()
+}
+
 func (r RecipeSampleValidation) Validate() error {
-	if r.ValidationRunID == "" || r.WorkID == "" || r.RecipeKind != RecipeDetail || r.SourceID == "" ||
-		r.CompanyVersion == 0 || r.SourceVersion == 0 || r.SampleJobID == "" || r.SampleJobVersion == 0 ||
-		r.ExpectedFieldCount < 1 ||
-		r.EndpointVersion != r.SampleJobVersion || r.Version == 0 || r.Candidate.Kind != r.RecipeKind ||
-		r.Candidate.Status != RecipeValidating || r.ProposedAssignment.SourceID != r.SourceID ||
-		r.ProposedAssignment.Kind != r.RecipeKind || r.ProposedAssignment.RecipeID != r.Candidate.RecipeID ||
-		r.ProposedAssignment.RecipeVersion != r.Candidate.Version ||
-		r.ProposedAssignment.ContractHash != r.Candidate.ContractHash {
+	if r.ValidationRunID == "" || r.WorkID == "" || r.CompanyID == "" || r.CompanyVersion == 0 ||
+		r.ExpectedFieldCount < 1 || r.Version == 0 || r.Candidate.Kind != r.RecipeKind ||
+		r.Candidate.Status != RecipeValidating {
 		return fmt.Errorf("Recipe sample validation is incomplete or inconsistent")
+	}
+	switch r.RecipeKind {
+	case RecipeDetail:
+		if r.SourceID == "" || r.SourceVersion == 0 || r.SampleJobID == "" || r.SampleJobVersion == 0 ||
+			r.EndpointVersion != r.SampleJobVersion || r.ProposedAssignment.SourceID != r.SourceID ||
+			r.ProposedAssignment.Kind != r.RecipeKind || r.ProposedAssignment.RecipeID != r.Candidate.RecipeID ||
+			r.ProposedAssignment.RecipeVersion != r.Candidate.Version ||
+			r.ProposedAssignment.ContractHash != r.Candidate.ContractHash {
+			return fmt.Errorf("Detail Recipe sample validation is incomplete or inconsistent")
+		}
+	case RecipeDiscovery:
+		if r.SourceID != "" || r.SourceVersion != 0 || r.SampleJobID != "" || r.SampleJobVersion != 0 ||
+			r.EndpointVersion != r.CompanyVersion || r.ProposedAssignment != (SourceRecipeAssignment{}) {
+			return fmt.Errorf("Discovery Recipe sample validation is incomplete or inconsistent")
+		}
+	default:
+		return fmt.Errorf("Recipe sample validation kind is unsupported")
 	}
 	if err := r.Candidate.Validate(); err != nil {
 		return err

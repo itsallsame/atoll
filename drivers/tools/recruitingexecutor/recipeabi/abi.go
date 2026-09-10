@@ -91,6 +91,7 @@ type AttemptFence struct {
 	SourceVersion       uint64 `json:"source_version"`
 	ProfileVersion      uint64 `json:"profile_version,omitempty"`
 	DiscoveryGeneration uint64 `json:"discovery_generation,omitempty"`
+	RecipeValidation    bool   `json:"recipe_validation,omitempty"`
 }
 
 func (in RunInput) Validate() error {
@@ -103,12 +104,13 @@ func (in RunInput) Validate() error {
 	}
 	if in.Target.Kind == "company" {
 		if in.Recipe == nil || blank(in.Recipe.RecipeID, in.Recipe.ContractHash) || in.Recipe.RecipeVersion == 0 ||
-			in.Attempt.DiscoveryGeneration == 0 || in.Attempt.SourceVersion != 0 || in.Assignment != (AssignmentRef{}) || in.Checkpoint != nil {
-			return fmt.Errorf("company discovery input requires Recipe and generation without Source or Assignment")
+			(in.Attempt.DiscoveryGeneration == 0) != in.Attempt.RecipeValidation || in.Attempt.SourceVersion != 0 ||
+			in.Assignment != (AssignmentRef{}) || in.Checkpoint != nil {
+			return fmt.Errorf("company discovery input requires either a production generation or Recipe validation without Source or Assignment")
 		}
 	} else if in.Recipe != nil || blank(in.Assignment.RecipeID, in.Assignment.ContractHash) ||
 		in.Assignment.RecipeVersion == 0 || in.Assignment.AssignmentVersion == 0 || in.Attempt.SourceVersion == 0 ||
-		in.Attempt.DiscoveryGeneration != 0 {
+		in.Attempt.DiscoveryGeneration != 0 || in.Attempt.RecipeValidation {
 		return fmt.Errorf("source and job inputs require Assignment and Source fence without discovery Recipe")
 	}
 	endpoint, err := url.Parse(in.Endpoint.URL)
