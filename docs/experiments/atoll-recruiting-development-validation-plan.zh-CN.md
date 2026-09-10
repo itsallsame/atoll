@@ -433,6 +433,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 执行状态补充（2026-09-10，岗位字段人工修正）：公开 `recruiting.job.correct` 已把既有 `CuratedOverride` 领域/存储能力接入普通运营员消息边界。set/clear 同时冻结 Job version 与 override-head identity/version，客户端不能自报操作者；命令事务先锁定真实 Job，再追加不可变 override version、移动 head、保存稳定 receipt 和不含字段值的审计事件，原始 Job、ListingObservation 和 DetailVersion 都不被改写。值为非 null、有效且至多 64 KiB 的 JSON，字段名有界且拒绝控制字符。`recruiting.job.correction.get` 返回指定 Job+field 的当前 head 和至多 100 条历史。隔离非 root MySQL 合同验证了原子性、陈旧 head 回滚、set/clear 与重放；普通用户真实 server E2E 又验证后续新抓取推进 Job 版本但人工覆盖仍生效、旧浏览器页被版本栅栏拒绝、撤销后恢复底层事实优先级，以及 server 重启后命令重放与两版历史一致。该切片不实现岗位下架，也不把人工修正反写成抓取事实。
 
+执行状态补充（2026-09-10，Profile 认证失败熔断）：统一 Executor 提交 `auth_expired`/`captcha` 后，控制面现会在失败命令事务内同时保存失败 Artifact、关闭 Attempt、释放 Permit、把 Work 关联到单飞 RepairIncident，并将仍匹配 Attempt 接受版本的 Profile 从 `ready` 推进到 `repairing`。该转换只改认证状态和版本，opaque Secret 引用、授权设备不进入事件且保持不变；派发候选查询会跳过非 `ready` Profile，避免队首故障任务遮挡其他可运行任务。两个已在途、绑定同一旧版本且稳定签名相同的 Attempt 可依次保存失败并加入同一 Incident，但 Profile 只推进一次、只产生一条 `profile.repair_required` 事件；后来到达的旧失败不会再次熔断已更新 Profile。`budget_revoked` 不会被误判为认证失效。隔离非 root MySQL 合同已覆盖命令重放、共享加入、秘密/设备引用不变和后续领取阻断。一次性安全修复会话、Executor 验证恢复和普通用户公开 Profile 运维接口仍未实现，因此 P7/S12 尚未完成。
+
 ## 13. P8：25 场景验收矩阵
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。

@@ -160,6 +160,58 @@ func failureDomainIdentity(domain model.FailureDomain, work model.Work, attempt 
 	}
 }
 
+func beginProfileRepairForFailureTx(ctx context.Context, tx *sql.Tx, attempt model.Attempt,
+	incident model.RepairIncident, causeCommandID string, at time.Time) error {
+	if attempt.ProfileID == "" || attempt.ProfileVersion == 0 || incident.Domain != model.FailureProfile ||
+		incident.DomainKey != attempt.ProfileID || strings.TrimSpace(causeCommandID) == "" || at.IsZero() {
+		return fmt.Errorf("Profile repair failure facts are inconsistent")
+	}
+	var state []byte
+	if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_profiles
+WHERE profile_id = ? FOR UPDATE`, attempt.ProfileID).Scan(&state); err != nil {
+		return fmt.Errorf("lock failed Profile: %w", err)
+	}
+	var current model.BrowserProfile
+	if err := json.Unmarshal(state, &current); err != nil {
+		return err
+	}
+	if current.ProfileID != attempt.ProfileID {
+		return fmt.Errorf("failed Profile identity is inconsistent")
+	}
+	// Failure evidence is still accepted after a concurrent failure has fenced
+	// this Profile. Only the Attempt bound to the current ready version may
+	// advance it; older in-flight Attempts join the same incident without
+	// fencing a repaired or disabled Profile again.
+	if current.Version != attempt.ProfileVersion || current.AuthStatus != model.ProfileReady {
+		return nil
+	}
+	next, err := current.BeginRepair(current.Version)
+	if err != nil {
+		return err
+	}
+	nextState, _ := json.Marshal(next)
+	result, err := tx.ExecContext(ctx, `UPDATE recruiting_profiles
+SET auth_status = ?, version = ?, state_json = ?, updated_at = ?
+WHERE profile_id = ? AND version = ? AND auth_status = ?`, next.AuthStatus, next.Version, nextState,
+		at.UTC(), current.ProfileID, current.Version, current.AuthStatus)
+	if err != nil {
+		return fmt.Errorf("fence failed Profile: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return fmt.Errorf("%w: Profile changed during authentication failure", ErrResultFenced)
+	}
+	payload, _ := json.Marshal(map[string]any{"profile_id": current.ProfileID,
+		"failed_profile_version": current.Version, "repair_incident_id": incident.IncidentID,
+		"repair_work_id": incident.RepairWorkID})
+	event, err := model.NewEventIntent("profile-repair-required-"+attempt.AttemptID,
+		"profile.repair_required", "profile", current.ProfileID, next.Version,
+		at.UTC().Format(time.RFC3339Nano), causeCommandID, payload)
+	if err != nil {
+		return err
+	}
+	return appendEventIntent(ctx, tx, event, at, at)
+}
+
 func openOrJoinRepairFailureTx(ctx context.Context, tx *sql.Tx, failure repairFailure,
 	affectedWorkID, causeID string, at time.Time) (model.RepairIncident, bool, error) {
 	failure.Placement.NotBefore = at.UTC()

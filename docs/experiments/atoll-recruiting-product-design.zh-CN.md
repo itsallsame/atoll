@@ -680,7 +680,7 @@ Attempt 还固定 Company/Source 配置版本、Recipe Assignment、Checkpoint �
 
 Resource 中大对象或批量结果的稳定引用，包括页面、截图、响应、原始职位、失败证据、候选 Recipe、验证报告和 trace。至少保存 ID、内容哈希、类型、创建者、关联 Work/Attempt、访问和保留策略。
 
-持久 Browser Profile 是安全 Resource，不是聊天凭证。至少保存 `profile_id`、站点/安全域、授权设备、版本、认证状态和最近验证时间；Cookie、密码和 OTP 不进入 Message、普通 Artifact 或 AI 上下文。Profile 故障按版本熔断，共享该 Profile 的 Work 只产生一个修复事项。
+持久 Browser Profile 是安全 Resource，不是聊天凭证。至少保存 `profile_id`、站点/安全域、授权设备、版本、认证状态和最近验证时间；Cookie、密码和 OTP 不进入 Message、普通 Artifact 或 AI 上下文。控制面接受绑定当前 Profile 版本的 `auth_expired` 或 `captcha` 失败时，必须在保存失败证据、关闭 Attempt、释放预算、阻塞 Work 和创建/加入 RepairIncident 的同一事务内，把 Profile 从 `ready` 推进到 `repairing` 并增加版本；Secret 引用和设备绑定不变。此后新的 Work 不得用该 Profile 领取，已在途的旧 Attempt 可以保存失败证据并加入同一修复，但不得重复增加 Profile 版本，也不得再次熔断已修复或禁用的 Profile。Profile 故障按失败版本和稳定签名单飞，共享该 Profile 的 Work 只产生一个对应修复事项。
 
 ### 9.6 领域状态机
 
@@ -895,7 +895,7 @@ Recruiting Actor 只做短时、确定性的校验与领域事务，不在 Actor
 | 确定性数据错误 | 进入修复，不盲目重试 |
 | 多轮不收敛 | `waiting_human` |
 
-失败按 `origin | recipe_version | profile | single_target` 归入故障域。相同 `failure_signature` 只允许一个活动 Repair Work，受影响 Work 通过 `blocked_by_repair_work_id` 关联；修复成功后分批、有界唤醒，避免重试和人工告警风暴。重试策略版本、Attempt 计数和预算耗尽原因随 Work 保存；人工重试不能绕过站点或 Profile 安全预算。
+失败按 `origin | recipe_version | profile | single_target` 归入故障域。相同 `failure_signature` 只允许一个活动 Repair Work，受影响 Work 通过 `blocked_by_repair_work_id` 关联；修复成功后分批、有界唤醒，避免重试和人工告警风暴。`auth_expired`/`captcha` 进入 Profile 故障域时还必须原子熔断其接受版本，派发查询和领取时都只允许 `ready` Profile；`budget_revoked` 即使按 Profile 聚合也只是预算/策略故障，不能把认证状态误改为失效。重试策略版本、Attempt 计数和预算耗尽原因随 Work 保存；人工重试不能绕过站点或 Profile 安全预算。
 
 ## 11. 一致性与恢复
 

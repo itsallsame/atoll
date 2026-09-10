@@ -92,6 +92,10 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	  AND (? = '' OR w.purpose = ?)
 	  AND w.not_before <= ? AND (w.deadline_at IS NULL OR w.deadline_at > ?)
   AND (? = '' OR w.origin = ?) AND (? = '' OR w.profile_id = ?)
+	  AND (w.profile_id IS NULL OR EXISTS (
+	    SELECT 1 FROM recruiting_profiles eligible_profile
+	    WHERE eligible_profile.profile_id = w.profile_id AND eligible_profile.auth_status = 'ready'
+	  ))
 	  AND ((w.purpose = 'listing_sync' AND (EXISTS (
 	    SELECT 1 FROM recruiting_source_occurrences o
 	    WHERE o.listing_work_id = w.work_id AND o.status IN ('queued', 'running')
@@ -984,8 +988,9 @@ type ExecutionTransitionCommand struct {
 }
 
 type executionTransitionHooks struct {
-	before func(*sql.Tx) (bool, error)
-	after  func(*sql.Tx, model.Attempt, model.Work) error
+	causeCommandID string
+	before         func(*sql.Tx) (bool, error)
+	after          func(*sql.Tx, model.Attempt, model.Work) error
 }
 
 // ApplyExecutionTransitionCommand makes the executor's command receipt and
@@ -1029,6 +1034,7 @@ func (r *Repository) ApplyExecutionTransitionCommand(ctx context.Context, comman
 	}
 	defer unlockRepair()
 	hooks := &executionTransitionHooks{
+		causeCommandID: command.CommandID,
 		before: func(tx *sql.Tx) (bool, error) {
 			stored, found, err := readCommandReceipt(ctx, tx, command.CommandID, command.RequestHash)
 			if err != nil || !found {
@@ -1324,6 +1330,14 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 							var incident model.RepairIncident
 							incident, _, err = openOrJoinRepairFailureTx(ctx, tx, failure, work.WorkID, attempt.AttemptID, businessAt)
 							decision.RepairWorkID = incident.RepairWorkID
+							if err == nil && incident.Domain == model.FailureProfile &&
+								(report.Class == "auth_expired" || report.Class == "captcha") {
+								causeID := attempt.AttemptID
+								if hooks != nil && hooks.causeCommandID != "" {
+									causeID = hooks.causeCommandID
+								}
+								err = beginProfileRepairForFailureTx(ctx, tx, attempt, incident, causeID, businessAt)
+							}
 						}
 					}
 				}
