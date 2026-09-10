@@ -124,6 +124,8 @@ var actorErrorClasses = map[string]failureClass{
 	"channel_unavailable":   {Unavailable, hintUnavailable, true},
 	"authority_unavailable": {Unavailable, hintUnavailable, true},
 	"provider_failed":       {Unavailable, hintUnavailable, true},
+	"generation_failed":     {Unavailable, hintUnavailable, true},
+	"critique_failed":       {Unavailable, hintUnavailable, true},
 
 	"mcp_timeout": {Timeout, hintTimeout, false},
 	"timeout":     {Timeout, hintTimeout, false},
@@ -142,6 +144,9 @@ var actorErrorClasses = map[string]failureClass{
 	"mcp_result_invalid": {InternalError, hintInternal, false},
 	"resource_error":     {InternalError, hintInternal, false},
 	"schedule_failed":    {InternalError, hintInternal, false},
+	"state_failed":       {InternalError, hintInternal, false},
+	"evolution_failed":   {InternalError, hintInternal, false},
+	"injection_failed":   {InternalError, hintInternal, false},
 	"runtime_failed":     {InternalError, hintInternal, false},
 }
 

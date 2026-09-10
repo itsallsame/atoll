@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope dev clean e2e-loop narrative-web narrative-serve
+.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope dev clean e2e-loop narrative-atoll narrative-web narrative-serve
 
 # server/daemon ship namespaced (atoll-server / atoll-daemon); the entry
 # command itself is plain `atoll` — its own name IS the namespace.
@@ -63,8 +63,12 @@ narrative-web:
 	@mkdir -p bin
 	go build -o bin/narrative-web ./cmd/narrative-web
 
+narrative-atoll:
+	@mkdir -p bin
+	go build -o bin/narrative-atoll ./cmd/narrative-atoll
+
 narrative-serve: narrative-web
-	./bin/narrative-web --addr 0.0.0.0:8841 --content narrative
+	./bin/narrative-web --addr 0.0.0.0:8841 --content narrative --atoll-home "$${NARRATIVE_ATOLL_HOME:-$$HOME/.atoll/server}"
 
 # ----------------------------------------------------------------------------
 # web — 按 WEB_VERSION 取 atoll-web 的那个 tag，构建，铺进 web/dist。

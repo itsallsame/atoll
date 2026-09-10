@@ -463,6 +463,295 @@ actor_policies:
         utility: {finish_register: 6, appeal_risk: -5}
         prose: 周继仁在草图上划下了一条直线。
 
+  # 从第六日起，行动不再只由固定基础分决定。角色已经观察到的关系、
+  # 证据与制度状态会通过 utility_modifiers 改变当下选择。
+  - id: he_measurement_position
+    tick: morning
+    order: 130
+    actor: he_asheng
+    location: 南湾七号田
+    when:
+      - {key: boundary.review, op: eq, value: measurement_ordered}
+      - {key: measurement.iteration, op: gte, value: 1}
+    participants: [lu_jinghe, shen_yanqiu]
+    observers: [he_asheng, lu_jinghe, shen_yanqiu, zhou_jiren]
+    options:
+      - id: measure_east_independently
+        action: 从树根东缘独自量出三步并钉下草绳
+        summary: 何阿生拒绝让曾经扣留契据的人共同决定起量方向。
+        perceived_goal: 不让一次程序含混吞掉七年的耕作事实。
+        intended_effect: 固定何氏主张的东向量线。
+        actual_effect: 现场出现第一条可重复测量、但尚未被共同承认的界线。
+        effects:
+          - {key: measurement.he_direction, op: set, value: east}
+          - {key: relationship.he_lu.trust, op: add, value: -1}
+        utility: {protect_cultivation: 6, reproducibility: 2, conflict_cost: -2}
+        utility_modifiers:
+          - when: [{key: lu_jinghe.withholding_exposed, op: eq, value: true}]
+            add: 4
+            reason: 陆氏扣契已被发现，合作测量的可信度下降
+        prose: 何阿生把草绳的一头绕在树根朝阳的一侧，三步都踩进自己熟悉的泥里。
+      - id: request_joint_measurement
+        action: 请沈砚秋执绳，与陆氏共同起量
+        summary: 何阿生试图用共同操作换取一次可被各方承认的结果。
+        perceived_goal: 减少复勘再次被推翻的可能。
+        intended_effect: 形成共同量线。
+        actual_effect: 各方必须先回答谁有权握住绳头。
+        effects:
+          - {key: measurement.he_direction, op: set, value: joint_requested}
+        utility: {legitimacy: 5, conflict_avoidance: 3}
+
+  - id: lu_measurement_response
+    tick: late_morning
+    order: 140
+    actor: lu_jinghe
+    location: 南湾七号田
+    when:
+      - {key: measurement.he_direction, op: exists}
+      - {key: evidence.upper_deed, op: eq, value: submitted_sealed}
+    participants: [he_asheng, shen_yanqiu]
+    observers: [lu_jinghe, he_asheng, shen_yanqiu, zhou_jiren]
+    options:
+      - id: measure_west_from_bark
+        action: 依契文旧例从树皮西缘另量三步
+        summary: 陆敬和用另一种同样可重复的起量法回应何阿生。
+        perceived_goal: 保住契据覆盖的田界，同时恢复陆氏解释文书的资格。
+        intended_effect: 固定陆氏主张的西向量线。
+        actual_effect: 两条都可复测的界线公开分叉，争议从记忆冲突变成规则冲突。
+        effects:
+          - {key: measurement.lu_direction, op: set, value: west}
+          - {key: boundary.conflict_type, op: set, value: rule_interpretation}
+        utility: {protect_deed: 7, reproducibility: 2, public_conflict: -2}
+        utility_modifiers:
+          - when: [{key: measurement.he_direction, op: eq, value: east}]
+            add: 3
+            reason: 何氏已先形成事实界线，陆氏必须回应
+        prose: 陆敬和没有拔何阿生的钉，只让长工从树皮另一面重新放绳。
+      - id: accept_east_measurement
+        action: 暂认何阿生的东向量线
+        summary: 陆敬和以让步换取对其余契据链的继续承认。
+        perceived_goal: 阻止扣契争议扩大到全部陆氏申报。
+        intended_effect: 缩小当前争端。
+        actual_effect: 南湾东界暂时稳定，陆氏内部将承担让地压力。
+        effects:
+          - {key: measurement.lu_direction, op: set, value: east_accepted}
+        utility: {contain_reputation_damage: 5, land_loss: -5}
+
+  - id: shen_records_split_measurement
+    tick: noon
+    order: 150
+    actor: shen_yanqiu
+    location: 南湾七号田
+    when:
+      - {key: measurement.he_direction, op: exists}
+      - {key: measurement.lu_direction, op: exists}
+    participants: [he_asheng, lu_jinghe]
+    observers: [shen_yanqiu, he_asheng, lu_jinghe, zhou_jiren]
+    options:
+      - id: preserve_both_measurements
+        action: 把两条量线分别绘入草图，不画折中线
+        summary: 沈砚秋把冲突的测量规则本身保存为新证据。
+        perceived_goal: 不用一个看似中立的平均值抹掉真实分歧。
+        intended_effect: 让县衙能够复核起点、方向和操作者。
+        actual_effect: 册局第一次记录的不只是结果，也包括结果如何产生。
+        effects:
+          - {key: measurement.record, op: set, value: two_methods_preserved}
+          - {key: institution.audit_depth, op: add, value: 1}
+        utility: {accuracy: 7, auditability: 6, complexity: -2}
+        utility_modifiers:
+          - when: [{key: boundary.conflict_type, op: eq, value: rule_interpretation}]
+            add: 3
+            reason: 分歧来自规则而非读数，不能用平均值消除
+        prose: 沈砚秋用朱、墨两色各画一线，在旁边写明谁握绳、从哪一面起步。
+      - id: draw_midline
+        action: 在两条量线之间画一条折中界
+        summary: 沈砚秋用几何平均暂时消除纸面冲突。
+        perceived_goal: 让册页能够继续向下填写。
+        intended_effect: 产生单一候选边界。
+        actual_effect: 操作简化了，任何一方的证据逻辑却都没有被回答。
+        effects:
+          - {key: measurement.record, op: set, value: administrative_midline}
+        utility: {simplicity: 5, deadline: 3, evidence_loss: -5}
+
+  - id: zhou_escalates_measurement_review
+    tick: departure
+    order: 160
+    actor: zhou_jiren
+    location: 南湾七号田
+    when:
+      - {key: measurement.record, op: eq, value: two_methods_preserved}
+    participants: [shen_yanqiu, he_asheng, lu_jinghe]
+    observers: [zhou_jiren, shen_yanqiu, he_asheng, lu_jinghe, lin_suyun]
+    options:
+      - id: summon_independent_neighbors
+        action: 传两名无直接利害的邻田户次日复量
+        summary: 周继仁把无法在当事人之间解决的规则冲突交给独立重复测量。
+        perceived_goal: 取得县衙可以引用、又不减少税额的程序结果。
+        intended_effect: 引入新的观察者和证据来源。
+        actual_effect: 争议网络扩大，但下一轮结果不再只由原有强弱关系决定。
+        effects:
+          - {key: boundary.review, op: set, value: independent_replication_ordered}
+          - {key: institution.queue, op: add, value: 2}
+        utility: {legitimacy: 7, auditability: 5, delay: -3}
+        utility_modifiers:
+          - when: [{key: institution.audit_depth, op: gte, value: 1}]
+            add: 2
+            reason: 草图已保存操作过程，独立复量现在可执行
+        prose: 周继仁这次没有留下方向空格。他另开一页，写下两名邻田户的名字。
+      - id: choose_one_method
+        action: 以县吏身份指定西向量法
+        summary: 周继仁用行政权终止方法争议。
+        perceived_goal: 避免清丈队列继续增长。
+        intended_effect: 立即得到单一界线。
+        actual_effect: 测量结束，但被排除的方法成为新的申诉理由。
+        effects:
+          - {key: boundary.review, op: set, value: administratively_closed}
+        utility: {deadline: 6, simplicity: 4, appeal_risk: -6}
+
+  # 复测不是预写的“第八日剧情”，而是第七日以后地表痕迹达到可比较
+  # 程度才会出现的行动链。每一步必须先被下一位行动者观察到。
+  - id: shen_builds_trace_series
+    tick: morning
+    order: 170
+    actor: shen_yanqiu
+    location: 南湾七号田
+    when:
+      - {key: boundary.review, op: eq, value: independent_replication_ordered}
+      - {key: measurement.iteration, op: gte, value: 3}
+      - {key: terrain.trace_visibility, op: gte, value: 3}
+    participants: [he_asheng, lu_jinghe]
+    observers: [shen_yanqiu, he_asheng, lu_jinghe, zhou_jiren]
+    options:
+      - id: separate_old_and_new_traces
+        action: 把三次量线按日期、执绳人与落脚位置分层描入草图
+        summary: 沈砚秋没有把干泥上的所有痕迹都当成同一种证据。
+        perceived_goal: 让后来形成的脚印不能冒充退水前已经存在的界址。
+        intended_effect: 建立可追溯的复测序列。
+        actual_effect: 草图第一次区分地貌证据、操作痕迹和当事人的主张，复测有了时间顺序。
+        effects:
+          - {key: evidence.trace_series, op: set, value: dated_and_attributed}
+          - {key: institution.audit_depth, op: add, value: 1}
+        utility: {accuracy: 8, auditability: 7, workload: -2}
+        prose: 沈砚秋没有立刻下田。她先把前两日的草图压在膝上，用淡墨描旧线，再用朱砂点出今晨仍看得见的绳痕。颜色不能判谁有理，却能说明哪一道痕迹先来，哪一道是人在争执以后才踩出来的。
+      - id: preserve_only_clearest_line
+        action: 只描最清楚的一条量线
+        summary: 沈砚秋把可见度当作证据强弱。
+        perceived_goal: 减少草册复杂度。
+        intended_effect: 留下一条便于县衙采用的界线。
+        actual_effect: 后形成的清晰脚印覆盖了较早但模糊的地貌证据。
+        effects:
+          - {key: evidence.trace_series, op: set, value: latest_trace_only}
+        utility: {simplicity: 5, evidence_loss: -7}
+
+  - id: he_challenges_trace_ownership
+    tick: late_morning
+    order: 180
+    actor: he_asheng
+    location: 南湾七号田
+    when:
+      - {key: evidence.trace_series, op: eq, value: dated_and_attributed}
+      - {key: measurement.he_direction, op: eq, value: east}
+    participants: [shen_yanqiu, lu_jinghe]
+    observers: [he_asheng, shen_yanqiu, lu_jinghe, zhou_jiren]
+    options:
+      - id: distinguish_work_paths_from_boundary
+        action: 指认哪些脚印来自七年耕作，哪些只是昨日丈量留下
+        summary: 何阿生把“痕迹是谁留下的”变成复测必须回答的问题。
+        perceived_goal: 不让一次短暂丈量与七年持续耕作获得相同分量。
+        intended_effect: 让占有时间进入证据记录。
+        actual_effect: 复测不能再只比较线的位置，还必须记录每类痕迹形成的时间与用途。
+        effects:
+          - {key: evidence.trace_use, op: set, value: cultivation_vs_measurement_disputed}
+          - {key: measurement.he_objection, op: set, value: preserved}
+        utility: {protect_cultivation: 8, evidentiary_time: 5, conflict_cost: -2}
+        prose: 何阿生蹲下去，用指节沿一串较宽的凹痕敲了三处。他说挑泥的脚不会走直，执绳的人才会；若把昨日那条直线叫作旧界，便是让一根绳替七年的脚说话。
+
+  - id: lu_challenges_trace_admissibility
+    tick: noon
+    order: 190
+    actor: lu_jinghe
+    location: 南湾七号田
+    when:
+      - {key: measurement.he_objection, op: eq, value: preserved}
+      - {key: evidence.upper_deed, op: eq, value: submitted_sealed}
+    participants: [he_asheng, shen_yanqiu]
+    observers: [lu_jinghe, he_asheng, shen_yanqiu, zhou_jiren]
+    options:
+      - id: require_trace_to_match_deed_language
+        action: 要求每一类地表痕迹都与上手契中的界址词逐项对应
+        summary: 陆敬和没有否认脚印差异，而是争夺什么痕迹有资格进入契据解释。
+        perceived_goal: 阻止连续耕作本身被直接换算成所有权。
+        intended_effect: 把现场证据重新约束在文书语义内。
+        actual_effect: 树根、旧沟、耕作路径和丈量线被列成四类证据，任何一类都不能单独决定产权。
+        effects:
+          - {key: evidence.admissible_classes, op: set, value: stump_ditch_cultivation_measurement}
+          - {key: measurement.lu_challenge, op: set, value: preserved}
+        utility: {protect_deed: 7, procedural_control: 5, public_conflict: -1}
+        prose: 陆敬和等何阿生说完，才把封过的契纸放到草图旁边。他说脚可以年年换路，契上的“沟外、树西”却不能跟着人走；要记便四样都记，不可只挑最像苦劳的那一种。
+
+  - id: zhou_orders_evidence_matrix
+    tick: departure
+    order: 200
+    actor: zhou_jiren
+    location: 南湾七号田
+    when:
+      - {key: evidence.trace_series, op: eq, value: dated_and_attributed}
+      - {key: measurement.he_objection, op: eq, value: preserved}
+      - {key: measurement.lu_challenge, op: eq, value: preserved}
+    participants: [shen_yanqiu, he_asheng, lu_jinghe]
+    observers: [zhou_jiren, shen_yanqiu, he_asheng, lu_jinghe]
+    options:
+      - id: preserve_evidence_matrix
+        action: 命册局把四类证据、来源和反对意见并列表送县复核
+        summary: 周继仁没有替任何一条痕迹宣布胜负，而是固定了它们相互约束的方式。
+        perceived_goal: 让县衙能够复核争议，同时避免现场再被新脚印改变。
+        intended_effect: 封存当前证据结构并结束本轮现场操作。
+        actual_effect: 南湾争议从两条量线升级为可审计的证据矩阵，现场暂时封存，产权仍未被提前裁定。
+        effects:
+          - {key: boundary.review, op: set, value: evidence_matrix_pending_county}
+          - {key: registration.south_field_7, op: set, value: structured_evidence_pending_ruling}
+          - {key: institution.queue, op: add, value: 1}
+        utility: {auditability: 9, preserve_taxpayer: 4, delay: -2}
+        prose: 周继仁让人把绳和竹签都留在原处，又在草图右边划出四格。他逐格念：树根、旧沟、耕路、量线。念完才抬头，说今日谁也不许再往泥里添一只脚。
+      - id: close_on_deed_language
+        action: 只按契据界址词结束复测
+        summary: 周继仁以文书优先结束现场争议。
+        perceived_goal: 减少县衙复核负担。
+        intended_effect: 形成单一待登界线。
+        actual_effect: 现场操作得以结束，但耕作时间与复测过程从正式理由中消失。
+        effects:
+          - {key: boundary.review, op: set, value: closed_on_deed_language}
+        utility: {deadline: 7, appeal_risk: -8}
+
+recurring_processes:
+  # 可重复过程拥有冷却和次数上限，状态改变后会自行停止；这类规则可用于
+  # 天气、疾病、价格、生态、资源再生等连续系统。
+  - id: post_flood_ground_change
+    tick: dawn
+    order: 130
+    mode: recurring
+    cooldown_days: 1
+    max_firings: 3
+    actor: environment
+    location: 南湾七号田
+    when:
+      - {key: boundary.review, op: neq, value: closed}
+      - {key: river.level, op: eq, value: receding}
+    participants: [he_asheng, lu_jinghe]
+    observers: [he_asheng, lu_jinghe, shen_yanqiu, zhou_jiren]
+    options:
+      - id: mud_drains_and_marks_hold
+        action: 退水继续改变地表可见性
+        summary: 泥面又干一层，昨日留下的脚印和量线变得可以重复辨认。
+        perceived_goal: 无
+        intended_effect: 无
+        actual_effect: 自然过程提高了复测可靠性，也让此前的操作痕迹成为新证据。
+        effects:
+          - {key: measurement.iteration, op: add, value: 1}
+          - {key: terrain.trace_visibility, op: add, value: 1}
+        utility: {physical_continuity: 8}
+        prose: 夜里没有再涨水。泥面收紧，昨日凌乱的足迹边缘反而清楚起来。
+
 chapter:
   title: 病船
   pov: 林素云
