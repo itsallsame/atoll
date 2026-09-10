@@ -67,8 +67,9 @@ type recipeProposalResponse struct {
 	ContractVersion  string                 `json:"contract_version"`
 	CorrelationID    string                 `json:"correlation_id"`
 	RequestedBy      string                 `json:"requested_by"`
-	SourceID         string                 `json:"source_id"`
-	EndpointRevision uint64                 `json:"endpoint_revision"`
+	SourceID         string                 `json:"source_id,omitempty"`
+	CompanyID        string                 `json:"company_id,omitempty"`
+	EndpointRevision uint64                 `json:"endpoint_revision,omitempty"`
 	Recipe           model.Recipe           `json:"recipe"`
 	Proposal         *recipeProposalSummary `json:"proposal,omitempty"`
 	NextAction       string                 `json:"next_action"`
@@ -169,13 +170,25 @@ func handleRecipePropose(sys actorbase.Sys, repository *store.Repository, msg ac
 	payload.RecipeID, payload.ContentRef, payload.ExpectedContentHash = strings.TrimSpace(payload.RecipeID),
 		strings.TrimSpace(payload.ContentRef), strings.TrimSpace(payload.ExpectedContentHash)
 	payload.CaptureRef, payload.ExpectedCaptureHash = strings.TrimSpace(payload.CaptureRef), strings.TrimSpace(payload.ExpectedCaptureHash)
-	if err != nil || payload.Target.Type != "source" || payload.RecipeID == "" || payload.RecipeVersion == 0 ||
-		payload.EndpointRevision == 0 || payload.ContentRef == "" || payload.ExpectedContentHash == "" ||
+	if err != nil || (payload.Target.Type != "source" && payload.Target.Type != "company") ||
+		payload.RecipeID == "" || payload.RecipeVersion == 0 || payload.ContentRef == "" || payload.ExpectedContentHash == "" ||
 		((payload.CaptureRef == "") != (payload.ExpectedCaptureHash == "")) {
 		if err == nil {
-			err = fmt.Errorf("source target, Recipe identity, endpoint_revision, content_ref, and expected_content_hash are required; capture_ref and expected_capture_hash must be supplied together")
+			err = fmt.Errorf("source/company target, Recipe identity, content_ref, and expected_content_hash are required; capture_ref and expected_capture_hash must be supplied together")
 		}
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	if payload.Target.Type == "company" {
+		if payload.EndpointRevision != 0 || payload.CaptureRef != "" {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "Company Discovery Recipe proposal cannot carry Source endpoint or Extension Capture fields")
+			return
+		}
+		handleCompanyDiscoveryRecipePropose(sys, repository, msg, payload, commandContext)
+		return
+	}
+	if payload.EndpointRevision == 0 {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "Source Recipe proposal requires endpoint_revision")
 		return
 	}
 	requestHash := commandRequestHash(msg)
@@ -317,6 +330,85 @@ func handleRecipePropose(sys actorbase.Sys, repository *store.Repository, msg ac
 	if err == nil {
 		result, err = repository.ApplyRecipeProposalCommand(msg.Ctx(), payload.ExpectedVersion, payload.EndpointRevision,
 			source.SourceID, recipe, receipt, event, businessAt, storedProposal)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
+}
+
+func handleCompanyDiscoveryRecipePropose(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg,
+	payload recipeProposePayload, commandContext CommandContext) {
+	requestHash := commandRequestHash(msg)
+	if replay, found, lookupErr := repository.LookupCommand(msg.Ctx(), payload.CommandID, requestHash); lookupErr != nil {
+		failStoreError(sys, msg, lookupErr)
+		return
+	} else if found {
+		_, _ = sys.Reply(msg, json.RawMessage(replay.Response))
+		return
+	}
+	company, err := repository.GetCompany(msg.Ctx(), payload.Target.ID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	if company.Version != payload.ExpectedVersion {
+		failStoreError(sys, msg, &model.VersionConflictError{Expected: payload.ExpectedVersion, Actual: company.Version})
+		return
+	}
+	if company.ControlStatus != model.ControlActive {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, "Discovery Recipe proposal requires an active Company")
+		return
+	}
+	outcome, readErr := sys.Resource().Read(resource.ResourceID(payload.ContentRef))
+	if readErr != nil || !outcome.Accepted() || !outcome.Found {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, "Discovery Recipe Resource is not readable by the proposing actor")
+		return
+	}
+	spec, err := recipeabi.DecodeSpec(outcome.Value)
+	if err != nil || spec.Kind != recipeabi.KindDiscovery {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, "Company proposal requires a valid Discovery Recipe Resource")
+		return
+	}
+	contentHash, err := spec.ContentHash()
+	if err != nil || contentHash != payload.ExpectedContentHash {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, "Discovery Recipe Resource content hash does not match the proposal")
+		return
+	}
+	contractHash, err := spec.ContractHash()
+	website, parseErr := url.Parse(company.Website)
+	if err != nil || parseErr != nil || website.Hostname() == "" {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, "Discovery Recipe contract or Company scope is invalid")
+		return
+	}
+	execution := model.RecipeExecution{ABIVersion: model.RecipeABIVersion, ContentRef: payload.ContentRef,
+		RequiredCapability: spec.RequiredCapability, Transport: model.RecipeTransport(spec.Transport)}
+	recipe, err := model.NewRecipe(payload.RecipeID, model.RecipeDiscovery, strings.ToLower(website.Hostname()),
+		payload.RecipeVersion, contentHash, contractHash, execution)
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, err.Error())
+		return
+	}
+	businessAt := time.UnixMilli(msg.TS).UTC()
+	response := recipeProposalResponse{ContractVersion: ContractVersion, CorrelationID: string(msg.CorrelationID),
+		RequestedBy: commandContext.RequestedBy, CompanyID: company.CompanyID, Recipe: recipe,
+		NextAction: "validate_recipe"}
+	responseBytes, _ := json.Marshal(response)
+	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, requestHash, responseBytes)
+	audit, _ := json.Marshal(map[string]any{"requested_by": commandContext.RequestedBy, "reason": payload.Reason,
+		"company_id": company.CompanyID, "company_version": company.Version, "content_ref": payload.ContentRef,
+		"content_hash": contentHash})
+	var event model.EventIntent
+	if err == nil {
+		event, err = model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|recipe.proposed"), "recipe.proposed",
+			"recipe", fmt.Sprintf("%s@%d", recipe.RecipeID, recipe.Version), recipe.StateVersion,
+			businessAt.Format(time.RFC3339Nano), payload.CommandID, audit)
+	}
+	var result store.CommandResult
+	if err == nil {
+		result, err = repository.ApplyCompanyRecipeProposalCommand(msg.Ctx(), payload.ExpectedVersion,
+			company.CompanyID, recipe, receipt, event, businessAt)
 	}
 	if err != nil {
 		failStoreError(sys, msg, err)

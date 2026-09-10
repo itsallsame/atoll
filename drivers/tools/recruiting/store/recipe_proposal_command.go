@@ -144,6 +144,84 @@ func (r *Repository) ApplyRecipeProposalCommand(ctx context.Context, expectedSou
 	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
 }
 
+// ApplyCompanyRecipeProposalCommand registers a Discovery Recipe draft against
+// the Company's versioned website. Discovery is company-scoped: inventing a
+// Source merely to reuse Source proposal fencing would corrupt provenance.
+func (r *Repository) ApplyCompanyRecipeProposalCommand(ctx context.Context, expectedCompanyVersion uint64,
+	companyID string, recipe model.Recipe, receipt model.CommandReceipt, event model.EventIntent,
+	businessAt time.Time) (CommandResult, error) {
+	aggregateID := fmt.Sprintf("%s@%d", recipe.RecipeID, recipe.Version)
+	if expectedCompanyVersion == 0 || companyID == "" || recipe.Kind != model.RecipeDiscovery ||
+		recipe.Status != model.RecipeDraft || recipe.StateVersion != 1 || receipt.CommandID == "" ||
+		event.AggregateType != "recipe" || event.AggregateID != aggregateID ||
+		event.AggregateVersion != recipe.StateVersion || event.CauseCommandID != receipt.CommandID || businessAt.IsZero() {
+		return CommandResult{}, fmt.Errorf("Company Discovery Recipe proposal facts are inconsistent")
+	}
+	if err := recipe.Validate(); err != nil {
+		return CommandResult{}, err
+	}
+	eventAt, err := time.Parse(time.RFC3339, event.BusinessAt)
+	if err != nil || !eventAt.Equal(businessAt) {
+		return CommandResult{}, fmt.Errorf("Company Discovery Recipe proposal business times are inconsistent")
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("begin Company Discovery Recipe proposal: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if replay, found, err := readCommandReceipt(ctx, tx, receipt.CommandID, receipt.RequestHash); err != nil {
+		return CommandResult{}, err
+	} else if found {
+		return CommandResult{Response: replay, Replayed: true}, nil
+	}
+	var companyState []byte
+	if err := tx.QueryRowContext(ctx, "SELECT state_json FROM recruiting_companies WHERE company_id = ? FOR UPDATE",
+		companyID).Scan(&companyState); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return CommandResult{}, ErrNotFound
+		}
+		return CommandResult{}, fmt.Errorf("lock Discovery Recipe Company: %w", err)
+	}
+	var company model.Company
+	if err := json.Unmarshal(companyState, &company); err != nil {
+		return CommandResult{}, fmt.Errorf("decode Discovery Recipe Company: %w", err)
+	}
+	if company.Version != expectedCompanyVersion {
+		return CommandResult{}, &model.VersionConflictError{Expected: expectedCompanyVersion, Actual: company.Version}
+	}
+	website, err := url.Parse(company.Website)
+	if err != nil || website.Hostname() == "" || company.ControlStatus != model.ControlActive ||
+		!strings.EqualFold(recipe.Scope, website.Hostname()) {
+		return CommandResult{}, fmt.Errorf("Discovery Recipe scope does not match the active Company website")
+	}
+	if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {
+		if errors.Is(err, ErrCommandConflict) {
+			_ = tx.Rollback()
+			return r.replayCommittedCommand(ctx, receipt.CommandID, receipt.RequestHash)
+		}
+		return CommandResult{}, err
+	}
+	state, _ := json.Marshal(recipe)
+	_, err = tx.ExecContext(ctx, `INSERT INTO recruiting_recipes(
+  recipe_id, recipe_version, recipe_kind, scope_key, status, content_hash,
+  contract_hash, state_version, state_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, recipe.RecipeID, recipe.Version, recipe.Kind, recipe.Scope,
+		recipe.Status, recipe.ContentHash, recipe.ContractHash, recipe.StateVersion, state, businessAt.UTC(), businessAt.UTC())
+	if err != nil {
+		if isDuplicateKey(err) {
+			return CommandResult{}, fmt.Errorf("%w: Recipe ID and version", ErrBusinessKeyExists)
+		}
+		return CommandResult{}, fmt.Errorf("create proposed Discovery Recipe: %w", err)
+	}
+	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CommandResult{}, fmt.Errorf("commit Company Discovery Recipe proposal: %w", err)
+	}
+	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
+}
+
 func (r *Repository) GetRecipeProposal(ctx context.Context, recipeID string, version uint64) (model.RecipeProposal, error) {
 	var state []byte
 	err := r.db.QueryRowContext(ctx, `SELECT state_json FROM recruiting_recipe_proposals
