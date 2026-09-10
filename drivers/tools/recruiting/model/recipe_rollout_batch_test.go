@@ -139,6 +139,8 @@ func TestRecipeRolloutItemsFreezeVersionsAndBindDeterministicCanaryOrder(t *test
 		assignment, _ := NewSourceRecipeAssignment(sourceID, RecipeListing, "listing-v1", 1,
 			"sha256:batch-contract", "2026-09-10T00:00:00Z")
 		source.ListingAssignment = &assignment
+		assessment := verifiedAssessment(source, assignment)
+		source.ContractAssessment = &assessment
 		item, err := NewRecipeRolloutBatchItem("batch-items", 1, source, assignment)
 		if err != nil {
 			t.Fatal(err)
@@ -184,19 +186,41 @@ func TestRecipeRolloutItemsFreezeVersionsAndBindDeterministicCanaryOrder(t *test
 	}
 
 	applied, err := canonicalA[0].MarkApplied(canonicalA[0].Version, canonicalA[0].ExpectedSourceVersion+1,
-		canonicalA[0].ExpectedAssignmentVersion+1)
+		canonicalA[0].ExpectedAssignmentVersion+1, "2026-09-10T01:00:00Z")
 	// Canonical items intentionally erase persistence state; actual stored items
 	// are created again with version 1 after ordering.
 	if err == nil || applied.Version != 0 {
 		t.Fatalf("canonical hash projection unexpectedly acted as mutable item: %+v err=%v", applied, err)
 	}
 	stored := items[0]
-	applied, err = stored.MarkApplied(stored.Version, stored.ExpectedSourceVersion+1, stored.ExpectedAssignmentVersion+1)
+	applied, err = stored.MarkApplied(stored.Version, stored.ExpectedSourceVersion+1,
+		stored.ExpectedAssignmentVersion+1, "2026-09-10T01:00:00Z")
 	if err != nil || applied.Status != RecipeRolloutItemAwaitingValidation {
 		t.Fatalf("applied item=%+v err=%v", applied, err)
 	}
-	succeeded, err := applied.MarkSucceeded(applied.Version)
+	bound, err := applied.BindValidation(applied.Version, "work-validation", "run-validation")
+	if err != nil || bound.ValidationRunID != "run-validation" {
+		t.Fatalf("bound item=%+v err=%v", bound, err)
+	}
+	succeeded, err := bound.MarkSucceeded(bound.Version, "work-validation", "2026-09-10T01:01:00Z")
 	if err != nil || succeeded.Status != RecipeRolloutItemSucceeded {
 		t.Fatalf("succeeded item=%+v err=%v", succeeded, err)
+	}
+	failed, err := applied.MarkFailed(applied.Version, "quality_rejected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retried, err := failed.Retry(failed.Version)
+	if err != nil || retried.Status != RecipeRolloutItemAwaitingValidation ||
+		retried.AppliedAssignmentVersion != applied.AppliedAssignmentVersion {
+		t.Fatalf("post-application retry=%+v err=%v", retried, err)
+	}
+	preApplyFailed, err := stored.MarkFailed(stored.Version, "version_conflict")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preApplyRetried, err := preApplyFailed.Retry(preApplyFailed.Version)
+	if err != nil || preApplyRetried.Status != RecipeRolloutItemPending {
+		t.Fatalf("pre-application retry=%+v err=%v", preApplyRetried, err)
 	}
 }

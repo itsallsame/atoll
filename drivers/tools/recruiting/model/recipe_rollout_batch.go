@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 type RecipeRolloutBatchStatus string
@@ -74,17 +75,26 @@ const (
 )
 
 type RecipeRolloutBatchItem struct {
-	BatchID                   string                  `json:"batch_id"`
-	Ordinal                   int                     `json:"ordinal"`
-	SourceID                  string                  `json:"source_id"`
-	ExpectedSourceVersion     uint64                  `json:"expected_source_version"`
-	ExpectedAssignmentVersion uint64                  `json:"expected_assignment_version"`
-	PreviousAssignment        SourceRecipeAssignment  `json:"previous_assignment"`
-	AppliedSourceVersion      uint64                  `json:"applied_source_version,omitempty"`
-	AppliedAssignmentVersion  uint64                  `json:"applied_assignment_version,omitempty"`
-	Status                    RecipeRolloutItemStatus `json:"status"`
-	FailureCode               string                  `json:"failure_code,omitempty"`
-	Version                   uint64                  `json:"version"`
+	BatchID                    string                  `json:"batch_id"`
+	Ordinal                    int                     `json:"ordinal"`
+	SourceID                   string                  `json:"source_id"`
+	ExpectedSourceVersion      uint64                  `json:"expected_source_version"`
+	ExpectedAssignmentVersion  uint64                  `json:"expected_assignment_version"`
+	PreviousAssignment         SourceRecipeAssignment  `json:"previous_assignment"`
+	PreviousEndpointRevision   uint64                  `json:"previous_endpoint_revision,omitempty"`
+	PreviousUpdateRetop        ContractVerification    `json:"previous_update_retop,omitempty"`
+	PreviousCheckpointStrategy CheckpointStrategy      `json:"previous_checkpoint_strategy,omitempty"`
+	PreviousOverlapPages       int                     `json:"previous_overlap_pages,omitempty"`
+	PreviousAssessmentVersion  uint64                  `json:"previous_assessment_version,omitempty"`
+	AppliedSourceVersion       uint64                  `json:"applied_source_version,omitempty"`
+	AppliedAssignmentVersion   uint64                  `json:"applied_assignment_version,omitempty"`
+	AppliedAt                  string                  `json:"applied_at,omitempty"`
+	ValidationWorkID           string                  `json:"validation_work_id,omitempty"`
+	ValidationRunID            string                  `json:"validation_run_id,omitempty"`
+	ValidatedAt                string                  `json:"validated_at,omitempty"`
+	Status                     RecipeRolloutItemStatus `json:"status"`
+	FailureCode                string                  `json:"failure_code,omitempty"`
+	Version                    uint64                  `json:"version"`
 }
 
 func RecipeRolloutOrderKey(batchID, sourceID string) string {
@@ -106,33 +116,90 @@ func NewRecipeRolloutBatchItem(batchID string, ordinal int, source RecruitmentSo
 	if projected == nil || *projected != assignment {
 		return RecipeRolloutBatchItem{}, fmt.Errorf("rollout item assignment does not match Source projection")
 	}
-	return RecipeRolloutBatchItem{BatchID: batchID, Ordinal: ordinal, SourceID: source.SourceID,
+	item := RecipeRolloutBatchItem{BatchID: batchID, Ordinal: ordinal, SourceID: source.SourceID,
 		ExpectedSourceVersion: source.Version, ExpectedAssignmentVersion: assignment.AssignmentVersion,
-		PreviousAssignment: assignment, Status: RecipeRolloutItemPending, Version: 1}, nil
+		PreviousAssignment: assignment, Status: RecipeRolloutItemPending, Version: 1}
+	if assignment.Kind == RecipeListing {
+		assessment := source.ContractAssessment
+		if assessment == nil || !assessment.ProductionIncrementalEligible() ||
+			assessment.SourceID != source.SourceID || assessment.RecipeID != assignment.RecipeID ||
+			assessment.RecipeVersion != assignment.RecipeVersion || assessment.ContractHash != assignment.ContractHash {
+			return RecipeRolloutBatchItem{}, fmt.Errorf("Listing rollout item requires the current verified Source assessment")
+		}
+		item.PreviousEndpointRevision = assessment.EndpointRevision
+		item.PreviousUpdateRetop = assessment.UpdateRetop
+		item.PreviousCheckpointStrategy = assessment.CheckpointStrategy
+		item.PreviousOverlapPages = assessment.OverlapPages
+		item.PreviousAssessmentVersion = assessment.Version
+	}
+	return item, nil
 }
 
-func (i RecipeRolloutBatchItem) MarkApplied(expected uint64, sourceVersion, assignmentVersion uint64) (RecipeRolloutBatchItem, error) {
+func (i RecipeRolloutBatchItem) MarkApplied(expected uint64, sourceVersion, assignmentVersion uint64,
+	appliedAt string) (RecipeRolloutBatchItem, error) {
 	if err := requireVersion(expected, i.Version); err != nil {
 		return RecipeRolloutBatchItem{}, err
 	}
 	if i.Status != RecipeRolloutItemPending || sourceVersion != i.ExpectedSourceVersion+1 ||
-		assignmentVersion != i.ExpectedAssignmentVersion+1 {
+		assignmentVersion != i.ExpectedAssignmentVersion+1 || !validRFC3339(appliedAt) {
 		return RecipeRolloutBatchItem{}, fmt.Errorf("pending rollout item and exact applied Source/Assignment versions are required")
 	}
 	i.AppliedSourceVersion, i.AppliedAssignmentVersion = sourceVersion, assignmentVersion
+	i.AppliedAt = strings.TrimSpace(appliedAt)
 	i.Status = RecipeRolloutItemAwaitingValidation
 	i.Version++
 	return i, nil
 }
 
-func (i RecipeRolloutBatchItem) MarkSucceeded(expected uint64) (RecipeRolloutBatchItem, error) {
+func (i RecipeRolloutBatchItem) BindValidation(expected uint64, workID, runID string) (RecipeRolloutBatchItem, error) {
 	if err := requireVersion(expected, i.Version); err != nil {
 		return RecipeRolloutBatchItem{}, err
 	}
-	if i.Status != RecipeRolloutItemAwaitingValidation {
+	workID, runID = strings.TrimSpace(workID), strings.TrimSpace(runID)
+	if i.Status != RecipeRolloutItemAwaitingValidation || i.ValidationWorkID != "" ||
+		workID == "" || runID == "" {
+		return RecipeRolloutBatchItem{}, fmt.Errorf("awaiting rollout item and validation Work/run are required")
+	}
+	i.ValidationWorkID, i.ValidationRunID = workID, runID
+	i.Version++
+	return i, nil
+}
+
+func (i RecipeRolloutBatchItem) MarkSucceeded(expected uint64, validationWorkID, validatedAt string) (RecipeRolloutBatchItem, error) {
+	if err := requireVersion(expected, i.Version); err != nil {
+		return RecipeRolloutBatchItem{}, err
+	}
+	validationWorkID = strings.TrimSpace(validationWorkID)
+	if i.Status != RecipeRolloutItemAwaitingValidation || validationWorkID == "" || !validRFC3339(validatedAt) ||
+		(i.ValidationWorkID != "" && i.ValidationWorkID != validationWorkID) ||
+		(i.PreviousAssignment.Kind == RecipeListing && (i.ValidationWorkID == "" || i.ValidationRunID == "")) {
 		return RecipeRolloutBatchItem{}, &InvalidTransitionError{Entity: "recipe_rollout_item", From: string(i.Status), Action: "succeed"}
 	}
+	i.ValidationWorkID = validationWorkID
+	i.ValidatedAt = strings.TrimSpace(validatedAt)
 	i.Status = RecipeRolloutItemSucceeded
+	i.Version++
+	return i, nil
+}
+
+func (i RecipeRolloutBatchItem) Retry(expected uint64) (RecipeRolloutBatchItem, error) {
+	if err := requireVersion(expected, i.Version); err != nil {
+		return RecipeRolloutBatchItem{}, err
+	}
+	if i.Status != RecipeRolloutItemFailed {
+		return RecipeRolloutBatchItem{}, &InvalidTransitionError{Entity: "recipe_rollout_item", From: string(i.Status), Action: "retry"}
+	}
+	if (i.AppliedSourceVersion == 0) != (i.AppliedAssignmentVersion == 0) ||
+		(i.AppliedSourceVersion == 0) != (i.AppliedAt == "") {
+		return RecipeRolloutBatchItem{}, fmt.Errorf("failed rollout item has inconsistent application evidence")
+	}
+	i.Status, i.FailureCode = RecipeRolloutItemPending, ""
+	if i.AppliedSourceVersion != 0 {
+		// An item which already switched Assignment retries only its evidence
+		// validation. Re-applying would create a second Assignment version.
+		i.Status = RecipeRolloutItemAwaitingValidation
+	}
+	i.ValidationWorkID, i.ValidationRunID, i.ValidatedAt = "", "", ""
 	i.Version++
 	return i, nil
 }
@@ -175,6 +242,10 @@ func CanonicalRecipeRolloutItems(batchID string, items []RecipeRolloutBatchItem)
 		canonical[index].Status = ""
 		canonical[index].AppliedSourceVersion = 0
 		canonical[index].AppliedAssignmentVersion = 0
+		canonical[index].AppliedAt = ""
+		canonical[index].ValidationWorkID = ""
+		canonical[index].ValidationRunID = ""
+		canonical[index].ValidatedAt = ""
 		canonical[index].FailureCode = ""
 		canonical[index].Version = 0
 	}
@@ -353,4 +424,9 @@ func minInt(left, right int) int {
 		return left
 	}
 	return right
+}
+
+func validRFC3339(value string) bool {
+	_, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	return err == nil
 }

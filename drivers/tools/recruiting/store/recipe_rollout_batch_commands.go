@@ -138,6 +138,17 @@ func (r *Repository) ApplyCancelRecipeRolloutBatchCommand(ctx context.Context, e
 	if derivedBatch != nextBatch || derivedParent != nextParent {
 		return CommandResult{}, fmt.Errorf("Recipe rollout batch cancellation does not match persisted aggregates")
 	}
+	if currentBatch.Status == model.RecipeRolloutBatchRunning || currentBatch.Status == model.RecipeRolloutBatchPaused {
+		var appliedItems int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_recipe_rollout_items
+WHERE batch_id = ? AND item_status <> ?`, currentBatch.BatchID, model.RecipeRolloutItemPending).Scan(&appliedItems); err != nil {
+			return CommandResult{}, fmt.Errorf("inspect Recipe rollout batch before cancellation: %w", err)
+		}
+		if appliedItems != 0 {
+			return CommandResult{}, fmt.Errorf("%w: a started Recipe rollout with applied members requires explicit rollback",
+				ErrRecipeRolloutRejected)
+		}
+	}
 	if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {
 		if errors.Is(err, ErrCommandConflict) {
 			_ = tx.Rollback()

@@ -406,6 +406,212 @@ func (r *Repository) ListRecipeRolloutBatchItems(ctx context.Context, batchID st
 	return page, nil
 }
 
+func (r *Repository) GetRecipeRolloutBatchItem(ctx context.Context, batchID string,
+	ordinal int) (model.RecipeRolloutBatchItem, error) {
+	if strings.TrimSpace(batchID) == "" || ordinal < 1 {
+		return model.RecipeRolloutBatchItem{}, fmt.Errorf("batch and positive ordinal are required")
+	}
+	return getRecipeRolloutItemWith(ctx, r.db, batchID, ordinal, false)
+}
+
+// ApplyRecipeRolloutBatchItemTransition persists one model-proven member
+// transition. It locks the parent batch first so cancellation, pause, and wave
+// advancement cannot race a member update into a closed range.
+func (r *Repository) ApplyRecipeRolloutBatchItemTransition(ctx context.Context, expectedItemVersion uint64,
+	next model.RecipeRolloutBatchItem, businessAt time.Time) error {
+	if expectedItemVersion == 0 || strings.TrimSpace(next.BatchID) == "" || next.Ordinal < 1 ||
+		next.Version != expectedItemVersion+1 || businessAt.IsZero() {
+		return fmt.Errorf("Recipe rollout item transition facts are inconsistent")
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return fmt.Errorf("begin Recipe rollout item transition: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	batch, err := getRecipeRolloutBatchWith(ctx, tx, next.BatchID, true)
+	if err != nil {
+		return err
+	}
+	current, err := getRecipeRolloutItemWith(ctx, tx, next.BatchID, next.Ordinal, true)
+	if err != nil {
+		return err
+	}
+	if current.Version != expectedItemVersion {
+		return &model.VersionConflictError{Expected: expectedItemVersion, Actual: current.Version}
+	}
+	if next.Ordinal < batch.ActiveFrom || next.Ordinal > batch.ActiveThrough {
+		return fmt.Errorf("Recipe rollout item is outside the active wave")
+	}
+	if current.Status == model.RecipeRolloutItemPending &&
+		next.Status == model.RecipeRolloutItemAwaitingValidation {
+		if err := validateRecipeRolloutAppliedFacts(ctx, tx, batch, next, businessAt); err != nil {
+			return err
+		}
+	}
+	if err := validateRecipeRolloutItemTransition(batch, current, next, businessAt); err != nil {
+		return err
+	}
+	if err := updateRecipeRolloutItemCAS(ctx, tx, current.Version, next, businessAt); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit Recipe rollout item transition: %w", err)
+	}
+	return nil
+}
+
+func validateRecipeRolloutAppliedFacts(ctx context.Context, tx *sql.Tx, batch model.RecipeRolloutBatch,
+	item model.RecipeRolloutBatchItem, businessAt time.Time) error {
+	source, err := getSourceForUpdate(ctx, tx, item.SourceID)
+	if err != nil {
+		return err
+	}
+	assignment, found, err := getAssignmentForUpdate(ctx, tx, item.SourceID, batch.Kind)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("%w: applied Recipe Assignment is absent", ErrRecipeRolloutRejected)
+	}
+	projected := source.DetailAssignment
+	if batch.Kind == model.RecipeListing {
+		projected = source.ListingAssignment
+	}
+	if source.Version != item.AppliedSourceVersion || assignment.AssignmentVersion != item.AppliedAssignmentVersion ||
+		assignment.RecipeID != batch.RecipeID || assignment.RecipeVersion != batch.RecipeVersion ||
+		assignment.ContractHash != batch.ContractHash || assignment.Kind != batch.Kind || projected == nil ||
+		*projected != assignment || !rolloutTimeEquals(assignment.EffectiveAt, businessAt) {
+		return fmt.Errorf("%w: applied Source/Assignment facts do not match the rollout target", ErrRecipeRolloutRejected)
+	}
+	if batch.Kind == model.RecipeListing &&
+		(source.ReadinessStatus != model.SourceRepairing || source.ContractAssessment != nil || source.CandidateEndpoint == nil) {
+		return fmt.Errorf("%w: applied Listing Source is not awaiting recalibration", ErrRecipeRolloutRejected)
+	}
+	if batch.Kind == model.RecipeDetail && source.ReadinessStatus != model.SourceReady {
+		return fmt.Errorf("%w: applied Detail Source is not ready", ErrRecipeRolloutRejected)
+	}
+	return nil
+}
+
+func validateRecipeRolloutItemTransition(batch model.RecipeRolloutBatch, current,
+	next model.RecipeRolloutBatchItem, businessAt time.Time) error {
+	if current.BatchID != next.BatchID || current.Ordinal != next.Ordinal || current.SourceID != next.SourceID ||
+		current.ExpectedSourceVersion != next.ExpectedSourceVersion ||
+		current.ExpectedAssignmentVersion != next.ExpectedAssignmentVersion ||
+		current.PreviousAssignment != next.PreviousAssignment ||
+		current.PreviousEndpointRevision != next.PreviousEndpointRevision ||
+		current.PreviousUpdateRetop != next.PreviousUpdateRetop ||
+		current.PreviousCheckpointStrategy != next.PreviousCheckpointStrategy ||
+		current.PreviousOverlapPages != next.PreviousOverlapPages ||
+		current.PreviousAssessmentVersion != next.PreviousAssessmentVersion {
+		return fmt.Errorf("Recipe rollout item immutable preview facts changed")
+	}
+	var derived model.RecipeRolloutBatchItem
+	var err error
+	switch {
+	case current.Status == model.RecipeRolloutItemPending && next.Status == model.RecipeRolloutItemAwaitingValidation:
+		if batch.Status != model.RecipeRolloutBatchRunning || !rolloutTimeEquals(next.AppliedAt, businessAt) {
+			return fmt.Errorf("Recipe rollout item can only be applied by a running batch at business time")
+		}
+		derived, err = current.MarkApplied(current.Version, next.AppliedSourceVersion,
+			next.AppliedAssignmentVersion, next.AppliedAt)
+	case current.Status == model.RecipeRolloutItemAwaitingValidation && next.Status == model.RecipeRolloutItemAwaitingValidation:
+		if batch.Status != model.RecipeRolloutBatchRunning {
+			return fmt.Errorf("Recipe rollout validation can only be bound by a running batch")
+		}
+		derived, err = current.BindValidation(current.Version, next.ValidationWorkID, next.ValidationRunID)
+	case current.Status == model.RecipeRolloutItemAwaitingValidation && next.Status == model.RecipeRolloutItemSucceeded:
+		if batch.Status != model.RecipeRolloutBatchRunning || !rolloutTimeEquals(next.ValidatedAt, businessAt) {
+			return fmt.Errorf("Recipe rollout item can only succeed in a running batch at business time")
+		}
+		derived, err = current.MarkSucceeded(current.Version, next.ValidationWorkID, next.ValidatedAt)
+	case (current.Status == model.RecipeRolloutItemPending ||
+		current.Status == model.RecipeRolloutItemAwaitingValidation) && next.Status == model.RecipeRolloutItemFailed:
+		if batch.Status != model.RecipeRolloutBatchRunning {
+			return fmt.Errorf("Recipe rollout item can only fail in a running batch")
+		}
+		derived, err = current.MarkFailed(current.Version, next.FailureCode)
+	case current.Status == model.RecipeRolloutItemFailed &&
+		(next.Status == model.RecipeRolloutItemPending || next.Status == model.RecipeRolloutItemAwaitingValidation):
+		if batch.Status != model.RecipeRolloutBatchPaused {
+			return fmt.Errorf("failed Recipe rollout item can only retry while its batch is paused")
+		}
+		derived, err = current.Retry(current.Version)
+	default:
+		return &model.InvalidTransitionError{Entity: "recipe_rollout_item", From: string(current.Status), Action: string(next.Status)}
+	}
+	if err != nil {
+		return err
+	}
+	if derived != next {
+		return fmt.Errorf("Recipe rollout item transition does not match persisted aggregate")
+	}
+	return nil
+}
+
+func (r *Repository) GetRecipeRolloutWaveProgress(ctx context.Context,
+	batchID string) (model.RecipeRolloutBatch, model.RecipeRolloutWaveProgress, error) {
+	if strings.TrimSpace(batchID) == "" {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutWaveProgress{}, fmt.Errorf("batch is required")
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutWaveProgress{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	batch, err := getRecipeRolloutBatchWith(ctx, tx, batchID, false)
+	if err != nil {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutWaveProgress{}, err
+	}
+	if (batch.Status != model.RecipeRolloutBatchRunning && batch.Status != model.RecipeRolloutBatchPaused) ||
+		batch.ActiveFrom < 1 || batch.ActiveThrough < batch.ActiveFrom {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutWaveProgress{},
+			fmt.Errorf("Recipe rollout batch has no active wave")
+	}
+	progress := model.RecipeRolloutWaveProgress{From: batch.ActiveFrom, Through: batch.ActiveThrough}
+	rows, err := tx.QueryContext(ctx, `SELECT item_status, COUNT(*)
+FROM recruiting_recipe_rollout_items
+WHERE batch_id = ? AND ordinal BETWEEN ? AND ?
+GROUP BY item_status`, batch.BatchID, batch.ActiveFrom, batch.ActiveThrough)
+	if err != nil {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutWaveProgress{}, fmt.Errorf("count Recipe rollout wave: %w", err)
+	}
+	defer rows.Close()
+	total := 0
+	for rows.Next() {
+		var status model.RecipeRolloutItemStatus
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return model.RecipeRolloutBatch{}, model.RecipeRolloutWaveProgress{}, err
+		}
+		switch status {
+		case model.RecipeRolloutItemPending:
+			progress.Pending = count
+		case model.RecipeRolloutItemAwaitingValidation:
+			progress.AwaitingValidation = count
+		case model.RecipeRolloutItemSucceeded:
+			progress.Succeeded = count
+		case model.RecipeRolloutItemFailed:
+			progress.Failed = count
+		default:
+			return model.RecipeRolloutBatch{}, model.RecipeRolloutWaveProgress{},
+				fmt.Errorf("unknown Recipe rollout item status %q", status)
+		}
+		total += count
+	}
+	if err := rows.Err(); err != nil {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutWaveProgress{}, err
+	}
+	if total != batch.ActiveThrough-batch.ActiveFrom+1 {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutWaveProgress{},
+			fmt.Errorf("Recipe rollout active wave member count is inconsistent")
+	}
+	if err := tx.Commit(); err != nil {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutWaveProgress{}, err
+	}
+	return batch, progress, nil
+}
+
 func rolloutBatchMatchesRecipe(batch model.RecipeRolloutBatch, recipe model.Recipe) error {
 	if recipe.Status != model.RecipeActive || recipe.RecipeID != batch.RecipeID || recipe.Version != batch.RecipeVersion ||
 		recipe.Kind != batch.Kind || recipe.Scope != batch.Scope || recipe.ContractHash != batch.ContractHash ||
@@ -500,6 +706,68 @@ func getRecipeRolloutBatchWith(ctx context.Context, queryer recipeRolloutBatchQu
 		return model.RecipeRolloutBatch{}, fmt.Errorf("decode Recipe rollout batch: %w", err)
 	}
 	return batch, nil
+}
+
+func getRecipeRolloutItemWith(ctx context.Context, queryer recipeRolloutBatchQueryer, batchID string,
+	ordinal int, lock bool) (model.RecipeRolloutBatchItem, error) {
+	query := "SELECT state_json FROM recruiting_recipe_rollout_items WHERE batch_id = ? AND ordinal = ?"
+	if lock {
+		query += " FOR UPDATE"
+	}
+	var state []byte
+	if err := queryer.QueryRowContext(ctx, query, batchID, ordinal).Scan(&state); errors.Is(err, sql.ErrNoRows) {
+		return model.RecipeRolloutBatchItem{}, ErrNotFound
+	} else if err != nil {
+		return model.RecipeRolloutBatchItem{}, fmt.Errorf("get Recipe rollout batch item: %w", err)
+	}
+	var item model.RecipeRolloutBatchItem
+	if err := json.Unmarshal(state, &item); err != nil {
+		return model.RecipeRolloutBatchItem{}, fmt.Errorf("decode Recipe rollout batch item: %w", err)
+	}
+	return item, nil
+}
+
+func updateRecipeRolloutItemCAS(ctx context.Context, tx *sql.Tx, expected uint64,
+	item model.RecipeRolloutBatchItem, at time.Time) error {
+	state, _ := json.Marshal(item)
+	appliedAt, err := nullableRolloutTime(item.AppliedAt)
+	if err != nil {
+		return err
+	}
+	validatedAt, err := nullableRolloutTime(item.ValidatedAt)
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE recruiting_recipe_rollout_items SET
+  item_status = ?, applied_source_version = NULLIF(?, 0), applied_assignment_version = NULLIF(?, 0),
+  applied_at = ?, validation_work_id = NULLIF(?, ''), validation_run_id = NULLIF(?, ''),
+  validated_at = ?, item_version = ?, failure_code = NULLIF(?, ''), state_json = ?, updated_at = ?
+WHERE batch_id = ? AND ordinal = ? AND item_version = ?`, item.Status, item.AppliedSourceVersion,
+		item.AppliedAssignmentVersion, appliedAt, item.ValidationWorkID, item.ValidationRunID,
+		validatedAt, item.Version, item.FailureCode, state, at.UTC(), item.BatchID, item.Ordinal, expected)
+	if err != nil {
+		return fmt.Errorf("update Recipe rollout batch item: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return &model.VersionConflictError{Expected: expected, Actual: item.Version - 1}
+	}
+	return nil
+}
+
+func rolloutTimeEquals(value string, expected time.Time) bool {
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	return err == nil && parsed.Equal(expected)
+}
+
+func nullableRolloutTime(value string) (any, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	if err != nil {
+		return nil, fmt.Errorf("Recipe rollout evidence time must be RFC3339: %w", err)
+	}
+	return parsed.UTC(), nil
 }
 
 type recipeRolloutItemsQueryer interface {

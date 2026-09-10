@@ -225,4 +225,125 @@ WHERE active_batch_key IS NOT NULL AND batch_id = ?`, batch.BatchID).Scan(&activ
 	if _, err := repository.GetRecipeRolloutBatch(ctx, "missing-batch"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing batch error=%v", err)
 	}
+
+	transitionBatch := createStartedRolloutBatchForTest(t, ctx, repository, targetRecipe,
+		sourceIDs[:1], now.Add(10*time.Second), "transition")
+	item, err := repository.GetRecipeRolloutBatchItem(ctx, transitionBatch.BatchID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyAt := now.Add(11 * time.Second)
+	claimed, _ := item.MarkApplied(item.Version, item.ExpectedSourceVersion+1,
+		item.ExpectedAssignmentVersion+1, applyAt.Format(time.RFC3339Nano))
+	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, item.Version, claimed, applyAt); err == nil {
+		t.Fatal("rollout member accepted an application claim before Source/Assignment cutover")
+	}
+	currentSource, _ := repository.GetSource(ctx, item.SourceID)
+	currentAssignment := *currentSource.ListingAssignment
+	nextAssignment, _ := currentAssignment.Replace(currentAssignment.AssignmentVersion, targetRecipe.RecipeID,
+		targetRecipe.Version, targetRecipe.ContractHash, applyAt.Format(time.RFC3339Nano))
+	nextSource, _ := currentSource.AssignRecipe(currentSource.Version, nextAssignment, true)
+	applyReceipt, _ := model.NewCommandReceipt("rollout-transition-apply", "recruiting.recipe.rollout",
+		"sha256:rollout-transition-apply", json.RawMessage(`{"status":"rolled_out"}`))
+	applyEvent, _ := model.NewEventIntent("rollout-transition-apply-event", "source.listing_recipe_rolled_out", "source",
+		nextSource.SourceID, nextSource.Version, applyAt.Format(time.RFC3339Nano), applyReceipt.CommandID,
+		json.RawMessage(`{}`))
+	if _, err := repository.ApplyRecipeAssignmentChangeCommand(ctx, currentSource.Version,
+		currentAssignment.AssignmentVersion, nextSource, nextAssignment, applyReceipt, applyEvent, applyAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, item.Version, claimed, applyAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, item.Version, claimed, applyAt); err == nil {
+		t.Fatal("stale rollout member transition won twice")
+	}
+	_, progress, err := repository.GetRecipeRolloutWaveProgress(ctx, transitionBatch.BatchID)
+	if err != nil || progress.AwaitingValidation != 1 || progress.Pending != 0 {
+		t.Fatalf("post-application progress=%+v err=%v", progress, err)
+	}
+	failAt := now.Add(12 * time.Second)
+	failed, _ := claimed.MarkFailed(claimed.Version, "quality_rejected")
+	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, claimed.Version, failed, failAt); err != nil {
+		t.Fatal(err)
+	}
+	storedItem, _ := repository.GetRecipeRolloutBatchItem(ctx, transitionBatch.BatchID, 1)
+	_, progress, err = repository.GetRecipeRolloutWaveProgress(ctx, transitionBatch.BatchID)
+	if err != nil || storedItem.Status != model.RecipeRolloutItemFailed ||
+		storedItem.AppliedAt != applyAt.Format(time.RFC3339Nano) || progress.Failed != 1 {
+		t.Fatalf("failed item=%+v progress=%+v err=%v", storedItem, progress, err)
+	}
+	transitionParent, _ := repository.GetWork(ctx, transitionBatch.ParentWorkID)
+	cancelAt := now.Add(13 * time.Second)
+	unsafeCanceledBatch, _ := transitionBatch.Cancel(transitionBatch.Version)
+	unsafeCanceledParent, _ := transitionParent.Cancel(transitionParent.Version)
+	unsafeCancelReceipt, _ := model.NewCommandReceipt("rollout-transition-cancel", "recruiting.recipe.rollout.batch.cancel",
+		"sha256:rollout-transition-cancel", json.RawMessage(`{"status":"canceled"}`))
+	unsafeCancelEvent, _ := model.NewEventIntent("rollout-transition-cancel-event", "recipe.rollout_batch.canceled", "work",
+		transitionParent.WorkID, unsafeCanceledParent.Version, cancelAt.Format(time.RFC3339Nano),
+		unsafeCancelReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyCancelRecipeRolloutBatchCommand(ctx, transitionBatch.Version,
+		transitionParent.Version, unsafeCanceledBatch, unsafeCanceledParent, unsafeCancelReceipt,
+		unsafeCancelEvent, cancelAt); !errors.Is(err, ErrRecipeRolloutRejected) {
+		t.Fatalf("partially applied rollout cancellation error=%v", err)
+	}
+}
+
+func createStartedRolloutBatchForTest(t *testing.T, ctx context.Context, repository *Repository,
+	targetRecipe model.Recipe, sourceIDs []string, now time.Time, suffix string) model.RecipeRolloutBatch {
+	t.Helper()
+	parent, _ := model.NewWork("work-rollout-"+suffix, "recipe", targetRecipe.RecipeID+"@1",
+		"recipe_rollout_batch", "human")
+	parent, _ = parent.WithCausality("human:batch-operator", "message:"+suffix, "")
+	batch, _ := model.NewRecipeRolloutBatch("rollout-"+suffix, parent.WorkID, targetRecipe,
+		"artifact://rollout/"+suffix, "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"recipe-rollout-sources.v1", 1, 1, 1)
+	placement := WorkPlacement{BusinessKey: "recipe-rollout-batch|" + batch.BatchID, NotBefore: now}
+	createReceipt, _ := model.NewCommandReceipt("rollout-"+suffix+"-create", "recruiting.recipe.rollout.batch",
+		"sha256:rollout-"+suffix+"-create", json.RawMessage(`{"status":"previewing"}`))
+	createEvent, _ := model.NewEventIntent("rollout-"+suffix+"-create-event", "recipe.rollout_batch.created", "work",
+		parent.WorkID, parent.Version, now.Format(time.RFC3339Nano), createReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyCreateRecipeRolloutBatchCommand(ctx, parent, placement, batch,
+		createReceipt, createEvent, now); err != nil {
+		t.Fatal(err)
+	}
+	sorted := append([]string(nil), sourceIDs...)
+	sort.Slice(sorted, func(left, right int) bool {
+		return model.RecipeRolloutOrderKey(batch.BatchID, sorted[left]) < model.RecipeRolloutOrderKey(batch.BatchID, sorted[right])
+	})
+	next, _ := batch.AppendPreviewChunk(batch.Version, 1, len(sorted))
+	chunkReceipt, _ := model.NewCommandReceipt("rollout-"+suffix+"-chunk", "recruiting.recipe.rollout.batch.preview.chunk",
+		"sha256:rollout-"+suffix+"-chunk", json.RawMessage(`{"status":"previewing"}`))
+	if _, err := repository.ApplyRecipeRolloutPreviewChunk(ctx, batch.Version, 1, sorted, next,
+		chunkReceipt, now); err != nil {
+		t.Fatal(err)
+	}
+	batch = next
+	items, err := repository.ListRecipeRolloutBatchItems(ctx, batch.BatchID, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previewHash, _ := model.RecipeRolloutPreviewHash(batch, targetRecipe, items.Items)
+	previewed, _ := batch.FinishPreview(batch.Version, previewHash)
+	previewStarted, _ := parent.Start(parent.Version)
+	previewParent, _ := previewStarted.WaitHuman(previewStarted.Version, "preview_ready")
+	previewReceipt, _ := model.NewCommandReceipt("rollout-"+suffix+"-preview", "recruiting.recipe.rollout.batch.preview.finished",
+		"sha256:rollout-"+suffix+"-preview", json.RawMessage(`{"status":"previewed"}`))
+	previewEvent, _ := model.NewEventIntent("rollout-"+suffix+"-preview-event", "recipe.rollout_batch.previewed", "work",
+		parent.WorkID, previewParent.Version, now.Format(time.RFC3339Nano), previewReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyFinishRecipeRolloutPreview(ctx, batch.Version, parent.Version,
+		previewed, previewParent, previewReceipt, previewEvent, now); err != nil {
+		t.Fatal(err)
+	}
+	startedBatch, _ := previewed.Start(previewed.Version, previewed.PreviewHash)
+	startedParent, _ := previewParent.Start(previewParent.Version)
+	startReceipt, _ := model.NewCommandReceipt("rollout-"+suffix+"-start", "recruiting.recipe.rollout.batch.confirm",
+		"sha256:rollout-"+suffix+"-start", json.RawMessage(`{"status":"running"}`))
+	startEvent, _ := model.NewEventIntent("rollout-"+suffix+"-start-event", "recipe.rollout_batch.started", "work",
+		parent.WorkID, startedParent.Version, now.Format(time.RFC3339Nano), startReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyStartRecipeRolloutBatchCommand(ctx, previewed.Version, previewParent.Version,
+		startedBatch, startedParent, startReceipt, startEvent, now); err != nil {
+		t.Fatal(err)
+	}
+	return startedBatch
 }

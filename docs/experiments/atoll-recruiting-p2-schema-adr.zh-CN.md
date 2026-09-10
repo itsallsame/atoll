@@ -100,6 +100,8 @@ migration 14 新增 `recruiting_listing_runs`，保存独立人工列表运行�
 
 migration 30 为 Recipe 批量灰度增加 `recruiting_recipe_rollout_batches` 和规范化成员表。父批次持有唯一活动 `kind+scope` 键、目标 Recipe 不可变身份、输入 Artifact/hash、preview hash、canary/wave 大小、当前开放 ordinal 范围和版本；成员冻结 Source/Assignment 版本及切换前 Assignment，不在父 JSON 中嵌入无界 Source 列表。预览按每块至多 500 项提交并保存 `next_chunk_sequence`，完成后才写最终 source count/preview hash；Source ID 以 `sha256(batch_id|source_id)` 确定性排序，使 canary 样本不依赖上传行序，同时 preview hash 绑定该顺序和全部版本。确认后一次只开放 canary 或一个至多 500 项的 wave；未全部重新验证为 ready 前不扩大，任一失败暂停。父 Work 是 Recruiting Actor 推进的控制面事实，不进入 Executor runnable 队列；各 Source 的真实校准仍复用已有 validation Work 和唯一 Executor class。
 
+migration 32 为成员增加应用时间、验证 Work/run 和验证完成时间的规范化证据列。成员 JSON 仍保存完整状态机，列投影只用于有界协调查询与外部事实关联。Listing 预览额外冻结切换前已验证的 Endpoint revision、`update_retop`、Checkpoint strategy/overlap 和 assessment version；运行时字段不进入 preview hash。成员 CAS 总是先锁父批次，再锁成员与 Source/Assignment，只有数据库中的 Assignment 已精确指向目标 Recipe、Source/Assignment 版本和生效时间一致时，才允许从 `pending` 进入 `awaiting_validation`。已经切换后验证失败的重试保持 applied fence，只重建验证，不重复产生 Assignment version；部分成员已经切换的批次不能用普通 cancel 遗留半发布状态，必须进入后续显式回滚流程。
+
 ## migration 与权限
 
 - migration 从空 schema 开始，不识别、不导入也不删除 Staircase 旧表；
