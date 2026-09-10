@@ -15,9 +15,9 @@ import (
 	"github.com/wanpengxie/atoll/protocol/resource"
 )
 
-// recipeRolloutPayload deliberately exposes only the first safe rollout
-// boundary: replacing an existing Source-level Detail assignment. Listing
-// rollout needs checkpoint compatibility/recalibration semantics of its own.
+// recipeRolloutPayload changes one Source assignment at a time. Listing
+// rollout uses the same compatibility boundary as rollback and deliberately
+// returns the Source to repairing before daily scheduling can resume.
 type recipeRolloutPayload struct {
 	MutationCommand
 	RecipeID                  string `json:"recipe_id"`
@@ -1003,18 +1003,18 @@ func handleRecipeRollout(sys actorbase.Sys, repository *store.Repository, msg ac
 		failStoreError(sys, msg, err)
 		return
 	}
-	existing, err := repository.GetAssignment(msg.Ctx(), current.SourceID, model.RecipeDetail)
-	if err != nil {
-		failStoreError(sys, msg, err)
-		return
-	}
 	recipe, err := repository.GetRecipe(msg.Ctx(), strings.TrimSpace(payload.RecipeID), payload.RecipeVersion)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
 	}
-	if recipe.Kind != model.RecipeDetail {
-		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "the first rollout slice accepts only Detail Recipes")
+	if recipe.Kind != model.RecipeDetail && recipe.Kind != model.RecipeListing {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "Source rollout accepts only Detail or Listing Recipes")
+		return
+	}
+	existing, err := repository.GetAssignment(msg.Ctx(), current.SourceID, recipe.Kind)
+	if err != nil {
+		failStoreError(sys, msg, err)
 		return
 	}
 	businessAt := time.UnixMilli(msg.TS).UTC()
@@ -1022,11 +1022,18 @@ func handleRecipeRollout(sys actorbase.Sys, repository *store.Repository, msg ac
 		recipe.ContractHash, businessAt.Format(time.RFC3339Nano))
 	if err == nil {
 		var next model.RecruitmentSource
-		next, err = current.AssignRecipe(payload.ExpectedVersion, replacement, false)
+		checkpointCompatible := recipe.Kind == model.RecipeListing && existing.ContractHash == recipe.ContractHash
+		next, err = current.AssignRecipe(payload.ExpectedVersion, replacement, checkpointCompatible)
 		if err == nil {
+			nextAction := "retry_failed_detail_work"
+			eventType := "source.detail_recipe_rolled_out"
+			if recipe.Kind == model.RecipeListing {
+				nextAction = "validate_source_before_resuming_schedule"
+				eventType = "source.listing_recipe_rolled_out"
+			}
 			response := recipeRolloutResponse{
 				ContractVersion: ContractVersion, CorrelationID: string(msg.CorrelationID), RequestedBy: commandContext.RequestedBy,
-				Source: next, Assignment: replacement, Target: Target{Type: "source", ID: next.SourceID}, NextAction: "retry_failed_detail_work",
+				Source: next, Assignment: replacement, Target: Target{Type: "source", ID: next.SourceID}, NextAction: nextAction,
 			}
 			responseBytes, _ := json.Marshal(response)
 			var receipt model.CommandReceipt
@@ -1039,13 +1046,13 @@ func handleRecipeRollout(sys actorbase.Sys, repository *store.Repository, msg ac
 			})
 			var event model.EventIntent
 			if err == nil {
-				event, err = model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|source.detail_recipe_rolled_out"),
-					"source.detail_recipe_rolled_out", "source", next.SourceID, next.Version,
+				event, err = model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|"+eventType),
+					eventType, "source", next.SourceID, next.Version,
 					businessAt.Format(time.RFC3339Nano), payload.CommandID, auditPayload)
 			}
 			var result store.CommandResult
 			if err == nil {
-				result, err = repository.ApplyDetailRecipeRolloutCommand(msg.Ctx(), payload.ExpectedVersion,
+				result, err = repository.ApplyRecipeAssignmentChangeCommand(msg.Ctx(), payload.ExpectedVersion,
 					payload.ExpectedAssignmentVersion, next, replacement, receipt, event, businessAt)
 			}
 			if err == nil {

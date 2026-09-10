@@ -37,7 +37,7 @@ func TestRecruitingExtensionBridgeUsesOrdinaryUserPublicProtocol(t *testing.T) {
 	waitRecruitingReady(t, ws, homeID, controlID, h.server)
 
 	seedAt := time.Now().UTC().Truncate(time.Second)
-	source, _ := seedRecipeOperations(t, runtimeDSN, seedAt)
+	source, _, _ := seedRecipeOperations(t, runtimeDSN, seedAt)
 	client, err := recruitingbridge.LoginAndConnect(context.Background(), recruitingbridge.AtollConfig{
 		BaseURL: h.base, Email: "extension-operator@example.test", Password: "extension-local-password",
 		ChannelID: homeID, ControlActorID: controlID, Timeout: 30 * time.Second})

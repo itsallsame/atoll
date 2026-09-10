@@ -37,7 +37,7 @@ func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing
 	waitRecruitingReady(t, ws, homeID, controlID, h.server)
 
 	seedAt := time.Now().UTC().Truncate(time.Second)
-	source, detailV2 := seedRecipeOperations(t, runtimeDSN, seedAt)
+	source, detailV2, listingCanary := seedRecipeOperations(t, runtimeDSN, seedAt)
 	rolloutPayload := map[string]any{
 		"command_id": "e2e-recipe-rollout", "target": map[string]any{"target_type": "source", "target_id": source.SourceID},
 		"expected_version": source.Version, "recipe_id": detailV2.RecipeID, "recipe_version": detailV2.Version,
@@ -183,13 +183,25 @@ func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing
 		stringField(t, rejectedCandidate, "next_action") != "edit_or_revalidate_recipe" {
 		t.Fatalf("Recipe rejection=%v", rejectedCandidate)
 	}
+	listingRolloutPayload := map[string]any{
+		"command_id": "e2e-listing-recipe-rollout", "target": map[string]any{"target_type": "source", "target_id": source.SourceID},
+		"expected_version": nestedNumberField(t, rolledBack, "source", "version"), "recipe_id": listingCanary.RecipeID,
+		"recipe_version": listingCanary.Version, "expected_assignment_version": 2,
+		"reason": "stage one compatible Listing Recipe canary on this Source",
+	}
+	listingRolledOut := ws.request(homeID, "recruiting.recipe.rollout", controlID, listingRolloutPayload)
+	if nestedNumberField(t, listingRolledOut, "assignment", "assignment_version") != 3 ||
+		nestedStringField(t, listingRolledOut, "source", "readiness_status") != "repairing" ||
+		stringField(t, listingRolledOut, "next_action") != "validate_source_before_resuming_schedule" {
+		t.Fatalf("Listing Recipe rollout=%v", listingRolledOut)
+	}
 	listingRollbackPayload := map[string]any{
 		"command_id": "e2e-listing-recipe-rollback", "target": map[string]any{"target_type": "source", "target_id": source.SourceID},
-		"expected_version": nestedNumberField(t, rolledBack, "source", "version"), "kind": "listing", "to_assignment_version": 1,
-		"expected_assignment_version": 2, "reason": "restore a compatible known-good listing Recipe before recalibration",
+		"expected_version": nestedNumberField(t, listingRolledOut, "source", "version"), "kind": "listing", "to_assignment_version": 1,
+		"expected_assignment_version": 3, "reason": "restore a compatible known-good listing Recipe before recalibration",
 	}
 	listingRolledBack := ws.request(homeID, "recruiting.recipe.rollback", controlID, listingRollbackPayload)
-	if nestedNumberField(t, listingRolledBack, "assignment", "assignment_version") != 3 ||
+	if nestedNumberField(t, listingRolledBack, "assignment", "assignment_version") != 4 ||
 		nestedStringField(t, listingRolledBack, "source", "readiness_status") != "repairing" ||
 		stringField(t, listingRolledBack, "next_action") != "validate_source_before_resuming_schedule" {
 		t.Fatalf("Listing Recipe rollback=%v", listingRolledBack)
@@ -204,20 +216,22 @@ func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing
 	waitRecruitingReady(t, recovered, homeID, controlID, h.server)
 	replayedQuarantine := recovered.request(homeID, "recruiting.recipe.quarantine", controlID, quarantinePayload)
 	replayedRollback := recovered.request(homeID, "recruiting.recipe.rollback", controlID, rollbackPayload)
+	replayedListingRollout := recovered.request(homeID, "recruiting.recipe.rollout", controlID, listingRolloutPayload)
 	replayedListingRollback := recovered.request(homeID, "recruiting.recipe.rollback", controlID, listingRollbackPayload)
 	replayedProposal := recovered.request(homeID, "recruiting.recipe.propose", controlID, proposalPayload)
 	replayedRejection := recovered.request(homeID, "recruiting.recipe.reject", controlID, rejectPayload)
 	if nestedNumberField(t, replayedQuarantine, "recipe", "state_version") != float64(detailV2.StateVersion+1) ||
 		nestedNumberField(t, replayedRollback, "assignment", "assignment_version") != 3 ||
-		nestedNumberField(t, replayedListingRollback, "assignment", "assignment_version") != 3 ||
+		nestedNumberField(t, replayedListingRollout, "assignment", "assignment_version") != 3 ||
+		nestedNumberField(t, replayedListingRollback, "assignment", "assignment_version") != 4 ||
 		nestedStringField(t, replayedProposal, "recipe", "status") != "draft" ||
 		nestedStringField(t, replayedRejection, "recipe", "status") != "draft" {
-		t.Fatalf("durable command replay quarantine=%v detail_rollback=%v listing_rollback=%v proposal=%v rejection=%v",
-			replayedQuarantine, replayedRollback, replayedListingRollback, replayedProposal, replayedRejection)
+		t.Fatalf("durable command replay quarantine=%v detail_rollback=%v listing_rollout=%v listing_rollback=%v proposal=%v rejection=%v",
+			replayedQuarantine, replayedRollback, replayedListingRollout, replayedListingRollback, replayedProposal, replayedRejection)
 	}
 }
 
-func seedRecipeOperations(t *testing.T, dsn string, now time.Time) (model.RecruitmentSource, model.Recipe) {
+func seedRecipeOperations(t *testing.T, dsn string, now time.Time) (model.RecruitmentSource, model.Recipe, model.Recipe) {
 	t.Helper()
 	db, err := store.Open(dsn)
 	if err != nil {
@@ -256,7 +270,8 @@ func seedRecipeOperations(t *testing.T, dsn string, now time.Time) (model.Recrui
 	}
 	listing := activeE2ERecipe(t, "e2e-recipe-listing", model.RecipeListing, 1, "listing-contract")
 	listingCurrent := activeE2ERecipe(t, "e2e-recipe-listing-current", model.RecipeListing, 1, "listing-contract")
-	for _, recipe := range []model.Recipe{listing, listingCurrent} {
+	listingCanary := activeE2ERecipe(t, "e2e-recipe-listing-canary", model.RecipeListing, 1, "listing-contract")
+	for _, recipe := range []model.Recipe{listing, listingCurrent, listingCanary} {
 		if err := repository.CreateRecipe(ctx, recipe, now); err != nil {
 			t.Fatal(err)
 		}
@@ -305,7 +320,7 @@ func seedRecipeOperations(t *testing.T, dsn string, now time.Time) (model.Recrui
 	if err := repository.PublishSourceAssignment(ctx, ready.Version, 0, withDetail, detailAssignment, now); err != nil {
 		t.Fatal(err)
 	}
-	return withDetail, detailV2
+	return withDetail, detailV2, listingCanary
 }
 
 func activeE2ERecipe(t *testing.T, id string, kind model.RecipeKind, version uint64, contractHash string) model.Recipe {

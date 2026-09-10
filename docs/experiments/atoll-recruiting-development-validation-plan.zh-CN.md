@@ -441,6 +441,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 执行状态补充（2026-09-10，Listing Recipe 安全历史回滚）：`recruiting.recipe.rollback` 现同时接受 Listing 历史 Assignment，但不把“同 contract hash”误当作可以立即恢复生产。Actor 与 Repository 双重要求目标为同 kind、active、同 contract hash、同 Executor capability；Source/Assignment/Recipe/Checkpoint 均在事务中重新锁定。已有 Checkpoint 必须精确绑定回滚前的当前 Assignment，随后仅把 Recipe ID/version 重绑定到历史版本并提升 Checkpoint fence；frontier、同时间边界、overlap、最后 occurrence 均保持原值。回滚追加单调的新 Assignment version，并把 Source 置为 `repairing`、清除旧四维校准、复制生产 Endpoint 为 Candidate，重新验证前不会被每日截点选入。隔离非 root MySQL 合同验证原子重放与水位不移动；普通用户真实 server E2E 验证 Detail/Listing 回滚、操作顺序安全和 server restart 后重放。S10 的单 Source 历史回滚切片已闭合；候选灰度 rollout、批量 canary 和不兼容迁移仍未完成。
 
+执行状态补充（2026-09-10，Listing Recipe 逐 Source 灰度）：公开 `recruiting.recipe.rollout` 已从 Detail 扩展到 Listing，但仍坚持一个命令只切换一个 Source。目标必须是已经 active 的同 kind Recipe；Repository 在锁内再次验证 scope、contract hash 和 Executor capability 与当前 Recipe 完全兼容。若 Source 已有 Checkpoint，事务提升其 fencing version并重绑定 Recipe ID/version，但保持 frontier、同时间组、overlap 和最后 occurrence 不变；Assignment 历史、Source 投影、receipt 与 `source.listing_recipe_rolled_out` 事件在同一事务提交。Source 随即进入 `repairing` 并清空旧校准，操作者必须完成 Source validation 才能恢复每日调度。非 root MySQL 合同覆盖带 Checkpoint 的 rollout→rollback 水位不移动；普通用户真实 server E2E 覆盖 Listing rollout、历史 rollback 及两条命令在 server restart 后重放。该能力是批量升级协调器可复用的安全逐项原语，不等于批量 canary 已完成。
+
 ## 13. P8：25 场景验收矩阵
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。

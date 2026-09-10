@@ -171,6 +171,28 @@ func TestDetailRecipeRolloutCommandIsFencedReplayableAndAtomic(t *testing.T) {
 		t.Fatalf("rejected rollout leaked assignment history: %v", err)
 	}
 
+	wrongScope := activeRecipe(t, "rollout-detail-other-scope", model.RecipeDetail,
+		"other.example.com", 1, "detail-contract")
+	if err := repository.CreateRecipe(ctx, wrongScope, rolloutAt); err != nil {
+		t.Fatal(err)
+	}
+	wrongScopeAssignment, _ := storedAssignment.Replace(storedAssignment.AssignmentVersion, wrongScope.RecipeID,
+		wrongScope.Version, wrongScope.ContractHash, rolloutAt.Add(1500*time.Millisecond).Format(time.RFC3339Nano))
+	wrongScopeNext, _ := storedSource.AssignRecipe(storedSource.Version, wrongScopeAssignment, false)
+	wrongScopeReceipt, _ := model.NewCommandReceipt("detail-rollout-wrong-scope", "recruiting.recipe.rollout",
+		"sha256:detail-rollout-wrong-scope", json.RawMessage(`{"bad":true}`))
+	wrongScopeEvent, _ := model.NewEventIntent("detail-rollout-wrong-scope-event", "source.detail_recipe_rolled_out",
+		"source", wrongScopeNext.SourceID, wrongScopeNext.Version, rolloutAt.Add(1500*time.Millisecond).Format(time.RFC3339Nano),
+		wrongScopeReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyDetailRecipeRolloutCommand(ctx, storedSource.Version, storedAssignment.AssignmentVersion,
+		wrongScopeNext, wrongScopeAssignment, wrongScopeReceipt, wrongScopeEvent,
+		rolloutAt.Add(1500*time.Millisecond)); !errors.Is(err, ErrRecipeRolloutRejected) {
+		t.Fatalf("cross-scope rollout error = %v", err)
+	}
+	if _, err := repository.GetAssignmentVersion(ctx, source.SourceID, model.RecipeDetail, 3); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-scope rollout leaked assignment history: %v", err)
+	}
+
 	// Quarantine is a constant-size Recipe lifecycle operation: it must not
 	// rewrite Source assignments or their immutable history.
 	quarantineAt := rolloutAt.Add(2 * time.Second)
@@ -257,7 +279,9 @@ func TestListingRecipeRollbackRebindsCheckpointWithoutMovingFrontier(t *testing.
 		"listing-rollback.example.com", 1, "stable-listing-contract")
 	listingV2 := activeRecipe(t, "listing-rollback-v2", model.RecipeListing,
 		"listing-rollback.example.com", 1, "stable-listing-contract")
-	for _, recipe := range []model.Recipe{listingV1, listingV2} {
+	listingCanary := activeRecipe(t, "listing-rollout-canary", model.RecipeListing,
+		"listing-rollback.example.com", 1, "stable-listing-contract")
+	for _, recipe := range []model.Recipe{listingV1, listingV2, listingCanary} {
 		if err := repository.CreateRecipe(ctx, recipe, now); err != nil {
 			t.Fatal(err)
 		}
@@ -309,27 +333,47 @@ func TestListingRecipeRollbackRebindsCheckpointWithoutMovingFrontier(t *testing.
 		t.Fatal(err)
 	}
 
-	rollbackAt := now.Add(3 * time.Minute)
+	canaryAt := now.Add(3 * time.Minute)
+	assignmentV3, _ := assignmentV2.Replace(assignmentV2.AssignmentVersion, listingCanary.RecipeID,
+		listingCanary.Version, listingCanary.ContractHash, canaryAt.Format(time.RFC3339Nano))
+	canarySource, _ := readyV2.AssignRecipe(readyV2.Version, assignmentV3, true)
+	canaryReceipt, _ := model.NewCommandReceipt("listing-canary-rollout", "recruiting.recipe.rollout",
+		"sha256:listing-canary-rollout", json.RawMessage(`{"status":"rolled_out"}`))
+	canaryEvent, _ := model.NewEventIntent("listing-canary-rollout-event", "source.listing_recipe_rolled_out", "source",
+		canarySource.SourceID, canarySource.Version, canaryAt.Format(time.RFC3339Nano), canaryReceipt.CommandID,
+		json.RawMessage(`{}`))
+	if _, err := repository.ApplyRecipeAssignmentChangeCommand(ctx, readyV2.Version,
+		assignmentV2.AssignmentVersion, canarySource, assignmentV3, canaryReceipt, canaryEvent, canaryAt); err != nil {
+		t.Fatal(err)
+	}
+	canaryCheckpoint, _ := repository.GetCheckpoint(ctx, source.SourceID)
+	if canarySource.ReadinessStatus != model.SourceRepairing || canaryCheckpoint.Version != checkpoint.Version+1 ||
+		canaryCheckpoint.RecipeID != listingCanary.RecipeID || canaryCheckpoint.FrontierActivityAt != checkpoint.FrontierActivityAt ||
+		canaryCheckpoint.LastOccurrenceID != checkpoint.LastOccurrenceID {
+		t.Fatalf("Listing canary rollout moved waterline or skipped repair fence: source=%+v checkpoint=%+v",
+			canarySource, canaryCheckpoint)
+	}
+
+	rollbackAt := now.Add(4 * time.Minute)
 	historical, err := repository.GetAssignmentVersion(ctx, source.SourceID, model.RecipeListing, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rollbackAssignment, _ := assignmentV2.Replace(assignmentV2.AssignmentVersion, historical.RecipeID,
+	rollbackAssignment, _ := assignmentV3.Replace(assignmentV3.AssignmentVersion, historical.RecipeID,
 		historical.RecipeVersion, historical.ContractHash, rollbackAt.Format(time.RFC3339Nano))
-	rollbackUnderstood := readyV2
-	rollbackSource, _ := rollbackUnderstood.AssignRecipe(rollbackUnderstood.Version, rollbackAssignment, true)
+	rollbackSource, _ := canarySource.AssignRecipe(canarySource.Version, rollbackAssignment, true)
 	receipt, _ := model.NewCommandReceipt("listing-rollback", "recruiting.recipe.rollback",
 		"sha256:listing-rollback", json.RawMessage(`{"status":"rolled_back"}`))
 	event, _ := model.NewEventIntent("listing-rollback-event", "source.listing_recipe_rolled_back", "source",
 		rollbackSource.SourceID, rollbackSource.Version, rollbackAt.Format(time.RFC3339Nano), receipt.CommandID,
 		json.RawMessage(`{}`))
-	result, err := repository.ApplyRecipeAssignmentChangeCommand(ctx, readyV2.Version,
-		assignmentV2.AssignmentVersion, rollbackSource, rollbackAssignment, receipt, event, rollbackAt)
+	result, err := repository.ApplyRecipeAssignmentChangeCommand(ctx, canarySource.Version,
+		assignmentV3.AssignmentVersion, rollbackSource, rollbackAssignment, receipt, event, rollbackAt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	replay, err := repository.ApplyRecipeAssignmentChangeCommand(ctx, readyV2.Version,
-		assignmentV2.AssignmentVersion, rollbackSource, rollbackAssignment, receipt, event, rollbackAt)
+	replay, err := repository.ApplyRecipeAssignmentChangeCommand(ctx, canarySource.Version,
+		assignmentV3.AssignmentVersion, rollbackSource, rollbackAssignment, receipt, event, rollbackAt)
 	if err != nil || !replay.Replayed || string(replay.Response) != string(result.Response) {
 		t.Fatalf("Listing rollback replay=%+v err=%v", replay, err)
 	}
@@ -342,11 +386,11 @@ func TestListingRecipeRollbackRebindsCheckpointWithoutMovingFrontier(t *testing.
 		*storedSource.CandidateEndpoint != *storedSource.ActiveEndpoint || storedSource.HasVerifiedIncrementalContract() {
 		t.Fatalf("Listing rollback did not require recalibration: %+v", storedSource)
 	}
-	if storedAssignment != rollbackAssignment || storedAssignment.AssignmentVersion != 3 ||
+	if storedAssignment != rollbackAssignment || storedAssignment.AssignmentVersion != 4 ||
 		storedAssignment.RecipeID != listingV1.RecipeID {
 		t.Fatalf("Listing rollback assignment=%+v", storedAssignment)
 	}
-	if storedCheckpoint.Version != checkpoint.Version+1 || storedCheckpoint.RecipeID != listingV1.RecipeID ||
+	if storedCheckpoint.Version != checkpoint.Version+2 || storedCheckpoint.RecipeID != listingV1.RecipeID ||
 		storedCheckpoint.RecipeVersion != listingV1.Version || storedCheckpoint.ContractHash != checkpoint.ContractHash ||
 		storedCheckpoint.FrontierActivityAt != checkpoint.FrontierActivityAt ||
 		storedCheckpoint.LastOccurrenceID != checkpoint.LastOccurrenceID || storedCheckpoint.OverlapPages != checkpoint.OverlapPages ||

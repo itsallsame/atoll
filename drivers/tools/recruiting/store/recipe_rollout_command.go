@@ -96,7 +96,8 @@ func (r *Repository) ApplyRecipeAssignmentChangeCommand(ctx context.Context, exp
 	// An already-created retry Work retains its placement. A rollout which
 	// changes capability or result contract therefore needs a separate
 	// migration workflow rather than this repair command.
-	if currentRecipe.Kind != assignment.Kind || currentRecipe.ContractHash != targetRecipe.ContractHash ||
+	if currentRecipe.Kind != assignment.Kind || currentRecipe.Scope != targetRecipe.Scope ||
+		currentRecipe.ContractHash != targetRecipe.ContractHash ||
 		currentRecipe.Execution.RequiredCapability != targetRecipe.Execution.RequiredCapability {
 		return CommandResult{}, fmt.Errorf("%w: %s assignment change requires compatible contract and executor capability", ErrRecipeRolloutRejected, assignment.Kind)
 	}
