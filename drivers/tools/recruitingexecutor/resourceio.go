@@ -1,10 +1,8 @@
 package recruitingexecutor
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +16,7 @@ import (
 	"github.com/wanpengxie/atoll/runtime/accessdoor"
 )
 
-const maxRecipeBytes = 256 << 10
+const maxRecipeBytes = recipeabi.MaxSpecBytes
 
 // resourceRecipeReader is the public Atoll Resource face narrowed to the one
 // operation the recruiting executor needs. Recipe bodies remain application
@@ -60,25 +58,9 @@ func resolveRecipe(resources resourceRecipeReader, contentRef string, expected r
 	if !outcome.Found {
 		return recipeabi.Spec{}, errors.New("recipe resource has no content")
 	}
-	if len(outcome.Value) == 0 || len(outcome.Value) > maxRecipeBytes {
-		return recipeabi.Spec{}, fmt.Errorf("recipe resource size must be in [1,%d] bytes", maxRecipeBytes)
-	}
-
-	var spec recipeabi.Spec
-	decoder := json.NewDecoder(bytes.NewReader(outcome.Value))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&spec); err != nil {
-		return recipeabi.Spec{}, fmt.Errorf("decode recipe resource: %w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return recipeabi.Spec{}, errors.New("decode recipe resource: multiple JSON values")
-		}
-		return recipeabi.Spec{}, fmt.Errorf("decode recipe resource: %w", err)
-	}
-	if err := spec.Validate(); err != nil {
-		return recipeabi.Spec{}, fmt.Errorf("validate recipe resource: %w", err)
+	spec, err := recipeabi.DecodeSpec(outcome.Value)
+	if err != nil {
+		return recipeabi.Spec{}, err
 	}
 	actualHash, err := spec.ContentHash()
 	if err != nil {

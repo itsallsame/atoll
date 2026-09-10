@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -77,10 +78,39 @@ func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing
 		t.Fatalf("Recipe rollback=%v", rolledBack)
 	}
 
-	candidate := seedRecipeValidationCandidate(t, runtimeDSN, source.SourceID, seedAt.Add(time.Second))
+	candidateSpec := recruitingLiveRecipe()
+	candidateBytes, _ := json.Marshal(candidateSpec)
+	candidateHash, _ := candidateSpec.ContentHash()
+	const candidateID = "e2e-recipe-listing"
+	const candidateVersion = 2
+	const candidateRef = "recipe://e2e-rejected-listing-candidate"
+	ws.resource(map[string]any{"channel_id": homeID, "op": "create", "resource_id": candidateRef,
+		"args": json.RawMessage(candidateBytes)})
+	proposalPayload := map[string]any{
+		"command_id": "e2e-recipe-proposal", "target": map[string]any{"target_type": "source", "target_id": source.SourceID},
+		"expected_version": nestedNumberField(t, rolledBack, "source", "version"), "recipe_id": candidateID,
+		"recipe_version": candidateVersion, "endpoint_revision": 1, "content_ref": candidateRef,
+		"expected_content_hash": candidateHash, "reason": "register an operator-confirmed candidate Resource",
+	}
+	badProposal := map[string]any{
+		"command_id": "e2e-recipe-proposal-bad-hash", "target": map[string]any{"target_type": "source", "target_id": source.SourceID},
+		"expected_version": nestedNumberField(t, rolledBack, "source", "version"), "recipe_id": candidateID,
+		"recipe_version": candidateVersion, "endpoint_revision": 1, "content_ref": candidateRef,
+		"expected_content_hash": "sha256:not-the-resource", "reason": "prove client-declared hashes cannot register a draft",
+	}
+	if _, terminal, err := ws.tryRequest(homeID, "recruiting.recipe.propose", controlID, badProposal); err == nil ||
+		terminal["error_code"] != "quality_rejected" {
+		t.Fatalf("bad Recipe Resource hash terminal=%v err=%v", terminal, err)
+	}
+	proposal := ws.request(homeID, "recruiting.recipe.propose", controlID, proposalPayload)
+	if nestedStringField(t, proposal, "recipe", "status") != "draft" ||
+		nestedStringField(t, proposal, "recipe", "scope") != "recipe.example.test" ||
+		stringField(t, proposal, "next_action") != "validate_recipe" {
+		t.Fatalf("Recipe proposal=%v", proposal)
+	}
 	validationPayload := map[string]any{
-		"command_id": "e2e-recipe-validation", "target": map[string]any{"target_type": "recipe", "target_id": candidate.RecipeID},
-		"expected_version": candidate.StateVersion, "recipe_version": candidate.Version, "source_id": source.SourceID,
+		"command_id": "e2e-recipe-validation", "target": map[string]any{"target_type": "recipe", "target_id": candidateID},
+		"expected_version": 1, "recipe_version": candidateVersion, "source_id": source.SourceID,
 		"run_id": "e2e-recipe-rejection-run", "work_id": "e2e-recipe-rejection-work",
 		"reason": "validate candidate before an operator decision",
 	}
@@ -90,8 +120,8 @@ func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing
 		t.Fatalf("Recipe validation before rejection=%v", validation)
 	}
 	rejectPayload := map[string]any{
-		"command_id": "e2e-recipe-reject", "target": map[string]any{"target_type": "recipe", "target_id": candidate.RecipeID},
-		"expected_version": candidate.StateVersion + 1, "recipe_version": candidate.Version,
+		"command_id": "e2e-recipe-reject", "target": map[string]any{"target_type": "recipe", "target_id": candidateID},
+		"expected_version": 2, "recipe_version": candidateVersion,
 		"validation_work_id": "e2e-recipe-rejection-work", "reason": "operator rejects this candidate",
 	}
 	if _, terminal, err := ws.tryRequest(homeID, "recruiting.recipe.reject", controlID, rejectPayload); err == nil ||
@@ -117,44 +147,15 @@ func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing
 	waitRecruitingReady(t, recovered, homeID, controlID, h.server)
 	replayedQuarantine := recovered.request(homeID, "recruiting.recipe.quarantine", controlID, quarantinePayload)
 	replayedRollback := recovered.request(homeID, "recruiting.recipe.rollback", controlID, rollbackPayload)
+	replayedProposal := recovered.request(homeID, "recruiting.recipe.propose", controlID, proposalPayload)
 	replayedRejection := recovered.request(homeID, "recruiting.recipe.reject", controlID, rejectPayload)
 	if nestedNumberField(t, replayedQuarantine, "recipe", "state_version") != float64(detailV2.StateVersion+1) ||
 		nestedNumberField(t, replayedRollback, "assignment", "assignment_version") != 3 ||
+		nestedStringField(t, replayedProposal, "recipe", "status") != "draft" ||
 		nestedStringField(t, replayedRejection, "recipe", "status") != "draft" {
-		t.Fatalf("durable command replay quarantine=%v rollback=%v rejection=%v",
-			replayedQuarantine, replayedRollback, replayedRejection)
+		t.Fatalf("durable command replay quarantine=%v rollback=%v proposal=%v rejection=%v",
+			replayedQuarantine, replayedRollback, replayedProposal, replayedRejection)
 	}
-}
-
-func seedRecipeValidationCandidate(t *testing.T, dsn, sourceID string, now time.Time) model.Recipe {
-	t.Helper()
-	db, err := store.Open(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	repository, _ := store.NewRepository(db)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	assignment, err := repository.GetAssignment(ctx, sourceID, model.RecipeListing)
-	if err != nil {
-		t.Fatal(err)
-	}
-	active, err := repository.GetRecipe(ctx, assignment.RecipeID, assignment.RecipeVersion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidate, err := model.NewRecipe(active.RecipeID, model.RecipeListing, active.Scope, active.Version+1,
-		"e2e-rejected-candidate-content", active.ContractHash, model.RecipeExecution{ABIVersion: model.RecipeABIVersion,
-			ContentRef: "recipe://e2e-rejected-listing-candidate", RequiredCapability: "http.fetch",
-			Transport: model.RecipeTransportHTTPJSON})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.CreateRecipe(ctx, candidate, now); err != nil {
-		t.Fatal(err)
-	}
-	return candidate
 }
 
 func seedRecipeOperations(t *testing.T, dsn string, now time.Time) (model.RecruitmentSource, model.Recipe) {

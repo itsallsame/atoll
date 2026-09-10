@@ -46,6 +46,43 @@ func TestRecipeSpecHashIsStableAndBindsContract(t *testing.T) {
 	}
 }
 
+func TestRecipeContractHashSeparatesCompatibilityFromRequestTuning(t *testing.T) {
+	spec := validListingSpec()
+	first, err := spec.ContractHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tuned := spec
+	tuned.Request.TimeoutMS++
+	tuned.Request.UserAgent = "Atoll-Recruiting/2"
+	if next, err := tuned.ContractHash(); err != nil || next != first {
+		t.Fatalf("request tuning changed compatibility hash: first=%s next=%s err=%v", first, next, err)
+	}
+	changed := spec
+	changed.Extraction.Fields = map[string]string{"job_key": "/external_id", "detail_url": "/url", "activity_at": "/updated_at"}
+	if next, err := changed.ContractHash(); err != nil || next == first {
+		t.Fatalf("identity extraction did not change compatibility hash: first=%s next=%s err=%v", first, next, err)
+	}
+}
+
+func TestDecodeSpecIsStrictBoundedAndShared(t *testing.T) {
+	raw, _ := json.Marshal(validListingSpec())
+	decoded, err := DecodeSpec(raw)
+	if err != nil || decoded.Kind != KindListing {
+		t.Fatalf("decode valid Recipe=%+v err=%v", decoded, err)
+	}
+	if _, err := DecodeSpec(append(raw, []byte(` {}`)...)); err == nil {
+		t.Fatal("multiple Recipe JSON values were accepted")
+	}
+	withUnknown := append(raw[:len(raw)-1], []byte(`,"activation":"active"}`)...)
+	if _, err := DecodeSpec(withUnknown); err == nil {
+		t.Fatal("unknown activation field was accepted")
+	}
+	if _, err := DecodeSpec(make([]byte, MaxSpecBytes+1)); err == nil {
+		t.Fatal("oversized Recipe Resource was accepted")
+	}
+}
+
 func TestOffsetPaginationIsHashBoundAndRestrictedToJSONListings(t *testing.T) {
 	spec := validListingSpec()
 	spec.Extraction.Next = ""

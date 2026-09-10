@@ -65,6 +65,7 @@ const (
 	TypeRunProduction     = "recruiting.run.production"
 
 	TypeRecipeInspect    = "recruiting.recipe.inspect"
+	TypeRecipePropose    = "recruiting.recipe.propose"
 	TypeRecipeValidate   = "recruiting.recipe.validate"
 	TypeRecipeApprove    = "recruiting.recipe.approve"
 	TypeRecipeReject     = "recruiting.recipe.reject"

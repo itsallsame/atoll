@@ -4,16 +4,22 @@
 package recipeabi
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 	"time"
 )
 
-const Version = "recruiting.recipe.v1"
+const (
+	Version      = "recruiting.recipe.v1"
+	MaxSpecBytes = 256 << 10
+)
 
 type Kind string
 
@@ -381,6 +387,55 @@ func (s Spec) ContentHash() (string, error) {
 	}
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// ContractHash identifies the extraction and incremental compatibility
+// contract independently from request tuning such as timeout and User-Agent.
+// A changed selector, identity/activity mapping, pagination rule, or listing
+// boundary therefore cannot silently reuse an existing Assignment lineage.
+func (s Spec) ContractHash() (string, error) {
+	if err := s.Validate(); err != nil {
+		return "", err
+	}
+	contract := struct {
+		Kind             Kind              `json:"kind"`
+		Transport        Transport         `json:"transport"`
+		Extraction       Extraction        `json:"extraction"`
+		OffsetPagination *OffsetPagination `json:"offset_pagination,omitempty"`
+		Listing          *ListingContract  `json:"listing,omitempty"`
+	}{s.Kind, s.Transport, s.Extraction, s.OffsetPagination, s.Listing}
+	raw, err := json.Marshal(contract)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// DecodeSpec is the shared strict Resource decoder used by both proposal
+// ingestion and execution. It prevents the control and data planes from
+// accepting different JSON dialects or size limits for the same Recipe ABI.
+func DecodeSpec(raw []byte) (Spec, error) {
+	if len(raw) == 0 || len(raw) > MaxSpecBytes {
+		return Spec{}, fmt.Errorf("recipe resource size must be in [1,%d] bytes", MaxSpecBytes)
+	}
+	var spec Spec
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&spec); err != nil {
+		return Spec{}, fmt.Errorf("decode recipe resource: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return Spec{}, errors.New("decode recipe resource: multiple JSON values")
+		}
+		return Spec{}, fmt.Errorf("decode recipe resource: %w", err)
+	}
+	if err := spec.Validate(); err != nil {
+		return Spec{}, fmt.Errorf("validate recipe resource: %w", err)
+	}
+	return spec, nil
 }
 
 type ArtifactRef struct {
