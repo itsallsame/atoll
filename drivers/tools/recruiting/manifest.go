@@ -47,6 +47,8 @@ func manifest() introspect.Manifest {
 			TypeSourceGet:                      {Description: "get one recruitment source"},
 			TypeSourceList:                     {Description: "seek-page sources globally or for one company"},
 			TypeRecipeInspect:                  {Description: "inspect one immutable Recipe version and its current Source assignment count"},
+			TypeRecipeValidate:                 {Description: "run one draft or quarantined Listing Recipe against a frozen real Source without publishing business data"},
+			TypeRecipeApprove:                  {Description: "activate one validating Recipe only after a complete executor-succeeded real-sample validation"},
 			TypeRecipeQuarantine:               {Description: "atomically quarantine one active Recipe version without rewriting Source assignments"},
 			TypeRecipeRollout:                  {Description: "atomically roll one Source detail assignment to a compatible active Recipe with source and assignment version fencing"},
 			TypeRecipeRollback:                 {Description: "append a new Source detail assignment from immutable assignment history with version fencing"},

@@ -55,6 +55,14 @@
 - Browser DOM 同样先保存 Artifact，之后才检查 attestation、最终 URL 与离线 DOM Recipe；策略违规、跨源、超量和解析失败仍保留证据。当前实现是安全契约和可替换 Broker adapter，尚未宣称已经接入某个 Chromium 运行时。
 - `extensioncapture` 把浏览器插件严格定位为人工发现/修复入口，而非新的长期 Worker：用户确认后只能提交绑定 Source/Endpoint version 的候选 Recipe、结构化 selector 轨迹和 `artifact://` 证据；候选内容生成稳定哈希，但没有 active、Assignment 或 Checkpoint 字段；
 - 插件轨迹没有输入值、请求体、Cookie/storage 或凭据字段，候选仍受 Recipe GET/header/预算校验；带凭据 URL、疑似 secret query、signed object URL、任意交互以及“仍依赖 extension 执行”的候选均拒绝。Browser 候选必须转成受控 Browser Plan，HTTP 候选不能夹带 Browser action；发布、灰度和 Assignment 仍只能由 Recruiting Actor 后续审批命令完成。
+- Listing 候选 Recipe 已有真实执行式验证和独立审批：`recipe.validate` 原子冻结候选 version 与 ready Source 的生产 Endpoint/Company/Source fence，创建 `recipe_validation` ListingRun、Work 和 capability dispatch；拟议 Assignment 只用于 immutable offer，不写入 Source 当前 Assignment 或历史。Executor 复用 Listing validation driver，只提交 page/trace Artifact 与质量证明；结果不写 Job、Observation 或 Checkpoint。
+- `recipe.approve` 重新核对 candidate content/contract/execution、指定 Work/run、唯一成功 Attempt、绑定该 Attempt 的未拒绝 Artifact 数量，以及 identity/ordering/pagination 三项证明；失败统一为 `quality_rejected` 且不发布。共享 execution result contract 与客户端 acknowledgement 已显式增加 `recipe_validation` 分支，避免执行完成后因客户端闭集遗漏而把 Attempt 留在 running。
+
+## 候选 Recipe 真实网站验证（负向证据通过）
+
+2026-09-10 显式运行 `ATOLL_RECRUITING_LIVE_E2E=1 go test ./e2e -run '^TestRecruitingLiveRecipeValidationRejectsBadCandidateThroughAtoll$' -count=1 -v`。普通登录用户通过真实 Atoll server 创建控制 Actor 和 daemon 上的统一 HTTP Executor；测试只读访问 Discord 的公开 Greenhouse Job Board API。候选 Listing Recipe 能成功请求、解析并产生 page/trace Artifact，但该实时列表不满足候选声明的 `newest_activity_desc`，因此验证 Work/Attempt 作为“执行完成”成功收口，后续审批明确返回 `quality_rejected`。回读确认候选仍为 validating、当前 Assignment 引用数为零，且验证事务没有写岗位事实或 Checkpoint。
+
+这条用例不是把第三方数据失败包装成通过；它验证的是审批 fail closed。单次实时列表不能证明 update-retop，且测试没有将该 Source 标为可生产增量。紧凑证据见 `docs/experiments/evidence/recruiting-live-recipe-validation-20260910.json`。
 
 ## 真实站点 Live Smoke（诊断通过，增量认证拒绝）
 

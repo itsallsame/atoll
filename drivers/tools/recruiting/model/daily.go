@@ -85,6 +85,25 @@ func NewCandidateListingExecutionSnapshot(source RecruitmentSource, recipe Recip
 	}, nil
 }
 
+// NewRecipeValidationListingExecutionSnapshot freezes a candidate Recipe and
+// one known production endpoint. The proposed Assignment is an execution
+// fence only and is not published to the Source by validation.
+func NewRecipeValidationListingExecutionSnapshot(source RecruitmentSource, recipe Recipe,
+	assignment SourceRecipeAssignment) (ListingExecutionSnapshot, error) {
+	if source.ActiveEndpoint == nil || recipe.Status != RecipeValidating || recipe.Kind != RecipeListing ||
+		assignment.SourceID != source.SourceID || assignment.Kind != RecipeListing || assignment.RecipeID != recipe.RecipeID ||
+		assignment.RecipeVersion != recipe.Version || assignment.ContractHash != recipe.ContractHash || assignment.AssignmentVersion == 0 {
+		return ListingExecutionSnapshot{}, fmt.Errorf("Recipe validation snapshot requires an active endpoint, validating listing Recipe, and proposed assignment")
+	}
+	endpoint, err := url.Parse(source.ActiveEndpoint.URL)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return ListingExecutionSnapshot{}, fmt.Errorf("Recipe validation endpoint is invalid")
+	}
+	return ListingExecutionSnapshot{Endpoint: *source.ActiveEndpoint, Assignment: assignment,
+		RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, ContentHash: recipe.ContentHash,
+		ContractHash: recipe.ContractHash, Execution: recipe.Execution, Origin: endpoint.Scheme + "://" + endpoint.Host}, nil
+}
+
 func (s ListingExecutionSnapshot) Validate(sourceID string) error {
 	endpoint, err := url.Parse(s.Endpoint.URL)
 	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" || s.Endpoint.Revision == 0 ||

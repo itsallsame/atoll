@@ -83,14 +83,14 @@ func TestDiagnosticRunExecutesWithEvidenceAndNoBusinessWrites(t *testing.T) {
 	trace := mustResultArtifact(t, "diagnostic-trace", model.ArtifactTrace, work.WorkID, offer.Attempt.AttemptID)
 	quality := executioncontract.ListingQuality{IdentityComplete: true, OrderingContractHeld: true, PaginationStable: true,
 		PreviousFrontierReached: true, OverlapCompleted: true, ItemCount: 7}
-	outcome, err := repository.AcceptDiagnosticResult(ctx, DiagnosticResult{CommandID: "diagnostic-result-command",
+	outcome, err := repository.AcceptDiagnosticResult(ctx, DiagnosticResult{CommandID: "diagnostic-result-command", ResultKind: "diagnostic",
 		RequestHash: "sha256:diagnostic-result", AttemptID: offer.Attempt.AttemptID, ExecutorActorID: offer.Attempt.ExecutorActorID,
 		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Artifacts: []model.ArtifactMetadata{page, trace}, Quality: quality,
 		CompletedAt: now.Add(time.Second)})
 	if err != nil || outcome.Replayed || outcome.Work.Status != model.WorkCompleted || outcome.Run.Status != model.ListingRunCompleted || outcome.Artifacts != 2 {
 		t.Fatalf("diagnostic result = %+v err=%v", outcome, err)
 	}
-	replayedResult, err := repository.AcceptDiagnosticResult(ctx, DiagnosticResult{CommandID: "diagnostic-result-command",
+	replayedResult, err := repository.AcceptDiagnosticResult(ctx, DiagnosticResult{CommandID: "diagnostic-result-command", ResultKind: "diagnostic",
 		RequestHash: "sha256:diagnostic-result", AttemptID: offer.Attempt.AttemptID, ExecutorActorID: offer.Attempt.ExecutorActorID,
 		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Artifacts: []model.ArtifactMetadata{page, trace}, Quality: quality,
 		CompletedAt: now.Add(2 * time.Second)})

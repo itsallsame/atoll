@@ -23,6 +23,7 @@
 - 用户取消 `baseline_listing` Work 不走单表状态捷径：专用取消事务同时把 Work 与 BaselineGeneration 置为 canceled、提升 acceptance fence、把活动 Attempt 置为 rejected、释放 Permit/预算计数并产生容量 wake。`baseline.start` 现与其他可执行 Work 一样，按 capability 从统一 Executor fleet 选择目标并在创建事务中写首次 wake，不再出现“仓储可领取但 daemon 未被唤醒”的断链。迟到 page/detail 或分类 Failure 都只留下 rejected Artifact 且不能创建 Checkpoint；原 generation 保留为终态证据，Company 可用新的 Work/generation 重新开始。命令重放不再次改变任何版本或预算。
 - 每个 baseline Detail Work 在物化事务中写入独立成员账本；详情成功事务同时接受 JobDetailVersion、完成 Work/Attempt、释放 Permit、把成员由 pending 变为 succeeded，并以 Baseline CAS 增加核算数。终态异常先进入 `waiting_human`；只有认证用户通过既有 `recruiting.work.resolve` 明确提交 `accepted_gap` 和理由，才在同一命令事务核算缺口，运行中的 Work 不能直接伪装成缺口。用户拒绝缺口并以 `terminated` 结束旧 Work 时，成员仍为 pending；`work.retry` 原子创建因果 Work、重绑该成员和 dispatch，重试的真实详情结果才核算成功。Company 不在每条详情事务中加锁；Recruiting Actor 的既有 reconcile 只在所有 active/ready Source 的最新 baseline 均完成或缺口已被接受时，原子推进 `initializing → ready` 并写领域事件。
 - Recipe 运维公开入口现提供 inspect、quarantine、Source 级兼容 Detail rollout/rollback。quarantine 是常量规模的 Recipe 状态事务，不改写所有引用它的 Source；领取时 active fence 阻止新 Attempt。rollback 从不可变 Assignment 历史选择已知良好 Recipe，但追加新的 Assignment version，并与 Source 投影、receipt/event 同事务提交。
+- Listing 候选 Recipe 可基于一个 ready Source 启动独立真实样本验证，复用统一 Listing Executor 且只落 page/trace 证据。审批必须反查唯一成功 Attempt 及其完整质量证明；2026-09-10 的 Discord Greenhouse 真实样本因活动时间非倒序被正确拒绝，未发布候选、未改 Assignment，也未产生 Job/Observation/Checkpoint。该能力验证 Recipe 发布闸门，不等于该站点通过 Source 增量资格校准。
 
 ## 已执行证据
 

@@ -169,6 +169,25 @@ func TestSubmitExecutionResultRequiresMatchingAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestSubmitRecipeValidationAcceptsOnlyRecipeValidationAcknowledgement(t *testing.T) {
+	response := executioncontract.ResultResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-recipe-validation", RequestedBy: "executor-1",
+		RecipeValidation: json.RawMessage(`{"work":{"work_id":"recipe-validation-work"}}`)}
+	caller := &callerStub{pending: &pendingStub{response: controlResponse(t, executioncontract.TypeResult, response)}}
+	payload := executioncontract.DiagnosticResult{CommandID: "recipe-validation-result", ResultKind: "recipe_validation",
+		AttemptID: "attempt-1", ExecutorIncarnation: "boot-1"}
+	if err := submitExecutionResult(context.Background(), caller, message.Root(), "control-1", "executor-1",
+		payload.ResultKind, payload, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	response.RecipeValidation, response.SourceValidation = nil, json.RawMessage(`{"work":{"work_id":"wrong-kind"}}`)
+	caller.pending.response = controlResponse(t, executioncontract.TypeResult, response)
+	if err := submitExecutionResult(context.Background(), caller, message.Root(), "control-1", "executor-1",
+		payload.ResultKind, payload, time.Second); err == nil {
+		t.Fatal("Recipe validation result accepted a source validation acknowledgement")
+	}
+}
+
 func TestSubmitCompanyImportResultAcceptsOnlyCompanyImportAcknowledgement(t *testing.T) {
 	response := executioncontract.ResultResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
 		CorrelationID: "correlation-import", RequestedBy: "executor-1", CompanyImport: json.RawMessage(`{"accepted_items":2}`)}

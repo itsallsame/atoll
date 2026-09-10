@@ -88,7 +88,9 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 			contexts++
 		}
 		if offer.Detail != nil || contexts != 1 ||
-			(work.Purpose != "listing_sync" && work.Purpose != "source_validation" && work.Purpose != "baseline_listing") || work.TargetType != "source" {
+			(work.Purpose != "listing_sync" && work.Purpose != "source_validation" && work.Purpose != "recipe_validation" && work.Purpose != "baseline_listing") ||
+			(work.Purpose == "recipe_validation" && work.TargetType != "recipe") ||
+			(work.Purpose != "recipe_validation" && work.TargetType != "source") {
 			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("listing offer must carry exactly one execution context")
 		}
 		var sourceID string
@@ -103,8 +105,10 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 			run := offer.ListingRun
 			sourceID, companyVersion, sourceVersion, snapshot = run.SourceID, run.CompanyVersion, run.SourceVersion, run.ListingExecution
 			if run.WorkID != work.WorkID || (run.Status != model.ListingRunQueued && run.Status != model.ListingRunRunning) ||
-				(run.Mode != model.ListingRunDiagnostic && run.Mode != model.ListingRunProduction && run.Mode != model.ListingRunValidation) ||
-				(run.Mode == model.ListingRunValidation) != (work.Purpose == "source_validation") {
+				(run.Mode != model.ListingRunDiagnostic && run.Mode != model.ListingRunProduction && run.Mode != model.ListingRunValidation &&
+					run.Mode != model.ListingRunRecipeValidation) ||
+				(run.Mode == model.ListingRunValidation) != (work.Purpose == "source_validation") ||
+				(run.Mode == model.ListingRunRecipeValidation) != (work.Purpose == "recipe_validation") {
 				return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("standalone listing run is not executable")
 			}
 		} else {
@@ -116,7 +120,11 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 				return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("baseline listing generation is not executable")
 			}
 		}
-		if work.TargetID != sourceID {
+		expectedTargetID := sourceID
+		if work.Purpose == "recipe_validation" {
+			expectedTargetID = fmt.Sprintf("%s@%d", snapshot.RecipeID, snapshot.RecipeVersion)
+		}
+		if work.TargetID != expectedTargetID {
 			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("listing target does not match execution context")
 		}
 		if err := snapshot.Validate(sourceID); err != nil {

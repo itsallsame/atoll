@@ -30,6 +30,7 @@ type executionControlResponse struct {
 	Completion       *store.ListingCompletionOutcome     `json:"completion,omitempty"`
 	Diagnostic       *store.DiagnosticResultOutcome      `json:"diagnostic,omitempty"`
 	SourceValidation *store.DiagnosticResultOutcome      `json:"source_validation,omitempty"`
+	RecipeValidation *store.DiagnosticResultOutcome      `json:"recipe_validation,omitempty"`
 	Detail           *store.DetailResultOutcome          `json:"detail,omitempty"`
 	CompanyImport    *store.CompanyImportResultOutcome   `json:"company_import,omitempty"`
 	SourceDiscovery  *store.SourceDiscoveryResultOutcome `json:"source_discovery,omitempty"`
@@ -67,7 +68,7 @@ func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, s
 		handleListingPageResult(sys, repository, msg)
 	case "listing_completion":
 		handleListingCompletionResult(sys, repository, msg)
-	case "diagnostic", "source_validation":
+	case "diagnostic", "source_validation", "recipe_validation":
 		handleDiagnosticResult(sys, repository, msg)
 	case "detail":
 		handleDetailResult(sys, repository, msg)
@@ -183,14 +184,15 @@ func handleDiagnosticResult(sys actorbase.Sys, repository *store.Repository, msg
 	if !decode(sys, msg, &payload) {
 		return
 	}
-	if strings.TrimSpace(payload.CommandID) == "" || (payload.ResultKind != "diagnostic" && payload.ResultKind != "source_validation") {
-		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "diagnostic/source validation command_id and result_kind are required")
+	if strings.TrimSpace(payload.CommandID) == "" || (payload.ResultKind != "diagnostic" && payload.ResultKind != "source_validation" &&
+		payload.ResultKind != "recipe_validation") {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "diagnostic/source/Recipe validation command_id and result_kind are required")
 		return
 	}
 	outcome, err := repository.AcceptDiagnosticResult(msg.Ctx(), store.DiagnosticResult{
 		CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), AttemptID: payload.AttemptID,
 		ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
-		Artifacts: payload.Artifacts, Quality: payload.Quality, CompletedAt: time.UnixMilli(msg.TS).UTC(),
+		ResultKind: payload.ResultKind, Artifacts: payload.Artifacts, Quality: payload.Quality, CompletedAt: time.UnixMilli(msg.TS).UTC(),
 	})
 	if err != nil {
 		failStoreError(sys, msg, err)
@@ -200,6 +202,8 @@ func handleDiagnosticResult(sys actorbase.Sys, repository *store.Repository, msg
 		RequestedBy: string(msg.Sender.ID)}
 	if payload.ResultKind == "source_validation" {
 		response.SourceValidation = &outcome
+	} else if payload.ResultKind == "recipe_validation" {
+		response.RecipeValidation = &outcome
 	} else {
 		response.Diagnostic = &outcome
 	}

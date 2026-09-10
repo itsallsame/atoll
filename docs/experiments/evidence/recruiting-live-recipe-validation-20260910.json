@@ -1,0 +1,27 @@
+{
+  "schema": "atoll.recruiting.live-recipe-validation.v1",
+  "observed_at": "2026-09-10",
+  "target": "https://boards-api.greenhouse.io/v1/boards/discord/jobs",
+  "access": "public read-only GET",
+  "test": "TestRecruitingLiveRecipeValidationRejectsBadCandidateThroughAtoll",
+  "execution": {
+    "atoll_server": true,
+    "daemon_executor": true,
+    "mysql_accounts": "non-root migration/runtime",
+    "result_kind": "recipe_validation",
+    "artifacts_required": ["page", "trace"]
+  },
+  "observed_result": {
+    "request_and_parse_succeeded": true,
+    "ordering_contract_held": false,
+    "approval_error_code": "quality_rejected",
+    "candidate_status_after_rejection": "validating",
+    "current_assignment_count": 0,
+    "business_facts_written": false
+  },
+  "claim_limits": [
+    "The live sample is negative evidence for newest_activity_desc.",
+    "A single sample does not prove update-retop.",
+    "The target is not declared production-incremental eligible."
+  ]
+}

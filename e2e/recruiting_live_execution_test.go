@@ -300,8 +300,16 @@ func recruitingLiveRecipe() recipeabi.Spec {
 	}
 }
 
-func seedLiveRecruitingSource(t *testing.T, dsn, sourceID, contentRef string, spec recipeabi.Spec, now time.Time) {
+func seedLiveRecruitingSource(t *testing.T, dsn, sourceID, contentRef string, spec recipeabi.Spec, now time.Time,
+	endpointURLs ...string) {
 	t.Helper()
+	endpointURL := recruitingLiveExecutionURL
+	if len(endpointURLs) > 1 {
+		t.Fatal("seed live recruiting Source accepts at most one endpoint override")
+	}
+	if len(endpointURLs) == 1 {
+		endpointURL = endpointURLs[0]
+	}
 	db, err := store.Open(dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -330,7 +338,7 @@ func seedLiveRecruitingSource(t *testing.T, dsn, sourceID, contentRef string, sp
 		company = next
 	}
 
-	source, _ := model.NewRecruitmentSource(sourceID, company.CompanyID, recruitingLiveExecutionURL, "all", 1)
+	source, _ := model.NewRecruitmentSource(sourceID, company.CompanyID, endpointURL, "all", 1)
 	if err := repository.CreateSource(ctx, source, now); err != nil {
 		t.Fatal(err)
 	}

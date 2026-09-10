@@ -618,6 +618,10 @@ Assignment 固定 `source_id + kind + recipe_version + contract_hash + effective
 
 Recipe 共享故障时先把该 Recipe version 原子推进到 `quarantined`。隔离不对所有 Source 做扇出更新：执行领取时必须重新要求 Recipe 为 active，因此不会基于已隔离版本创建新 Attempt；现有 Source Assignment 仍保留为“当时选择了什么”的事实，方便查询影响面和逐 Source 恢复。Source 回滚必须选择同 kind、同 contract hash、同 capability 且当前为 active 的历史 Recipe，并以 Source version 与当前 Assignment version 双重 CAS 原子更新 Source 投影、当前 Assignment、Assignment 历史、命令 receipt 和审计事件。Listing Recipe 的回滚还须先处理 Checkpoint 兼容或重新校准，首个可操作切片只开放 Detail Recipe。
 
+候选 Recipe 的验证不是一个直接改状态的管理动作。`recipe.validate` 必须选择一个已 ready 的真实 Source，把 draft/quarantined 的候选版本、当前生产 Endpoint、Company/Source version 和一个“当前 Assignment version+1”的拟议 Assignment 冻结进独立 `ListingRun(mode=recipe_validation)`，并经统一 Work/Attempt/Permit/capability dispatch 交给同一个 Recruiting Executor。拟议 Assignment 只作为执行 fence，不写入当前 Assignment 或历史；验证结果只保存 page/trace Artifact 和客观质量证明，不写 Job、ListingObservation 或 Checkpoint。验证执行成功与候选质量通过是两个不同结论：即使 identity、ordering 或 pagination 为 false，Attempt/Work 仍可成功完成，从而保留可审计的反证。
+
+`recipe.approve` 是其后的独立证据闸门。它必须锁定同一 validating Recipe，反查调用方指定的 validation Work/run 是否精确冻结该 content/contract/execution version，要求恰好一个成功 Attempt，并要求结果声明的全部 page/trace Artifact 都属于该 Attempt、未被拒绝且数量一致；identity、ordering、pagination 三项当前样本证明全部成立后才可发布 active。任何串版、证据缺失、重复成功 Attempt 或质量失败都返回 `quality_rejected`，Recipe 保持 validating，Source Assignment 与业务数据保持不变。单次样本仍不能证明历史岗位“更新后重新置顶”；`update-retop` 继续属于 Source 多次校准契约，不能由 Recipe 审批冒充已验证。第一阶段只开放 Listing Recipe 的真实执行验证，Detail/Discovery 候选验证需各自定义结果契约后再接入。
+
 Attempt 固定引用 `recipe_id + recipe_version`，不能静默漂移版本。
 
 ### 9.3 Work

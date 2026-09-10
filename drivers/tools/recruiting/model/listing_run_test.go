@@ -26,6 +26,30 @@ func TestStandaloneListingRunHasAnIndependentLifecycle(t *testing.T) {
 	}
 }
 
+func TestRecipeValidationListingRunFreezesCandidateWithoutPublishingIt(t *testing.T) {
+	source, _ := NewRecruitmentSource("source-recipe-validation", "company-1", "https://jobs.example.com", "all", 1)
+	source.ActiveEndpoint = source.CandidateEndpoint
+	source.CandidateEndpoint = nil
+	current, _ := NewSourceRecipeAssignment(source.SourceID, RecipeListing, "listing-current", 1, "contract-a",
+		"2026-09-09T00:00:00Z")
+	source.ListingAssignment = &current
+	candidate, _ := NewRecipe("listing-candidate", RecipeListing, "jobs.example.com", 2, "content-b", "contract-a",
+		RecipeExecution{ABIVersion: RecipeABIVersion, ContentRef: "recipe://listing/candidate",
+			RequiredCapability: "http.fetch", Transport: RecipeTransportHTTPJSON})
+	validating, _ := candidate.BeginValidation(candidate.StateVersion)
+	proposed, _ := current.Replace(current.AssignmentVersion, validating.RecipeID, validating.Version,
+		validating.ContractHash, "2026-09-09T00:01:00Z")
+	snapshot, err := NewRecipeValidationListingExecutionSnapshot(source, validating, proposed)
+	if err != nil || snapshot.Assignment.AssignmentVersion != 2 || source.ListingAssignment.RecipeID != current.RecipeID {
+		t.Fatalf("Recipe validation snapshot=%+v source=%+v err=%v", snapshot, source, err)
+	}
+	run, err := NewListingRun("recipe-validation-run", "recipe-validation-work", ListingRunRecipeValidation,
+		source.SourceID, 1, source.Version, nil, snapshot)
+	if err != nil || run.Mode != ListingRunRecipeValidation {
+		t.Fatalf("Recipe validation run=%+v err=%v", run, err)
+	}
+}
+
 func TestOnlyQueuedProductionRunCanLinkDailyRecovery(t *testing.T) {
 	execution := testListingExecution("source-1")
 	checkpoint := IncrementalCheckpoint{Version: 4, FrontierJobKeys: []string{"old"}}

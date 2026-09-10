@@ -270,6 +270,8 @@ func failStoreError(sys actorbase.Sys, msg actorbase.Msg, err error) {
 		code = ErrorBudgetBlocked
 	case errors.Is(err, store.ErrRecipeRolloutRejected):
 		code = ErrorQualityRejected
+	case errors.Is(err, store.ErrRecipeValidationRejected):
+		code = ErrorQualityRejected
 	case errors.Is(err, store.ErrRepairEvidenceRejected):
 		code = ErrorQualityRejected
 	default:

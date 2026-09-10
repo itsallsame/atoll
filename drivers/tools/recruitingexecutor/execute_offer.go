@@ -79,7 +79,8 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 
 	switch offer.Kind {
 	case "listing":
-		validation := offer.ListingRun != nil && offer.ListingRun.Mode == model.ListingRunValidation
+		validation := offer.ListingRun != nil && (offer.ListingRun.Mode == model.ListingRunValidation ||
+			offer.ListingRun.Mode == model.ListingRunRecipeValidation)
 		diagnostic := offer.ListingRun != nil && offer.ListingRun.Mode == model.ListingRunDiagnostic
 		var run httpdriver.ListingRunResult
 		var runErr error

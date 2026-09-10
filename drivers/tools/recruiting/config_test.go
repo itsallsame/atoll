@@ -3,6 +3,10 @@ package recruiting
 import (
 	"encoding/json"
 	"testing"
+	"time"
+
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 )
 
 func TestParseConfigDefaultsAndRejectsUnknownFields(t *testing.T) {
@@ -82,6 +86,21 @@ func TestExecutionDispatchTargetIsCapabilityBoundAndDeterministic(t *testing.T) 
 	}
 }
 
+func TestRecipeValidationCreatesCapabilityBoundExecutionDispatch(t *testing.T) {
+	cfg := Config{Executors: []ExecutorTargetConfig{{ActorID: "tool:executor-http", Capability: "http.fetch"}}}
+	work, err := model.NewWork("recipe-validation-work", "recipe", "listing@2", "recipe_validation", "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2095, 2, 1, 0, 0, 0, 0, time.UTC)
+	placement := store.WorkPlacement{Capability: "http.fetch", Origin: "https://jobs.example.com", NotBefore: now}
+	dispatch, err := workCommandDispatch(cfg, work, placement, "validate-recipe-command", "recipe_validation")
+	if err != nil || dispatch == nil || dispatch.TargetActorID != "tool:executor-http" ||
+		dispatch.Capability != placement.Capability || dispatch.CauseKind != "recipe_validation" {
+		t.Fatalf("Recipe validation dispatch=%+v err=%v", dispatch, err)
+	}
+}
+
 func TestManifestExposesControlAndExecutorResultWords(t *testing.T) {
 	words := manifest().Words
 	for _, word := range []string{
@@ -93,7 +112,7 @@ func TestManifestExposesControlAndExecutorResultWords(t *testing.T) {
 		TypeSourceResume, TypeSourceArchive, TypeSourceRestore, TypeSourceGet, TypeSourceList,
 		TypeRunDiagnostic,
 		TypeRunProduction,
-		TypeRecipeInspect, TypeRecipeRollout, TypeRecipeQuarantine, TypeRecipeRollback,
+		TypeRecipeInspect, TypeRecipeValidate, TypeRecipeApprove, TypeRecipeRollout, TypeRecipeQuarantine, TypeRecipeRollback,
 		TypeJobGet, TypeJobList, TypeWorkGet, TypeWorkList, TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary,
 		TypeWorkCreate, TypeWorkPause, TypeWorkResume, TypeWorkRetry, TypeWorkCancel, TypeWorkResolve,
 		TypeSystemReconcile, TypeExecutionWakeCompleted,

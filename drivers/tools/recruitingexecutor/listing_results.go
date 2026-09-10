@@ -28,7 +28,8 @@ type listingSubmissions struct {
 func prepareDiagnosticSubmission(ctx context.Context, offer executioncontract.Offer, run httpdriver.ListingRunResult,
 	sink *atollArtifactSink) (executioncontract.DiagnosticResult, error) {
 	if ctx == nil || sink == nil || offer.ListingRun == nil ||
-		(offer.ListingRun.Mode != model.ListingRunDiagnostic && offer.ListingRun.Mode != model.ListingRunValidation) ||
+		(offer.ListingRun.Mode != model.ListingRunDiagnostic && offer.ListingRun.Mode != model.ListingRunValidation &&
+			offer.ListingRun.Mode != model.ListingRunRecipeValidation) ||
 		offer.Occurrence != nil || run.Output.Failure != nil || run.Output.AttemptID != offer.Attempt.AttemptID || len(run.Output.Artifacts) == 0 {
 		return executioncontract.DiagnosticResult{}, errors.New("successful standalone diagnostic run and artifacts are required")
 	}
@@ -55,6 +56,8 @@ func prepareDiagnosticSubmission(ctx context.Context, offer executioncontract.Of
 	resultKind := "diagnostic"
 	if offer.ListingRun.Mode == model.ListingRunValidation {
 		resultKind = "source_validation"
+	} else if offer.ListingRun.Mode == model.ListingRunRecipeValidation {
+		resultKind = "recipe_validation"
 	}
 	return executioncontract.DiagnosticResult{
 		CommandID: resultKind + "-result-" + offer.Attempt.AttemptID, ResultKind: resultKind,

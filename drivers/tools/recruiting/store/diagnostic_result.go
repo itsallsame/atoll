@@ -13,6 +13,7 @@ import (
 
 type DiagnosticResult struct {
 	CommandID, RequestHash, AttemptID, ExecutorActorID, ExecutorIncarnation string
+	ResultKind                                                              string
 	Artifacts                                                               []model.ArtifactMetadata
 	Quality                                                                 executioncontract.ListingQuality
 	CompletedAt                                                             time.Time
@@ -30,7 +31,8 @@ type DiagnosticResultOutcome struct {
 func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input DiagnosticResult) (DiagnosticResultOutcome, error) {
 	if input.CommandID == "" || input.RequestHash == "" || input.AttemptID == "" || input.ExecutorActorID == "" ||
 		input.ExecutorIncarnation == "" || input.CompletedAt.IsZero() || len(input.Artifacts) == 0 || len(input.Artifacts) > 101 ||
-		input.Quality.ItemCount < 0 {
+		input.Quality.ItemCount < 0 || (input.ResultKind != "diagnostic" && input.ResultKind != "source_validation" &&
+		input.ResultKind != "recipe_validation") {
 		return DiagnosticResultOutcome{}, fmt.Errorf("evidence result requires bounded artifacts, quality, execution identity, and time")
 	}
 	seen := map[string]bool{}
@@ -71,8 +73,16 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 		return DiagnosticResultOutcome{}, err
 	}
 	validation := run.Mode == model.ListingRunValidation && work.Purpose == "source_validation"
+	recipeValidation := run.Mode == model.ListingRunRecipeValidation && work.Purpose == "recipe_validation"
 	diagnostic := run.Mode == model.ListingRunDiagnostic && work.Purpose == "listing_sync"
-	if (!validation && !diagnostic) || run.Status != model.ListingRunRunning {
+	expectedResultKind := "diagnostic"
+	if validation {
+		expectedResultKind = "source_validation"
+	} else if recipeValidation {
+		expectedResultKind = "recipe_validation"
+	}
+	if (!validation && !recipeValidation && !diagnostic) || input.ResultKind != expectedResultKind ||
+		run.Status != model.ListingRunRunning {
 		return DiagnosticResultOutcome{}, fmt.Errorf("result is not for a running diagnostic listing run")
 	}
 	if diagnostic && (!input.Quality.IdentityComplete || !input.Quality.OrderingContractHeld || !input.Quality.PaginationStable) {
@@ -89,6 +99,8 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 	var currentFence model.AttemptFence
 	if validation {
 		currentFence, err = loadSourceValidationOfferFence(ctx, tx, run, attempt.ProfileID)
+	} else if recipeValidation {
+		currentFence, err = loadRecipeValidationOfferFence(ctx, tx, run, attempt.ProfileID)
 	} else {
 		_, currentFence, err = loadStandaloneListingOfferFence(ctx, tx, run, attempt.ProfileID)
 	}
@@ -155,6 +167,8 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 	eventKind := "listing.diagnostic_completed"
 	if validation {
 		eventKind = "source.validation_evidence_recorded"
+	} else if recipeValidation {
+		eventKind = "recipe.validation_evidence_recorded"
 	}
 	event, err := model.NewEventIntent("diagnostic-completed-"+attempt.AttemptID, eventKind, "work",
 		completedWork.WorkID, completedWork.Version, input.CompletedAt.UTC().Format(time.RFC3339Nano), input.CommandID, payload)

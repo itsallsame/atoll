@@ -350,6 +350,7 @@ type ResultResponse struct {
 	Completion       json.RawMessage `json:"completion,omitempty"`
 	Diagnostic       json.RawMessage `json:"diagnostic,omitempty"`
 	SourceValidation json.RawMessage `json:"source_validation,omitempty"`
+	RecipeValidation json.RawMessage `json:"recipe_validation,omitempty"`
 	Detail           json.RawMessage `json:"detail,omitempty"`
 	CompanyImport    json.RawMessage `json:"company_import,omitempty"`
 	SourceDiscovery  json.RawMessage `json:"source_discovery,omitempty"`

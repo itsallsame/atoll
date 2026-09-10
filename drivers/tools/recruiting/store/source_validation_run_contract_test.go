@@ -92,7 +92,7 @@ func TestSourceValidationCreatesFencedExecutionAndEvidenceForPublish(t *testing.
 	trace := mustResultArtifact(t, "source-validation-trace", model.ArtifactTrace, work.WorkID, offer.Attempt.AttemptID)
 	quality := executioncontract.ListingQuality{IdentityComplete: true, OrderingContractHeld: true,
 		PaginationStable: true, ItemCount: 12}
-	outcome, err := repository.AcceptDiagnosticResult(ctx, DiagnosticResult{CommandID: "source-validation-result",
+	outcome, err := repository.AcceptDiagnosticResult(ctx, DiagnosticResult{CommandID: "source-validation-result", ResultKind: "source_validation",
 		RequestHash: "sha256:source-validation-result", AttemptID: offer.Attempt.AttemptID,
 		ExecutorActorID: offer.Attempt.ExecutorActorID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation,
 		Artifacts: []model.ArtifactMetadata{page, trace}, Quality: quality, CompletedAt: now.Add(time.Second)})
@@ -226,7 +226,7 @@ func TestSourceValidationQualityViolationMarksSourceInvalid(t *testing.T) {
 	}
 	page := mustResultArtifact(t, "invalid-validation-page", model.ArtifactPage, work.WorkID, offer.Attempt.AttemptID)
 	trace := mustResultArtifact(t, "invalid-validation-trace", model.ArtifactTrace, work.WorkID, offer.Attempt.AttemptID)
-	outcome, err := repository.AcceptDiagnosticResult(ctx, DiagnosticResult{CommandID: "invalid-validation-result",
+	outcome, err := repository.AcceptDiagnosticResult(ctx, DiagnosticResult{CommandID: "invalid-validation-result", ResultKind: "source_validation",
 		RequestHash: "sha256:invalid-validation-result", AttemptID: offer.Attempt.AttemptID,
 		ExecutorActorID: offer.Attempt.ExecutorActorID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation,
 		Artifacts: []model.ArtifactMetadata{page, trace}, Quality: executioncontract.ListingQuality{

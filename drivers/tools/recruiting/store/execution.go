@@ -110,6 +110,18 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	      AND validation_recipe.status = 'active'
 	      AND validation_recipe.content_hash = JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.listing_execution.content_hash'))
 	      AND validation_recipe.contract_hash = JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.listing_execution.contract_hash'))
+	  )) OR (w.purpose = 'recipe_validation' AND EXISTS (
+	    SELECT 1 FROM recruiting_listing_runs lr
+	    JOIN recruiting_sources sample_source ON sample_source.source_id = lr.source_id
+	    JOIN recruiting_recipes candidate_recipe
+	      ON candidate_recipe.recipe_id = JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.listing_execution.recipe_id'))
+	     AND candidate_recipe.recipe_version = CAST(JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.listing_execution.recipe_version')) AS UNSIGNED)
+	    WHERE lr.work_id = w.work_id AND lr.run_mode = 'recipe_validation' AND lr.run_status IN ('queued', 'running')
+	      AND sample_source.readiness_status = 'ready'
+	      AND CAST(JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.source_version')) AS UNSIGNED) = sample_source.version
+	      AND candidate_recipe.status = 'validating'
+	      AND candidate_recipe.content_hash = JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.listing_execution.content_hash'))
+	      AND candidate_recipe.contract_hash = JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.listing_execution.contract_hash'))
 	  )) OR (w.purpose = 'detail_sync' AND EXISTS (
 	    SELECT 1 FROM recruiting_source_jobs j
 	    WHERE j.job_id = w.target_id AND j.job_status IN ('detail_pending', 'update_pending')
@@ -218,6 +230,11 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		if err == nil {
 			fence, err = loadSourceValidationOfferFence(ctx, tx, listingRun, placement.ProfileID)
 		}
+	case "recipe_validation":
+		listingRun, err = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
+		if err == nil {
+			fence, err = loadRecipeValidationOfferFence(ctx, tx, listingRun, placement.ProfileID)
+		}
 	case "detail_sync":
 		detail, fence, err = loadDetailOfferFence(ctx, tx, work, placement)
 	case "company_import":
@@ -297,13 +314,13 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	if !permitExpiresAt.IsZero() {
 		offer.BudgetExpiresAt = permitExpiresAt.Format(time.RFC3339Nano)
 	}
-	if work.Purpose == "listing_sync" || work.Purpose == "source_validation" {
+	if work.Purpose == "listing_sync" || work.Purpose == "source_validation" || work.Purpose == "recipe_validation" {
 		if listingRun.ListingRunID != "" {
 			offer.ListingRun = &listingRun
 		} else {
 			offer.Occurrence = &occurrence
 		}
-		if work.Purpose == "source_validation" {
+		if work.Purpose == "source_validation" || work.Purpose == "recipe_validation" {
 			offer.Kind = "listing"
 		}
 	} else if isCompanyImportPurpose(work.Purpose) {
@@ -531,6 +548,68 @@ func loadSourceValidationOfferFence(ctx context.Context, tx *sql.Tx, run model.L
 		}
 		if profile.AuthStatus != model.ProfileReady {
 			return model.AttemptFence{}, fmt.Errorf("source validation profile is not ready")
+		}
+		fence.ProfileID, fence.ProfileVersion = profile.ProfileID, profile.Version
+	}
+	return fence, nil
+}
+
+func loadRecipeValidationOfferFence(ctx context.Context, tx *sql.Tx, run model.ListingRun, profileID string) (model.AttemptFence, error) {
+	if run.Mode != model.ListingRunRecipeValidation || run.Checkpoint != nil || run.CheckpointVersion != 0 ||
+		(run.Status != model.ListingRunQueued && run.Status != model.ListingRunRunning) {
+		return model.AttemptFence{}, fmt.Errorf("Recipe validation run is not executable")
+	}
+	var companyState, sourceState, assignmentState, recipeState []byte
+	err := tx.QueryRowContext(ctx, `SELECT c.state_json, s.state_json, a.state_json, r.state_json
+FROM recruiting_sources s
+JOIN recruiting_companies c ON c.company_id = s.company_id
+JOIN recruiting_source_assignments a ON a.source_id = s.source_id AND a.recipe_kind = 'listing'
+JOIN recruiting_recipes r ON r.recipe_id = ? AND r.recipe_version = ?
+WHERE s.source_id = ? FOR UPDATE`, run.ListingExecution.RecipeID, run.ListingExecution.RecipeVersion,
+		run.SourceID).Scan(&companyState, &sourceState, &assignmentState, &recipeState)
+	if err != nil {
+		return model.AttemptFence{}, fmt.Errorf("load Recipe validation fence: %w", err)
+	}
+	var company model.Company
+	var source model.RecruitmentSource
+	var currentAssignment model.SourceRecipeAssignment
+	var recipe model.Recipe
+	for _, item := range []struct {
+		data   []byte
+		target any
+	}{{companyState, &company}, {sourceState, &source}, {assignmentState, &currentAssignment}, {recipeState, &recipe}} {
+		if err := json.Unmarshal(item.data, item.target); err != nil {
+			return model.AttemptFence{}, err
+		}
+	}
+	if company.Version != run.CompanyVersion || company.OnboardingStatus != model.CompanyReady ||
+		company.ControlStatus != model.ControlActive || source.Version != run.SourceVersion ||
+		source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive ||
+		source.HealthStatus != model.HealthHealthy || source.ListingAssignment == nil ||
+		!reflect.DeepEqual(*source.ListingAssignment, currentAssignment) || recipe.Status != model.RecipeValidating ||
+		recipe.Kind != model.RecipeListing || recipe.ContentHash != run.ListingExecution.ContentHash ||
+		recipe.ContractHash != run.ListingExecution.ContractHash || recipe.Execution != run.ListingExecution.Execution {
+		return model.AttemptFence{}, fmt.Errorf("Recipe validation run is fenced by changed Source or candidate Recipe")
+	}
+	proposed, err := currentAssignment.Replace(currentAssignment.AssignmentVersion, recipe.RecipeID, recipe.Version,
+		recipe.ContractHash, run.ListingExecution.Assignment.EffectiveAt)
+	if err != nil {
+		return model.AttemptFence{}, err
+	}
+	execution, err := model.NewRecipeValidationListingExecutionSnapshot(source, recipe, proposed)
+	if err != nil || !reflect.DeepEqual(execution, run.ListingExecution) {
+		return model.AttemptFence{}, fmt.Errorf("Recipe validation run is fenced by changed endpoint or assignment")
+	}
+	fence := model.AttemptFence{CompanyVersion: run.CompanyVersion, SourceVersion: run.SourceVersion,
+		AssignmentVersion: proposed.AssignmentVersion, RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version}
+	if profileID != "" {
+		var profileState []byte
+		if err := tx.QueryRowContext(ctx, "SELECT state_json FROM recruiting_profiles WHERE profile_id = ?", profileID).Scan(&profileState); err != nil {
+			return model.AttemptFence{}, fmt.Errorf("load Recipe validation profile: %w", err)
+		}
+		var profile model.BrowserProfile
+		if err := json.Unmarshal(profileState, &profile); err != nil || profile.AuthStatus != model.ProfileReady {
+			return model.AttemptFence{}, fmt.Errorf("Recipe validation Profile is not ready")
 		}
 		fence.ProfileID, fence.ProfileVersion = profile.ProfileID, profile.Version
 	}
@@ -977,6 +1056,11 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			if fenceErr == nil {
 				currentFence, fenceErr = loadSourceValidationOfferFence(ctx, tx, listingRun, attempt.ProfileID)
 			}
+		case "recipe_validation":
+			listingRun, fenceErr = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
+			if fenceErr == nil {
+				currentFence, fenceErr = loadRecipeValidationOfferFence(ctx, tx, listingRun, attempt.ProfileID)
+			}
 		case "detail_sync":
 			placement, placementErr := getWorkPlacementWith(ctx, tx, work.WorkID)
 			if placementErr != nil {
@@ -1038,7 +1122,8 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 				err = updateOccurrenceInTx(ctx, tx, previousOccurrenceVersion, occurrence, businessAt)
 			}
 		}
-		if err == nil && (work.Purpose == "listing_sync" || work.Purpose == "source_validation") && listingRun.Status == model.ListingRunQueued {
+		if err == nil && (work.Purpose == "listing_sync" || work.Purpose == "source_validation" ||
+			work.Purpose == "recipe_validation") && listingRun.Status == model.ListingRunQueued {
 			previousRunVersion := listingRun.Version
 			listingRun, err = listingRun.Start(listingRun.Version)
 			if err == nil {

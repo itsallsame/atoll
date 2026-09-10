@@ -13,6 +13,9 @@ const (
 	// ListingRunValidation executes a staged Source endpoint and records
 	// evidence without publishing either jobs or an incremental checkpoint.
 	ListingRunValidation ListingRunMode = "source_validation"
+	// ListingRunRecipeValidation executes a validating candidate Recipe against
+	// one frozen production Source without publishing jobs or a checkpoint.
+	ListingRunRecipeValidation ListingRunMode = "recipe_validation"
 )
 
 type ListingRunStatus string
@@ -58,7 +61,8 @@ func NewListingRun(id, workID string, mode ListingRunMode, sourceID string, comp
 	checkpoint *IncrementalCheckpoint, execution ListingExecutionSnapshot) (ListingRun, error) {
 	id, workID, sourceID = strings.TrimSpace(id), strings.TrimSpace(workID), strings.TrimSpace(sourceID)
 	if id == "" || workID == "" || sourceID == "" || companyVersion == 0 || sourceVersion == 0 ||
-		(mode != ListingRunDiagnostic && mode != ListingRunProduction && mode != ListingRunValidation) {
+		(mode != ListingRunDiagnostic && mode != ListingRunProduction && mode != ListingRunValidation &&
+			mode != ListingRunRecipeValidation) {
 		return ListingRun{}, fmt.Errorf("listing run identity, mode, and aggregate versions are required")
 	}
 	if err := execution.Validate(sourceID); err != nil {
