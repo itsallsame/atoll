@@ -85,6 +85,11 @@ type RecipeRolloutBatchItem struct {
 	Version                   uint64                  `json:"version"`
 }
 
+func RecipeRolloutOrderKey(batchID, sourceID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(batchID) + "|" + strings.TrimSpace(sourceID)))
+	return hex.EncodeToString(sum[:])
+}
+
 func NewRecipeRolloutBatchItem(batchID string, ordinal int, source RecruitmentSource,
 	assignment SourceRecipeAssignment) (RecipeRolloutBatchItem, error) {
 	batchID = strings.TrimSpace(batchID)
@@ -151,9 +156,7 @@ func CanonicalRecipeRolloutItems(batchID string, items []RecipeRolloutBatchItem)
 	}
 	canonical := append([]RecipeRolloutBatchItem(nil), items...)
 	sort.Slice(canonical, func(left, right int) bool {
-		leftSum := sha256.Sum256([]byte(batchID + "|" + canonical[left].SourceID))
-		rightSum := sha256.Sum256([]byte(batchID + "|" + canonical[right].SourceID))
-		return hex.EncodeToString(leftSum[:]) < hex.EncodeToString(rightSum[:])
+		return RecipeRolloutOrderKey(batchID, canonical[left].SourceID) < RecipeRolloutOrderKey(batchID, canonical[right].SourceID)
 	})
 	seen := make(map[string]struct{}, len(canonical))
 	for index := range canonical {

@@ -445,6 +445,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 执行状态补充（2026-09-10，Recipe 批量灰度领域与 schema 基础）：新增纯领域 `RecipeRolloutBatch`/item 状态机和 migration 30。批次采用持久父 Work、规范化成员、确定性 canary 顺序、每块/每 wave 至多 500 项；`previewing` 可按 chunk sequence 从中断处续跑，最终 preview hash 绑定输入 Artifact、目标 Recipe 和每个 Source/Assignment 版本。确认后先只开放 canary，所有成员重新验证成功才开放下一 wave；等待验证不推进版本，任一失败把固定 wave 原地暂停，不能扩散到后续 Source，恢复必须显式执行。父 Work 不进入 Executor runnable 队列，不增加 Worker 类型。当前提交只冻结领域/schema 契约；Resource 预览、Repository 协调事务、公开查询/控制词与 reconcile 尚待后续切片接通，因此不把 S22 标记完成。
 
+执行状态补充（2026-09-10，Recipe 批量灰度持久预览与控制事务）：Repository 已接通批次创建、最多 500 项的连续 preview chunk、数据库事实重算 preview hash、成员 seek 分页、确认启动和取消。创建只接受无 Executor capability 的父控制 Work；预览逐块锁定 Batch，并按 Source ID、当前 Assignment/Recipe 和目标 Recipe 的稳定次序取锁，逐项重新验证 Source 为 active/ready/healthy、当前与目标 Recipe 的 kind/scope/contract/capability 完全兼容且版本不同。任一不兼容成员会使整块回滚，已保存成员、批次版本与 command receipt 均不改变。确认只启动父 Work 和批次，不在一个 20K Source 大事务里切换 Assignment；实际切换必须由后续 reconcile 逐 Source 使用既有安全 rollout 原语完成。隔离非 root MySQL 8.4 合同已经覆盖乱序拒绝、不兼容整块回滚、chunk/创建/取消重放、最终 hash、稳定分页、启动及活动批次键释放。公开 Resource 输入、Actor 查询/控制词、逐项 rollout、验证观测、wave 自动推进与失败暂停仍待后续切片，因此 S22 仍未完成。
+
 ## 13. P8：25 场景验收矩阵
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。
