@@ -1,0 +1,21 @@
+:root { color-scheme: light; font: 13px/1.45 system-ui, sans-serif; color: #17201f; }
+body { margin: 0; width: 390px; background: #f5f7f6; }
+main { padding: 16px; }
+header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+h1 { margin: 0; font-size: 17px; }
+#phase { color: #0f766e; font-weight: 650; }
+section { display: grid; gap: 9px; padding: 12px; margin-bottom: 11px; background: white; border: 1px solid #dce4e1; border-radius: 10px; }
+label { display: grid; gap: 4px; color: #43514e; }
+input { min-width: 0; padding: 7px 8px; border: 1px solid #b8c6c2; border-radius: 6px; font: inherit; }
+button { padding: 8px 10px; border: 1px solid #9aaca7; border-radius: 7px; background: #fff; color: #17201f; cursor: pointer; }
+button:hover { border-color: #0f766e; }
+button.done { border-color: #0f766e; background: #e7f6f2; }
+button:disabled { opacity: .5; cursor: default; }
+.primary { color: white; border-color: #0f766e; background: #0f766e; }
+.row { display: grid; grid-template-columns: 1fr 84px; gap: 8px; }
+.marks { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.hint { margin: 0; color: #65736f; font-size: 12px; }
+.confirm { grid-template-columns: 18px 1fr; align-items: start; font-size: 12px; }
+.confirm input { margin: 2px 0 0; }
+#message { min-height: 19px; margin: 5px 1px; color: #9f2d20; }
+#result { max-height: 120px; overflow: auto; white-space: pre-wrap; color: #155e55; font-size: 11px; }

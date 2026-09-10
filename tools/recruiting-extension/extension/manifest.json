@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Atoll Recruiting Capture",
+  "version": "0.1.0",
+  "description": "Capture a confirmed recruiting page structure as a versioned Atoll Recipe proposal.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1/*", "http://[::1]/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Atoll Recruiting Capture",
+    "default_popup": "popup.html"
+  }
+}

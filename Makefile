@@ -1,10 +1,10 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope recruiting-boundary-check recruiting-live-smoke recruiting-mysql-stress dev clean e2e-loop
+.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope recruiting-boundary-check recruiting-live-smoke recruiting-mysql-stress recruiting-extension-test recruiting-extension-live-test dev clean e2e-loop
 
 # server/daemon ship namespaced (atoll-server / atoll-daemon); the entry
 # command itself is plain `atoll` — its own name IS the namespace.
-GO_BINARIES := server daemon society atoll recruiting-migrate
+GO_BINARIES := server daemon society atoll recruiting-migrate recruiting-extension-bridge
 
 # ----------------------------------------------------------------------------
 # deps — 拉全部依赖（此前叫 install；那个名字现在归下面的装机向导，因为
@@ -179,6 +179,17 @@ recruiting-mysql-stress:
 
 recruiting-live-smoke:
 	./scripts/recruiting-live-smoke.sh
+
+recruiting-extension-test:
+	go test -race ./cmd/recruiting-extension-bridge ./tools/recruiting-extension/bridge
+	npm test --prefix tools/recruiting-extension
+	node --check tools/recruiting-extension/extension/background.js
+	node --check tools/recruiting-extension/extension/content-logic.js
+	node --check tools/recruiting-extension/extension/content.js
+	node --check tools/recruiting-extension/extension/popup.js
+
+recruiting-extension-live-test:
+	ATOLL_RECRUITING_EXTENSION_LIVE=1 go test ./e2e -run '^TestRecruitingExtensionCaptureLogicAgainstRealDiscordPage$$' -count=1 -v
 
 # ----------------------------------------------------------------------------
 # dev — 备好一个干净的开发场地：清空 $(DEV_HOME) + 编译，然后把启动命令

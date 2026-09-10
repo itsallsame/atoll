@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Atoll 招聘流程捕获</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header><h1>招聘流程捕获</h1><span id="phase">未连接</span></header>
+    <section id="connection">
+      <label>Bridge 地址<input id="endpoint" value="ws://127.0.0.1:0/capture" spellcheck="false"></label>
+      <label>配对令牌<input id="token" type="password" autocomplete="off"></label>
+      <button id="pair">连接本机 Bridge</button>
+    </section>
+    <section id="capture">
+      <label>Source ID<input id="source" spellcheck="false"></label>
+      <div class="row">
+        <label>Recipe ID<input id="recipe" spellcheck="false"></label>
+        <label class="version">版本<input id="version" type="number" min="1" value="1"></label>
+      </div>
+      <button id="begin">开始捕获当前 HTTPS 页面</button>
+      <p class="hint">依次点按钮，再回到页面点击对应元素。字段必须位于选中的岗位卡片内。</p>
+      <div class="marks">
+        <button data-role="collection">1 岗位卡片</button>
+        <button data-role="job_key">2 稳定岗位 ID</button>
+        <button data-role="title">3 岗位标题</button>
+        <button data-role="detail_url">4 详情链接</button>
+        <button data-role="activity_at">可选 活动时间</button>
+      </div>
+      <label class="confirm"><input id="confirm" type="checkbox"> 我确认列表按最新活动时间倒序，历史岗位更新后会重新置顶；置顶项已由该选择排除。</label>
+      <button id="submit" class="primary">生成证据并提交 Draft</button>
+    </section>
+    <p id="message" role="status"></p>
+    <pre id="result"></pre>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

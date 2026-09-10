@@ -55,7 +55,7 @@
 - Browser DOM 同样先保存 Artifact，之后才检查 attestation、最终 URL 与离线 DOM Recipe；策略违规、跨源、超量和解析失败仍保留证据。当前实现是安全契约和可替换 Broker adapter，尚未宣称已经接入某个 Chromium 运行时。
 - `extensioncapture` 把浏览器插件严格定位为人工发现/修复入口，而非新的长期 Worker：用户确认后只能提交绑定 Source/Endpoint version 的候选 Recipe、结构化 selector 轨迹和 `artifact://` 证据；候选内容生成稳定哈希，但没有 active、Assignment 或 Checkpoint 字段；
 - 插件轨迹没有输入值、请求体、Cookie/storage 或凭据字段，候选仍受 Recipe GET/header/预算校验；带凭据 URL、疑似 secret query、signed object URL、任意交互以及“仍依赖 extension 执行”的候选均拒绝。Browser 候选必须转成受控 Browser Plan，HTTP 候选不能夹带 Browser action；发布、灰度和 Assignment 仍只能由 Recruiting Actor 后续审批命令完成。
-- `recipe.propose` 已把权限受控的 Recipe Spec Resource 和可选 Extension Capture Resource 接入 Recruiting Actor：Source version/active Endpoint revision 是提案 fence，Actor 与 Executor 共享严格有界 Recipe decoder，并严格解码 Capture，自行计算 content/compatibility contract hash 和 Endpoint scope。Capture actor 必须等于消息信封身份，Capture 的 Source/Endpoint/URL/Candidate/hash 必须与锁定事实和 Recipe Resource 一致。migration 26 将 trace/evidence 引用的不可变 Proposal 与 draft、receipt/event 原子保存，`recipe.inspect` 可审计读回；客户端仍不能提交 active 状态、Assignment 或自报 contract hash。浏览器插件 UI/打包和真实浏览器上传尚未完成，不能把整个插件产品描述为已交付。
+- `recipe.propose` 已把权限受控的 Recipe Spec Resource 和可选 Extension Capture Resource 接入 Recruiting Actor：Source version/active Endpoint revision 是提案 fence，Actor 与 Executor 共享严格有界 Recipe decoder，并严格解码 Capture，自行计算 content/compatibility contract hash 和 Endpoint scope。Capture actor 必须等于消息信封身份，Capture 的 Source/Endpoint/URL/Candidate/hash 必须与锁定事实和 Recipe Resource 一致。migration 26 将 trace/evidence 引用的不可变 Proposal 与 draft、receipt/event 原子保存，`recipe.inspect` 可审计读回；客户端仍不能提交 active 状态、Assignment 或自报 contract hash。Manifest V3 开发预览 UI、loopback Bridge、真实 DOM 捕获和普通用户 Resource 上传链已实现；整包自动加载点击、Browser Broker/Profile 尚未完成，不能把整个插件产品描述为已交付。
 - Listing 候选 Recipe 已有真实执行式验证和独立审批：`recipe.validate` 原子冻结候选 version 与 ready Source 的生产 Endpoint/Company/Source fence，创建 `recipe_validation` ListingRun、Work 和 capability dispatch；拟议 Assignment 只用于 immutable offer，不写入 Source 当前 Assignment 或历史。Executor 复用 Listing validation driver，只提交 page/trace Artifact 与质量证明；结果不写 Job、Observation 或 Checkpoint。
 - `recipe.approve` 重新核对 candidate content/contract/execution、指定 Work/run、唯一成功 Attempt、绑定该 Attempt 的未拒绝 Artifact 数量，以及 identity/ordering/pagination 三项证明；失败统一为 `quality_rejected` 且不发布。共享 execution result contract 与客户端 acknowledgement 已显式增加 `recipe_validation` 分支，避免执行完成后因客户端闭集遗漏而把 Attempt 留在 running。
 - `recipe.reject` 不允许用 Recipe 状态切换隐式遗弃运行中的验证。它要求精确 validation Work 已为 completed/failed/canceled 且没有活动 Attempt，否则返回 `waiting_human`；成功时仅把候选返回 draft，保留全部 Work/Attempt/Artifact 证据并支持命令重放。普通用户 server E2E 已覆盖 open Work 拒绝失败、显式 cancel、拒绝成功及 server restart 后重放。
@@ -91,7 +91,7 @@ make recruiting-live-smoke
 
 ## 尚未完成
 
-- Browser Broker 的 Chromium/CDP 实现、OS/container 级隔离，以及浏览器插件 UI/打包与真实浏览器 Capture 上传；服务端 Extension Proposal→持久 Draft/验证/人工审批链已接通；
+- Browser Broker 的 Chromium/CDP 实现、OS/container 级隔离，以及插件整包在 Chrome for Testing/Chromium 中的自动加载点击门；开发预览插件、本机安全 Bridge、真实 DOM 捕获内核及 Extension Proposal→持久 Draft/验证/人工审批链已接通；
 - 本地确定性站点的全部异常矩阵；
 - 更多站型的 Nightly/Weekly Live 验证，以及由正式 Artifact 存储提供保留期，而不是验收机本地文件；
 - Recipe KV 与 Artifact File 已在真实 Atoll server/daemon 的允许路径通过；权限拒绝和重启保持 e2e 仍待补齐；
