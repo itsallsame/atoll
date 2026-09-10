@@ -41,6 +41,11 @@ func TestProfileRepairSessionIsDeviceBoundOneTimeAuthority(t *testing.T) {
 	if err != nil || failedActive.Status != ProfileRepairFailed {
 		t.Fatalf("failed active session=%+v err=%v", failedActive, err)
 	}
+	retryable, err := active.RetryAfterAttemptExpiry(active.Version, active.AttemptID)
+	if err != nil || retryable.Status != ProfileRepairAwaitingDevice || retryable.AttemptID != "" ||
+		retryable.Version != active.Version+1 || retryable.ExpiresAt != active.ExpiresAt {
+		t.Fatalf("retryable crashed session=%+v err=%v", retryable, err)
+	}
 }
 
 func TestProfileRepairSessionExpiresBeforeActivationOrSubmission(t *testing.T) {

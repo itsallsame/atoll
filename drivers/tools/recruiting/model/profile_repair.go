@@ -135,3 +135,17 @@ func (s ProfileRepairSession) Fail(expected uint64, attemptID, deviceActorID str
 	s.Status, s.Version = ProfileRepairFailed, s.Version+1
 	return s, nil
 }
+
+// RetryAfterAttemptExpiry releases a crashed executor incarnation without
+// extending the one-time session deadline. A replacement Attempt must still
+// be claimed by the same authorized device before the original expiry.
+func (s ProfileRepairSession) RetryAfterAttemptExpiry(expected uint64, attemptID string) (ProfileRepairSession, error) {
+	if err := requireVersion(expected, s.Version); err != nil {
+		return ProfileRepairSession{}, err
+	}
+	if s.Status != ProfileRepairActive || strings.TrimSpace(attemptID) == "" || attemptID != s.AttemptID {
+		return ProfileRepairSession{}, &InvalidTransitionError{Entity: "profile repair session", From: string(s.Status), Action: "retry after Attempt expiry"}
+	}
+	s.AttemptID, s.Status, s.Version = "", ProfileRepairAwaitingDevice, s.Version+1
+	return s, nil
+}

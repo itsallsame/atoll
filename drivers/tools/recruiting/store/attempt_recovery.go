@@ -152,6 +152,11 @@ FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE SKIP LOCKED`, attemptID
 		}
 		retryQueued = true
 	}
+	if retryQueued && work.Purpose == "profile_repair" {
+		if err := resetProfileRepairSessionAfterAttemptExpiryTx(ctx, tx, work, attempt, recoveredAt); err != nil {
+			return false, false, err
+		}
+	}
 	expiredState, _ := json.Marshal(expired)
 	update, err := tx.ExecContext(ctx, `
 UPDATE recruiting_attempts SET attempt_status = ?, state_json = ?, updated_at = ?
@@ -182,4 +187,26 @@ WHERE attempt_id = ? AND attempt_status = ?`, expired.Status, expiredState,
 		return false, false, err
 	}
 	return retryQueued, true, nil
+}
+
+func resetProfileRepairSessionAfterAttemptExpiryTx(ctx context.Context, tx *sql.Tx, work model.Work,
+	attempt model.Attempt, recoveredAt time.Time) error {
+	var state []byte
+	err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_profile_repair_sessions
+WHERE work_id = ? FOR UPDATE`, work.WorkID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrAttemptConflict
+	}
+	if err != nil {
+		return err
+	}
+	var session model.ProfileRepairSession
+	if err := json.Unmarshal(state, &session); err != nil {
+		return err
+	}
+	next, err := session.RetryAfterAttemptExpiry(session.Version, attempt.AttemptID)
+	if err != nil {
+		return ErrAttemptConflict
+	}
+	return updateProfileRepairSessionTx(ctx, tx, session.Version, next, recoveredAt)
 }

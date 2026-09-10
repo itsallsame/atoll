@@ -155,6 +155,39 @@ func TestProfileRepairBeginIsAtomicDeviceBoundAndSecretFree(t *testing.T) {
 		t.Fatalf("interactive Profile repair acquired website permit count=%d err=%v", permits, err)
 	}
 
+	originalExpiry := activeSession.ExpiresAt
+	recovery, err := repository.RecoverStaleAttempts(ctx, now.Add(4*time.Second), 500, now.Add(5*time.Second))
+	if err != nil || recovery.Expired < 1 || recovery.RetryQueued < 1 {
+		t.Fatalf("recover crashed Profile repair execution=%+v err=%v", recovery, err)
+	}
+	expiredAttempt, _ := repository.GetAttempt(ctx, offer.Attempt.AttemptID)
+	retryableWork, _ := repository.GetWork(ctx, work.WorkID)
+	retryableSession, err := repository.GetProfileRepairSession(ctx, session.SessionID)
+	if err != nil || expiredAttempt.Status != model.AttemptExpired ||
+		retryableWork.Status != model.WorkWaitingRetry ||
+		retryableSession.Status != model.ProfileRepairAwaitingDevice || retryableSession.AttemptID != "" ||
+		retryableSession.ExpiresAt != originalExpiry {
+		t.Fatalf("recovered Profile repair attempt=%+v work=%+v session=%+v err=%v",
+			expiredAttempt, retryableWork, retryableSession, err)
+	}
+	retryOffer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "profile-repair-retry-attempt",
+		ExecutorActorID: profile.DeviceID + ":1", ExecutorIncarnation: "authorized-device-retry-boot",
+		Capability: ProfileRepairCapability, ProfileID: profile.ProfileID, OfferedAt: now.Add(6 * time.Second),
+		BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil || retryOffer.Kind != "profile_repair" || retryOffer.ProfileRepair == nil ||
+		retryOffer.ProfileRepair.SessionID != session.SessionID {
+		t.Fatalf("retried Profile repair offer=%+v err=%v", retryOffer, err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, retryOffer.Attempt.AttemptID,
+		retryOffer.Attempt.ExecutorActorID, retryOffer.Attempt.ExecutorIncarnation, now.Add(7*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, retryOffer.Attempt.AttemptID,
+		retryOffer.Attempt.ExecutorActorID, retryOffer.Attempt.ExecutorIncarnation, now.Add(8*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	offer = retryOffer
+
 	secondSession, _ := model.NewProfileRepairSession("profile-repair-begin-session-2", profile.ProfileID, repairing.Version,
 		incident.IncidentID, "profile-repair-begin-session-work-2", "human:operator", profile.DeviceID, expiresAt)
 	secondWork, _ := model.NewWork(secondSession.WorkID, "profile", profile.ProfileID, "profile_repair", "human")
@@ -180,7 +213,7 @@ func TestProfileRepairBeginIsAtomicDeviceBoundAndSecretFree(t *testing.T) {
 		t.Fatalf("failed duplicate session left work=%d receipt=%d", secondWorks, secondReceipts)
 	}
 
-	completedAt := now.Add(4 * time.Second)
+	completedAt := now.Add(9 * time.Second)
 	verificationDeadline := completedAt.Add(10 * time.Minute)
 	verificationWork, _ := model.NewWork("profile-repair-verification-work", "profile", profile.ProfileID,
 		"profile_verify", "automatic")
@@ -219,7 +252,7 @@ func TestProfileRepairBeginIsAtomicDeviceBoundAndSecretFree(t *testing.T) {
 		t.Fatalf("rotated Profile=%+v", rotatedProfile)
 	}
 	submittedSession, _ := repository.GetProfileRepairSession(ctx, session.SessionID)
-	if submittedSession.Status != model.ProfileRepairSubmitted || submittedSession.Version != 3 ||
+	if submittedSession.Status != model.ProfileRepairSubmitted || submittedSession.Version != retryableSession.Version+2 ||
 		submittedSession.ValidationWorkID != verificationWork.WorkID {
 		t.Fatalf("submitted Profile repair session=%+v", submittedSession)
 	}
@@ -300,7 +333,7 @@ WHERE cause_command_id = ? AND event_kind IN ('profile.repair_submitted','profil
 	verifiedWork, _ := repository.GetWork(ctx, verificationWork.WorkID)
 	verifiedAttempt, _ := repository.GetAttempt(ctx, verificationOffer.Attempt.AttemptID)
 	if verifyingProfile.AuthStatus != model.ProfileVerifying || verifyingProfile.Version != 3 || verifyingProfile.SecretRef != nextSecretRef ||
-		verifiedSession.Status != model.ProfileRepairVerified || verifiedSession.Version != 4 ||
+		verifiedSession.Status != model.ProfileRepairVerified || verifiedSession.Version != retryableSession.Version+3 ||
 		verifiedWork.Status != model.WorkCompleted || verifiedAttempt.Status != model.AttemptSucceeded {
 		t.Fatalf("verified lifecycle profile=%+v session=%+v work=%+v attempt=%+v",
 			verifyingProfile, verifiedSession, verifiedWork, verifiedAttempt)
