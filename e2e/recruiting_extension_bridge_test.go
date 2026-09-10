@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/extensioncapture"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 	recruitingbridge "github.com/wanpengxie/atoll/tools/recruiting-extension/bridge"
@@ -78,5 +80,44 @@ func TestRecruitingExtensionBridgeUsesOrdinaryUserPublicProtocol(t *testing.T) {
 	if err != nil || nestedStringField(t, inspected, "capture_proposal", "capture_id") != draft.CaptureID || sender == "" ||
 		nestedStringField(t, inspected, "capture_proposal", "captured_by") != sender {
 		t.Fatalf("extension proposal inspect=%v sender=%q err=%v", inspected, sender, err)
+	}
+
+	job, _ := model.NewSourceJob("e2e-extension-detail-job", source.SourceID, "external-detail-123",
+		"https://apply.example.test/jobs/123")
+	db, err := store.Open(runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobState, _ := json.Marshal(job)
+	insertJob := "INSERT INTO recruiting_source_jobs(" +
+		"job_id, source_id, source_job_key, detail_url, job_status, refresh_generation, detail_version," +
+		"detail_content_hash, first_discovered_at, last_activity_at, version, state_json, created_at, updated_at" +
+		") VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)"
+	_, err = db.ExecContext(context.Background(), insertJob, job.JobID, job.SourceID, job.SourceJobKey,
+		job.DetailURL, job.Status, job.RefreshGeneration, job.DetailVersion, job.Version, jobState, seedAt, seedAt)
+	_ = db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	detailCandidate := candidate
+	detailCandidate.Kind = recipeabi.KindDetail
+	detailCandidate.Extraction = recipeabi.Extraction{Fields: map[string]string{
+		"title": "h1", "description": ".description",
+	}}
+	detailCandidate.Listing = nil
+	detailDraft := recruitingbridge.Draft{Version: recruitingbridge.DraftVersion,
+		CaptureID: "e2e-real-bridge-detail-capture", SourceID: source.SourceID,
+		RecipeID: "e2e-bridge-detail", RecipeVersion: 1, PageURL: job.DetailURL, SampleJobID: job.JobID,
+		CapturedAt: seedAt.Format(time.RFC3339), UserConfirmed: true, Candidate: detailCandidate,
+		Trace: []extensioncapture.TraceStep{{Kind: extensioncapture.TraceNavigate},
+			{Kind: extensioncapture.TraceField, Selector: "h1", Field: "title"},
+			{Kind: extensioncapture.TraceField, Selector: ".description", Field: "description"},
+			{Kind: extensioncapture.TraceArtifact}},
+		Evidence: json.RawMessage("{\"version\":\"recruiting.extension-evidence.v1\",\"sample\":\"detail\"}")}
+	detailResult, err := recruitingbridge.SubmitDraft(context.Background(), client, detailDraft, time.Now)
+	if err != nil || nestedStringField(t, detailResult.Response, "recipe", "kind") != "detail" ||
+		nestedStringField(t, detailResult.Response, "recipe", "scope") != "apply.example.test" ||
+		nestedStringField(t, detailResult.Response, "proposal", "sample_job_id") != job.JobID {
+		t.Fatalf("Detail extension bridge result=%+v err=%v", detailResult, err)
 	}
 }

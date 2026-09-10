@@ -21,7 +21,10 @@ import (
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
 
-const Version = "recruiting.extension-capture.v1"
+const (
+	LegacyVersion = "recruiting.extension-capture.v1"
+	Version       = "recruiting.extension-capture.v2"
+)
 
 // MaxCaptureBytes bounds the Resource before JSON decoding. Captures contain
 // only a structural trace and evidence references, never page bodies.
@@ -47,32 +50,38 @@ type TraceStep struct {
 }
 
 type Capture struct {
-	Version         string                  `json:"version"`
-	CaptureID       string                  `json:"capture_id"`
-	SourceID        string                  `json:"source_id"`
-	EndpointVersion uint64                  `json:"endpoint_version"`
-	SourceURL       string                  `json:"source_url"`
-	CapturedBy      string                  `json:"captured_by"`
-	CapturedAt      string                  `json:"captured_at"`
-	UserConfirmed   bool                    `json:"user_confirmed"`
-	Candidate       recipeabi.Spec          `json:"candidate"`
-	BrowserPlan     *browserdriver.Plan     `json:"browser_plan,omitempty"`
-	Artifacts       []recipeabi.ArtifactRef `json:"artifacts"`
-	Trace           []TraceStep             `json:"trace"`
+	Version          string                  `json:"version"`
+	CaptureID        string                  `json:"capture_id"`
+	SourceID         string                  `json:"source_id"`
+	EndpointVersion  uint64                  `json:"endpoint_version"`
+	SourceURL        string                  `json:"source_url"`
+	PageURL          string                  `json:"page_url,omitempty"`
+	SampleJobID      string                  `json:"sample_job_id,omitempty"`
+	SampleJobVersion uint64                  `json:"sample_job_version,omitempty"`
+	CapturedBy       string                  `json:"captured_by"`
+	CapturedAt       string                  `json:"captured_at"`
+	UserConfirmed    bool                    `json:"user_confirmed"`
+	Candidate        recipeabi.Spec          `json:"candidate"`
+	BrowserPlan      *browserdriver.Plan     `json:"browser_plan,omitempty"`
+	Artifacts        []recipeabi.ArtifactRef `json:"artifacts"`
+	Trace            []TraceStep             `json:"trace"`
 }
 
 type Proposal struct {
-	SourceID        string                  `json:"source_id"`
-	EndpointVersion uint64                  `json:"endpoint_version"`
-	SourceURL       string                  `json:"source_url"`
-	Candidate       recipeabi.Spec          `json:"candidate"`
-	BrowserPlan     *browserdriver.Plan     `json:"browser_plan,omitempty"`
-	Evidence        []recipeabi.ArtifactRef `json:"evidence"`
-	Trace           []TraceStep             `json:"trace"`
-	CaptureID       string                  `json:"capture_id"`
-	CapturedBy      string                  `json:"captured_by"`
-	CapturedAt      string                  `json:"captured_at"`
-	ContentHash     string                  `json:"content_hash"`
+	SourceID         string                  `json:"source_id"`
+	EndpointVersion  uint64                  `json:"endpoint_version"`
+	SourceURL        string                  `json:"source_url"`
+	PageURL          string                  `json:"page_url"`
+	SampleJobID      string                  `json:"sample_job_id,omitempty"`
+	SampleJobVersion uint64                  `json:"sample_job_version,omitempty"`
+	Candidate        recipeabi.Spec          `json:"candidate"`
+	BrowserPlan      *browserdriver.Plan     `json:"browser_plan,omitempty"`
+	Evidence         []recipeabi.ArtifactRef `json:"evidence"`
+	Trace            []TraceStep             `json:"trace"`
+	CaptureID        string                  `json:"capture_id"`
+	CapturedBy       string                  `json:"captured_by"`
+	CapturedAt       string                  `json:"captured_at"`
+	ContentHash      string                  `json:"content_hash"`
 }
 
 // DecodeCapture is the single strict decoder used at the browser-extension
@@ -102,7 +111,7 @@ func DecodeCapture(raw []byte) (Capture, error) {
 }
 
 func (c Capture) Validate() error {
-	if c.Version != Version || blank(c.CaptureID, c.SourceID, c.SourceURL, c.CapturedBy) || c.EndpointVersion == 0 || !c.UserConfirmed {
+	if (c.Version != Version && c.Version != LegacyVersion) || blank(c.CaptureID, c.SourceID, c.SourceURL, c.CapturedBy) || c.EndpointVersion == 0 || !c.UserConfirmed {
 		return fmt.Errorf("extension capture requires version, identities, endpoint version, and user confirmation")
 	}
 	if _, err := time.Parse(time.RFC3339, c.CapturedAt); err != nil {
@@ -120,8 +129,40 @@ func (c Capture) Validate() error {
 			}
 		}
 	}
+	pageURL := c.PageURL
+	if pageURL == "" {
+		pageURL = c.SourceURL
+	}
+	page, pageErr := url.Parse(pageURL)
+	if pageErr != nil || page.Scheme != "https" || page.Host == "" || page.User != nil || page.Fragment != "" {
+		return fmt.Errorf("extension captured page must be an absolute HTTPS URL without credentials or fragment")
+	}
+	for key := range page.Query() {
+		lower := strings.ToLower(key)
+		for _, forbidden := range []string{"token", "secret", "password", "session", "signature", "authorization", "api_key", "apikey"} {
+			if strings.Contains(lower, forbidden) {
+				return fmt.Errorf("extension captured page query appears to contain secret material")
+			}
+		}
+	}
 	if err := c.Candidate.Validate(); err != nil {
 		return fmt.Errorf("extension candidate recipe: %w", err)
+	}
+	if c.Version == LegacyVersion && (c.Candidate.Kind != recipeabi.KindListing || c.PageURL != "" ||
+		c.SampleJobID != "" || c.SampleJobVersion != 0) {
+		return fmt.Errorf("legacy extension capture supports only its original Listing shape")
+	}
+	switch c.Candidate.Kind {
+	case recipeabi.KindListing:
+		if pageURL != c.SourceURL || c.SampleJobID != "" || c.SampleJobVersion != 0 {
+			return fmt.Errorf("listing capture must target the active Source page")
+		}
+	case recipeabi.KindDetail:
+		if strings.TrimSpace(c.SampleJobID) == "" || len(c.SampleJobID) > 191 || c.SampleJobVersion == 0 {
+			return fmt.Errorf("detail capture requires a versioned Source Job sample")
+		}
+	case recipeabi.KindDiscovery:
+		return fmt.Errorf("Source-bound extension capture does not support discovery Recipes")
 	}
 	if c.Candidate.Transport == recipeabi.TransportBrowser {
 		if c.BrowserPlan == nil {
@@ -186,19 +227,46 @@ func (c Capture) Proposal() (Proposal, error) {
 	if err := c.Validate(); err != nil {
 		return Proposal{}, err
 	}
+	if c.Version == LegacyVersion {
+		unsigned := struct {
+			SourceID        string
+			EndpointVersion uint64
+			SourceURL       string
+			Candidate       recipeabi.Spec
+			BrowserPlan     *browserdriver.Plan
+			Evidence        []recipeabi.ArtifactRef
+			Trace           []TraceStep
+			CaptureID       string
+			CapturedBy      string
+			CapturedAt      string
+		}{
+			SourceID: c.SourceID, EndpointVersion: c.EndpointVersion, SourceURL: c.SourceURL,
+			Candidate: c.Candidate, BrowserPlan: c.BrowserPlan, Evidence: c.Artifacts, Trace: c.Trace,
+			CaptureID: c.CaptureID, CapturedBy: c.CapturedBy, CapturedAt: c.CapturedAt,
+		}
+		raw, err := json.Marshal(unsigned)
+		if err != nil {
+			return Proposal{}, err
+		}
+		return c.proposalWithHash(raw)
+	}
 	unsigned := struct {
-		SourceID        string
-		EndpointVersion uint64
-		SourceURL       string
-		Candidate       recipeabi.Spec
-		BrowserPlan     *browserdriver.Plan
-		Evidence        []recipeabi.ArtifactRef
-		Trace           []TraceStep
-		CaptureID       string
-		CapturedBy      string
-		CapturedAt      string
+		SourceID         string
+		EndpointVersion  uint64
+		SourceURL        string
+		PageURL          string
+		SampleJobID      string
+		SampleJobVersion uint64
+		Candidate        recipeabi.Spec
+		BrowserPlan      *browserdriver.Plan
+		Evidence         []recipeabi.ArtifactRef
+		Trace            []TraceStep
+		CaptureID        string
+		CapturedBy       string
+		CapturedAt       string
 	}{
 		SourceID: c.SourceID, EndpointVersion: c.EndpointVersion, SourceURL: c.SourceURL,
+		PageURL: pageURL(c), SampleJobID: c.SampleJobID, SampleJobVersion: c.SampleJobVersion,
 		Candidate: c.Candidate, BrowserPlan: c.BrowserPlan, Evidence: c.Artifacts, Trace: c.Trace,
 		CaptureID: c.CaptureID, CapturedBy: c.CapturedBy, CapturedAt: c.CapturedAt,
 	}
@@ -206,7 +274,11 @@ func (c Capture) Proposal() (Proposal, error) {
 	if err != nil {
 		return Proposal{}, err
 	}
-	sum := sha256.Sum256(raw)
+	return c.proposalWithHash(raw)
+}
+
+func (c Capture) proposalWithHash(unsigned []byte) (Proposal, error) {
+	sum := sha256.Sum256(unsigned)
 	candidate, err := cloneJSON(c.Candidate)
 	if err != nil {
 		return Proposal{}, err
@@ -220,10 +292,18 @@ func (c Capture) Proposal() (Proposal, error) {
 		browserPlan = &plan
 	}
 	return Proposal{SourceID: c.SourceID, EndpointVersion: c.EndpointVersion, SourceURL: c.SourceURL,
+		PageURL: pageURL(c), SampleJobID: c.SampleJobID, SampleJobVersion: c.SampleJobVersion,
 		Candidate: candidate, BrowserPlan: browserPlan, Evidence: append([]recipeabi.ArtifactRef(nil), c.Artifacts...),
 		Trace:     append([]TraceStep(nil), c.Trace...),
 		CaptureID: c.CaptureID, CapturedBy: c.CapturedBy, CapturedAt: c.CapturedAt,
 		ContentHash: "sha256:" + hex.EncodeToString(sum[:])}, nil
+}
+
+func pageURL(c Capture) string {
+	if c.PageURL != "" {
+		return c.PageURL
+	}
+	return c.SourceURL
 }
 
 func cloneJSON[T any](value T) (T, error) {

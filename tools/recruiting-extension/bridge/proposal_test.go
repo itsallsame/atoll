@@ -41,6 +41,23 @@ func bridgeSource() SourceFence {
 		ControlStatus: model.ControlActive, HealthStatus: model.HealthHealthy}
 }
 
+func bridgeDetailDraft() Draft {
+	draft := bridgeDraft()
+	draft.RecipeID = "detail-example"
+	draft.PageURL = "https://apply.example.test/jobs/123"
+	draft.SampleJobID = "job-01"
+	draft.Candidate.Kind = recipeabi.KindDetail
+	draft.Candidate.Extraction = recipeabi.Extraction{Fields: map[string]string{
+		"title": "h1", "description": ".description",
+	}}
+	draft.Candidate.Listing = nil
+	draft.Trace = []extensioncapture.TraceStep{{Kind: extensioncapture.TraceNavigate},
+		{Kind: extensioncapture.TraceField, Selector: "h1", Field: "title"},
+		{Kind: extensioncapture.TraceField, Selector: ".description", Field: "description"},
+		{Kind: extensioncapture.TraceArtifact}}
+	return draft
+}
+
 func TestBuildBindsUntrustedDraftToAuthenticatedSourceFacts(t *testing.T) {
 	at := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	resources, err := Build(bridgeDraft(), bridgeSource(), "human:operator:7", at)
@@ -63,6 +80,26 @@ func TestBuildBindsUntrustedDraftToAuthenticatedSourceFacts(t *testing.T) {
 	proposal := resources.Proposal
 	if proposal["content_ref"] != resources.RecipeRef || proposal["capture_ref"] != resources.CaptureRef {
 		t.Fatalf("proposal does not reference generated Resources: %+v", proposal)
+	}
+}
+
+func TestBuildBindsDetailCaptureToAuthoritativeJobSample(t *testing.T) {
+	source := bridgeSource()
+	source.SampleJobID, source.SampleJobVersion, source.SampleJobURL = "job-01", 4, "https://apply.example.test/jobs/123"
+	resources, err := Build(bridgeDetailDraft(), source, "human:operator:7",
+		time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resources.Capture.SourceURL != source.EndpointURL || resources.Capture.PageURL != source.SampleJobURL ||
+		resources.Capture.SampleJobID != "job-01" || resources.Capture.SampleJobVersion != 4 {
+		t.Fatalf("Detail capture lost Source or Job fence: %+v", resources.Capture)
+	}
+	moved := source
+	moved.SampleJobURL = "https://apply.example.test/jobs/456"
+	if _, err := Build(bridgeDetailDraft(), moved, "human:operator:7",
+		time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)); err == nil {
+		t.Fatal("Detail page no longer matching the authoritative Job was accepted")
 	}
 }
 

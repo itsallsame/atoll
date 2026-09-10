@@ -6,7 +6,7 @@ h1 { margin: 0; font-size: 17px; }
 #phase { color: #0f766e; font-weight: 650; }
 section { display: grid; gap: 9px; padding: 12px; margin-bottom: 11px; background: white; border: 1px solid #dce4e1; border-radius: 10px; }
 label { display: grid; gap: 4px; color: #43514e; }
-input { min-width: 0; padding: 7px 8px; border: 1px solid #b8c6c2; border-radius: 6px; font: inherit; }
+input, select { min-width: 0; padding: 7px 8px; border: 1px solid #b8c6c2; border-radius: 6px; font: inherit; background: white; }
 button { padding: 8px 10px; border: 1px solid #9aaca7; border-radius: 7px; background: #fff; color: #17201f; cursor: pointer; }
 button:hover { border-color: #0f766e; }
 button.done { border-color: #0f766e; background: #e7f6f2; }

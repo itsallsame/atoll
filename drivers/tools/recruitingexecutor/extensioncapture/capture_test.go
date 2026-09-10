@@ -55,6 +55,20 @@ func TestCaptureProducesDeterministicProposalWithoutActivationAuthority(t *testi
 	}
 }
 
+func TestLegacyCaptureHashRemainsStable(t *testing.T) {
+	capture := validCapture()
+	capture.Version = LegacyVersion
+	capture.PageURL = ""
+	proposal, err := capture.Proposal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const expected = "sha256:2c69adaa34636320bd4a0650c1df92eae0792bc010995c40e86db0bf627d4d1b"
+	if proposal.ContentHash != expected {
+		t.Fatalf("legacy immutable Capture hash changed: got %s want %s", proposal.ContentHash, expected)
+	}
+}
+
 func TestCaptureRejectsExtensionDependentOrUnconfirmedProposal(t *testing.T) {
 	for name, mutate := range map[string]func(Capture) Capture{
 		"unconfirmed":  func(c Capture) Capture { c.UserConfirmed = false; return c },
@@ -85,6 +99,33 @@ func TestBrowserCandidateRequiresConstrainedPlan(t *testing.T) {
 	capture.BrowserPlan = &plan
 	if _, err := capture.Proposal(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDetailCaptureSeparatesSourceEndpointFromVersionedJobPage(t *testing.T) {
+	capture := validCapture()
+	capture.PageURL = "https://apply.example.com/jobs/123"
+	capture.SampleJobID, capture.SampleJobVersion = "job-123", 7
+	capture.Candidate.Kind = recipeabi.KindDetail
+	capture.Candidate.Extraction = recipeabi.Extraction{Fields: map[string]string{
+		"title": "h1", "description": ".description",
+	}}
+	capture.Candidate.Listing = nil
+	capture.Trace = []TraceStep{{Kind: TraceNavigate},
+		{Kind: TraceField, Selector: "h1", Field: "title"},
+		{Kind: TraceField, Selector: ".description", Field: "description"},
+		{Kind: TraceArtifact}}
+	proposal, err := capture.Proposal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.SourceURL != capture.SourceURL || proposal.PageURL != capture.PageURL ||
+		proposal.SampleJobID != "job-123" || proposal.SampleJobVersion != 7 {
+		t.Fatalf("Detail proposal lost its dual fence: %+v", proposal)
+	}
+	capture.SampleJobVersion = 0
+	if _, err := capture.Proposal(); err == nil {
+		t.Fatal("unversioned Detail sample was accepted")
 	}
 }
 

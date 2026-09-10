@@ -83,6 +83,9 @@ type recipeProposalSummary struct {
 	EndpointRevision uint64 `json:"endpoint_revision"`
 	CaptureRef       string `json:"capture_ref"`
 	CaptureHash      string `json:"capture_hash"`
+	PageURL          string `json:"page_url"`
+	SampleJobID      string `json:"sample_job_id,omitempty"`
+	SampleJobVersion uint64 `json:"sample_job_version,omitempty"`
 	CapturedBy       string `json:"captured_by"`
 	CapturedAt       string `json:"captured_at"`
 	EvidenceCount    int    `json:"evidence_count"`
@@ -93,6 +96,7 @@ func summarizeRecipeProposal(proposal model.RecipeProposal) recipeProposalSummar
 	return recipeProposalSummary{CaptureID: proposal.CaptureID, SourceID: proposal.SourceID,
 		SourceVersion: proposal.SourceVersion, EndpointRevision: proposal.EndpointRevision,
 		CaptureRef: proposal.CaptureRef, CaptureHash: proposal.CaptureHash, CapturedBy: proposal.CapturedBy,
+		PageURL: proposal.PageURL, SampleJobID: proposal.SampleJobID, SampleJobVersion: proposal.SampleJobVersion,
 		CapturedAt: proposal.CapturedAt, EvidenceCount: len(proposal.Evidence), TraceStepCount: len(proposal.Trace)}
 }
 
@@ -213,19 +217,15 @@ func handleRecipePropose(sys actorbase.Sys, repository *store.Repository, msg ac
 		return
 	}
 	contractHash, err := spec.ContractHash()
-	endpointURL, parseErr := url.Parse(source.ActiveEndpoint.URL)
-	if err != nil || parseErr != nil || endpointURL.Hostname() == "" {
+	scopeURL, parseErr := url.Parse(source.ActiveEndpoint.URL)
+	if err != nil || parseErr != nil || scopeURL.Hostname() == "" {
 		_, _ = sys.Fail(msg, ErrorQualityRejected, "Recipe contract or Source scope is invalid")
 		return
 	}
 	execution.RequiredCapability = spec.RequiredCapability
 	execution.Transport = model.RecipeTransport(spec.Transport)
-	recipe, err := model.NewRecipe(payload.RecipeID, model.RecipeKind(spec.Kind), strings.ToLower(endpointURL.Hostname()),
-		payload.RecipeVersion, contentHash, contractHash, execution)
-	if err != nil {
-		_, _ = sys.Fail(msg, ErrorQualityRejected, err.Error())
-		return
-	}
+	var capture *extensioncapture.Capture
+	var captureProposal extensioncapture.Proposal
 	var storedProposal *model.RecipeProposal
 	if payload.CaptureRef != "" {
 		captureOutcome, captureReadErr := sys.Resource().Read(resource.ResourceID(payload.CaptureRef))
@@ -233,11 +233,12 @@ func handleRecipePropose(sys actorbase.Sys, repository *store.Repository, msg ac
 			_, _ = sys.Fail(msg, ErrorQualityRejected, "Extension Capture Resource is not readable by the proposing actor")
 			return
 		}
-		capture, captureErr := extensioncapture.DecodeCapture(captureOutcome.Value)
+		decoded, captureErr := extensioncapture.DecodeCapture(captureOutcome.Value)
 		if captureErr != nil {
 			_, _ = sys.Fail(msg, ErrorQualityRejected, captureErr.Error())
 			return
 		}
+		capture = &decoded
 		proposal, proposalErr := capture.Proposal()
 		candidateHash, candidateHashErr := capture.Candidate.ContentHash()
 		if proposalErr != nil || candidateHashErr != nil || proposal.ContentHash != payload.ExpectedCaptureHash ||
@@ -247,8 +248,32 @@ func handleRecipePropose(sys actorbase.Sys, repository *store.Repository, msg ac
 			_, _ = sys.Fail(msg, ErrorQualityRejected, "Extension Capture identity, actor, endpoint fence, candidate, or hash does not match the proposal")
 			return
 		}
+		captureProposal = proposal
+		if capture.Candidate.Kind == recipeabi.KindDetail {
+			job, jobErr := repository.GetJob(msg.Ctx(), capture.SampleJobID)
+			if jobErr != nil || job.SourceID != source.SourceID || job.Version != capture.SampleJobVersion ||
+				job.DetailURL != proposal.PageURL {
+				_, _ = sys.Fail(msg, ErrorQualityRejected, "Extension Detail Capture Job sample does not match the current Source Job")
+				return
+			}
+			scopeURL, parseErr = url.Parse(proposal.PageURL)
+			if parseErr != nil || scopeURL.Hostname() == "" {
+				_, _ = sys.Fail(msg, ErrorQualityRejected, "Extension Detail Capture scope is invalid")
+				return
+			}
+		}
+	}
+	recipe, err := model.NewRecipe(payload.RecipeID, model.RecipeKind(spec.Kind), strings.ToLower(scopeURL.Hostname()),
+		payload.RecipeVersion, contentHash, contractHash, execution)
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, err.Error())
+		return
+	}
+	if capture != nil {
+		proposal := captureProposal
 		storedProposal = &model.RecipeProposal{CaptureID: capture.CaptureID, SourceID: source.SourceID,
 			SourceVersion: source.Version, EndpointRevision: capture.EndpointVersion, SourceURL: capture.SourceURL,
+			PageURL: proposal.PageURL, SampleJobID: proposal.SampleJobID, SampleJobVersion: proposal.SampleJobVersion,
 			RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, CaptureRef: payload.CaptureRef,
 			CaptureHash: proposal.ContentHash, RecipeContentRef: payload.ContentRef, RecipeContentHash: contentHash,
 			CapturedBy: capture.CapturedBy, CapturedAt: capture.CapturedAt, StateVersion: 1,
@@ -262,7 +287,7 @@ func handleRecipePropose(sys actorbase.Sys, repository *store.Repository, msg ac
 			storedProposal.Trace[index] = model.RecipeProposalTrace{Kind: string(step.Kind), Selector: step.Selector,
 				Field: step.Field, Attribute: step.Attribute}
 		}
-		if proposalErr = storedProposal.Validate(); proposalErr != nil {
+		if proposalErr := storedProposal.Validate(); proposalErr != nil {
 			_, _ = sys.Fail(msg, ErrorQualityRejected, proposalErr.Error())
 			return
 		}

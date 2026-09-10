@@ -36,6 +36,7 @@ type Draft struct {
 	RecipeID      string                       `json:"recipe_id"`
 	RecipeVersion uint64                       `json:"recipe_version"`
 	PageURL       string                       `json:"page_url"`
+	SampleJobID   string                       `json:"sample_job_id,omitempty"`
 	CapturedAt    string                       `json:"captured_at"`
 	UserConfirmed bool                         `json:"user_confirmed"`
 	Candidate     recipeabi.Spec               `json:"candidate"`
@@ -52,6 +53,9 @@ type SourceFence struct {
 	ReadinessStatus  model.SourceReadinessStatus
 	ControlStatus    model.ControlStatus
 	HealthStatus     model.HealthStatus
+	SampleJobID      string
+	SampleJobVersion uint64
+	SampleJobURL     string
 }
 
 type ResourceSet struct {
@@ -87,11 +91,24 @@ func Build(draft Draft, source SourceFence, capturedBy string, receivedAt time.T
 	pageURL, pageErr := url.Parse(draft.PageURL)
 	endpointURL, endpointErr := url.Parse(source.EndpointURL)
 	if pageErr != nil || endpointErr != nil || pageURL.Scheme != "https" || endpointURL.Scheme != "https" ||
-		pageURL.User != nil || pageURL.Fragment != "" || draft.PageURL != source.EndpointURL {
-		return ResourceSet{}, fmt.Errorf("captured page must exactly match the active HTTPS Source Endpoint")
+		pageURL.User != nil || pageURL.Fragment != "" {
+		return ResourceSet{}, fmt.Errorf("captured page and active Source Endpoint must be safe HTTPS URLs")
 	}
 	if err := draft.Candidate.Validate(); err != nil {
 		return ResourceSet{}, fmt.Errorf("extension draft candidate: %w", err)
+	}
+	switch draft.Candidate.Kind {
+	case recipeabi.KindListing:
+		if draft.PageURL != source.EndpointURL || draft.SampleJobID != "" {
+			return ResourceSet{}, fmt.Errorf("Listing capture must exactly match the active Source Endpoint")
+		}
+	case recipeabi.KindDetail:
+		if draft.SampleJobID == "" || draft.SampleJobID != source.SampleJobID || source.SampleJobVersion == 0 ||
+			draft.PageURL != source.SampleJobURL {
+			return ResourceSet{}, fmt.Errorf("Detail capture must match the authoritative Source Job sample")
+		}
+	default:
+		return ResourceSet{}, fmt.Errorf("Source-bound extension capture supports Listing and Detail Recipes")
 	}
 	if len(draft.Evidence) == 0 || len(draft.Evidence) > MaxEvidenceBytes || !singleJSONValue(draft.Evidence) {
 		return ResourceSet{}, fmt.Errorf("extension evidence must be one bounded JSON value")
@@ -115,6 +132,7 @@ func Build(draft Draft, source SourceFence, capturedBy string, receivedAt time.T
 	}
 	capture := extensioncapture.Capture{Version: extensioncapture.Version, CaptureID: draft.CaptureID,
 		SourceID: draft.SourceID, EndpointVersion: source.EndpointRevision, SourceURL: source.EndpointURL,
+		PageURL: draft.PageURL, SampleJobID: source.SampleJobID, SampleJobVersion: source.SampleJobVersion,
 		CapturedBy: capturedBy, CapturedAt: draftCapturedAt.UTC().Format(time.RFC3339), UserConfirmed: true,
 		Candidate: candidate, BrowserPlan: draft.BrowserPlan,
 		Artifacts: []recipeabi.ArtifactRef{{ArtifactID: "capture-page-" + draft.CaptureID,

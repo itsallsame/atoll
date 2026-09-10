@@ -99,7 +99,37 @@ try {
     if (!value || value.matchedCount < 2 || !value.firstHref.startsWith('https://job-boards.greenhouse.io/discord/jobs/') || !value.firstTitle) {
       throw new Error(`real_capture_quality_failed: ${JSON.stringify(value)}`);
     }
-    process.stdout.write(JSON.stringify(value));
+    await cdp.call('Page.navigate', {url: value.firstHref});
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const ready = await cdp.call('Runtime.evaluate', {expression: "document.readyState === 'complete' && document.querySelector('h1') && document.querySelector('.job__description')", returnByValue: true});
+      if (ready.result.value) break;
+      if (attempt === 199) throw new Error('real_job_detail_not_ready');
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    await cdp.call('Runtime.evaluate', {expression: logicSource});
+    const detailExpression = [
+      "(() => {",
+      "const logic = globalThis.AtollRecruitingCaptureLogic;",
+      "const title = document.querySelector('h1');",
+      "const description = document.querySelector('.job__description');",
+      "const draft = logic.buildDraft({version: logic.VERSION, captureId: 'live-discord-detail-capture',",
+      "sourceId: 'live-discord-source', recipeId: 'live-discord-detail', recipeVersion: 1,",
+      "recipeKind: 'detail', sampleJobId: 'live-discord-job', pageURL: location.href,",
+      "userConfirmed: true, capturedAt: new Date().toISOString(), matchedCount: 2,",
+      "sampleHTML: title.outerHTML + '\\n' + description.outerHTML,",
+      "marks: {title: {selector: logic.selectorFor(title, null, document)},",
+      "description: {selector: logic.selectorFor(description, null, document)}}});",
+      "return {draft, pageURL: location.href, title: title.textContent.trim(),",
+      "descriptionLength: description.textContent.trim().length};",
+      "})()",
+    ].join('\n');
+    const detailEvaluated = await cdp.call('Runtime.evaluate', {expression: detailExpression, returnByValue: true});
+    if (detailEvaluated.exceptionDetails) throw new Error(detailEvaluated.exceptionDetails.text || 'detail_capture_evaluation_failed');
+    const detail = detailEvaluated.result.value;
+    if (!detail || !detail.title || detail.descriptionLength < 100 || detail.pageURL !== value.firstHref) {
+      throw new Error('real_detail_capture_quality_failed: ' + JSON.stringify(detail));
+    }
+    process.stdout.write(JSON.stringify({...value, detail}));
   } finally {
     cdp.close();
   }

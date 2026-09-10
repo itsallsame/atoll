@@ -70,21 +70,28 @@
   }
 
   function buildDraft(input) {
+    const recipeKind = input?.recipeKind === 'detail' ? 'detail' : 'listing';
     if (!input || input.version !== VERSION || !safeSegment(input.captureId) || !clean(input.sourceId) ||
         !clean(input.recipeId) || !Number.isSafeInteger(input.recipeVersion) || input.recipeVersion < 1 ||
         !input.userConfirmed || !/^https:\/\//.test(input.pageURL)) throw new Error('capture_identity_invalid');
     const marks = input.marks || {};
-    if (!clean(marks.collection?.selector) || !clean(marks.job_key?.selector) ||
-        !clean(marks.title?.selector) || !clean(marks.detail_url?.selector)) throw new Error('required_marks_missing');
+    if (recipeKind === 'listing' && (!clean(marks.collection?.selector) || !clean(marks.job_key?.selector) ||
+        !clean(marks.title?.selector) || !clean(marks.detail_url?.selector))) throw new Error('required_marks_missing');
+    if (recipeKind === 'detail' && (!clean(input.sampleJobId) || !clean(marks.title?.selector) ||
+        !clean(marks.description?.selector))) throw new Error('required_detail_marks_missing');
     const fields = {}, attributes = {};
-    for (const name of ['job_key', 'title', 'detail_url', 'activity_at']) {
+    const fieldNames = recipeKind === 'listing'
+      ? ['job_key', 'title', 'detail_url', 'activity_at']
+      : ['title', 'description', 'location', 'employment_type', 'posted_at'];
+    for (const name of fieldNames) {
       const mark = marks[name];
       if (!mark) continue;
       fields[name] = clean(mark.selector);
       if (clean(mark.attribute)) attributes[name] = clean(mark.attribute);
     }
-    const trace = [{kind: 'navigate'}, {kind: 'mark_collection', selector: clean(marks.collection.selector)}];
-    for (const name of ['job_key', 'title', 'detail_url', 'activity_at']) {
+    const trace = [{kind: 'navigate'}];
+    if (recipeKind === 'listing') trace.push({kind: 'mark_collection', selector: clean(marks.collection.selector)});
+    for (const name of fieldNames) {
       if (!marks[name]) continue;
       trace.push({kind: 'mark_field', selector: fields[name], field: name, ...(attributes[name] ? {attribute: attributes[name]} : {})});
     }
@@ -94,7 +101,7 @@
       version: 'recruiting.extension-evidence.v1',
       page_url: input.pageURL,
       captured_at: input.capturedAt,
-      collection_selector: clean(marks.collection.selector),
+      ...(recipeKind === 'listing' ? {collection_selector: clean(marks.collection.selector)} : {}),
       matched_count: input.matchedCount,
       sample_html: clean(input.sampleHTML, 200000),
     };
@@ -105,21 +112,22 @@
       recipe_id: clean(input.recipeId),
       recipe_version: input.recipeVersion,
       page_url: input.pageURL,
+      ...(recipeKind === 'detail' ? {sample_job_id: clean(input.sampleJobId)} : {}),
       captured_at: input.capturedAt,
       user_confirmed: true,
       candidate: {
         abi_version: RECIPE_VERSION,
-        kind: 'listing',
+        kind: recipeKind,
         required_capability: 'http.fetch',
         transport: 'http_html',
         request: {method: 'GET', headers: {Accept: 'text/html'}, timeout_ms: 20000,
           max_response_bytes: 2097152, max_redirects: 2, user_agent: 'Atoll-Recruiting-Extension/1'},
-        extraction: {collection: clean(marks.collection.selector), fields,
+        extraction: {...(recipeKind === 'listing' ? {collection: clean(marks.collection.selector)} : {}), fields,
           ...(Object.keys(attributes).length ? {attributes} : {})},
-        listing: {identity_field: 'job_key', detail_url_field: 'detail_url',
+        ...(recipeKind === 'listing' ? {listing: {identity_field: 'job_key', detail_url_field: 'detail_url',
           ...(fields.activity_at ? {activity_field: 'activity_at'} : {}), boundary_mode: fields.activity_at ? 'activity_time' : 'frontier_keys',
           ordering: 'newest_activity_desc', update_retop: true, overlap_pages: 1, max_pages: 10,
-          max_items_per_page: 500, max_total_bytes: 10485760, frontier_width: 20},
+          max_items_per_page: 500, max_total_bytes: 10485760, frontier_width: 20}} : {}),
       },
       trace,
       evidence,

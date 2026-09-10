@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
 
 type atollSubmissionClient interface {
@@ -47,10 +48,25 @@ func SubmitDraft(ctx context.Context, client atollSubmissionClient, draft Draft,
 	if source.ActiveEndpoint == nil {
 		return SubmissionResult{}, fmt.Errorf("Source response has no active Endpoint")
 	}
-	resources, err := Build(draft, SourceFence{SourceID: source.SourceID, SourceVersion: source.Version,
+	fence := SourceFence{SourceID: source.SourceID, SourceVersion: source.Version,
 		EndpointRevision: source.ActiveEndpoint.Revision, EndpointURL: source.ActiveEndpoint.URL,
-		ReadinessStatus: source.ReadinessStatus, ControlStatus: source.ControlStatus, HealthStatus: source.HealthStatus},
-		sender, now().UTC())
+		ReadinessStatus: source.ReadinessStatus, ControlStatus: source.ControlStatus, HealthStatus: source.HealthStatus}
+	if draft.Candidate.Kind == recipeabi.KindDetail {
+		terminal, jobSender, jobErr := client.Request(ctx, "recruiting.job.get", map[string]string{"id": draft.SampleJobID})
+		if jobErr != nil {
+			return SubmissionResult{}, fmt.Errorf("read Detail sample Job fence: %w", jobErr)
+		}
+		if jobSender != sender {
+			return SubmissionResult{}, fmt.Errorf("authenticated sender changed while reading Detail sample Job")
+		}
+		rawJob, marshalErr := json.Marshal(terminal["entity"])
+		var job model.SourceJob
+		if marshalErr != nil || json.Unmarshal(rawJob, &job) != nil || job.SourceID != source.SourceID {
+			return SubmissionResult{}, fmt.Errorf("Detail sample Job does not belong to the Source")
+		}
+		fence.SampleJobID, fence.SampleJobVersion, fence.SampleJobURL = job.JobID, job.Version, job.DetailURL
+	}
+	resources, err := Build(draft, fence, sender, now().UTC())
 	if err != nil {
 		return SubmissionResult{}, err
 	}

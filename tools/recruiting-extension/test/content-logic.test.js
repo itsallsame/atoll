@@ -51,6 +51,24 @@ test('buildDraft requires explicit user confirmation and all identity fields', (
   assert.throws(() => logic.buildDraft(missing), /required_marks_missing/);
 });
 
+test('buildDraft emits a Detail Recipe bound to a Job sample without Listing semantics', () => {
+  const detail = input();
+  detail.recipeKind = 'detail';
+  detail.sampleJobId = 'job-01';
+  detail.pageURL = 'https://jobs.example.test/openings/123';
+  detail.marks = {
+    title: {selector: 'h1'},
+    description: {selector: 'main .description'},
+    location: {selector: '[data-field="location"]'},
+  };
+  const draft = logic.buildDraft(detail);
+  assert.equal(draft.sample_job_id, 'job-01');
+  assert.equal(draft.candidate.kind, 'detail');
+  assert.equal(draft.candidate.extraction.fields.description, 'main .description');
+  assert.equal(draft.candidate.listing, undefined);
+  assert.equal(draft.trace.some(step => step.kind === 'mark_collection'), false);
+});
+
 test('bridge endpoint is loopback websocket only', () => {
   assert.equal(logic.bridgeEndpoint('ws://127.0.0.1:4321/capture'), 'ws://127.0.0.1:4321/capture');
   for (const endpoint of ['wss://example.test/capture', 'ws://0.0.0.0:4321/capture',

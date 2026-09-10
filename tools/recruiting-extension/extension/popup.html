@@ -16,20 +16,26 @@
     </section>
     <section id="capture">
       <label>Source ID<input id="source" spellcheck="false"></label>
+      <label>Recipe 类型<select id="kind"><option value="listing">岗位列表 Listing</option><option value="detail">岗位详情 Detail</option></select></label>
+      <label id="sample-job-row" hidden>样本 Job ID<input id="sample-job" spellcheck="false"></label>
       <div class="row">
         <label>Recipe ID<input id="recipe" spellcheck="false"></label>
         <label class="version">版本<input id="version" type="number" min="1" value="1"></label>
       </div>
       <button id="begin">开始捕获当前 HTTPS 页面</button>
-      <p class="hint">依次点按钮，再回到页面点击对应元素。字段必须位于选中的岗位卡片内。</p>
+      <p class="hint" id="capture-hint">依次点按钮，再回到页面点击对应元素。字段必须位于选中的岗位卡片内。</p>
       <div class="marks">
-        <button data-role="collection">1 岗位卡片</button>
-        <button data-role="job_key">2 稳定岗位 ID</button>
-        <button data-role="title">3 岗位标题</button>
-        <button data-role="detail_url">4 详情链接</button>
-        <button data-role="activity_at">可选 活动时间</button>
+        <button data-role="collection" data-kind="listing">1 岗位卡片</button>
+        <button data-role="job_key" data-kind="listing">2 稳定岗位 ID</button>
+        <button data-role="title">岗位标题</button>
+        <button data-role="detail_url" data-kind="listing">4 详情链接</button>
+        <button data-role="activity_at" data-kind="listing">可选 活动时间</button>
+        <button data-role="description" data-kind="detail">岗位描述</button>
+        <button data-role="location" data-kind="detail">可选 工作地点</button>
+        <button data-role="employment_type" data-kind="detail">可选 雇佣类型</button>
+        <button data-role="posted_at" data-kind="detail">可选 发布时间</button>
       </div>
-      <label class="confirm"><input id="confirm" type="checkbox"> 我确认列表按最新活动时间倒序，历史岗位更新后会重新置顶；置顶项已由该选择排除。</label>
+      <label class="confirm"><input id="confirm" type="checkbox"><span id="confirm-copy">我确认列表按最新活动时间倒序，历史岗位更新后会重新置顶；置顶项已由该选择排除。</span></label>
       <button id="submit" class="primary">生成证据并提交 Draft</button>
     </section>
     <p id="message" role="status"></p>

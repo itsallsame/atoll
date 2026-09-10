@@ -123,3 +123,61 @@ func TestCapturedRecipeProposalPersistsAuditableProvenanceAtomically(t *testing.
 		t.Fatalf("captured proposal replay: %v", err)
 	}
 }
+
+func TestCapturedDetailRecipeProposalLocksItsSourceJobSample(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	now := time.Date(2095, 2, 4, 3, 0, 0, 0, time.UTC)
+	company := persistExecutionReadyCompany(t, ctx, repository, "captured-detail", now)
+	source := persistExecutionReadySource(t, ctx, repository, company, "captured-detail", "captured-detail-source", now)
+	job, _ := model.NewSourceJob("captured-detail-job", source.SourceID, "external-123",
+		"https://apply.example.com/jobs/123")
+	tx, txErr := db.BeginTx(ctx, nil)
+	if txErr != nil {
+		t.Fatal(txErr)
+	}
+	if err := insertJob(ctx, tx, job, now); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	recipe, _ := model.NewRecipe("captured-detail", model.RecipeDetail, "apply.example.com", 1,
+		"sha256:detail-content", "sha256:detail-contract", model.RecipeExecution{ABIVersion: model.RecipeABIVersion,
+			ContentRef: "recipe://captured/detail-v1", RequiredCapability: "http.fetch",
+			Transport: model.RecipeTransportHTTPHTML})
+	proposal := model.RecipeProposal{CaptureID: "capture-detail-proposal", SourceID: source.SourceID,
+		SourceVersion: source.Version, EndpointRevision: source.ActiveEndpoint.Revision, SourceURL: source.ActiveEndpoint.URL,
+		PageURL: job.DetailURL, SampleJobID: job.JobID, SampleJobVersion: job.Version,
+		RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, CaptureRef: "artifact://captured/detail-proposal-v1",
+		CaptureHash: "sha256:detail-capture", RecipeContentRef: recipe.Execution.ContentRef,
+		RecipeContentHash: recipe.ContentHash, CapturedBy: "operator-detail-proposal",
+		CapturedAt: now.Format(time.RFC3339), StateVersion: 1,
+		Evidence: []model.RecipeProposalEvidence{{ArtifactID: "capture-detail-page", ContentHash: "sha256:page",
+			ObjectRef: "artifact://captured/detail-page"}},
+		Trace: []model.RecipeProposalTrace{{Kind: "navigate"}, {Kind: "mark_field", Selector: "h1", Field: "title"}}}
+	receipt, _ := model.NewCommandReceipt("captured-detail-command", "recruiting.recipe.propose",
+		"sha256:captured-detail", json.RawMessage(`{"status":"draft"}`))
+	event, _ := model.NewEventIntent("captured-detail-event", "recipe.proposed", "recipe", "captured-detail@1",
+		recipe.StateVersion, now.Format(time.RFC3339Nano), receipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyRecipeProposalCommand(ctx, source.Version, source.ActiveEndpoint.Revision,
+		source.SourceID, recipe, receipt, event, now, &proposal); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repository.GetRecipeProposal(ctx, recipe.RecipeID, recipe.Version)
+	if err != nil || !reflect.DeepEqual(stored, proposal) {
+		t.Fatalf("stored Detail proposal=%+v err=%v", stored, err)
+	}
+}

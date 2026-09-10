@@ -32,6 +32,12 @@ func TestRecruitingExtensionCaptureLogicAgainstRealDiscordPage(t *testing.T) {
 		MatchedCount int             `json:"matchedCount"`
 		FirstHref    string          `json:"firstHref"`
 		FirstTitle   string          `json:"firstTitle"`
+		Detail       struct {
+			Draft             json.RawMessage `json:"draft"`
+			PageURL           string          `json:"pageURL"`
+			Title             string          `json:"title"`
+			DescriptionLength int             `json:"descriptionLength"`
+		} `json:"detail"`
 	}
 	if err := json.Unmarshal(output, &result); err != nil {
 		t.Fatalf("decode real Chrome result: %v: %s", err, output)
@@ -46,5 +52,17 @@ func TestRecruitingExtensionCaptureLogicAgainstRealDiscordPage(t *testing.T) {
 		"human:live-extension:1", time.Now().UTC())
 	if err != nil || result.Collection != "tr.job-post" || result.MatchedCount < 2 || result.FirstHref == "" || result.FirstTitle == "" {
 		t.Fatalf("real Capture result=%+v buildErr=%v", result, err)
+	}
+	detailDraft, err := recruitingbridge.DecodeDraft(result.Detail.Draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = recruitingbridge.Build(detailDraft, recruitingbridge.SourceFence{SourceID: detailDraft.SourceID,
+		SourceVersion: 1, EndpointRevision: 1, EndpointURL: draft.PageURL,
+		SampleJobID: detailDraft.SampleJobID, SampleJobVersion: 1, SampleJobURL: result.Detail.PageURL,
+		ReadinessStatus: model.SourceReady, ControlStatus: model.ControlActive, HealthStatus: model.HealthHealthy},
+		"human:live-extension:1", time.Now().UTC())
+	if err != nil || result.Detail.Title == "" || result.Detail.DescriptionLength < 100 {
+		t.Fatalf("real Detail Capture result=%+v buildErr=%v", result.Detail, err)
 	}
 }

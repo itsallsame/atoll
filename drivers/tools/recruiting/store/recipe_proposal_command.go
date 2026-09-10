@@ -66,12 +66,29 @@ func (r *Repository) ApplyRecipeProposalCommand(ctx context.Context, expectedSou
 		current.ActiveEndpoint.Revision != endpointRevision {
 		return CommandResult{}, fmt.Errorf("Recipe proposal requires the exact active endpoint of a ready healthy Source")
 	}
-	endpoint, err := url.Parse(current.ActiveEndpoint.URL)
-	if err != nil || endpoint.Hostname() == "" || !strings.EqualFold(recipe.Scope, endpoint.Hostname()) {
-		return CommandResult{}, fmt.Errorf("Recipe proposal scope does not match the locked Source endpoint")
-	}
+	scopeTarget := current.ActiveEndpoint.URL
 	if proposal != nil && proposal.SourceURL != current.ActiveEndpoint.URL {
 		return CommandResult{}, fmt.Errorf("browser capture proposal URL does not match the locked Source endpoint")
+	}
+	if proposal != nil && proposal.SampleJobID != "" {
+		job, jobErr := getJobWithLock(ctx, tx, proposal.SampleJobID)
+		if jobErr != nil || job.SourceID != sourceID || job.Version != proposal.SampleJobVersion ||
+			job.DetailURL != proposal.PageURL || recipe.Kind != model.RecipeDetail {
+			return CommandResult{}, fmt.Errorf("browser Detail capture sample changed before proposal commit")
+		}
+		scopeTarget = proposal.PageURL
+	} else if proposal != nil {
+		pageURL := proposal.PageURL
+		if pageURL == "" {
+			pageURL = proposal.SourceURL
+		}
+		if pageURL != current.ActiveEndpoint.URL || recipe.Kind == model.RecipeDetail {
+			return CommandResult{}, fmt.Errorf("browser capture target does not match the Recipe kind")
+		}
+	}
+	endpoint, err := url.Parse(scopeTarget)
+	if err != nil || endpoint.Hostname() == "" || !strings.EqualFold(recipe.Scope, endpoint.Hostname()) {
+		return CommandResult{}, fmt.Errorf("Recipe proposal scope does not match the locked capture target")
 	}
 	if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {
 		if errors.Is(err, ErrCommandConflict) {

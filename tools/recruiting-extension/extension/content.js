@@ -2,7 +2,7 @@
   if (globalThis.__atollRecruitingCaptureInstalled) return;
   globalThis.__atollRecruitingCaptureInstalled = true;
   const logic = globalThis.AtollRecruitingCaptureLogic;
-  const state = {active: false, armed: '', marks: {}, highlighted: []};
+  const state = {active: false, recipeKind: 'listing', armed: '', marks: {}, targets: {}, highlighted: []};
 
   function fieldAttribute(role, element) {
     if (role === 'detail_url') return element.closest('a[href]') ? 'href' : '';
@@ -29,15 +29,16 @@
       const selector = logic.collectionSelectorFor(target, document);
       state.marks.collection = {selector};
     } else {
-      if (!state.marks.collection) throw new Error('mark_collection_first');
-      const card = target.closest(state.marks.collection.selector);
-      if (!card) throw new Error('field_outside_collection');
+      const card = state.recipeKind === 'listing' ? target.closest(state.marks.collection?.selector || ':not(*)') : null;
+      if (state.recipeKind === 'listing' && !state.marks.collection) throw new Error('mark_collection_first');
+      if (state.recipeKind === 'listing' && !card) throw new Error('field_outside_collection');
       const selector = logic.selectorFor(target, card, document);
       if (!selector) throw new Error('field_selector_failed');
       const attribute = fieldAttribute(role, target);
       if ((role === 'job_key' || role === 'detail_url') && !attribute) throw new Error(`${role}_requires_stable_attribute`);
       state.marks[role] = {selector, ...(attribute ? {attribute} : {})};
     }
+    state.targets[role] = target;
     target.dataset.atollRecruitingCaptured = role;
     target.style.outline = '3px solid #0d9488';
     state.highlighted.push(target);
@@ -59,9 +60,10 @@
 
   function sanitizedSamples() {
     const selector = state.marks.collection?.selector;
-    if (!selector) return {count: 0, html: ''};
-    const cards = [...document.querySelectorAll(selector)];
-    const html = cards.slice(0, 3).map(card => {
+    const samples = selector ? [...document.querySelectorAll(selector)].slice(0, 3) :
+      [...new Set(Object.values(state.targets))].slice(0, 8);
+    const count = selector ? document.querySelectorAll(selector).length : samples.length;
+    const html = samples.map(card => {
       const clone = card.cloneNode(true);
       clone.querySelectorAll('script,style,form,input,textarea,select,button,iframe,object,embed').forEach(node => node.remove());
       for (const element of [clone, ...clone.querySelectorAll('*')]) {
@@ -74,7 +76,7 @@
       }
       return clone.outerHTML;
     }).join('\n');
-    return {count: cards.length, html: html.slice(0, 200000)};
+    return {count, html: html.slice(0, 200000)};
   }
 
   document.addEventListener('click', event => {
@@ -90,8 +92,10 @@
   chrome.runtime.onMessage.addListener((message, _sender, reply) => {
     if (message?.type === 'capture.begin') {
       state.active = true;
+      state.recipeKind = message.recipeKind === 'detail' ? 'detail' : 'listing';
       state.armed = '';
       state.marks = {};
+      state.targets = {};
       for (const element of state.highlighted) {
         delete element.dataset.atollRecruitingCaptured;
         element.style.outline = '';
@@ -101,7 +105,10 @@
       return;
     }
     if (message?.type === 'capture.arm') {
-      if (!state.active || !['collection', 'job_key', 'title', 'detail_url', 'activity_at'].includes(message.role)) {
+      const roles = state.recipeKind === 'detail'
+        ? ['title', 'description', 'location', 'employment_type', 'posted_at']
+        : ['collection', 'job_key', 'title', 'detail_url', 'activity_at'];
+      if (!state.active || !roles.includes(message.role)) {
         reply({ok: false, error: 'capture_not_active'});
       } else {
         state.armed = message.role;

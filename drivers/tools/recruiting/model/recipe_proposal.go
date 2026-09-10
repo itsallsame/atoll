@@ -16,6 +16,9 @@ type RecipeProposal struct {
 	SourceVersion     uint64                   `json:"source_version"`
 	EndpointRevision  uint64                   `json:"endpoint_revision"`
 	SourceURL         string                   `json:"source_url"`
+	PageURL           string                   `json:"page_url"`
+	SampleJobID       string                   `json:"sample_job_id,omitempty"`
+	SampleJobVersion  uint64                   `json:"sample_job_version,omitempty"`
 	RecipeID          string                   `json:"recipe_id"`
 	RecipeVersion     uint64                   `json:"recipe_version"`
 	CaptureRef        string                   `json:"capture_ref"`
@@ -65,6 +68,17 @@ func (p RecipeProposal) Validate() error {
 	target, err := url.Parse(p.SourceURL)
 	if err != nil || target.Scheme != "https" || target.Host == "" || target.User != nil || target.Fragment != "" {
 		return fmt.Errorf("Recipe proposal Source URL is invalid")
+	}
+	pageURL := p.PageURL
+	if pageURL == "" {
+		pageURL = p.SourceURL
+	}
+	page, err := url.Parse(pageURL)
+	if err != nil || page.Scheme != "https" || page.Host == "" || page.User != nil || page.Fragment != "" {
+		return fmt.Errorf("Recipe proposal captured page URL is invalid")
+	}
+	if (p.SampleJobID == "") != (p.SampleJobVersion == 0) || len(p.SampleJobID) > 191 {
+		return fmt.Errorf("Recipe proposal Job sample identity is invalid")
 	}
 	for index, ref := range []string{p.CaptureRef, p.RecipeContentRef} {
 		parsed, parseErr := url.Parse(ref)

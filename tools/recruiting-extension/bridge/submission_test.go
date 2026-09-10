@@ -13,6 +13,7 @@ import (
 
 type submissionFake struct {
 	source    model.RecruitmentSource
+	job       model.SourceJob
 	sender    string
 	resources []string
 	proposal  map[string]any
@@ -26,12 +27,29 @@ func (f *submissionFake) Request(_ context.Context, word string, payload any) (m
 	switch word {
 	case "recruiting.source.get":
 		return map[string]any{"status": "completed", "entity": f.source}, f.sender, nil
+	case "recruiting.job.get":
+		return map[string]any{"status": "completed", "entity": f.job}, f.sender, nil
 	case "recruiting.recipe.propose":
 		raw, _ := json.Marshal(payload)
 		_ = json.Unmarshal(raw, &f.proposal)
 		return map[string]any{"status": "completed", "recipe": map[string]any{"status": "draft"}}, f.sender, nil
 	default:
 		return nil, f.sender, fmt.Errorf("unexpected word %q", word)
+	}
+}
+
+func TestSubmitDetailDraftReadsJobFenceBeforeUploading(t *testing.T) {
+	fake := &submissionFake{source: readyBridgeSource(), sender: "human:operator:7",
+		job: model.SourceJob{JobID: "job-01", SourceID: "source-01",
+			DetailURL: "https://apply.example.test/jobs/123", Version: 4}}
+	result, err := SubmitDraft(context.Background(), fake, bridgeDetailDraft(), func() time.Time {
+		return time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RecipeID != "detail-example" || len(fake.resources) != 3 {
+		t.Fatalf("Detail submission result=%+v resources=%v", result, fake.resources)
 	}
 }
 

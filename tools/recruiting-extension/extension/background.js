@@ -83,7 +83,9 @@ async function beginCapture(config) {
   await connect();
   const tab = await activeTab();
   await installContent(tab.id);
-  const response = await chrome.tabs.sendMessage(tab.id, {type: 'capture.begin'});
+  const recipeKind = config.recipeKind === 'detail' ? 'detail' : 'listing';
+  if (recipeKind === 'detail' && !String(config.sampleJobId || '').trim()) throw new Error('sample_job_id_required');
+  const response = await chrome.tabs.sendMessage(tab.id, {type: 'capture.begin', recipeKind});
   if (!response?.ok) throw new Error(response?.error || 'capture_begin_failed');
   state.captureId = crypto.randomUUID();
   state.pageURL = response.pageURL;
@@ -92,7 +94,7 @@ async function beginCapture(config) {
   state.lastError = '';
   state.phase = 'capturing';
   state.config = {sourceId: String(config.sourceId || '').trim(), recipeId: String(config.recipeId || '').trim(),
-    recipeVersion: Number(config.recipeVersion)};
+    recipeVersion: Number(config.recipeVersion), recipeKind, sampleJobId: String(config.sampleJobId || '').trim()};
   await publish();
   return publicState();
 }
