@@ -151,6 +151,8 @@ func handleRecipeMessage(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		handleRecipeReject(sys, repository, msg)
 	case TypeRecipeRollout:
 		handleRecipeRollout(sys, repository, msg)
+	case TypeRecipeRolloutBatch, TypeRecipeRolloutBatchConfirm, TypeRecipeRolloutBatchCancel:
+		handleRecipeRolloutBatch(sys, repository, msg)
 	case TypeRecipeQuarantine:
 		handleRecipeQuarantine(sys, repository, msg)
 	case TypeRecipeRollback:

@@ -562,6 +562,7 @@ recruiting.work.create / get / list / pause / resume
 recruiting.work.correct / retry / cancel / resolve
 recruiting.run.diagnostic / join_occurrence / production
 recruiting.recipe.inspect / validate / approve / reject / rollout / rollback
+recruiting.recipe.rollout.batch / batch.get / batch.items / batch.confirm / batch.cancel
 recruiting.execution.offer / accept / started / result / failed
 recruiting.daily_run.get / list / summary
 recruiting.jobs.search
@@ -578,6 +579,8 @@ recruiting.capacity.status
 确认事务本身不修改 Company，而是原子启动一个 `company_import_apply` 协调 Work。它仍由同一 Executor class 和 `company.import` capability 领取，每次 immutable offer 最多携带配置的 500 个待处理项；Executor 只确认这一有界 envelope，Company 的权威写入留在控制面。每个预览项各用一个独立事务创建自己的 `company_import_item` 子 Work、Company（适用时）、逐项 outcome 和 event：单项业务冲突进入 `waiting_human`，输入内重复项为 `skipped`，不会回滚其他成功项。进程在中途退出后，已存在 outcome 的项被幂等跳过；仍有待处理项时同一协调 Work 进入 `waiting_retry` 并产生下一次持久 dispatch；若最后一个 item 已提交但页级回执丢失，恢复后的空 finalizer offer 负责完成汇总，不会留下无 pending item 的悬挂批次。全部项终结后，`CompanyImport` 保存结构化汇总；无异常时父 Work 成功，有失败或等待人工时父 Work 保持 `waiting_human`，不得把部分成功冒充整批成功。
 
 `recruiting.company.import.cancel` 适用于预览或应用中的批次。请求事务先把批次推进到 `canceling`，取消已有协调 Work 并提升 acceptance fence，使旧 Executor 结果立即失效，再创建同一 capability 的高优先级取消协调 Work。已经成功、跳过或等待人工的逐项事实保持不变；尚未开始的项目仍按有界页和独立事务创建 canceled 子 Work/outcome，不能以一次大范围 UPDATE 伪造逐项控制边界。全部未开始项终结后批次和父 Work 才进入 `canceled`。
+
+Recipe 批量发布使用 `recipe-rollout-sources.v1` JSON Resource，正文只含相同 `schema_version` 和最多 20,000 个唯一规范 `source_ids`；命令另携带原始字节 SHA-256、policy version、目标 active Recipe、canary size 和不超过 500 的 wave size。Recruiting Actor 可读取 KV 或 File Resource，严格拒绝未知字段、尾随 JSON、重复或带空白的 Source ID，并以 `SHA-256(batch_id|source_id)` 形成与输入排列无关的确定性 canary 顺序。预览按最多 500 项的短事务逐块重读 Source、当前 Assignment/Recipe 和目标 Recipe；最终 preview hash 同时绑定输入 hash、schema/policy、目标 Recipe 的 kind/scope/contract/capability 及每个 Source/Assignment version。完成预览时父 Work 进入 `waiting_human(preview_ready)`。确认只原子启动批次和父 Work、开放第一个 canary 范围，不提前修改任何 Source，也不产生 Executor dispatch；后续逐 Source 发布、校验与 wave 推进由 Recruiting Actor 的有界 reconcile 完成。
 
 ## 9. 最小领域模型
 

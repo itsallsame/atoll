@@ -81,7 +81,8 @@ func TestRecipeRolloutBatchPreviewStartQueryAndCancelAreDurable(t *testing.T) {
 	parent, _ := model.NewWork("work-rollout-batch", "recipe", "rollout-batch-target@1", "recipe_rollout_batch", "human")
 	parent, _ = parent.WithCausality("human:batch-operator", "message:batch-create", "")
 	batch, err := model.NewRecipeRolloutBatch("rollout-batch", parent.WorkID, targetRecipe,
-		"artifact://rollout-batch/sources", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1, 2)
+		"artifact://rollout-batch/sources", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"recipe-rollout-sources.v1", 1, 1, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,23 +157,26 @@ func TestRecipeRolloutBatchPreviewStartQueryAndCancelAreDurable(t *testing.T) {
 	if err != nil || len(allItems.Items) != 3 {
 		t.Fatalf("preview items=%+v err=%v", allItems, err)
 	}
-	previewHash, _ := model.RecipeRolloutPreviewHash(batch.BatchID, targetRecipe, batch.InputArtifactHash, allItems.Items)
+	previewHash, _ := model.RecipeRolloutPreviewHash(batch, targetRecipe, allItems.Items)
 	previewed, _ := batch.FinishPreview(batch.Version, previewHash)
+	previewParentStarted, _ := parent.Start(parent.Version)
+	previewParent, _ := previewParentStarted.WaitHuman(previewParentStarted.Version, "preview_ready")
 	previewReceipt, _ := model.NewCommandReceipt("rollout-batch-preview-finished", "recruiting.recipe.rollout.batch.preview.finished",
 		"sha256:rollout-batch-preview-finished", json.RawMessage(`{"status":"previewed"}`))
 	previewEvent, _ := model.NewEventIntent("rollout-batch-previewed-event", "recipe.rollout_batch.previewed", "work",
-		parent.WorkID, parent.Version, now.Add(4*time.Second).Format(time.RFC3339Nano), previewReceipt.CommandID, json.RawMessage(`{}`))
-	previewResult, err := repository.ApplyFinishRecipeRolloutPreview(ctx, batch.Version, previewed, previewReceipt,
-		previewEvent, now.Add(4*time.Second))
+		parent.WorkID, previewParent.Version, now.Add(4*time.Second).Format(time.RFC3339Nano), previewReceipt.CommandID, json.RawMessage(`{}`))
+	previewResult, err := repository.ApplyFinishRecipeRolloutPreview(ctx, batch.Version, parent.Version,
+		previewed, previewParent, previewReceipt, previewEvent, now.Add(4*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	previewReplay, err := repository.ApplyFinishRecipeRolloutPreview(ctx, batch.Version, previewed, previewReceipt,
-		previewEvent, now.Add(4*time.Second))
+	previewReplay, err := repository.ApplyFinishRecipeRolloutPreview(ctx, batch.Version, parent.Version,
+		previewed, previewParent, previewReceipt, previewEvent, now.Add(4*time.Second))
 	if err != nil || !previewReplay.Replayed || string(previewReplay.Response) != string(previewResult.Response) {
 		t.Fatalf("preview completion replay=%+v err=%v", previewReplay, err)
 	}
 	batch = previewed
+	parent = previewParent
 	pageOne, _ := repository.ListRecipeRolloutBatchItems(ctx, batch.BatchID, 0, 2)
 	pageTwo, _ := repository.ListRecipeRolloutBatchItems(ctx, batch.BatchID, pageOne.NextCursor, 2)
 	if len(pageOne.Items) != 2 || pageOne.NextCursor != 2 || len(pageTwo.Items) != 1 || pageTwo.NextCursor != 0 {

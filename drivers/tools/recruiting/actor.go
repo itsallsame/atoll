@@ -167,7 +167,9 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleCompanyMessage(sys, repository, msg)
 		case TypeSourceAdd, TypeSourceUpdate, TypeSourceValidate, TypeSourceValidationPublish, TypeSourceValidationReject, TypeSourcePause, TypeSourceResume, TypeSourceArchive, TypeSourceRestore:
 			handleSourceMessage(sys, cfg, repository, msg)
-		case TypeRecipePropose, TypeRecipeValidate, TypeRecipeApprove, TypeRecipeReject, TypeRecipeRollout, TypeRecipeQuarantine, TypeRecipeRollback:
+		case TypeRecipePropose, TypeRecipeValidate, TypeRecipeApprove, TypeRecipeReject, TypeRecipeRollout,
+			TypeRecipeRolloutBatch, TypeRecipeRolloutBatchConfirm, TypeRecipeRolloutBatchCancel,
+			TypeRecipeQuarantine, TypeRecipeRollback:
 			handleRecipeMessage(sys, cfg, repository, msg)
 		case TypeRepairValidate, TypeRepairResolve, TypeRepairRecover:
 			handleRepairMessage(sys, cfg, repository, msg)
@@ -192,6 +194,7 @@ func run(sys actorbase.Sys, cfg Config) error {
 		case TypeSourceGet, TypeSourceList, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
 			TypeJobGet, TypeJobList, TypeJobCorrectionGet, TypeProfileGet, TypeWorkGet, TypeWorkList,
 			TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary, TypeRepairGet, TypeRepairList, TypeRecipeInspect,
+			TypeRecipeRolloutBatchGet, TypeRecipeRolloutBatchItems,
 			TypeSystemStatus, TypeCapacityStatus:
 			handleResourceQuery(sys, cfg, repository, msg)
 		case TypeSystemReconcile:

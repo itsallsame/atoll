@@ -125,6 +125,10 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		handleRecipeInspectQuery(sys, repository, msg)
 		return
 	}
+	if msg.Type == TypeRecipeRolloutBatchGet || msg.Type == TypeRecipeRolloutBatchItems {
+		handleRecipeRolloutBatchQuery(sys, repository, msg)
+		return
+	}
 	var payload entityGetPayload
 	if !decode(sys, msg, &payload) {
 		return

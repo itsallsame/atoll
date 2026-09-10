@@ -68,14 +68,19 @@ const (
 	TypeRunJoinOccurrence = "recruiting.run.join_occurrence"
 	TypeRunProduction     = "recruiting.run.production"
 
-	TypeRecipeInspect    = "recruiting.recipe.inspect"
-	TypeRecipePropose    = "recruiting.recipe.propose"
-	TypeRecipeValidate   = "recruiting.recipe.validate"
-	TypeRecipeApprove    = "recruiting.recipe.approve"
-	TypeRecipeReject     = "recruiting.recipe.reject"
-	TypeRecipeRollout    = "recruiting.recipe.rollout"
-	TypeRecipeQuarantine = "recruiting.recipe.quarantine"
-	TypeRecipeRollback   = "recruiting.recipe.rollback"
+	TypeRecipeInspect             = "recruiting.recipe.inspect"
+	TypeRecipePropose             = "recruiting.recipe.propose"
+	TypeRecipeValidate            = "recruiting.recipe.validate"
+	TypeRecipeApprove             = "recruiting.recipe.approve"
+	TypeRecipeReject              = "recruiting.recipe.reject"
+	TypeRecipeRollout             = "recruiting.recipe.rollout"
+	TypeRecipeRolloutBatch        = "recruiting.recipe.rollout.batch"
+	TypeRecipeRolloutBatchGet     = "recruiting.recipe.rollout.batch.get"
+	TypeRecipeRolloutBatchItems   = "recruiting.recipe.rollout.batch.items"
+	TypeRecipeRolloutBatchConfirm = "recruiting.recipe.rollout.batch.confirm"
+	TypeRecipeRolloutBatchCancel  = "recruiting.recipe.rollout.batch.cancel"
+	TypeRecipeQuarantine          = "recruiting.recipe.quarantine"
+	TypeRecipeRollback            = "recruiting.recipe.rollback"
 
 	TypeExecutionOffer         = executioncontract.TypeOffer
 	TypeExecutionAccept        = executioncontract.TypeAccept

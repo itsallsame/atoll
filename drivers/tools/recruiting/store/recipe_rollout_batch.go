@@ -244,12 +244,16 @@ func validateRolloutBatchSource(batch model.RecipeRolloutBatch, target model.Rec
 	return nil
 }
 
-func (r *Repository) ApplyFinishRecipeRolloutPreview(ctx context.Context, expectedBatchVersion uint64,
-	next model.RecipeRolloutBatch, receipt model.CommandReceipt, event model.EventIntent,
+func (r *Repository) ApplyFinishRecipeRolloutPreview(ctx context.Context, expectedBatchVersion,
+	expectedParentVersion uint64, next model.RecipeRolloutBatch, nextParent model.Work,
+	receipt model.CommandReceipt, event model.EventIntent,
 	businessAt time.Time) (CommandResult, error) {
-	if expectedBatchVersion == 0 || next.Version != expectedBatchVersion+1 ||
+	if expectedBatchVersion == 0 || expectedParentVersion == 0 || next.Version != expectedBatchVersion+1 ||
 		next.Status != model.RecipeRolloutBatchPreviewed || receipt.CommandID == "" ||
 		event.AggregateType != "work" || event.AggregateID != next.ParentWorkID ||
+		nextParent.WorkID != next.ParentWorkID || nextParent.Version != expectedParentVersion+2 ||
+		nextParent.Status != model.WorkWaitingHuman || nextParent.WaitingReason != "preview_ready" ||
+		event.AggregateVersion != nextParent.Version ||
 		event.CauseCommandID != receipt.CommandID || businessAt.IsZero() {
 		return CommandResult{}, fmt.Errorf("Recipe rollout preview completion facts are inconsistent")
 	}
@@ -274,6 +278,24 @@ func (r *Repository) ApplyFinishRecipeRolloutPreview(ctx context.Context, expect
 	if current.Version != expectedBatchVersion {
 		return CommandResult{}, &model.VersionConflictError{Expected: expectedBatchVersion, Actual: current.Version}
 	}
+	currentParent, err := getWorkWith(ctx, tx, current.ParentWorkID, true)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	if currentParent.Version != expectedParentVersion {
+		return CommandResult{}, &model.VersionConflictError{Expected: expectedParentVersion, Actual: currentParent.Version}
+	}
+	startedParent, err := currentParent.Start(currentParent.Version)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	derivedParent, err := startedParent.WaitHuman(startedParent.Version, "preview_ready")
+	if err != nil || derivedParent != nextParent {
+		if err == nil {
+			err = fmt.Errorf("preview completion parent Work does not match persisted aggregate")
+		}
+		return CommandResult{}, err
+	}
 	items, err := listRecipeRolloutItemsWith(ctx, tx, current.BatchID, 0, current.PreviewedCount)
 	if err != nil {
 		return CommandResult{}, err
@@ -285,7 +307,7 @@ func (r *Repository) ApplyFinishRecipeRolloutPreview(ctx context.Context, expect
 	if err != nil {
 		return CommandResult{}, err
 	}
-	previewHash, err := model.RecipeRolloutPreviewHash(current.BatchID, recipe, current.InputArtifactHash, items)
+	previewHash, err := model.RecipeRolloutPreviewHash(current, recipe, items)
 	if err != nil {
 		return CommandResult{}, err
 	}
@@ -303,6 +325,9 @@ func (r *Repository) ApplyFinishRecipeRolloutPreview(ctx context.Context, expect
 		}
 		return CommandResult{}, err
 	}
+	if err := updateWorkTx(ctx, tx, currentParent.Version, nextParent, businessAt); err != nil {
+		return CommandResult{}, err
+	}
 	if err := updateRecipeRolloutBatchCAS(ctx, tx, current.Version, next, businessAt); err != nil {
 		return CommandResult{}, err
 	}
@@ -317,6 +342,51 @@ func (r *Repository) ApplyFinishRecipeRolloutPreview(ctx context.Context, expect
 
 func (r *Repository) GetRecipeRolloutBatch(ctx context.Context, batchID string) (model.RecipeRolloutBatch, error) {
 	return getRecipeRolloutBatchWith(ctx, r.db, batchID, false)
+}
+
+func (r *Repository) PrepareFinishRecipeRolloutPreview(ctx context.Context, batchID string) (
+	model.RecipeRolloutBatch, model.RecipeRolloutBatch, model.Work, model.Work, error) {
+	current, err := r.GetRecipeRolloutBatch(ctx, batchID)
+	if err != nil {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutBatch{}, model.Work{}, model.Work{}, err
+	}
+	if current.Status != model.RecipeRolloutBatchPreviewing || current.PreviewedCount < 1 {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutBatch{}, model.Work{}, model.Work{},
+			fmt.Errorf("Recipe rollout batch is not ready to finish preview")
+	}
+	items, err := listRecipeRolloutItemsWith(ctx, r.db, current.BatchID, 0, current.PreviewedCount)
+	if err != nil {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutBatch{}, model.Work{}, model.Work{}, err
+	}
+	if len(items) != current.PreviewedCount {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutBatch{}, model.Work{}, model.Work{},
+			fmt.Errorf("Recipe rollout preview member count is incomplete")
+	}
+	recipe, err := r.GetRecipe(ctx, current.RecipeID, current.RecipeVersion)
+	if err != nil {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutBatch{}, model.Work{}, model.Work{}, err
+	}
+	previewHash, err := model.RecipeRolloutPreviewHash(current, recipe, items)
+	if err != nil {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutBatch{}, model.Work{}, model.Work{}, err
+	}
+	next, err := current.FinishPreview(current.Version, previewHash)
+	if err != nil {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutBatch{}, model.Work{}, model.Work{}, err
+	}
+	currentParent, err := r.GetWork(ctx, current.ParentWorkID)
+	if err != nil {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutBatch{}, model.Work{}, model.Work{}, err
+	}
+	startedParent, err := currentParent.Start(currentParent.Version)
+	if err != nil {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutBatch{}, model.Work{}, model.Work{}, err
+	}
+	nextParent, err := startedParent.WaitHuman(startedParent.Version, "preview_ready")
+	if err != nil {
+		return model.RecipeRolloutBatch{}, model.RecipeRolloutBatch{}, model.Work{}, model.Work{}, err
+	}
+	return current, next, currentParent, nextParent, nil
 }
 
 func (r *Repository) ListRecipeRolloutBatchItems(ctx context.Context, batchID string, afterOrdinal,
@@ -351,13 +421,13 @@ func insertRecipeRolloutBatch(ctx context.Context, tx *sql.Tx, batch model.Recip
   batch_id, active_batch_key, parent_work_id, recipe_id, recipe_version, recipe_kind, status, phase,
   source_count, previewed_count, next_chunk_sequence, canary_size, wave_size, active_from, active_through,
   succeeded_count, failed_count, batch_version, input_artifact_ref, input_artifact_hash, preview_hash,
-  state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	schema_version, policy_version, state_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		batch.BatchID, rolloutBatchActiveKey(batch), batch.ParentWorkID, batch.RecipeID, batch.RecipeVersion,
 		batch.Kind, batch.Status, batch.Phase, batch.SourceCount, batch.PreviewedCount, batch.NextChunkSequence,
 		batch.CanarySize, batch.WaveSize, batch.ActiveFrom, batch.ActiveThrough, batch.SucceededCount,
 		batch.FailedCount, batch.Version, batch.InputArtifactRef, batch.InputArtifactHash,
-		batch.PreviewHash, state, at.UTC(), at.UTC())
+		batch.PreviewHash, batch.SchemaVersion, batch.PolicyVersion, state, at.UTC(), at.UTC())
 	if err == nil {
 		return nil
 	}

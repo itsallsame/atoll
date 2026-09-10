@@ -22,7 +22,7 @@ func activeRolloutBatchRecipe(t *testing.T) Recipe {
 func previewedRolloutBatch(t *testing.T, batchID string, sourceCount, canarySize, waveSize int) RecipeRolloutBatch {
 	t.Helper()
 	batch, err := NewRecipeRolloutBatch(batchID, "work-"+batchID, activeRolloutBatchRecipe(t),
-		"artifact://rollout/"+batchID, rolloutInputHash, canarySize, waveSize)
+		"artifact://rollout/"+batchID, rolloutInputHash, "recipe-rollout-sources.v1", 1, canarySize, waveSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestRecipeRolloutBatchFailureStopsExpansionAndNeedsExplicitResume(t *testin
 func TestRecipeRolloutBatchRejectsStaleMalformedAndUnsafeTransitions(t *testing.T) {
 	recipe := activeRolloutBatchRecipe(t)
 	if _, err := NewRecipeRolloutBatch("batch", "work", recipe, "artifact://input",
-		"not-a-hash", 1, 1); err == nil {
+		"not-a-hash", "recipe-rollout-sources.v1", 1, 1, 1); err == nil {
 		t.Fatal("batch accepted a non-hashed immutable input")
 	}
 	batch := previewedRolloutBatch(t, "batch", 10, 2, 3)
@@ -159,17 +159,24 @@ func TestRecipeRolloutItemsFreezeVersionsAndBindDeterministicCanaryOrder(t *test
 			t.Fatalf("canary order is not deterministic: A=%+v B=%+v", canonicalA, canonicalB)
 		}
 	}
-	hashA, _ := RecipeRolloutPreviewHash("batch-items", activeRolloutBatchRecipe(t), rolloutInputHash, items)
-	hashB, _ := RecipeRolloutPreviewHash("batch-items", activeRolloutBatchRecipe(t), rolloutInputHash,
+	batch := previewedRolloutBatch(t, "batch-items", 3, 1, 2)
+	hashA, _ := RecipeRolloutPreviewHash(batch, activeRolloutBatchRecipe(t), items)
+	hashB, _ := RecipeRolloutPreviewHash(batch, activeRolloutBatchRecipe(t),
 		[]RecipeRolloutBatchItem{items[2], items[0], items[1]})
 	if hashA == "" || hashA != hashB {
 		t.Fatalf("preview hash changed with input order: %q != %q", hashA, hashB)
 	}
 	changed := append([]RecipeRolloutBatchItem(nil), items...)
 	changed[0].ExpectedSourceVersion++
-	hashChanged, _ := RecipeRolloutPreviewHash("batch-items", activeRolloutBatchRecipe(t), rolloutInputHash, changed)
+	hashChanged, _ := RecipeRolloutPreviewHash(batch, activeRolloutBatchRecipe(t), changed)
 	if hashChanged == hashA {
 		t.Fatal("preview hash did not bind frozen Source versions")
+	}
+	policyChanged := batch
+	policyChanged.PolicyVersion++
+	hashPolicyChanged, _ := RecipeRolloutPreviewHash(policyChanged, activeRolloutBatchRecipe(t), items)
+	if hashPolicyChanged == hashA {
+		t.Fatal("preview hash did not bind the policy version")
 	}
 	duplicate := append(items, items[0])
 	if _, err := CanonicalRecipeRolloutItems("batch-items", duplicate); err == nil {

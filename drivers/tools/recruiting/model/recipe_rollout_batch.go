@@ -38,6 +38,8 @@ type RecipeRolloutBatch struct {
 	Capability        string                   `json:"capability"`
 	InputArtifactRef  string                   `json:"input_artifact_ref"`
 	InputArtifactHash string                   `json:"input_artifact_hash"`
+	SchemaVersion     string                   `json:"schema_version"`
+	PolicyVersion     uint64                   `json:"policy_version"`
 	PreviewHash       string                   `json:"preview_hash"`
 	SourceCount       int                      `json:"source_count"`
 	PreviewedCount    int                      `json:"previewed_count"`
@@ -179,11 +181,12 @@ func CanonicalRecipeRolloutItems(batchID string, items []RecipeRolloutBatchItem)
 	return canonical, nil
 }
 
-func RecipeRolloutPreviewHash(batchID string, recipe Recipe, inputArtifactHash string, items []RecipeRolloutBatchItem) (string, error) {
-	if recipe.RecipeID == "" || recipe.Version == 0 || !validSHA256(inputArtifactHash) || len(items) == 0 {
-		return "", fmt.Errorf("Recipe identity, input hash, and rollout items are required")
+func RecipeRolloutPreviewHash(batch RecipeRolloutBatch, recipe Recipe, items []RecipeRolloutBatchItem) (string, error) {
+	if recipe.RecipeID == "" || recipe.Version == 0 || !validSHA256(batch.InputArtifactHash) ||
+		strings.TrimSpace(batch.SchemaVersion) == "" || batch.PolicyVersion == 0 || len(items) == 0 {
+		return "", fmt.Errorf("Recipe identity, input contract, and rollout items are required")
 	}
-	canonical, err := CanonicalRecipeRolloutItems(batchID, items)
+	canonical, err := CanonicalRecipeRolloutItems(batch.BatchID, items)
 	if err != nil {
 		return "", err
 	}
@@ -192,22 +195,27 @@ func RecipeRolloutPreviewHash(batchID string, recipe Recipe, inputArtifactHash s
 		RecipeID          string                   `json:"recipe_id"`
 		RecipeVersion     uint64                   `json:"recipe_version"`
 		Kind              RecipeKind               `json:"kind"`
+		Scope             string                   `json:"scope"`
 		ContractHash      string                   `json:"contract_hash"`
 		Capability        string                   `json:"capability"`
 		InputArtifactHash string                   `json:"input_artifact_hash"`
+		SchemaVersion     string                   `json:"schema_version"`
+		PolicyVersion     uint64                   `json:"policy_version"`
 		Items             []RecipeRolloutBatchItem `json:"items"`
-	}{batchID, recipe.RecipeID, recipe.Version, recipe.Kind, recipe.ContractHash,
-		recipe.Execution.RequiredCapability, inputArtifactHash, canonical})
+	}{batch.BatchID, recipe.RecipeID, recipe.Version, recipe.Kind, recipe.Scope, recipe.ContractHash,
+		recipe.Execution.RequiredCapability, batch.InputArtifactHash, batch.SchemaVersion, batch.PolicyVersion, canonical})
 	sum := sha256.Sum256(payload)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func NewRecipeRolloutBatch(batchID, parentWorkID string, recipe Recipe, inputArtifactRef,
-	inputArtifactHash string, canarySize, waveSize int) (RecipeRolloutBatch, error) {
+	inputArtifactHash, schemaVersion string, policyVersion uint64, canarySize, waveSize int) (RecipeRolloutBatch, error) {
 	batchID, parentWorkID = strings.TrimSpace(batchID), strings.TrimSpace(parentWorkID)
 	inputArtifactRef, inputArtifactHash = strings.TrimSpace(inputArtifactRef), strings.TrimSpace(inputArtifactHash)
-	if batchID == "" || parentWorkID == "" || inputArtifactRef == "" || !validSHA256(inputArtifactHash) {
-		return RecipeRolloutBatch{}, fmt.Errorf("batch, parent Work, input Artifact, and SHA-256 input hash are required")
+	schemaVersion = strings.TrimSpace(schemaVersion)
+	if batchID == "" || parentWorkID == "" || inputArtifactRef == "" || !validSHA256(inputArtifactHash) ||
+		schemaVersion == "" || policyVersion == 0 {
+		return RecipeRolloutBatch{}, fmt.Errorf("batch, parent Work, input Artifact/hash, schema, and policy are required")
 	}
 	if recipe.Status != RecipeActive || (recipe.Kind != RecipeListing && recipe.Kind != RecipeDetail) ||
 		strings.TrimSpace(recipe.Scope) == "" || strings.TrimSpace(recipe.ContractHash) == "" ||
@@ -221,7 +229,8 @@ func NewRecipeRolloutBatch(batchID, parentWorkID string, recipe Recipe, inputArt
 		BatchID: batchID, ParentWorkID: parentWorkID, RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version,
 		Kind: recipe.Kind, Scope: recipe.Scope, ContractHash: recipe.ContractHash,
 		Capability: recipe.Execution.RequiredCapability, InputArtifactRef: inputArtifactRef,
-		InputArtifactHash: inputArtifactHash, CanarySize: canarySize, WaveSize: waveSize,
+		InputArtifactHash: inputArtifactHash, SchemaVersion: schemaVersion, PolicyVersion: policyVersion,
+		CanarySize: canarySize, WaveSize: waveSize,
 		Status: RecipeRolloutBatchPreviewing, NextChunkSequence: 1, Version: 1,
 	}, nil
 }
