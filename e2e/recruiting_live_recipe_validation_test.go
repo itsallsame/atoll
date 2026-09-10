@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,8 +17,9 @@ import (
 )
 
 // TestRecruitingLiveRecipeValidationRejectsBadCandidateThroughAtoll proves
-// that a syntactically valid candidate is still executed against a public job
-// board and cannot be approved when its real-sample quality proof is false.
+// both validation outcomes against public Greenhouse data: a Listing candidate
+// with a false ordering claim is rejected, while a Detail candidate produces
+// evidence-only output and can be approved without publishing Job data.
 func TestRecruitingLiveRecipeValidationRejectsBadCandidateThroughAtoll(t *testing.T) {
 	if os.Getenv("ATOLL_RECRUITING_LIVE_E2E") != "1" {
 		t.Skip("set ATOLL_RECRUITING_LIVE_E2E=1 to run the real-website Recipe validation test")
@@ -134,6 +137,53 @@ func TestRecruitingLiveRecipeValidationRejectsBadCandidateThroughAtoll(t *testin
 		numberField(t, inspected, "current_assignment_count") != 0 {
 		t.Fatalf("failed approval activated or assigned candidate=%v", inspected)
 	}
+
+	_, detailSpec := greenhouseDetailRepairRecipes()
+	const detailRef = "recipe://e2e-live-detail-validation-candidate"
+	detailRaw, err := json.Marshal(detailSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.resource(map[string]any{"channel_id": homeID, "op": "create", "resource_id": detailRef,
+		"args": json.RawMessage(detailRaw)})
+	jobID, detailCandidate := seedLiveDetailValidationCandidate(t, runtimeDSN, sourceID, detailRef,
+		detailSpec, time.Now().UTC())
+	detailValidatePayload := map[string]any{
+		"command_id":       "e2e-live-detail-recipe-validate",
+		"target":           map[string]any{"target_type": "recipe", "target_id": detailCandidate.RecipeID},
+		"expected_version": detailCandidate.StateVersion, "recipe_version": detailCandidate.Version,
+		"source_id": sourceID, "sample_job_id": jobID,
+		"run_id": "e2e-live-detail-recipe-validation-run", "work_id": "e2e-live-detail-recipe-validation-work",
+		"reason": "execute the Detail candidate against one frozen public Job without publishing its data",
+	}
+	detailStarted := ws.request(homeID, "recruiting.recipe.validate", controlID, detailValidatePayload)
+	if nestedStringField(t, detailStarted, "validation_run", "sample_job_id") != jobID ||
+		nestedStringField(t, detailStarted, "validation_run", "validation_status") != "queued" {
+		t.Fatalf("live Detail Recipe validation start=%v", detailStarted)
+	}
+	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 20})
+	detailWork, detailAttemptStatus := waitLiveWorkByID(t, runtimeDSN,
+		"e2e-live-detail-recipe-validation-work", 90*time.Second, daemonLog, h.server.logPath)
+	if detailWork.Status != model.WorkCompleted || detailWork.Resolution != model.ResolutionSucceeded ||
+		detailAttemptStatus != string(model.AttemptSucceeded) {
+		t.Fatalf("live Detail Recipe validation work=%+v attempt=%s", detailWork, detailAttemptStatus)
+	}
+	detailArtifacts := liveWorkArtifacts(t, runtimeDSN, detailWork.WorkID)
+	if len(detailArtifacts) != 2 {
+		t.Fatalf("live Detail Recipe validation evidence=%v", detailArtifacts)
+	}
+	detailApprovePayload := map[string]any{
+		"command_id":       "e2e-live-detail-recipe-approve",
+		"target":           map[string]any{"target_type": "recipe", "target_id": detailCandidate.RecipeID},
+		"expected_version": detailCandidate.StateVersion + 1, "recipe_version": detailCandidate.Version,
+		"validation_work_id": detailWork.WorkID, "reason": "approve the successful frozen Detail sample",
+	}
+	detailApproved := ws.request(homeID, "recruiting.recipe.approve", controlID, detailApprovePayload)
+	if nestedStringField(t, detailApproved, "recipe", "status") != "active" {
+		t.Fatalf("live Detail Recipe approval=%v", detailApproved)
+	}
+	assertLiveDetailValidationHasNoBusinessWrites(t, runtimeDSN, sourceID, jobID,
+		detailCandidate.RecipeID, detailCandidate.Version)
 }
 
 func seedLiveListingCandidate(t *testing.T, dsn, contentRef string, spec recipeabi.Spec, now time.Time) model.Recipe {
@@ -164,4 +214,87 @@ func seedLiveListingCandidate(t *testing.T, dsn, contentRef string, spec recipea
 		t.Fatal(err)
 	}
 	return candidate
+}
+
+func seedLiveDetailValidationCandidate(t *testing.T, dsn, sourceID, contentRef string,
+	spec recipeabi.Spec, now time.Time) (string, model.Recipe) {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repository, _ := store.NewRepository(db)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	source, err := repository.GetSource(ctx, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contractSum := sha256.Sum256([]byte(`{"fields":["id","title","url"]}`))
+	contractHash := "sha256:" + hex.EncodeToString(contractSum[:])
+	current, _ := model.NewRecipe("e2e-live-detail-validation", model.RecipeDetail,
+		"boards-api.greenhouse.io", 1, "sha256:current-detail", contractHash,
+		model.RecipeExecution{ABIVersion: model.RecipeABIVersion,
+			ContentRef: "recipe://e2e-live-detail-validation-current", RequiredCapability: "http.fetch",
+			Transport: model.RecipeTransportHTTPJSON})
+	current, _ = current.BeginValidation(current.StateVersion)
+	current, _ = current.Publish(current.StateVersion)
+	if err := repository.CreateRecipe(ctx, current, now); err != nil {
+		t.Fatal(err)
+	}
+	assignment, _ := model.NewSourceRecipeAssignment(sourceID, model.RecipeDetail, current.RecipeID,
+		current.Version, current.ContractHash, now.Format(time.RFC3339Nano))
+	withDetail, err := source.AssignRecipe(source.Version, assignment, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.PublishSourceAssignment(ctx, source.Version, 0, withDetail, assignment, now); err != nil {
+		t.Fatal(err)
+	}
+	jobKey, detailURL := currentGreenhouseDetailFixture(t)
+	job, _ := model.NewSourceJob("e2e-live-detail-validation-job", sourceID, jobKey, detailURL)
+	jobState, _ := json.Marshal(job)
+	if _, err := db.ExecContext(ctx, `INSERT INTO recruiting_source_jobs(
+job_id, source_id, source_job_key, detail_url, job_status, refresh_generation, detail_version,
+detail_content_hash, first_discovered_at, last_activity_at, version, state_json, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)`, job.JobID, job.SourceID, job.SourceJobKey,
+		job.DetailURL, job.Status, job.RefreshGeneration, job.DetailVersion, job.Version, jobState, now, now); err != nil {
+		t.Fatal(err)
+	}
+	contentHash, err := spec.ContentHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, _ := model.NewRecipe(current.RecipeID, model.RecipeDetail, current.Scope, 2, contentHash,
+		contractHash, model.RecipeExecution{ABIVersion: model.RecipeABIVersion, ContentRef: contentRef,
+			RequiredCapability: "http.fetch", Transport: model.RecipeTransportHTTPJSON})
+	if err := repository.CreateRecipe(ctx, candidate, now); err != nil {
+		t.Fatal(err)
+	}
+	return job.JobID, candidate
+}
+
+func assertLiveDetailValidationHasNoBusinessWrites(t *testing.T, dsn, sourceID, jobID, recipeID string,
+	recipeVersion uint64) {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var detailVersions, assignedCandidate int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recruiting_job_detail_versions WHERE job_id = ?`,
+		jobID).Scan(&detailVersions); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recruiting_source_assignments
+WHERE source_id = ? AND recipe_kind = 'detail' AND recipe_id = ? AND recipe_version = ?`,
+		sourceID, recipeID, recipeVersion).Scan(&assignedCandidate); err != nil {
+		t.Fatal(err)
+	}
+	if detailVersions != 0 || assignedCandidate != 0 {
+		t.Fatalf("Detail validation leaked business writes: detail_versions=%d candidate_assignments=%d",
+			detailVersions, assignedCandidate)
+	}
 }
