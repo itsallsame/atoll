@@ -277,19 +277,50 @@ WHERE active_batch_key IS NOT NULL AND batch_id = ?`, batch.BatchID).Scan(&activ
 		storedItem.AppliedAt != applyAt.Format(time.RFC3339Nano) || progress.Failed != 1 {
 		t.Fatalf("failed item=%+v progress=%+v err=%v", storedItem, progress, err)
 	}
+	pausedBatch, changed, err := repository.ReconcileRecipeRolloutWave(ctx, transitionBatch.BatchID,
+		now.Add(13*time.Second))
+	if err != nil || !changed || pausedBatch.Status != model.RecipeRolloutBatchPaused || pausedBatch.FailedCount != 1 {
+		t.Fatalf("paused batch=%+v changed=%v err=%v", pausedBatch, changed, err)
+	}
 	transitionParent, _ := repository.GetWork(ctx, transitionBatch.ParentWorkID)
+	if transitionParent.Status != model.WorkWaitingHuman || transitionParent.WaitingReason != "rollout_failed" {
+		t.Fatalf("paused parent=%+v", transitionParent)
+	}
 	cancelAt := now.Add(13 * time.Second)
-	unsafeCanceledBatch, _ := transitionBatch.Cancel(transitionBatch.Version)
+	unsafeCanceledBatch, _ := pausedBatch.Cancel(pausedBatch.Version)
 	unsafeCanceledParent, _ := transitionParent.Cancel(transitionParent.Version)
 	unsafeCancelReceipt, _ := model.NewCommandReceipt("rollout-transition-cancel", "recruiting.recipe.rollout.batch.cancel",
 		"sha256:rollout-transition-cancel", json.RawMessage(`{"status":"canceled"}`))
 	unsafeCancelEvent, _ := model.NewEventIntent("rollout-transition-cancel-event", "recipe.rollout_batch.canceled", "work",
 		transitionParent.WorkID, unsafeCanceledParent.Version, cancelAt.Format(time.RFC3339Nano),
 		unsafeCancelReceipt.CommandID, json.RawMessage(`{}`))
-	if _, err := repository.ApplyCancelRecipeRolloutBatchCommand(ctx, transitionBatch.Version,
+	if _, err := repository.ApplyCancelRecipeRolloutBatchCommand(ctx, pausedBatch.Version,
 		transitionParent.Version, unsafeCanceledBatch, unsafeCanceledParent, unsafeCancelReceipt,
 		unsafeCancelEvent, cancelAt); !errors.Is(err, ErrRecipeRolloutRejected) {
 		t.Fatalf("partially applied rollout cancellation error=%v", err)
+	}
+	resumeAt := now.Add(14 * time.Second)
+	resumedBatch, _ := pausedBatch.Resume(pausedBatch.Version)
+	resumedParent, _ := transitionParent.Start(transitionParent.Version)
+	resumeReceipt, _ := model.NewCommandReceipt("rollout-transition-resume", "recruiting.recipe.rollout.batch.resume",
+		"sha256:rollout-transition-resume", json.RawMessage(`{"status":"running"}`))
+	resumeEvent, _ := model.NewEventIntent("rollout-transition-resume-event", "recipe.rollout_batch.resumed", "work",
+		transitionParent.WorkID, resumedParent.Version, resumeAt.Format(time.RFC3339Nano), resumeReceipt.CommandID,
+		json.RawMessage(`{}`))
+	resumed, err := repository.ApplyResumeRecipeRolloutBatchCommand(ctx, pausedBatch.Version,
+		transitionParent.Version, resumedBatch, resumedParent, resumeReceipt, resumeEvent, resumeAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedResume, err := repository.ApplyResumeRecipeRolloutBatchCommand(ctx, pausedBatch.Version,
+		transitionParent.Version, resumedBatch, resumedParent, resumeReceipt, resumeEvent, resumeAt)
+	if err != nil || !replayedResume.Replayed || string(replayedResume.Response) != string(resumed.Response) {
+		t.Fatalf("resume replay=%+v err=%v", replayedResume, err)
+	}
+	retriedItem, _ := repository.GetRecipeRolloutBatchItem(ctx, resumedBatch.BatchID, 1)
+	if retriedItem.Status != model.RecipeRolloutItemAwaitingValidation || retriedItem.FailureCode != "" ||
+		retriedItem.AppliedAssignmentVersion != claimed.AppliedAssignmentVersion {
+		t.Fatalf("resumed item=%+v", retriedItem)
 	}
 }
 

@@ -78,6 +78,7 @@ const (
 	TypeRecipeRolloutBatchGet     = "recruiting.recipe.rollout.batch.get"
 	TypeRecipeRolloutBatchItems   = "recruiting.recipe.rollout.batch.items"
 	TypeRecipeRolloutBatchConfirm = "recruiting.recipe.rollout.batch.confirm"
+	TypeRecipeRolloutBatchResume  = "recruiting.recipe.rollout.batch.resume"
 	TypeRecipeRolloutBatchCancel  = "recruiting.recipe.rollout.batch.cancel"
 	TypeRecipeQuarantine          = "recruiting.recipe.quarantine"
 	TypeRecipeRollback            = "recruiting.recipe.rollback"

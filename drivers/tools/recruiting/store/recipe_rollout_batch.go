@@ -486,10 +486,16 @@ func validateRecipeRolloutValidationBinding(ctx context.Context, tx *sql.Tx, bat
 	if err != nil {
 		return err
 	}
+	source, err := getSourceForUpdate(ctx, tx, current.SourceID)
+	if err != nil {
+		return err
+	}
 	if work.TargetType != "source" || work.TargetID != current.SourceID || work.Purpose != "source_validation" ||
 		work.Terminal() || run.ListingRunID != next.ValidationRunID || run.WorkID != work.WorkID ||
 		run.Mode != model.ListingRunValidation || run.SourceID != current.SourceID ||
-		run.SourceVersion != current.AppliedSourceVersion+1 ||
+		next.ValidationSourceVersion <= current.AppliedSourceVersion ||
+		run.SourceVersion != next.ValidationSourceVersion || source.Version != next.ValidationSourceVersion ||
+		source.ReadinessStatus != model.SourceValidating ||
 		run.ListingExecution.RecipeID != batch.RecipeID ||
 		run.ListingExecution.RecipeVersion != batch.RecipeVersion ||
 		run.ListingExecution.ContractHash != batch.ContractHash ||
@@ -550,6 +556,7 @@ func validateRecipeRolloutValidationOutcome(ctx context.Context, tx *sql.Tx, bat
 		return err
 	}
 	if run.ListingRunID != item.ValidationRunID || run.SourceID != item.SourceID ||
+		run.SourceVersion != item.ValidationSourceVersion ||
 		run.Mode != model.ListingRunValidation {
 		return fmt.Errorf("Recipe rollout validation outcome belongs to another Work/run")
 	}
@@ -617,7 +624,8 @@ func validateRecipeRolloutItemTransition(batch model.RecipeRolloutBatch, current
 		if batch.Status != model.RecipeRolloutBatchRunning {
 			return fmt.Errorf("Recipe rollout validation can only be bound by a running batch")
 		}
-		derived, err = current.BindValidation(current.Version, next.ValidationWorkID, next.ValidationRunID)
+		derived, err = current.BindValidation(current.Version, next.ValidationWorkID, next.ValidationRunID,
+			next.ValidationSourceVersion)
 	case current.Status == model.RecipeRolloutItemAwaitingValidation && next.Status == model.RecipeRolloutItemSucceeded:
 		if batch.Status != model.RecipeRolloutBatchRunning || !rolloutTimeEquals(next.ValidatedAt, businessAt) {
 			return fmt.Errorf("Recipe rollout item can only succeed in a running batch at business time")

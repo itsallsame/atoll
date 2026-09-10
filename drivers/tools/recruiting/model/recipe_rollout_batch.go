@@ -94,6 +94,7 @@ type RecipeRolloutBatchItem struct {
 	AppliedAt                  string                  `json:"applied_at,omitempty"`
 	ValidationWorkID           string                  `json:"validation_work_id,omitempty"`
 	ValidationRunID            string                  `json:"validation_run_id,omitempty"`
+	ValidationSourceVersion    uint64                  `json:"validation_source_version,omitempty"`
 	ValidatedAt                string                  `json:"validated_at,omitempty"`
 	Status                     RecipeRolloutItemStatus `json:"status"`
 	FailureCode                string                  `json:"failure_code,omitempty"`
@@ -166,16 +167,18 @@ func (i RecipeRolloutBatchItem) MarkApplied(expected uint64, sourceVersion, assi
 	return i, nil
 }
 
-func (i RecipeRolloutBatchItem) BindValidation(expected uint64, workID, runID string) (RecipeRolloutBatchItem, error) {
+func (i RecipeRolloutBatchItem) BindValidation(expected uint64, workID, runID string,
+	sourceVersion uint64) (RecipeRolloutBatchItem, error) {
 	if err := requireVersion(expected, i.Version); err != nil {
 		return RecipeRolloutBatchItem{}, err
 	}
 	workID, runID = strings.TrimSpace(workID), strings.TrimSpace(runID)
 	if i.Status != RecipeRolloutItemAwaitingValidation || i.ValidationWorkID != "" ||
-		workID == "" || runID == "" {
+		workID == "" || runID == "" || sourceVersion <= i.AppliedSourceVersion {
 		return RecipeRolloutBatchItem{}, fmt.Errorf("awaiting rollout item and validation Work/run are required")
 	}
 	i.ValidationWorkID, i.ValidationRunID = workID, runID
+	i.ValidationSourceVersion = sourceVersion
 	i.Version++
 	return i, nil
 }
@@ -187,7 +190,8 @@ func (i RecipeRolloutBatchItem) MarkSucceeded(expected uint64, validationWorkID,
 	validationWorkID = strings.TrimSpace(validationWorkID)
 	if i.Status != RecipeRolloutItemAwaitingValidation || validationWorkID == "" || !validRFC3339(validatedAt) ||
 		(i.ValidationWorkID != "" && i.ValidationWorkID != validationWorkID) ||
-		(i.PreviousAssignment.Kind == RecipeListing && (i.ValidationWorkID == "" || i.ValidationRunID == "")) {
+		(i.PreviousAssignment.Kind == RecipeListing && (i.ValidationWorkID == "" || i.ValidationRunID == "" ||
+			i.ValidationSourceVersion <= i.AppliedSourceVersion)) {
 		return RecipeRolloutBatchItem{}, &InvalidTransitionError{Entity: "recipe_rollout_item", From: string(i.Status), Action: "succeed"}
 	}
 	i.ValidationWorkID = validationWorkID
@@ -217,6 +221,7 @@ func (i RecipeRolloutBatchItem) Retry(expected uint64) (RecipeRolloutBatchItem, 
 		i.ApplyRequestedAt = ""
 	}
 	i.ValidationWorkID, i.ValidationRunID, i.ValidatedAt = "", "", ""
+	i.ValidationSourceVersion = 0
 	i.Version++
 	return i, nil
 }

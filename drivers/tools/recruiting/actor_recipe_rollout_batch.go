@@ -68,7 +68,8 @@ func handleRecipeRolloutBatch(sys actorbase.Sys, repository *store.Repository, m
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
 		return
 	}
-	if msg.Type == TypeRecipeRolloutBatchConfirm || msg.Type == TypeRecipeRolloutBatchCancel {
+	if msg.Type == TypeRecipeRolloutBatchConfirm || msg.Type == TypeRecipeRolloutBatchResume ||
+		msg.Type == TypeRecipeRolloutBatchCancel {
 		handleRecipeRolloutBatchControl(sys, repository, msg)
 		return
 	}
@@ -248,6 +249,11 @@ func handleRecipeRolloutBatchControl(sys actorbase.Sys, repository *store.Reposi
 		if err == nil {
 			nextParent, err = parent.Start(parent.Version)
 		}
+	} else if msg.Type == TypeRecipeRolloutBatchResume {
+		nextBatch, err = batch.Resume(payload.ExpectedVersion)
+		if err == nil {
+			nextParent, err = parent.Start(parent.Version)
+		}
 	} else {
 		nextBatch, err = batch.Cancel(payload.ExpectedVersion)
 		if err == nil {
@@ -259,6 +265,9 @@ func handleRecipeRolloutBatchControl(sys actorbase.Sys, repository *store.Reposi
 		return
 	}
 	nextAction, eventType := "monitor_canary", "recipe.rollout_batch.started"
+	if msg.Type == TypeRecipeRolloutBatchResume {
+		eventType = "recipe.rollout_batch.resumed"
+	}
 	if msg.Type == TypeRecipeRolloutBatchCancel {
 		nextAction, eventType = "none", "recipe.rollout_batch.canceled"
 	}
@@ -274,6 +283,9 @@ func handleRecipeRolloutBatchControl(sys actorbase.Sys, repository *store.Reposi
 	var result store.CommandResult
 	if msg.Type == TypeRecipeRolloutBatchConfirm {
 		result, err = repository.ApplyStartRecipeRolloutBatchCommand(msg.Ctx(), batch.Version, parent.Version,
+			nextBatch, nextParent, receipt, event, businessAt)
+	} else if msg.Type == TypeRecipeRolloutBatchResume {
+		result, err = repository.ApplyResumeRecipeRolloutBatchCommand(msg.Ctx(), batch.Version, parent.Version,
 			nextBatch, nextParent, receipt, event, businessAt)
 	} else {
 		result, err = repository.ApplyCancelRecipeRolloutBatchCommand(msg.Ctx(), batch.Version, parent.Version,

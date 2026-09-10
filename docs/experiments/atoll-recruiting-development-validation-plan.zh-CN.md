@@ -451,6 +451,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 执行状态补充（2026-09-10，Listing Recipe 批量 canary 纵向执行）：migration 33 先持久化 apply request 的稳定业务时间，Actor reconcile 随后以确定性 command ID 调用既有逐 Source Assignment 原语；即使进程退出在 Assignment 提交与成员登记之间，重启仍读取数据库目标事实并继续，不能重复产生 Assignment version。Listing 成员会创建真实 `source_validation` Work/run 和既有 Executor dispatch；成功 Attempt 的质量结果、page/trace Artifact 仍经过原 Source publication 证据闸门。对已经选择目标 Recipe 的重校准只更新 Source assessment，不再生成一次同 Recipe Assignment。隔离非 root MySQL 8.4 纵向合同跨 Repository 重建依次验证 plan→apply→validation、模拟 Executor 成功、自动发布、成员/父 Work/批次完成、Assignment 历史恰为旧版与目标版两条；完整 store 126.515 秒及 Actor 合同 1.197 秒通过。Detail canary、失败 wave 的显式 rollback/resume、多 wave 与进程级 Server/Executor E2E 仍未完成，因此 S22 继续保持未完成。
 
+执行状态补充（2026-09-10，失败 wave 暂停与显式恢复）：数据库从活动 wave 的规范化成员事实重算失败数，任一失败会原子把 Batch 与父 Work 推进到 `paused`/`waiting_human(rollout_failed)`，不会开放下一 wave。公开 `recipe.rollout.batch.resume` 重新锁定整个固定 wave，并要求每个失败成员关联的旧 validation Work 已由用户终结；随后在一个至多 500 项的事务中按失败阶段恢复成员、启动父 Work 并清零批次失败计数。已经 applied 的成员回到 awaiting validation，Assignment fence 保持不变；切换前失败才回到 pending。每次恢复以成员 version 派生新的 validation generation，并把该代 Source version 与 Work/run 一起登记，防止复用旧终态 Work 或旧 command receipt；当前 Source snapshot 用 CAS 锁定，已应用 Assignment version 继续作为不变围栏。跨 Repository 的非 root MySQL 纵向合同已实际执行首次质量失败→Source invalid→wave 暂停→显式恢复→新 Work/Run→验证成功→批次完成。命令 receipt/event 与恢复原子提交并可重放。部分应用批次仍不能直接 cancel；显式 rollback 尚待下一切片。
+
 ## 13. P8：25 场景验收矩阵
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。

@@ -158,7 +158,8 @@ func reconcileRecipeRolloutApplication(ctx context.Context, repository *store.Re
 
 func reconcileListingRolloutValidation(ctx context.Context, cfg Config, repository *store.Repository,
 	batch model.RecipeRolloutBatch, item model.RecipeRolloutBatchItem, now time.Time) (bool, error) {
-	runID := "rollout-validation-" + stableDigest(batch.BatchID+"|"+item.SourceID)
+	validationIdentity := recipeRolloutValidationIdentity(batch.BatchID, item.SourceID, item.Version)
+	runID := "rollout-validation-" + stableDigest(validationIdentity)
 	workID := "work-" + runID
 	if existingWork, err := repository.GetWork(ctx, workID); err == nil {
 		run, runErr := repository.GetListingRunByWork(ctx, workID)
@@ -168,7 +169,7 @@ func reconcileListingRolloutValidation(ctx context.Context, cfg Config, reposito
 			}
 			return false, fmt.Errorf("existing rollout validation Work is inconsistent")
 		}
-		bound, bindErr := item.BindValidation(item.Version, workID, runID)
+		bound, bindErr := item.BindValidation(item.Version, workID, runID, run.SourceVersion)
 		if bindErr != nil {
 			return false, bindErr
 		}
@@ -180,11 +181,14 @@ func reconcileListingRolloutValidation(ctx context.Context, cfg Config, reposito
 	if err != nil {
 		return false, err
 	}
-	validationAt, err := time.Parse(time.RFC3339, item.AppliedAt)
+	appliedAt, err := time.Parse(time.RFC3339, item.AppliedAt)
 	if err != nil {
 		return false, err
 	}
-	validationAt = validationAt.Add(time.Microsecond)
+	validationAt := now.UTC()
+	if !validationAt.After(appliedAt) {
+		validationAt = appliedAt.Add(time.Microsecond)
+	}
 	nextSource, run, err := preparation.NewRun(runID, workID, item.AppliedAssignmentVersion,
 		validationAt.UTC().Format(time.RFC3339Nano))
 	if err != nil {
@@ -202,7 +206,7 @@ func reconcileListingRolloutValidation(ctx context.Context, cfg Config, reposito
 		NotBefore: validationAt}
 	response, _ := json.Marshal(map[string]any{"batch_id": batch.BatchID, "source_id": item.SourceID,
 		"work_id": workID, "validation_run_id": runID})
-	commandID := "rollout-validate-" + stableDigest(batch.BatchID+"|"+item.SourceID)
+	commandID := "rollout-validate-" + stableDigest(validationIdentity)
 	receipt, _ := model.NewCommandReceipt(commandID, "recruiting.internal.recipe_rollout.validate",
 		"sha256:"+stableDigest(commandID), response)
 	event, _ := model.NewEventIntent("event-"+stableDigest(commandID+"|source.validation_started"),
@@ -213,11 +217,14 @@ func reconcileListingRolloutValidation(ctx context.Context, cfg Config, reposito
 	if err != nil {
 		return false, err
 	}
-	if _, err := repository.ApplySourceValidationCommand(ctx, item.AppliedSourceVersion,
+	// A failed validation legitimately advances the Source to invalid. Resume
+	// therefore fences the current Source snapshot prepared above, while the
+	// applied Assignment version remains the immutable rollout fence.
+	if _, err := repository.ApplySourceValidationCommand(ctx, preparation.Source.Version,
 		item.AppliedAssignmentVersion, nextSource, run, work, placement, receipt, event, dispatch, validationAt); err != nil {
 		return false, err
 	}
-	bound, err := item.BindValidation(item.Version, workID, runID)
+	bound, err := item.BindValidation(item.Version, workID, runID, run.SourceVersion)
 	if err != nil {
 		return false, err
 	}
@@ -225,6 +232,14 @@ func reconcileListingRolloutValidation(ctx context.Context, cfg Config, reposito
 		return false, err
 	}
 	return true, nil
+}
+
+// recipeRolloutValidationIdentity is stable while an unbound item is retried
+// after a process crash, but advances when a failed item is explicitly resumed.
+// That prevents the new validation generation from reusing the terminal Work,
+// ListingRun, or command receipt from the previous generation.
+func recipeRolloutValidationIdentity(batchID, sourceID string, itemVersion uint64) string {
+	return fmt.Sprintf("%s|%s|%d", batchID, sourceID, itemVersion)
 }
 
 func reconcileListingRolloutValidationOutcome(ctx context.Context, repository *store.Repository,

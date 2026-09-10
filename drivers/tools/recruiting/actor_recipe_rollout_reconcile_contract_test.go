@@ -115,7 +115,7 @@ func TestRecipeRolloutReconcileAppliesListingAndStartsRealValidation(t *testing.
 		RequestHash: "sha256:actor-rollout-result", AttemptID: offer.Attempt.AttemptID,
 		ExecutorActorID: offer.Attempt.ExecutorActorID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation,
 		ResultKind: "source_validation", Artifacts: []model.ArtifactMetadata{page, trace},
-		Quality: executioncontract.ListingQuality{IdentityComplete: true, OrderingContractHeld: true,
+		Quality: executioncontract.ListingQuality{IdentityComplete: true, OrderingContractHeld: false,
 			PaginationStable: true, ItemCount: 3}, CompletedAt: now.Add(5 * time.Second)}); err != nil {
 		t.Fatal(err)
 	}
@@ -123,14 +123,84 @@ func TestRecipeRolloutReconcileAppliesListingAndStartsRealValidation(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	pausedBatch, _ := repository.GetRecipeRolloutBatch(ctx, batch.BatchID)
+	failedItem, _ := repository.GetRecipeRolloutBatchItem(ctx, batch.BatchID, 1)
+	pausedParent, _ := repository.GetWork(ctx, batch.ParentWorkID)
+	invalidSource, _ := repository.GetSource(ctx, source.SourceID)
+	if fourth.WavesAdvanced != 1 || pausedBatch.Status != model.RecipeRolloutBatchPaused ||
+		failedItem.Status != model.RecipeRolloutItemFailed || pausedParent.Status != model.WorkWaitingHuman ||
+		invalidSource.ReadinessStatus != model.SourceInvalid {
+		t.Fatalf("fourth=%+v batch=%+v item=%+v parent=%+v source=%+v", fourth,
+			pausedBatch, failedItem, pausedParent, invalidSource)
+	}
+	firstValidationWorkID := failedItem.ValidationWorkID
+	resumeAt := now.Add(7 * time.Second)
+	resumedBatch, _ := pausedBatch.Resume(pausedBatch.Version)
+	resumedParent, _ := pausedParent.Start(pausedParent.Version)
+	resumeReceipt, _ := model.NewCommandReceipt("actor-rollout-resume", TypeRecipeRolloutBatchResume,
+		"sha256:actor-rollout-resume", json.RawMessage(`{"status":"running"}`))
+	resumeEvent, _ := model.NewEventIntent("actor-rollout-resume-event", "recipe.rollout_batch.resumed", "work",
+		pausedParent.WorkID, resumedParent.Version, resumeAt.Format(time.RFC3339Nano), resumeReceipt.CommandID,
+		json.RawMessage(`{}`))
+	if _, err := repository.ApplyResumeRecipeRolloutBatchCommand(ctx, pausedBatch.Version, pausedParent.Version,
+		resumedBatch, resumedParent, resumeReceipt, resumeEvent, resumeAt); err != nil {
+		t.Fatal(err)
+	}
+	repository, _ = store.NewRepository(db)
+	fifth, err := reconcileRecipeRolloutBatches(ctx, cfg, repository, 10, now.Add(8*time.Second))
+	if err != nil || fifth.ValidationsStarted != 1 {
+		t.Fatalf("fifth reconcile=%+v err=%v", fifth, err)
+	}
+	retriedItem, _ := repository.GetRecipeRolloutBatchItem(ctx, batch.BatchID, 1)
+	if retriedItem.ValidationWorkID == "" || retriedItem.ValidationWorkID == firstValidationWorkID {
+		t.Fatalf("resumed validation reused terminal Work: first=%q resumed=%q",
+			firstValidationWorkID, retriedItem.ValidationWorkID)
+	}
+	retryRun, err := repository.GetListingRunByWork(ctx, retriedItem.ValidationWorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryOffer, err := repository.OfferExecution(ctx, store.ListingOfferRequest{AttemptID: "actor-rollout-retry-attempt",
+		ExecutorActorID: "tool:actor-rollout:1", ExecutorIncarnation: "actor-rollout-boot",
+		Capability: retryRun.ListingExecution.Execution.RequiredCapability, Origin: retryRun.ListingExecution.Origin,
+		OfferedAt: now.Add(9 * time.Second), BudgetPolicy: cfg.executionBudgetPolicy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, retryOffer.Attempt.AttemptID, retryOffer.Attempt.ExecutorActorID,
+		retryOffer.Attempt.ExecutorIncarnation, now.Add(9*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, retryOffer.Attempt.AttemptID, retryOffer.Attempt.ExecutorActorID,
+		retryOffer.Attempt.ExecutorIncarnation, now.Add(9*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	retryPage, _ := model.NewArtifactMetadata("actor-rollout-retry-page", model.ArtifactPage, "sha256:retry-page",
+		"artifact://actor-rollout/retry-page", retriedItem.ValidationWorkID, retryOffer.Attempt.AttemptID,
+		"recruiting:operator", "30d", true)
+	retryTrace, _ := model.NewArtifactMetadata("actor-rollout-retry-trace", model.ArtifactTrace, "sha256:retry-trace",
+		"artifact://actor-rollout/retry-trace", retriedItem.ValidationWorkID, retryOffer.Attempt.AttemptID,
+		"recruiting:operator", "30d", true)
+	if _, err := repository.AcceptDiagnosticResult(ctx, store.DiagnosticResult{CommandID: "actor-rollout-retry-result",
+		RequestHash: "sha256:actor-rollout-retry-result", AttemptID: retryOffer.Attempt.AttemptID,
+		ExecutorActorID: retryOffer.Attempt.ExecutorActorID, ExecutorIncarnation: retryOffer.Attempt.ExecutorIncarnation,
+		ResultKind: "source_validation", Artifacts: []model.ArtifactMetadata{retryPage, retryTrace},
+		Quality: executioncontract.ListingQuality{IdentityComplete: true, OrderingContractHeld: true,
+			PaginationStable: true, ItemCount: 3}, CompletedAt: now.Add(10 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	sixth, err := reconcileRecipeRolloutBatches(ctx, cfg, repository, 10, now.Add(11*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
 	completedBatch, _ := repository.GetRecipeRolloutBatch(ctx, batch.BatchID)
 	completedItem, _ := repository.GetRecipeRolloutBatchItem(ctx, batch.BatchID, 1)
 	completedParent, _ := repository.GetWork(ctx, batch.ParentWorkID)
 	completedSource, _ := repository.GetSource(ctx, source.SourceID)
-	if fourth.WavesAdvanced != 1 || completedBatch.Status != model.RecipeRolloutBatchCompleted ||
+	if sixth.WavesAdvanced != 1 || completedBatch.Status != model.RecipeRolloutBatchCompleted ||
 		completedItem.Status != model.RecipeRolloutItemSucceeded || completedParent.Status != model.WorkCompleted ||
 		completedSource.ReadinessStatus != model.SourceReady || !completedSource.HasVerifiedIncrementalContract() {
-		t.Fatalf("fourth=%+v batch=%+v item=%+v parent=%+v source=%+v", fourth,
+		t.Fatalf("sixth=%+v batch=%+v item=%+v parent=%+v source=%+v", sixth,
 			completedBatch, completedItem, completedParent, completedSource)
 	}
 	var assignmentHistory int
@@ -141,9 +211,19 @@ WHERE source_id = ? AND recipe_kind = ?`, source.SourceID, model.RecipeListing).
 	if assignmentHistory != 2 {
 		t.Fatalf("reconcile duplicated the applied Assignment history: %d", assignmentHistory)
 	}
-	replayed, err := reconcileRecipeRolloutBatches(ctx, cfg, repository, 10, now.Add(7*time.Second))
-	if err != nil || replayed.BatchesScanned != 0 {
-		t.Fatalf("completed rollout was reconciled again: %+v err=%v", replayed, err)
+	replayedBatch, changed, err := repository.ReconcileRecipeRolloutWave(ctx, batch.BatchID, now.Add(12*time.Second))
+	if err != nil || changed || replayedBatch != completedBatch {
+		t.Fatalf("completed rollout changed on reconcile: %+v changed=%v err=%v", replayedBatch, changed, err)
+	}
+}
+
+func TestRecipeRolloutValidationIdentityIsStableWithinGenerationAndChangesAfterResume(t *testing.T) {
+	first := recipeRolloutValidationIdentity("batch-1", "source-1", 3)
+	if replayed := recipeRolloutValidationIdentity("batch-1", "source-1", 3); replayed != first {
+		t.Fatalf("same validation generation changed identity: first=%q replayed=%q", first, replayed)
+	}
+	if resumed := recipeRolloutValidationIdentity("batch-1", "source-1", 6); resumed == first {
+		t.Fatalf("resumed validation generation reused identity %q", resumed)
 	}
 }
 

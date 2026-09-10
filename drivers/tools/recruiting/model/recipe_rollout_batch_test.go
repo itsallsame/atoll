@@ -201,8 +201,10 @@ func TestRecipeRolloutItemsFreezeVersionsAndBindDeterministicCanaryOrder(t *test
 	if err != nil || applied.Status != RecipeRolloutItemAwaitingValidation {
 		t.Fatalf("applied item=%+v err=%v", applied, err)
 	}
-	bound, err := applied.BindValidation(applied.Version, "work-validation", "run-validation")
-	if err != nil || bound.ValidationRunID != "run-validation" {
+	bound, err := applied.BindValidation(applied.Version, "work-validation", "run-validation",
+		applied.AppliedSourceVersion+1)
+	if err != nil || bound.ValidationRunID != "run-validation" ||
+		bound.ValidationSourceVersion != applied.AppliedSourceVersion+1 {
 		t.Fatalf("bound item=%+v err=%v", bound, err)
 	}
 	succeeded, err := bound.MarkSucceeded(bound.Version, "work-validation", "2026-09-10T01:01:00Z")
