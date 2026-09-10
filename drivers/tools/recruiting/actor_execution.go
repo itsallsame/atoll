@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -20,20 +21,22 @@ type listingOfferPayload = executioncontract.OfferRequest
 type executionTransitionPayload = executioncontract.TransitionRequest
 
 type executionControlResponse struct {
-	ContractVersion  string                              `json:"contract_version"`
-	CorrelationID    string                              `json:"correlation_id"`
-	RequestedBy      string                              `json:"requested_by"`
-	Available        bool                                `json:"available,omitempty"`
-	Offer            *store.ExecutionOffer               `json:"offer,omitempty"`
-	Attempt          *model.Attempt                      `json:"attempt,omitempty"`
-	Page             *store.ListingPageOutcome           `json:"page,omitempty"`
-	Completion       *store.ListingCompletionOutcome     `json:"completion,omitempty"`
-	Diagnostic       *store.DiagnosticResultOutcome      `json:"diagnostic,omitempty"`
-	SourceValidation *store.DiagnosticResultOutcome      `json:"source_validation,omitempty"`
-	RecipeValidation any                                 `json:"recipe_validation,omitempty"`
-	Detail           *store.DetailResultOutcome          `json:"detail,omitempty"`
-	CompanyImport    *store.CompanyImportResultOutcome   `json:"company_import,omitempty"`
-	SourceDiscovery  *store.SourceDiscoveryResultOutcome `json:"source_discovery,omitempty"`
+	ContractVersion     string                                `json:"contract_version"`
+	CorrelationID       string                                `json:"correlation_id"`
+	RequestedBy         string                                `json:"requested_by"`
+	Available           bool                                  `json:"available,omitempty"`
+	Offer               *store.ExecutionOffer                 `json:"offer,omitempty"`
+	Attempt             *model.Attempt                        `json:"attempt,omitempty"`
+	Page                *store.ListingPageOutcome             `json:"page,omitempty"`
+	Completion          *store.ListingCompletionOutcome       `json:"completion,omitempty"`
+	Diagnostic          *store.DiagnosticResultOutcome        `json:"diagnostic,omitempty"`
+	SourceValidation    *store.DiagnosticResultOutcome        `json:"source_validation,omitempty"`
+	RecipeValidation    any                                   `json:"recipe_validation,omitempty"`
+	Detail              *store.DetailResultOutcome            `json:"detail,omitempty"`
+	CompanyImport       *store.CompanyImportResultOutcome     `json:"company_import,omitempty"`
+	SourceDiscovery     *store.SourceDiscoveryResultOutcome   `json:"source_discovery,omitempty"`
+	ProfileRepair       *store.ProfileRepairSubmissionOutcome `json:"profile_repair,omitempty"`
+	ProfileVerification *store.ProfileVerificationOutcome     `json:"profile_verification,omitempty"`
 }
 
 type listingPageResultPayload = executioncontract.ListingPageResult
@@ -47,8 +50,10 @@ type companyImportPreviewChunkPayload = executioncontract.CompanyImportPreviewCh
 type companyImportPreviewCompletionPayload = executioncontract.CompanyImportPreviewCompletionResult
 type companyImportApplyPayload = executioncontract.CompanyImportApplyResult
 type sourceDiscoveryResultPayload = executioncontract.SourceDiscoveryResult
+type profileRepairSubmissionPayload = executioncontract.ProfileRepairSubmission
+type profileVerificationResultPayload = executioncontract.ProfileVerificationResult
 
-func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, state *storedState, msg actorbase.Msg) {
+func handleAnyExecutionResult(sys actorbase.Sys, cfg Config, repository *store.Repository, state *storedState, msg actorbase.Msg) {
 	var discriminator struct {
 		ResultKind string `json:"result_kind"`
 	}
@@ -83,9 +88,88 @@ func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, s
 		handleCompanyImportPreviewCompletion(sys, repository, msg)
 	case "company_import_apply":
 		handleCompanyImportApply(sys, repository, msg)
+	case "profile_repair_submission":
+		handleProfileRepairSubmission(sys, cfg, repository, msg)
+	case "profile_verification":
+		handleProfileVerificationResult(sys, repository, msg)
 	default:
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "unknown execution result_kind")
 	}
+}
+
+func handleProfileVerificationResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload profileVerificationResultPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if strings.TrimSpace(payload.CommandID) == "" || payload.ResultKind != "profile_verification" ||
+		strings.TrimSpace(payload.SessionID) == "" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "Profile verification command, session, and result kind are required")
+		return
+	}
+	outcome, err := repository.AcceptProfileVerificationResult(msg.Ctx(), store.ProfileVerificationResult{
+		CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), AttemptID: payload.AttemptID,
+		ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
+		SessionID: payload.SessionID, SecurityDomain: strings.TrimSpace(payload.SecurityDomain),
+		Authenticated: payload.Authenticated, Artifact: payload.Artifact, CompletedAt: time.UnixMilli(msg.TS).UTC(),
+	})
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := executionControlResponse{ContractVersion: executioncontract.Version,
+		CorrelationID: string(msg.CorrelationID), RequestedBy: string(msg.Sender.ID), ProfileVerification: &outcome}
+	_, _ = sys.Reply(msg, response)
+}
+
+func handleProfileRepairSubmission(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
+	var payload profileRepairSubmissionPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if strings.TrimSpace(payload.CommandID) == "" || payload.ResultKind != "profile_repair_submission" ||
+		strings.TrimSpace(payload.SessionID) == "" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "Profile repair submission command, session, and result kind are required")
+		return
+	}
+	session, err := repository.GetProfileRepairSession(msg.Ctx(), payload.SessionID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	completedAt := time.UnixMilli(msg.TS).UTC()
+	suffix := stableDigest(payload.CommandID + "|" + payload.SessionID + "|profile.verify")
+	verificationWork, err := model.NewWork("profile-verify-work-"+suffix, "profile", session.ProfileID,
+		"profile_verify", "automatic")
+	if err == nil {
+		verificationWork, err = verificationWork.WithCausality(string(msg.Sender.ID), string(msg.ID), session.WorkID)
+	}
+	deadline := completedAt.Add(time.Duration(cfg.ProfileRepairSessionTTLMS) * time.Millisecond)
+	placement := store.WorkPlacement{BusinessKey: fmt.Sprintf("profile-verify|%s|%d", session.ProfileID, session.ProfileVersion+1),
+		Priority: 700, Capability: store.ProfileRepairCapability, ProfileID: session.ProfileID,
+		NotBefore: completedAt, DeadlineAt: &deadline}
+	var dispatch store.ExecutionDispatchIntent
+	if err == nil {
+		dispatch, err = store.NewExecutionDispatchIntent("dispatch-profile-verify-"+suffix, session.DeviceActorID,
+			store.ProfileRepairCapability, "", session.ProfileID, "profile_verification_created", payload.CommandID, completedAt)
+	}
+	var outcome store.ProfileRepairSubmissionOutcome
+	if err == nil {
+		outcome, err = repository.AcceptProfileRepairSubmission(msg.Ctx(), store.ProfileRepairSubmission{
+			CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), AttemptID: payload.AttemptID,
+			ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
+			SessionID: payload.SessionID, NextSecretRef: payload.NextSecretRef, Artifact: payload.Artifact,
+			VerificationWork: verificationWork, VerificationPlace: placement,
+			VerificationDispatch: dispatch, CompletedAt: completedAt,
+		})
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := executionControlResponse{ContractVersion: executioncontract.Version,
+		CorrelationID: string(msg.CorrelationID), RequestedBy: string(msg.Sender.ID), ProfileRepair: &outcome}
+	_, _ = sys.Reply(msg, response)
 }
 
 func handleRecipeSampleValidationResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

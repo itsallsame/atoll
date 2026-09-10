@@ -177,6 +177,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleBaselineStart(sys, cfg, repository, msg)
 		case TypeJobCorrect:
 			handleJobCorrect(sys, repository, msg)
+		case TypeProfileRepairBegin:
+			handleProfileRepairBegin(sys, cfg, repository, msg)
 		case TypeWorkCreate, TypeWorkPause, TypeWorkResume, TypeWorkRetry, TypeWorkCancel, TypeWorkResolve:
 			handleWorkMessage(sys, cfg, repository, msg)
 		case TypeRunJoinOccurrence:
@@ -188,7 +190,7 @@ func run(sys actorbase.Sys, cfg Config) error {
 		case TypeExecutionOffer, TypeExecutionAccept, TypeExecutionStarted, TypeExecutionFailed, TypeExecutionWakeCompleted:
 			handleExecutionControlMessage(sys, cfg, repository, msg)
 		case TypeSourceGet, TypeSourceList, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
-			TypeJobGet, TypeJobList, TypeJobCorrectionGet, TypeWorkGet, TypeWorkList,
+			TypeJobGet, TypeJobList, TypeJobCorrectionGet, TypeProfileGet, TypeWorkGet, TypeWorkList,
 			TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary, TypeRepairGet, TypeRepairList, TypeRecipeInspect,
 			TypeSystemStatus, TypeCapacityStatus:
 			handleResourceQuery(sys, cfg, repository, msg)
@@ -201,7 +203,7 @@ func run(sys actorbase.Sys, cfg Config) error {
 		case TypeProbeStatus:
 			handleStatus(sys, state, msg)
 		case TypeExecutionResult:
-			handleAnyExecutionResult(sys, repository, state, msg)
+			handleAnyExecutionResult(sys, cfg, repository, state, msg)
 		default:
 			_, _ = sys.Fail(msg, "type_unsupported", fmt.Sprintf("recruiting actor does not answer %q", msg.Type))
 		}

@@ -351,6 +351,20 @@ func (a Attempt) WithBatchFence(batchVersion uint64) (Attempt, error) {
 	return a, nil
 }
 
+// WithProfileRepairFence binds a repair or verification Attempt only to its
+// Profile control version. It must not invent Company, Source, Recipe, or
+// batch identities for this control-plane Work.
+func (a Attempt) WithProfileRepairFence(profileID string, profileVersion uint64) (Attempt, error) {
+	if a.Status != AttemptOffered || strings.TrimSpace(profileID) == "" || profileVersion < 2 ||
+		a.CompanyVersion != 0 || a.SourceVersion != 0 || a.AssignmentVersion != 0 || a.RecipeID != "" ||
+		a.RecipeVersion != 0 || a.ProfileID != "" || a.ProfileVersion != 0 || a.BatchVersion != 0 ||
+		a.DiscoveryGeneration != 0 {
+		return Attempt{}, fmt.Errorf("offered unfenced Attempt and repairing Profile version are required")
+	}
+	a.ProfileID, a.ProfileVersion = strings.TrimSpace(profileID), profileVersion
+	return a, nil
+}
+
 // WithDiscoveryFence binds source discovery to its Company, immutable Recipe
 // version, aggregate generation state, and optional authenticated profile. It
 // deliberately leaves Source and Assignment versions empty: neither exists

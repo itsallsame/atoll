@@ -201,6 +201,7 @@ type Offer struct {
 	Discovery           *model.SourceDiscovery        `json:"discovery,omitempty"`
 	Recipe              *model.Recipe                 `json:"recipe,omitempty"`
 	RecipeValidation    *model.RecipeSampleValidation `json:"recipe_validation,omitempty"`
+	ProfileRepair       *model.ProfileRepairSession   `json:"profile_repair,omitempty"`
 	Budget              model.BudgetPermit            `json:"budget"`
 	BudgetExpiresAt     string                        `json:"budget_expires_at"`
 	RequestedCapability string                        `json:"requested_capability"`
@@ -355,18 +356,45 @@ type SourceDiscoveryResult struct {
 	Candidates          []model.SourceDiscoveryCandidate `json:"candidates"`
 }
 
+// ProfileRepairSubmission is emitted only by the device-bound executor after
+// an operator completed the interactive login. NextSecretRef is an opaque
+// local-provider reference, never a cookie, password, or OTP. A separate
+// verification Work must still prove that the rotated reference works.
+type ProfileRepairSubmission struct {
+	CommandID           string                 `json:"command_id"`
+	ResultKind          string                 `json:"result_kind"`
+	AttemptID           string                 `json:"attempt_id"`
+	ExecutorIncarnation string                 `json:"executor_incarnation"`
+	SessionID           string                 `json:"session_id"`
+	NextSecretRef       string                 `json:"next_secret_ref"`
+	Artifact            model.ArtifactMetadata `json:"artifact"`
+}
+
+type ProfileVerificationResult struct {
+	CommandID           string                 `json:"command_id"`
+	ResultKind          string                 `json:"result_kind"`
+	AttemptID           string                 `json:"attempt_id"`
+	ExecutorIncarnation string                 `json:"executor_incarnation"`
+	SessionID           string                 `json:"session_id"`
+	SecurityDomain      string                 `json:"security_domain"`
+	Authenticated       bool                   `json:"authenticated"`
+	Artifact            model.ArtifactMetadata `json:"artifact"`
+}
+
 type ResultResponse struct {
-	Status           string          `json:"status"`
-	Reason           string          `json:"reason,omitempty"`
-	ContractVersion  string          `json:"contract_version"`
-	CorrelationID    string          `json:"correlation_id"`
-	RequestedBy      string          `json:"requested_by"`
-	Page             json.RawMessage `json:"page,omitempty"`
-	Completion       json.RawMessage `json:"completion,omitempty"`
-	Diagnostic       json.RawMessage `json:"diagnostic,omitempty"`
-	SourceValidation json.RawMessage `json:"source_validation,omitempty"`
-	RecipeValidation json.RawMessage `json:"recipe_validation,omitempty"`
-	Detail           json.RawMessage `json:"detail,omitempty"`
-	CompanyImport    json.RawMessage `json:"company_import,omitempty"`
-	SourceDiscovery  json.RawMessage `json:"source_discovery,omitempty"`
+	Status              string          `json:"status"`
+	Reason              string          `json:"reason,omitempty"`
+	ContractVersion     string          `json:"contract_version"`
+	CorrelationID       string          `json:"correlation_id"`
+	RequestedBy         string          `json:"requested_by"`
+	Page                json.RawMessage `json:"page,omitempty"`
+	Completion          json.RawMessage `json:"completion,omitempty"`
+	Diagnostic          json.RawMessage `json:"diagnostic,omitempty"`
+	SourceValidation    json.RawMessage `json:"source_validation,omitempty"`
+	RecipeValidation    json.RawMessage `json:"recipe_validation,omitempty"`
+	Detail              json.RawMessage `json:"detail,omitempty"`
+	CompanyImport       json.RawMessage `json:"company_import,omitempty"`
+	SourceDiscovery     json.RawMessage `json:"source_discovery,omitempty"`
+	ProfileRepair       json.RawMessage `json:"profile_repair,omitempty"`
+	ProfileVerification json.RawMessage `json:"profile_verification,omitempty"`
 }

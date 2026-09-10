@@ -47,6 +47,7 @@ type Config struct {
 	RetryBaseDelayMS             int                    `json:"retry_base_delay_ms"`
 	RetryMaxDelayMS              int                    `json:"retry_max_delay_ms"`
 	RetryThrottledDelayMS        int                    `json:"retry_throttled_delay_ms"`
+	ProfileRepairSessionTTLMS    int                    `json:"profile_repair_session_ttl_ms"`
 }
 
 type ExecutorTargetConfig struct {
@@ -115,6 +116,9 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 	if err := cfg.executionFailurePolicy().Validate(); err != nil {
 		return Config{}, fmt.Errorf("recruiting config: %w", err)
 	}
+	if cfg.ProfileRepairSessionTTLMS < 60_000 || cfg.ProfileRepairSessionTTLMS > 3_600_000 {
+		return Config{}, fmt.Errorf("recruiting config: profile_repair_session_ttl_ms must be in [60000,3600000]")
+	}
 	if cfg.DailyScheduleEnabled {
 		if _, err := time.LoadLocation(cfg.DailyScheduleTimezone); err != nil {
 			return Config{}, fmt.Errorf("recruiting config: invalid daily_schedule_timezone: %w", err)
@@ -143,6 +147,7 @@ func defaultConfig() Config {
 		BudgetMaxPerOrigin: 8, BudgetMaxPerCompany: 50, BudgetMaxPerProfile: 1, BudgetPermitTTLMS: 900_000,
 		RetryPolicyVersion: 1, RetryMaxAutomaticAttempts: 4, RetryBaseDelayMS: 30_000,
 		RetryMaxDelayMS: 1_800_000, RetryThrottledDelayMS: 300_000,
+		ProfileRepairSessionTTLMS: 600_000,
 	}
 }
 
@@ -213,5 +218,6 @@ const ConfigSchema = `{
 	,"retry_base_delay_ms":{"type":"integer","minimum":1000,"maximum":86400000}
 	,"retry_max_delay_ms":{"type":"integer","minimum":1000,"maximum":604800000}
 	,"retry_throttled_delay_ms":{"type":"integer","minimum":1000,"maximum":604800000}
+	,"profile_repair_session_ttl_ms":{"type":"integer","minimum":60000,"maximum":3600000}
   }
 }`

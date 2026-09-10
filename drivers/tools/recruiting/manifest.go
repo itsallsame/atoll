@@ -59,6 +59,8 @@ func manifest() introspect.Manifest {
 			TypeJobList:                        {Description: "seek-page jobs belonging to one recruitment source"},
 			TypeJobCorrect:                     {Description: "atomically set or clear one version-fenced manual Job field override with audit history"},
 			TypeJobCorrectionGet:               {Description: "inspect the current manual override and bounded immutable history for one Job field"},
+			TypeProfileGet:                     {Description: "inspect secret-free Browser Profile metadata and its latest repair session"},
+			TypeProfileRepairBegin:             {Description: "create one expiring Profile repair session routed only to its authorized device"},
 			TypeWorkGet:                        {Description: "get one operational work item"},
 			TypeWorkList:                       {Description: "seek-page operational work or list runnable work by capability"},
 			TypeWorkCreate:                     {Description: "create one manually initiated operational work item"},

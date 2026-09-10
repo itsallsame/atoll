@@ -94,6 +94,74 @@ func (r *Repository) ApplyRepairValidationCommand(ctx context.Context, expectedV
 	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
 }
 
+// resolveVerifiedProfileRepair is intentionally part of repair.resolve. A
+// successful verification Work is evidence, but it must not independently
+// reopen the Profile to scheduled traffic before the repair incident closes.
+func resolveVerifiedProfileRepair(ctx context.Context, tx *sql.Tx, incident model.RepairIncident,
+	causeCommandID string, at time.Time) error {
+	var sessionState []byte
+	err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_profile_repair_sessions
+WHERE incident_id = ? AND validation_work_id = ? AND session_status = 'verified'
+ORDER BY session_id DESC LIMIT 1 FOR UPDATE`, incident.IncidentID, incident.ValidationWorkID).Scan(&sessionState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrRepairEvidenceRejected
+	}
+	if err != nil {
+		return err
+	}
+	var session model.ProfileRepairSession
+	if err := json.Unmarshal(sessionState, &session); err != nil {
+		return err
+	}
+	if session.ProfileID != incident.DomainKey || session.IncidentID != incident.IncidentID ||
+		session.ValidationWorkID != incident.ValidationWorkID || session.Status != model.ProfileRepairVerified {
+		return ErrRepairEvidenceRejected
+	}
+	var profileState []byte
+	err = tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_profiles WHERE profile_id = ? FOR UPDATE`,
+		session.ProfileID).Scan(&profileState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrRepairEvidenceRejected
+	}
+	if err != nil {
+		return err
+	}
+	var profile model.BrowserProfile
+	if err := json.Unmarshal(profileState, &profile); err != nil {
+		return err
+	}
+	if profile.AuthStatus != model.ProfileVerifying || profile.Version != session.ProfileVersion+1 ||
+		profile.DeviceID != session.DeviceActorID {
+		return ErrRepairEvidenceRejected
+	}
+	next, err := profile.Verify(profile.Version)
+	if err != nil {
+		return err
+	}
+	nextState, _ := json.Marshal(next)
+	result, err := tx.ExecContext(ctx, `UPDATE recruiting_profiles
+SET auth_status = ?, version = ?, state_json = ?, updated_at = ?
+WHERE profile_id = ? AND version = ? AND auth_status = ?`, next.AuthStatus, next.Version,
+		nextState, at.UTC(), profile.ProfileID, profile.Version, profile.AuthStatus)
+	if err != nil {
+		return err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return ErrRepairEvidenceRejected
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"profile_id": profile.ProfileID, "profile_version": next.Version,
+		"repair_incident_id": incident.IncidentID, "validation_work_id": incident.ValidationWorkID,
+	})
+	event, err := model.NewEventIntent("profile-repair-resolved-"+incident.IncidentID,
+		"profile.repair_resolved", "profile", profile.ProfileID, next.Version,
+		at.UTC().Format(time.RFC3339Nano), causeCommandID, payload)
+	if err != nil {
+		return err
+	}
+	return appendEventIntent(ctx, tx, event, at, at)
+}
+
 func (r *Repository) ApplyRepairResolveCommand(ctx context.Context, expectedVersion uint64, next model.RepairIncident,
 	repairWork model.Work, receipt model.CommandReceipt, repairEvent, workEvent model.EventIntent,
 	businessAt time.Time) (CommandResult, error) {
@@ -158,6 +226,11 @@ func (r *Repository) ApplyRepairResolveCommand(ctx context.Context, expectedVers
 			return r.replayCommittedCommand(ctx, receipt.CommandID, receipt.RequestHash)
 		}
 		return CommandResult{}, err
+	}
+	if current.Domain == model.FailureProfile {
+		if err := resolveVerifiedProfileRepair(ctx, tx, current, receipt.CommandID, businessAt); err != nil {
+			return CommandResult{}, err
+		}
 	}
 	if err := updateRepairIncidentTx(ctx, tx, expectedVersion, next, businessAt); err != nil {
 		return CommandResult{}, err
@@ -389,6 +462,21 @@ func verifyRepairValidationWork(ctx context.Context, tx *sql.Tx, incident model.
 	}
 	if work.Status != model.WorkCompleted || work.Resolution != model.ResolutionSucceeded || work.CauseWorkID == "" {
 		return fmt.Errorf("%w: requires an executor-succeeded causal retry Work", ErrRepairEvidenceRejected)
+	}
+	if incident.Domain == model.FailureProfile {
+		var verified int
+		if work.TargetType != "profile" || work.TargetID != incident.DomainKey || work.Purpose != "profile_verify" {
+			return fmt.Errorf("%w: Profile repair requires its device verification Work", ErrRepairEvidenceRejected)
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_profile_repair_sessions
+WHERE incident_id = ? AND validation_work_id = ? AND session_status = 'verified'`,
+			incident.IncidentID, work.WorkID).Scan(&verified); err != nil {
+			return err
+		}
+		if verified != 1 {
+			return fmt.Errorf("%w: Profile verification session is not verified", ErrRepairEvidenceRejected)
+		}
+		return nil
 	}
 	var member int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_repair_affected_works

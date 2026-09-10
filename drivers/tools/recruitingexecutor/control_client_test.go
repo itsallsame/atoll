@@ -218,3 +218,29 @@ func TestSubmitCompanyImportApplyAcceptsCompanyImportAcknowledgement(t *testing.
 		t.Fatal(err)
 	}
 }
+
+func TestSubmitProfileControlResultsRequireMatchingAcknowledgements(t *testing.T) {
+	response := executioncontract.ResultResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-profile", RequestedBy: "tool:profile-device:1",
+		ProfileRepair: json.RawMessage(`{"session_status":"submitted"}`)}
+	caller := &callerStub{pending: &pendingStub{response: controlResponse(t, executioncontract.TypeResult, response)}}
+	repair := executioncontract.ProfileRepairSubmission{CommandID: "profile-submit", ResultKind: "profile_repair_submission",
+		AttemptID: "attempt-1", ExecutorIncarnation: "boot-1", SessionID: "session-1"}
+	if err := submitExecutionResult(context.Background(), caller, message.Root(), "tool:control", "tool:profile-device:1",
+		repair.ResultKind, repair, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	response.ProfileRepair = nil
+	response.ProfileVerification = json.RawMessage(`{"session_status":"verified"}`)
+	caller.pending.response = controlResponse(t, executioncontract.TypeResult, response)
+	verification := executioncontract.ProfileVerificationResult{CommandID: "profile-verify", ResultKind: "profile_verification",
+		AttemptID: "attempt-2", ExecutorIncarnation: "boot-1", SessionID: "session-1"}
+	if err := submitExecutionResult(context.Background(), caller, message.Root(), "tool:control", "tool:profile-device:1",
+		verification.ResultKind, verification, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := submitExecutionResult(context.Background(), caller, message.Root(), "tool:control", "tool:profile-device:1",
+		repair.ResultKind, repair, time.Second); err == nil {
+		t.Fatal("Profile repair result accepted a verification acknowledgement")
+	}
+}

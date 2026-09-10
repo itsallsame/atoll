@@ -97,6 +97,10 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		handleJobCorrectionGet(sys, repository, msg)
 		return
 	}
+	if msg.Type == TypeProfileGet {
+		handleProfileGet(sys, repository, msg)
+		return
+	}
 	if msg.Type == TypeDailyRunList {
 		handleDailyRunListQuery(sys, repository, msg)
 		return

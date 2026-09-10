@@ -32,6 +32,10 @@ func isCompanyImportPurpose(purpose string) bool {
 	return purpose == "company_import" || purpose == "company_import_apply"
 }
 
+func isBudgetlessPurpose(purpose string) bool {
+	return isCompanyImportPurpose(purpose) || purpose == "profile_repair" || purpose == "profile_verify"
+}
+
 type ListingOfferRequest struct {
 	AttemptID           string
 	ExecutorActorID     string
@@ -94,7 +98,10 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
   AND (? = '' OR w.origin = ?) AND (? = '' OR w.profile_id = ?)
 	  AND (w.profile_id IS NULL OR EXISTS (
 	    SELECT 1 FROM recruiting_profiles eligible_profile
-	    WHERE eligible_profile.profile_id = w.profile_id AND eligible_profile.auth_status = 'ready'
+	    WHERE eligible_profile.profile_id = w.profile_id AND
+	      ((w.purpose = 'profile_repair' AND eligible_profile.auth_status = 'repairing') OR
+	       (w.purpose = 'profile_verify' AND eligible_profile.auth_status = 'verifying') OR
+	       (w.purpose NOT IN ('profile_repair', 'profile_verify') AND eligible_profile.auth_status = 'ready'))
 	  ))
 	  AND ((w.purpose = 'listing_sync' AND (EXISTS (
 	    SELECT 1 FROM recruiting_source_occurrences o
@@ -167,6 +174,12 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	  )) OR (w.purpose = 'baseline_listing' AND EXISTS (
 	    SELECT 1 FROM recruiting_baseline_generations bg
 	    WHERE bg.work_id = w.work_id AND bg.generation_status = 'listing' AND bg.listing_finalized = FALSE
+	  )) OR (w.purpose = 'profile_repair' AND EXISTS (
+	    SELECT 1 FROM recruiting_profile_repair_sessions prs
+	    WHERE prs.work_id = w.work_id AND prs.session_status = 'awaiting_device'
+	  )) OR (w.purpose = 'profile_verify' AND EXISTS (
+	    SELECT 1 FROM recruiting_profile_repair_sessions prs
+	    WHERE prs.validation_work_id = w.work_id AND prs.session_status = 'submitted'
 	  )))
   AND NOT EXISTS (
     SELECT 1 FROM recruiting_attempts a
@@ -244,6 +257,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	var companyImportItems []executioncontract.CompanyImportApplyItem
 	var discovery model.SourceDiscovery
 	var discoveryRecipe model.Recipe
+	var profileRepair model.ProfileRepairSession
 	var fence model.AttemptFence
 	switch work.Purpose {
 	case "listing_sync":
@@ -292,6 +306,12 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		discovery, discoveryRecipe, fence, err = loadSourceDiscoveryOfferFence(ctx, tx, work, placement)
 	case "baseline_listing":
 		baseline, fence, err = loadBaselineOfferFence(ctx, tx, work, placement)
+	case "profile_repair":
+		profileRepair, fence, err = loadProfileRepairOfferFence(ctx, tx, work, placement,
+			request.ExecutorActorID, request.OfferedAt)
+	case "profile_verify":
+		profileRepair, fence, err = loadProfileVerificationOfferFence(ctx, tx, work, placement,
+			request.ExecutorActorID, request.OfferedAt)
 	default:
 		err = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)
 	}
@@ -316,7 +336,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		companyID = recipeSampleValidation.CompanyID
 	} else if work.Purpose == "source_discovery" {
 		companyID = discovery.CompanyID
-	} else if !isCompanyImportPurpose(work.Purpose) {
+	} else if !isBudgetlessPurpose(work.Purpose) {
 		if err := tx.QueryRowContext(ctx, "SELECT company_id FROM recruiting_sources WHERE source_id = ?", sourceID).Scan(&companyID); err != nil {
 			return ExecutionOffer{}, fmt.Errorf("load execution company: %w", err)
 		}
@@ -328,6 +348,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	if err == nil {
 		if isCompanyImportPurpose(work.Purpose) {
 			attempt, err = attempt.WithBatchFence(fence.BatchVersion)
+		} else if work.Purpose == "profile_repair" || work.Purpose == "profile_verify" {
+			attempt, err = attempt.WithProfileRepairFence(fence.ProfileID, fence.ProfileVersion)
 		} else if work.Purpose == "source_discovery" {
 			attempt, err = attempt.WithDiscoveryFence(fence)
 		} else if work.Purpose == "recipe_validation" && recipeSampleValidation.RecipeKind == model.RecipeDiscovery {
@@ -341,7 +363,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	}
 	var permit model.BudgetPermit
 	var permitExpiresAt time.Time
-	if !isCompanyImportPurpose(work.Purpose) {
+	if !isBudgetlessPurpose(work.Purpose) {
 		permit, permitExpiresAt, err = acquireBudgetPermitTx(ctx, tx, attempt.AttemptID, placement.Origin, placement.ProfileID,
 			placement.Capability, companyID, request.BudgetPolicy, request.OfferedAt)
 		if err != nil {
@@ -379,6 +401,12 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	} else if work.Purpose == "baseline_listing" {
 		offer.Kind = "listing"
 		offer.Baseline = &baseline
+	} else if work.Purpose == "profile_repair" {
+		offer.Kind = "profile_repair"
+		offer.ProfileRepair = &profileRepair
+	} else if work.Purpose == "profile_verify" {
+		offer.Kind = "profile_verification"
+		offer.ProfileRepair = &profileRepair
 	}
 	offerState, err := json.Marshal(offer)
 	if err != nil {
@@ -1177,7 +1205,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			return model.Attempt{}, nil
 		}
 	}
-	if action != "fail" && !isCompanyImportPurpose(work.Purpose) {
+	if action != "fail" && !isBudgetlessPurpose(work.Purpose) {
 		if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, businessAt); err != nil {
 			return model.Attempt{}, err
 		}
@@ -1186,12 +1214,13 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 	var listingRun model.ListingRun
 	var recipeSampleValidation model.RecipeSampleValidation
 	var currentDiscovery model.SourceDiscovery
+	var currentProfileRepair model.ProfileRepairSession
 	var currentFence model.AttemptFence
-	// A failure closes execution authority but does not publish business data,
-	// so it remains safe to record after a domain configuration change. Accept
-	// and start do publish execution authority and therefore recheck every
-	// frozen fence.
-	if action != "fail" {
+	// Ordinary execution failures may be recorded after a domain configuration
+	// change because they only close old authority. Profile control failures are
+	// different: they also transition the bound repair session (and verification
+	// failures move Profile back to repairing), so they must recheck that fence.
+	if action != "fail" || work.Purpose == "profile_repair" || work.Purpose == "profile_verify" {
 		var fenceErr error
 		switch work.Purpose {
 		case "listing_sync":
@@ -1252,6 +1281,25 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			} else {
 				_, currentFence, fenceErr = loadBaselineOfferFence(ctx, tx, work, placement)
 			}
+		case "profile_repair":
+			placement, placementErr := getWorkPlacementWith(ctx, tx, work.WorkID)
+			if placementErr != nil {
+				fenceErr = placementErr
+			} else if action == "fail" {
+				currentProfileRepair, currentFence, fenceErr = loadActiveProfileRepairFailureFence(ctx, tx, work,
+					placement, attempt, businessAt)
+			} else {
+				currentProfileRepair, currentFence, fenceErr = loadProfileRepairOfferFence(ctx, tx, work, placement,
+					attempt.ExecutorActorID, businessAt)
+			}
+		case "profile_verify":
+			placement, placementErr := getWorkPlacementWith(ctx, tx, work.WorkID)
+			if placementErr != nil {
+				fenceErr = placementErr
+			} else {
+				currentProfileRepair, currentFence, fenceErr = loadProfileVerificationOfferFence(ctx, tx, work, placement,
+					attempt.ExecutorActorID, businessAt)
+			}
 		default:
 			fenceErr = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)
 		}
@@ -1306,9 +1354,51 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 				}
 			}
 		}
+		if err == nil && work.Purpose == "profile_repair" {
+			nextSession, transitionErr := currentProfileRepair.Activate(currentProfileRepair.Version,
+				attempt.AttemptID, currentProfileRepair.DeviceActorID, businessAt)
+			if transitionErr != nil {
+				err = transitionErr
+			} else {
+				err = updateProfileRepairSessionTx(ctx, tx, currentProfileRepair.Version, nextSession, businessAt)
+			}
+		}
 	case "fail":
 		attempt, err = attempt.Fail()
-		if err == nil {
+		if err == nil && (work.Purpose == "profile_repair" || work.Purpose == "profile_verify") {
+			if report == nil || failurePolicy == nil {
+				err = fmt.Errorf("Profile control failure requires a classified report and policy")
+			} else {
+				incident, incidentErr := getRepairIncidentForUpdate(ctx, tx, currentProfileRepair.IncidentID)
+				if incidentErr != nil {
+					err = incidentErr
+				} else {
+					previousWorkVersion := work.Version
+					decision := model.ExecutionFailureDecision{PolicyVersion: failurePolicy.Version,
+						AttemptCount: work.AutomaticAttempts + 1, FailureClass: report.Class,
+						Route: model.FailureHuman, RepairWorkID: incident.RepairWorkID}
+					work, err = work.ApplyExecutionFailure(work.Version, decision)
+					if err == nil {
+						err = updateFailedWorkTx(ctx, tx, previousWorkVersion, work, decision, businessAt)
+					}
+					if err == nil {
+						var failedSession model.ProfileRepairSession
+						failedSession, err = currentProfileRepair.Fail(currentProfileRepair.Version,
+							attempt.AttemptID, currentProfileRepair.DeviceActorID)
+						if err == nil {
+							err = updateProfileRepairSessionTx(ctx, tx, currentProfileRepair.Version, failedSession, businessAt)
+						}
+					}
+					if err == nil && work.Purpose == "profile_verify" {
+						causeID := attempt.AttemptID
+						if hooks != nil && hooks.causeCommandID != "" {
+							causeID = hooks.causeCommandID
+						}
+						err = returnProfileToRepairingTx(ctx, tx, currentProfileRepair, causeID, businessAt)
+					}
+				}
+			}
+		} else if err == nil {
 			previousWorkVersion := work.Version
 			if report == nil {
 				work, err = work.WaitRetry(work.Version, strings.TrimSpace(reason))
@@ -1349,7 +1439,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 				}
 			}
 		}
-		if err == nil && !isCompanyImportPurpose(work.Purpose) {
+		if err == nil && !isBudgetlessPurpose(work.Purpose) {
 			err = releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitReleased, businessAt)
 		}
 		if err == nil && report != nil {

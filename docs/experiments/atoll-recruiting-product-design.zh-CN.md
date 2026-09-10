@@ -965,6 +965,10 @@ Recruiting Actor 的恢复 handler 检查长期无进展 Work/Attempt、已上�
 - 人工命令使用 `expected_version`，旧操作不能覆盖新状态；
 - 批量影响 Target 或共享 Recipe 的动作可配置二次批准。
 
+Profile 修复不是新的 Worker 类型，也不是把 Cookie、密码或 OTP 发给 Agent。它复用统一的 `Work → Attempt → Artifact → RepairIncident` 权威链，并由 capability=`browser.profile.repair` 路由到 Profile 已绑定的可信设备 Actor。普通运营员只能创建一个有期限、可审计的修复会话；只有与 `device_id` 精确匹配的已认证 Tool Actor 才能领取对应 Work。会话和公开投影只保存身份、版本、状态和截止时间，凭证始终留在设备侧；控制面只接受新的不可解析 `secret://` 引用和已脱敏验证 Artifact。
+
+修复采用两阶段恢复：设备提交新引用后，Profile 从 `repairing` 进入 `verifying`，原交互 Work 成功结束，并创建独立 `profile_verify` Work；同一授权设备必须在 Profile 的确切 `security_domain` 上提交 authenticated canary。Canary 成功只把会话标记为 `verified`，Profile 仍保持 `verifying`，所以每日任务不能提前恢复。运营员再以该验证 Work 启动 RepairIncident validation，并在 `repair.resolve` 事务中同时完成唯一 Repair Work、解决 Incident、将 Profile 推进到 `ready`；随后才按既有有界 recover 协议释放受影响 Work。失败的交互/验证仍归属于原 RepairIncident，不递归创建新的 Profile 故障；验证失败会把 Profile 退回 `repairing`。过期会话由现有 Recruiting reconcile 定时器分批取消 Work、失效 Attempt 并释放唯一活动会话键，不增加 Reconciler 或 Worker 类型。
+
 ### 12.3 Work Center
 
 用户可按 trigger、purpose、状态、等待原因、Target、发起者和时间筛选 Work，并查看输入、Recipe、Attempt、Artifact 和因果链；执行创建、领取人工项、暂停、恢复、取消、修正、重试、跳过、批准、拒绝或终止。界面必须分别显示列表覆盖、详情待处理、当前仍可用详情、失败原因和下一动作，不能把详情失败显示成列表漏采。

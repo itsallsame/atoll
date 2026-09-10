@@ -139,10 +139,10 @@ func (r *Repository) OpenOrJoinRepair(ctx context.Context, incident model.Repair
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO recruiting_repair_incidents(
   incident_id, repair_key, active_repair_key, failure_domain, domain_key, failure_signature,
-  failing_version, repair_status, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  failing_version, repair_work_id, repair_status, version, state_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		incident.IncidentID, incident.RepairKey, incident.RepairKey, incident.Domain, incident.DomainKey,
-		incident.FailureSignature, incident.FailingVersion, incident.Status, incident.Version,
+		incident.FailureSignature, incident.FailingVersion, nullableString(incident.RepairWorkID), incident.Status, incident.Version,
 		state, businessAt.UTC(), businessAt.UTC())
 	joined := false
 	if err != nil {
@@ -152,14 +152,16 @@ INSERT INTO recruiting_repair_incidents(
 		}
 		joined = true
 		var existingState []byte
+		var repairWorkID sql.NullString
 		if err := tx.QueryRowContext(ctx, `
-SELECT state_json FROM recruiting_repair_incidents
-WHERE active_repair_key = ? FOR UPDATE`, incident.RepairKey).Scan(&existingState); err != nil {
+SELECT state_json, repair_work_id FROM recruiting_repair_incidents
+WHERE active_repair_key = ? FOR UPDATE`, incident.RepairKey).Scan(&existingState, &repairWorkID); err != nil {
 			return model.RepairIncident{}, false, fmt.Errorf("join repair incident: %w", err)
 		}
 		if err := json.Unmarshal(existingState, &incident); err != nil {
 			return model.RepairIncident{}, false, err
 		}
+		incident.RepairWorkID = repairWorkID.String
 		previousVersion := incident.Version
 		incident, err = incident.AddAffectedWork(incident.Version, requestedWorkID)
 		if err != nil {
