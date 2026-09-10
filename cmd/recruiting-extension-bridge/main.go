@@ -31,13 +31,14 @@ func main() {
 
 func run() error {
 	var config bridge.AtollConfig
-	var passwordFile, listenAddress string
+	var passwordFile, executorTokenFile, listenAddress string
 	flag.StringVar(&config.BaseURL, "atoll", "http://127.0.0.1:8080", "Atoll HTTPS or loopback HTTP base URL")
 	flag.StringVar(&config.Email, "email", "", "ordinary Atoll operator email")
 	flag.StringVar(&passwordFile, "password-file", "", "0600 file containing the operator password")
 	flag.StringVar(&config.ChannelID, "channel", "", "channel containing the Recruiting Actor (defaults to the operator home)")
 	flag.StringVar(&config.ControlActorID, "control-actor", "", "Recruiting Actor ID in the selected channel")
 	flag.StringVar(&listenAddress, "listen", "127.0.0.1:0", "loopback listen address")
+	flag.StringVar(&executorTokenFile, "executor-token-file", "", "optional 0400/0600 token file enabling the local Profile executor endpoint")
 	flag.Parse()
 	if err := validateListenAddress(listenAddress); err != nil {
 		return err
@@ -60,7 +61,17 @@ func run() error {
 		return fmt.Errorf("generate pairing token: %w", err)
 	}
 	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
-	service := &bridge.Service{Client: client, Token: token, Now: time.Now}
+	var executorToken string
+	if executorTokenFile != "" {
+		executorToken, err = readPasswordFile(executorTokenFile)
+		if err != nil {
+			return fmt.Errorf("read executor token: %w", err)
+		}
+		if len(executorToken) < 32 {
+			return fmt.Errorf("executor token must contain at least 32 characters")
+		}
+	}
+	service := &bridge.Service{Client: client, Token: token, ExecutorToken: executorToken, Now: time.Now}
 	handler, err := service.Handler()
 	if err != nil {
 		return err
@@ -73,6 +84,9 @@ func run() error {
 	address := listener.Addr().(*net.TCPAddr)
 	pairing := map[string]any{"version": bridge.BridgeProtocolVersion,
 		"endpoint": fmt.Sprintf("ws://127.0.0.1:%d/capture", address.Port), "token": token}
+	if executorToken != "" {
+		pairing["browser_broker_url"] = fmt.Sprintf("http://127.0.0.1:%d", address.Port)
+	}
 	encoded, _ := json.Marshal(pairing)
 	fmt.Println(string(encoded))
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}

@@ -507,7 +507,7 @@ func (artifact ArtifactRef) Validate() error {
 	}
 	if artifact.Kind != "" {
 		switch artifact.Kind {
-		case "page", "response", "failure", "listing_delta", "trace":
+		case "page", "response", "failure", "listing_delta", "trace", "validation":
 		default:
 			return fmt.Errorf("artifact kind %q is not supported by the Recipe ABI", artifact.Kind)
 		}

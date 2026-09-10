@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -28,8 +29,9 @@ func TestProfileRepairBeginIsAtomicDeviceBoundAndSecretFree(t *testing.T) {
 	migrateTestDatabase(t, ctx, db)
 	repository, _ := NewRepository(db)
 	now := time.Date(2026, 9, 10, 9, 0, 0, 0, time.UTC)
-	profile, _ := model.NewBrowserProfile("profile-repair-begin-profile", "jobs.example.test",
-		"tool:authorized-profile-device", "secret://profiles/repair-begin/v1")
+	profile, _ := model.NewBrowserProfileWithVerification("profile-repair-begin-profile", "jobs.example.test",
+		"tool:authorized-profile-device", "secret://profiles/repair-begin/v1",
+		testProfileVerificationRecipe("jobs.example.test", "repair-begin"))
 	if err := repository.CreateProfile(ctx, profile, now.Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +88,7 @@ func TestProfileRepairBeginIsAtomicDeviceBoundAndSecretFree(t *testing.T) {
 		t.Fatalf("stored Profile repair session=%+v err=%v", stored, err)
 	}
 	storedProfile, _ := repository.GetProfile(ctx, profile.ProfileID)
-	if storedProfile != repairing {
+	if !reflect.DeepEqual(storedProfile, repairing) {
 		t.Fatalf("begin session changed Profile=%+v want=%+v", storedProfile, repairing)
 	}
 	pending, err := repository.ListPendingExecutionDispatches(ctx, now, 10)
@@ -133,7 +135,9 @@ func TestProfileRepairBeginIsAtomicDeviceBoundAndSecretFree(t *testing.T) {
 		BudgetPolicy: testExecutionBudgetPolicy()})
 	if err != nil || offer.Kind != "profile_repair" || offer.ProfileRepair == nil ||
 		offer.ProfileRepair.SessionID != session.SessionID || offer.Attempt.ProfileID != profile.ProfileID ||
-		offer.Attempt.ProfileVersion != profile.Version+1 || offer.Budget.PermitID != "" {
+		offer.Attempt.ProfileVersion != profile.Version+1 || offer.Budget.PermitID != "" ||
+		offer.ProfileSecurityDomain != profile.SecurityDomain || offer.ProfileTaskExpiresAt != session.ExpiresAt ||
+		offer.ProfileVerification == nil || *offer.ProfileVerification != *profile.Verification {
 		t.Fatalf("authorized Profile repair offer=%+v err=%v", offer, err)
 	}
 	if _, err := repository.AcceptListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
@@ -283,7 +287,9 @@ WHERE cause_command_id = ? AND event_kind IN ('profile.repair_submitted','profil
 		ProfileID: profile.ProfileID, OfferedAt: completedAt.Add(time.Second), BudgetPolicy: testExecutionBudgetPolicy()})
 	if err != nil || verificationOffer.Kind != "profile_verification" || verificationOffer.ProfileRepair == nil ||
 		verificationOffer.ProfileRepair.SessionID != session.SessionID || verificationOffer.Attempt.ProfileVersion != 3 ||
-		verificationOffer.Budget.PermitID != "" {
+		verificationOffer.Budget.PermitID != "" || verificationOffer.ProfileSecurityDomain != profile.SecurityDomain ||
+		verificationOffer.ProfileTaskExpiresAt != verificationDeadline.Format(time.RFC3339Nano) ||
+		verificationOffer.ProfileVerification == nil || *verificationOffer.ProfileVerification != *profile.Verification {
 		t.Fatalf("Profile verification offer=%+v err=%v", verificationOffer, err)
 	}
 	if _, err := repository.AcceptListingExecution(ctx, verificationOffer.Attempt.AttemptID,
@@ -385,8 +391,8 @@ WHERE cause_command_id = ? AND event_kind = 'profile.repair_session.verified'`,
 	}
 
 	// Expiry is reconciled durably even when no replacement command arrives.
-	expiryProfile, _ := model.NewBrowserProfile("profile-repair-expiry-profile", "expiry.example.test",
-		profile.DeviceID, "secret://profiles/expiry/v1")
+	expiryProfile, _ := model.NewBrowserProfileWithVerification("profile-repair-expiry-profile", "expiry.example.test",
+		profile.DeviceID, "secret://profiles/expiry/v1", testProfileVerificationRecipe("expiry.example.test", "expiry"))
 	if err := repository.CreateProfile(ctx, expiryProfile, now); err != nil {
 		t.Fatal(err)
 	}
@@ -502,4 +508,13 @@ WHERE cause_command_id = ? AND event_kind = 'profile.repair_session.verified'`,
 	if expiredSession.Status != model.ProfileRepairExpired || expiredWork.Status != model.WorkCanceled {
 		t.Fatalf("expired lifecycle session=%+v work=%+v", expiredSession, expiredWork)
 	}
+}
+
+func testProfileVerificationRecipe(domain, suffix string) model.ProfileVerificationRecipe {
+	return model.ProfileVerificationRecipe{EndpointURL: "https://" + domain + "/private/canary",
+		RecipeID: "profile-canary-" + suffix, RecipeVersion: 1, ContentHash: "sha256:" + strings.Repeat("a", 64),
+		ContractHash: "sha256:" + strings.Repeat("b", 64), Kind: model.RecipeDetail,
+		Execution: model.RecipeExecution{ABIVersion: model.RecipeABIVersion,
+			ContentRef: "recipe://profile-canary/" + suffix, RequiredCapability: ProfileRepairCapability,
+			Transport: model.RecipeTransportBrowser}, MinimumRecordCount: 1}
 }

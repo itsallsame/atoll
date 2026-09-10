@@ -38,6 +38,12 @@
       <label class="confirm"><input id="confirm" type="checkbox"><span id="confirm-copy">我确认列表按最新活动时间倒序，历史岗位更新后会重新置顶；置顶项已由该选择排除。</span></label>
       <button id="submit" class="primary">生成证据并提交 Draft</button>
     </section>
+	<section id="profile-repair" hidden>
+	  <strong>浏览器 Profile 需要修复</strong>
+	  <p class="hint">请在当前浏览器完成登录，并停留在同一安全域页面。确认后插件会导航到冻结的验证地址 <span id="profile-domain"></span>，执行站点专用 Recipe；Cookie、密码、OTP 和提取值不会发送给 Atoll。</p>
+	  <label class="confirm"><input id="profile-confirm" type="checkbox">我确认登录操作已完成，并允许执行同域验证。</label>
+	  <button id="profile-complete" class="primary">验证并提交修复</button>
+	</section>
     <p id="message" role="status"></p>
     <pre id="result"></pre>
   </main>

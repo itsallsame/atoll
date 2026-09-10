@@ -969,6 +969,8 @@ Profile 修复不是新的 Worker 类型，也不是把 Cookie、密码或 OTP �
 
 修复采用两阶段恢复：设备提交新引用后，Profile 从 `repairing` 进入 `verifying`，原交互 Work 成功结束，并创建独立 `profile_verify` Work；同一授权设备必须在 Profile 的确切 `security_domain` 上提交 authenticated canary。Canary 成功只把会话标记为 `verified`，Profile 仍保持 `verifying`，所以每日任务不能提前恢复。运营员再以该验证 Work 启动 RepairIncident validation，并在 `repair.resolve` 事务中同时完成唯一 Repair Work、解决 Incident、将 Profile 推进到 `ready`；随后才按既有有界 recover 协议释放受影响 Work。失败的交互/验证仍归属于原 RepairIncident，不递归创建新的 Profile 故障；验证失败会把 Profile 退回 `repairing`。过期会话由现有 Recruiting reconcile 定时器分批取消 Work、失效 Attempt 并释放唯一活动会话键，不增加 Reconciler 或 Worker 类型。
 
+Authenticated canary 不是“同域页面能打开”、Cookie 数量、DOM 中没有密码框，也不是与上次页面快照比较。每个 Profile 必须冻结一个站点专用的版本化 Browser Recipe：精确 HTTPS endpoint、Recipe ID/version、正文 hash、兼容 contract hash、kind 和最小完整记录数都进入 Profile/Attempt fence。Executor 在接受 Work 前通过 Atoll Resource 读取并校验该 Recipe，授权扩展只在精确 endpoint 上执行声明式字段提取；边界外只返回 Recipe 身份、完整记录数和通过结论，任何字段值、Cookie、密码、OTP 或 storage 都不进入 Bridge、Message、Artifact 或 AI。验证页面或 Recipe 改版必须先产生新 Profile 版本，旧 Attempt 不能借新页面通过。
+
 ### 12.3 Work Center
 
 用户可按 trigger、purpose、状态、等待原因、Target、发起者和时间筛选 Work，并查看输入、Recipe、Attempt、Artifact 和因果链；执行创建、领取人工项、暂停、恢复、取消、修正、重试、跳过、批准、拒绝或终止。界面必须分别显示列表覆盖、详情待处理、当前仍可用详情、失败原因和下一动作，不能把详情失败显示成列表漏采。

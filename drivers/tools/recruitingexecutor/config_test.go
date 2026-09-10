@@ -66,6 +66,30 @@ func TestParseConfigEnablesCompanyImportInSameExecutorClassWithoutHTTPPolicy(t *
 	}
 }
 
+func TestParseConfigEnablesProfileBrokerInSameExecutorClass(t *testing.T) {
+	raw := json.RawMessage(`{
+		"capability":"browser.profile.repair","execution_enabled":true,"control_actor_id":"tool:control",
+		"artifact_device_name":"worker-a","artifact_channel_name":"recruiting","artifact_directory":"artifacts",
+		"artifact_access_scope":"operators","artifact_retention":"30d","artifact_redaction":"redacted",
+		"browser_broker_url":"http://127.0.0.1:19090","browser_broker_token_file":"/run/user/1000/atoll-broker.token"
+	}`)
+	cfg, err := parseConfig(raw)
+	if err != nil || cfg.Capability != "browser.profile.repair" || cfg.BrowserBrokerTimeoutMS != 900_000 {
+		t.Fatalf("browser Profile config=%+v err=%v", cfg, err)
+	}
+	for _, invalid := range []string{"https://127.0.0.1:19090", "http://localhost:19090", "http://10.0.0.2:19090", "http://127.0.0.1:19090/path"} {
+		candidate := json.RawMessage(`{
+			"capability":"browser.profile.repair","execution_enabled":true,"control_actor_id":"tool:control",
+			"artifact_device_name":"worker-a","artifact_channel_name":"recruiting","artifact_directory":"artifacts",
+			"artifact_access_scope":"operators","artifact_retention":"30d","artifact_redaction":"redacted",
+			"browser_broker_url":"` + invalid + `","browser_broker_token_file":"/tmp/token"
+		}`)
+		if _, err := parseConfig(candidate); err == nil {
+			t.Fatalf("unsafe browser broker URL was accepted: %s", invalid)
+		}
+	}
+}
+
 func TestManifestHasOneExecutorClass(t *testing.T) {
 	m := manifest()
 	if m.Class != Class {

@@ -437,6 +437,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 执行状态补充（2026-09-10，Profile 设备绑定修复协议）：在不修改 Atoll `protocol/runtime/lib/platform/registry` 的前提下，Recruiting 扩展已增加公开 `recruiting.profile.get`、`recruiting.profile.repair.begin`，以及统一执行协议中的 `profile_repair`/`profile_verification` offer/result。普通用户只能创建 expiring session 和读取脱敏投影；控制面将 Work 精确投递到 Profile 绑定的 Tool Actor，错误设备看不到候选，且普通用户不能调用执行接口。设备提交仅包含轮换后的 opaque `secret://` 引用和 redacted validation Artifact，原子推进 Profile 到 `verifying` 并创建独立 canary Work；canary 通过后 Profile 仍被栅栏，只有既有 `repair.validation.begin → repair.resolve` 才在结案事务中恢复 `ready`。交互/验证失败不会递归制造 RepairIncident，过期会话由既有 reconcile 有界取消并释放活动键。Repository MySQL contract 覆盖授权领取、错误设备拒绝、重放、秘密不进入响应/事件、两阶段验证/结案、无预算控制 Work 和过期回收；公开 Server E2E 覆盖普通运营员发起、重放、权限拒绝、脱敏查询及重启恢复。设备侧浏览器扩展/本地 broker 的交互 UI 和真实登录站点 canary 尚未接入，因此此切片完成的是控制面协议与持久化闭环，P7/S12 仍不宣称完成。
 
+执行状态补充（2026-09-10，Profile 本机 Broker 与站点 canary）：同一个 `recruiting-executor` class 现可按 `browser.profile.repair` capability 调用 loopback-only Bridge 的 `/profile-task`；Executor 与插件分别使用不同的强令牌，令牌只从 `0400/0600` 文件读取，Profile Artifact 强制为 redacted。Bridge 在插件暂时离线时最多保留 8 个有截止时间的请求，插件重连后重投；请求、结果均绑定 Attempt、会话、安全域、Recipe ID/version/content hash/contract hash 和最小记录数。插件必须先位于相同 HTTPS 安全域，随后导航到冻结的精确 canary URL并运行站点专用 Browser Recipe；纯逻辑测试证明只返回完整记录数，不返回提取值，低于阈值会立即形成负向结果而非等待超时。Executor 在 accept/start 前通过 Atoll Resource 解析并复核 Recipe hash/contract，成功后只保存结构化脱敏验证证据。定向 race、Bridge/扩展测试和非 root MySQL 8.4 Profile 合同已通过。仍缺 Chrome 整包自动化、真实授权登录站点 canary，以及能让日常 Browser Driver 解析新 `secret://chrome-profile/...` 引用的设备侧 Profile provider；因此该切片推进了 S12，但 P7/S12 仍未完成。
+
 ## 13. P8：25 场景验收矩阵
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。

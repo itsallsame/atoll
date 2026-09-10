@@ -258,6 +258,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	var discovery model.SourceDiscovery
 	var discoveryRecipe model.Recipe
 	var profileRepair model.ProfileRepairSession
+	var profileSecurityDomain string
+	var profileVerification *model.ProfileVerificationRecipe
 	var fence model.AttemptFence
 	switch work.Purpose {
 	case "listing_sync":
@@ -318,6 +320,26 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	if err != nil {
 		return ExecutionOffer{}, err
 	}
+	if work.Purpose == "profile_repair" || work.Purpose == "profile_verify" {
+		var profileState []byte
+		if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_profiles WHERE profile_id = ?`,
+			profileRepair.ProfileID).Scan(&profileState); err != nil {
+			return ExecutionOffer{}, err
+		}
+		var profile model.BrowserProfile
+		if err := json.Unmarshal(profileState, &profile); err != nil {
+			return ExecutionOffer{}, err
+		}
+		profileSecurityDomain = profile.SecurityDomain
+		if profile.Verification == nil {
+			return ExecutionOffer{}, fmt.Errorf("Profile has no versioned authentication canary Recipe")
+		}
+		verification := *profile.Verification
+		if err := verification.Validate(profile.SecurityDomain); err != nil {
+			return ExecutionOffer{}, err
+		}
+		profileVerification = &verification
+	}
 	sourceID := occurrence.SourceID
 	if listingRun.ListingRunID != "" {
 		sourceID = listingRun.SourceID
@@ -374,7 +396,12 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		Kind: strings.TrimSuffix(work.Purpose, "_sync"), Attempt: attempt, Work: work, Checkpoint: checkpoint,
 		Detail: detail, Budget: permit,
 		RequestedCapability: strings.TrimSpace(request.Capability), RequestedOrigin: strings.TrimSpace(request.Origin),
-		RequestedProfileID: strings.TrimSpace(request.ProfileID),
+		RequestedProfileID:    strings.TrimSpace(request.ProfileID),
+		ProfileSecurityDomain: profileSecurityDomain,
+		ProfileVerification:   profileVerification,
+	}
+	if (work.Purpose == "profile_repair" || work.Purpose == "profile_verify") && placement.DeadlineAt != nil {
+		offer.ProfileTaskExpiresAt = placement.DeadlineAt.UTC().Format(time.RFC3339Nano)
 	}
 	if !permitExpiresAt.IsZero() {
 		offer.BudgetExpiresAt = permitExpiresAt.Format(time.RFC3339Nano)

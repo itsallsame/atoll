@@ -104,6 +104,15 @@
       reply({ok: true, pageURL: location.href});
       return;
     }
+    if (message?.type === 'profile.recipe_probe') {
+      try {
+        reply({ok: true, ...logic.profileRecipeProbe({securityDomain: message.securityDomain,
+          canaryURL: message.canaryURL, recipe: message.recipe, minimumRecords: message.minimumRecords})});
+      } catch (error) {
+        reply({ok: false, error: error.message});
+      }
+      return;
+    }
     if (message?.type === 'capture.arm') {
       const roles = state.recipeKind === 'detail'
         ? ['title', 'description', 'location', 'employment_type', 'posted_at']

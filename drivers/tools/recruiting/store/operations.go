@@ -16,6 +16,11 @@ func (r *Repository) CreateProfile(ctx context.Context, profile model.BrowserPro
 	if profile.ProfileID == "" || profile.Version != 1 || profile.SecretRef == "" {
 		return fmt.Errorf("new profile identity, opaque secret reference, and version 1 are required")
 	}
+	if profile.Verification != nil {
+		if err := profile.Verification.Validate(profile.SecurityDomain); err != nil {
+			return fmt.Errorf("validate new profile verification Recipe: %w", err)
+		}
+	}
 	state, _ := json.Marshal(profile)
 	_, err := r.db.ExecContext(ctx, `
 INSERT INTO recruiting_profiles(
@@ -48,6 +53,11 @@ func (r *Repository) GetProfile(ctx context.Context, profileID string) (model.Br
 func (r *Repository) UpdateProfileCAS(ctx context.Context, expected uint64, profile model.BrowserProfile, businessAt time.Time) error {
 	if profile.Version != expected+1 {
 		return fmt.Errorf("profile update must advance exactly one expected version")
+	}
+	if profile.Verification != nil {
+		if err := profile.Verification.Validate(profile.SecurityDomain); err != nil {
+			return fmt.Errorf("validate updated profile verification Recipe: %w", err)
+		}
 	}
 	state, _ := json.Marshal(profile)
 	result, err := r.db.ExecContext(ctx, `

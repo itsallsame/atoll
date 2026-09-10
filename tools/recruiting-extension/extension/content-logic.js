@@ -141,7 +141,66 @@
     return parsed.toString().replace(/\/$/, '');
   }
 
-  const api = Object.freeze({VERSION, RECIPE_VERSION, clean, safeSegment, selectorFor, collectionSelectorFor, buildDraft, bridgeEndpoint});
+  // Run the frozen, site-specific Browser Recipe against the exact canary
+  // page. Only a count leaves this boundary; extracted DOM values remain in
+  // the page and never enter extension storage, messages, or artifacts.
+  function profileRecipeProbe(input, environment = {}) {
+    const documentRoot = environment.documentRoot || root.document;
+    const pageLocation = environment.location || root.location;
+    const securityDomain = clean(input?.securityDomain, 253);
+    let canary;
+    try { canary = new URL(String(input?.canaryURL || '')); }
+    catch { throw new Error('profile_canary_location_mismatch'); }
+    if (!documentRoot || !pageLocation || canary.protocol !== 'https:' || canary.username || canary.password ||
+        canary.hostname !== securityDomain || pageLocation.protocol !== 'https:' ||
+        pageLocation.hostname !== securityDomain || pageLocation.href !== canary.href) {
+      throw new Error('profile_canary_location_mismatch');
+    }
+    const recipe = input?.recipe;
+    const minimumRecords = Number(input?.minimumRecords);
+    if (recipe?.abi_version !== RECIPE_VERSION || recipe.transport !== 'browser' ||
+        recipe.required_capability !== 'browser.profile.repair' || !['listing', 'detail'].includes(recipe.kind) ||
+        String(recipe.request?.method || '').trim().toUpperCase() !== 'GET' ||
+        !recipe.extraction?.fields || Array.isArray(recipe.extraction.fields) ||
+        Object.keys(recipe.extraction.fields).length < 1 || !Number.isInteger(minimumRecords) ||
+        minimumRecords < 1 || minimumRecords > 100) {
+      throw new Error('profile_canary_recipe_invalid');
+    }
+    for (const [field, selector] of Object.entries(recipe.extraction.fields)) {
+      if (!clean(field, 161) || !clean(selector, 4097)) throw new Error('profile_canary_recipe_invalid');
+    }
+    let roots;
+    try {
+      if (recipe.kind === 'listing') {
+        const collection = clean(recipe.extraction.collection, 4097);
+        if (!collection) throw new Error('profile_canary_collection_required');
+        roots = [...documentRoot.querySelectorAll(collection)].slice(0, 101);
+      } else {
+        roots = [documentRoot];
+      }
+    } catch (error) {
+      if (error?.message === 'profile_canary_collection_required') throw error;
+      throw new Error('profile_canary_selector_invalid');
+    }
+    let recordCount = 0;
+    for (const recordRoot of roots) {
+      let complete = true;
+      for (const [field, selector] of Object.entries(recipe.extraction.fields)) {
+        let element;
+        try { element = recordRoot.querySelector(String(selector)); }
+        catch { throw new Error('profile_canary_selector_invalid'); }
+        const attribute = recipe.extraction.attributes?.[field];
+        const value = attribute ? element?.getAttribute(String(attribute)) : element?.textContent;
+        if (!String(value || '').trim()) { complete = false; break; }
+      }
+      if (complete) recordCount++;
+      if (recordCount >= 100) break;
+    }
+    return {authenticated: recordCount >= minimumRecords, recordCount};
+  }
+
+  const api = Object.freeze({VERSION, RECIPE_VERSION, clean, safeSegment, selectorFor, collectionSelectorFor,
+    buildDraft, bridgeEndpoint, profileRecipeProbe});
   root.AtollRecruitingCaptureLogic = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

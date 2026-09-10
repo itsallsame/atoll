@@ -36,6 +36,9 @@ type Config struct {
 	RobotsCacheTTLMS        int           `json:"robots_cache_ttl_ms,omitempty"`
 	BatchMaxBytes           int64         `json:"batch_max_bytes,omitempty"`
 	BatchChunkSize          int           `json:"batch_chunk_size,omitempty"`
+	BrowserBrokerURL        string        `json:"browser_broker_url,omitempty"`
+	BrowserBrokerTokenFile  string        `json:"browser_broker_token_file,omitempty"`
+	BrowserBrokerTimeoutMS  int           `json:"browser_broker_timeout_ms,omitempty"`
 }
 
 func DefaultConfig() json.RawMessage {
@@ -61,11 +64,13 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 	cfg.ArtifactRetention = strings.TrimSpace(cfg.ArtifactRetention)
 	cfg.ArtifactRedaction = strings.TrimSpace(cfg.ArtifactRedaction)
 	cfg.TermsReviewedAt = strings.TrimSpace(cfg.TermsReviewedAt)
+	cfg.BrowserBrokerURL = strings.TrimSpace(cfg.BrowserBrokerURL)
+	cfg.BrowserBrokerTokenFile = strings.TrimSpace(cfg.BrowserBrokerTokenFile)
 	if cfg.Capability == "" {
 		return Config{}, fmt.Errorf("recruiting executor config: capability is required")
 	}
 	if cfg.ExecutionEnabled {
-		if (cfg.Capability != "http.fetch" && cfg.Capability != "company.import") || !executioncontract.ValidToolTarget(string(cfg.ControlActorID)) || cfg.ControlWaitMS < 100 || cfg.ControlWaitMS > 300_000 ||
+		if (cfg.Capability != "http.fetch" && cfg.Capability != "company.import" && cfg.Capability != "browser.profile.repair") || !executioncontract.ValidToolTarget(string(cfg.ControlActorID)) || cfg.ControlWaitMS < 100 || cfg.ControlWaitMS > 300_000 ||
 			cfg.ArtifactDeviceName == "" || cfg.ArtifactChannelName == "" || cfg.ArtifactDirectory == "" ||
 			cfg.ArtifactAccessScope == "" || cfg.ArtifactRetention == "" || cfg.ArtifactMaxBytes < 1 || cfg.ArtifactMaxBytes > 20<<20 ||
 			(cfg.ArtifactRedaction != "raw" && cfg.ArtifactRedaction != "redacted") {
@@ -88,6 +93,15 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 		if cfg.Capability == "company.import" && (cfg.BatchMaxBytes < 1 || cfg.BatchMaxBytes > 100<<20 || cfg.BatchChunkSize < 1 || cfg.BatchChunkSize > 500) {
 			return Config{}, fmt.Errorf("recruiting executor config: invalid company import byte or chunk limit")
 		}
+		if cfg.Capability == "browser.profile.repair" {
+			if cfg.ArtifactRedaction != "redacted" || cfg.BrowserBrokerURL == "" || cfg.BrowserBrokerTokenFile == "" ||
+				cfg.BrowserBrokerTimeoutMS < 1_000 || cfg.BrowserBrokerTimeoutMS > 3_600_000 {
+				return Config{}, fmt.Errorf("recruiting executor config: browser Profile execution requires a redacted Artifact policy and local broker settings")
+			}
+			if err := validateBrowserBrokerURL(cfg.BrowserBrokerURL); err != nil {
+				return Config{}, fmt.Errorf("recruiting executor config: %w", err)
+			}
+		}
 	}
 	return cfg, nil
 }
@@ -96,7 +110,7 @@ func defaultConfig() Config {
 	return Config{Capability: "fixture", ControlWaitMS: 30_000, ArtifactMaxBytes: 2 << 20,
 		HTTPMaxConcurrency: 4, HTTPMinOriginIntervalMS: 1_000, HTTPCircuitThreshold: 3, HTTPCircuitCooldownMS: 300_000,
 		RobotsTimeoutMS: 10_000, RobotsMaxBytes: 1 << 20, RobotsCacheTTLMS: 3_600_000,
-		BatchMaxBytes: 20 << 20, BatchChunkSize: 250}
+		BatchMaxBytes: 20 << 20, BatchChunkSize: 250, BrowserBrokerTimeoutMS: 900_000}
 }
 
 const ConfigSchema = `{
@@ -125,5 +139,8 @@ const ConfigSchema = `{
     "robots_cache_ttl_ms":{"type":"integer","minimum":60000,"maximum":86400000},
     "batch_max_bytes":{"type":"integer","minimum":1,"maximum":104857600},
     "batch_chunk_size":{"type":"integer","minimum":1,"maximum":500}
+	,"browser_broker_url":{"type":"string","minLength":1}
+	,"browser_broker_token_file":{"type":"string","minLength":1}
+	,"browser_broker_timeout_ms":{"type":"integer","minimum":1000,"maximum":3600000}
   }
 }`

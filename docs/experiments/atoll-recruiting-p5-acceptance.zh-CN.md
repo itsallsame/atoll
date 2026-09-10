@@ -25,7 +25,7 @@
 - Recipe 运维公开入口现提供 inspect、quarantine、Source 级兼容 Detail rollout/rollback。quarantine 是常量规模的 Recipe 状态事务，不改写所有引用它的 Source；领取时 active fence 阻止新 Attempt。rollback 从不可变 Assignment 历史选择已知良好 Recipe，但追加新的 Assignment version，并与 Source 投影、receipt/event 同事务提交。
 - Listing 候选 Recipe 可基于一个 ready Source 启动独立真实样本验证，复用统一 Listing Executor 且只落 page/trace 证据。审批必须反查唯一成功 Attempt 及其完整质量证明；2026-09-10 的 Discord Greenhouse 真实样本因活动时间非倒序被正确拒绝，未发布候选、未改 Assignment，也未产生 Job/Observation/Checkpoint。该能力验证 Recipe 发布闸门，不等于该站点通过 Source 增量资格校准。
 - 操作者显式拒绝候选 Recipe 前必须先关闭关联 validation Work；公开 server 旅程证明 open Work 不能被悄悄遗弃，cancel 后候选才能回到 draft，审计命令在重启后稳定重放。
-- 候选不再需要测试或操作者直接写 MySQL：普通用户可把声明式 Spec 与 Extension Capture 分别保存为权限受控的 Atoll Resource，再以 `recipe.propose` 让 Actor 验证 hash/ABI/Source fence、信封操作者和 Candidate 一致性，并原子创建 draft 与不可变 trace/evidence Proposal；Listing 页面锁定 Source Endpoint，Detail 页面另锁定同 Source Job version/detail URL。Manifest V3 开发预览和本机 Bridge 已通过普通用户公开协议完成两类 Resource 上传与提案，真实 Chrome DOM 内核从 Discord 列表进入真实详情页并分别生成 Listing/Detail Draft；浏览器整包自动加载点击、Detail 候选执行验证与 Browser Broker/Profile 仍待实现。
+- 候选不再需要测试或操作者直接写 MySQL：普通用户可把声明式 Spec 与 Extension Capture 分别保存为权限受控的 Atoll Resource，再以 `recipe.propose` 让 Actor 验证 hash/ABI/Source fence、信封操作者和 Candidate 一致性，并原子创建 draft 与不可变 trace/evidence Proposal；Listing 页面锁定 Source Endpoint，Detail 页面另锁定同 Source Job version/detail URL。Manifest V3 开发预览和本机 Bridge 已通过普通用户公开协议完成两类 Resource 上传与提案，真实 Chrome DOM 内核从 Discord 列表进入真实详情页并分别生成 Listing/Detail Draft；Detail/Discovery 候选 evidence-only 执行验证也已完成。设备绑定 Profile 修复 relay 已有协议和合同测试，但浏览器整包自动加载点击、真实授权登录 canary、通用 Browser Broker 与设备侧 Profile provider 仍待实现。
 
 ## 已执行证据
 

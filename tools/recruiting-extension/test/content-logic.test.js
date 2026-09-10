@@ -77,6 +77,87 @@ test('bridge endpoint is loopback websocket only', () => {
   }
 });
 
+function element(textContent = '', attributes = {}) {
+  return {textContent, getAttribute: name => attributes[name] ?? null};
+}
+
+function record(selectors) {
+  return {querySelector: selector => selectors[selector] ?? null};
+}
+
+function browserRecipe(kind = 'detail') {
+  return {
+    abi_version: logic.RECIPE_VERSION,
+    kind,
+    required_capability: 'browser.profile.repair',
+    transport: 'browser',
+    request: {method: 'GET'},
+    extraction: {fields: {identity: '[data-user-id]'}},
+  };
+}
+
+function probeEnvironment(documentRoot, href = 'https://account.example.test/private/jobs') {
+  const location = new URL(href);
+  return {documentRoot, location};
+}
+
+test('profile canary runs a frozen Detail Recipe and returns counts without extracted values', () => {
+  const documentRoot = record({'[data-user-id]': element('private-user-42')});
+  const result = logic.profileRecipeProbe({securityDomain: 'account.example.test',
+    canaryURL: 'https://account.example.test/private/jobs', recipe: browserRecipe(), minimumRecords: 1},
+  probeEnvironment(documentRoot));
+  assert.deepEqual(result, {authenticated: true, recordCount: 1});
+  assert.equal(JSON.stringify(result).includes('private-user-42'), false);
+});
+
+test('profile canary requires enough complete Listing records', () => {
+  const recipe = browserRecipe('listing');
+  recipe.extraction.collection = 'article.private-job';
+  recipe.extraction.fields.title = 'h2';
+  recipe.extraction.attributes = {identity: 'data-user-id'};
+  const records = [
+    record({'[data-user-id]': element('', {'data-user-id': '1'}), h2: element('Engineer')}),
+    record({'[data-user-id]': element('', {'data-user-id': '2'}), h2: element('Designer')}),
+    record({'[data-user-id]': element('', {'data-user-id': '3'}), h2: element('')}),
+  ];
+  const documentRoot = {querySelectorAll: selector => selector === 'article.private-job' ? records : []};
+  assert.deepEqual(logic.profileRecipeProbe({securityDomain: 'account.example.test',
+    canaryURL: 'https://account.example.test/private/jobs', recipe, minimumRecords: 2},
+  probeEnvironment(documentRoot)), {authenticated: true, recordCount: 2});
+  assert.deepEqual(logic.profileRecipeProbe({securityDomain: 'account.example.test',
+    canaryURL: 'https://account.example.test/private/jobs', recipe, minimumRecords: 3},
+  probeEnvironment(documentRoot)), {authenticated: false, recordCount: 2});
+});
+
+test('profile canary rejects a different page or security domain', () => {
+  const documentRoot = record({'[data-user-id]': element('private-user-42')});
+  const input = {securityDomain: 'account.example.test', canaryURL: 'https://account.example.test/private/jobs',
+    recipe: browserRecipe(), minimumRecords: 1};
+  assert.throws(() => logic.profileRecipeProbe(input,
+    probeEnvironment(documentRoot, 'https://account.example.test/public/jobs')), /profile_canary_location_mismatch/);
+  assert.throws(() => logic.profileRecipeProbe({...input, securityDomain: 'other.example.test'},
+    probeEnvironment(documentRoot)), /profile_canary_location_mismatch/);
+});
+
+test('profile canary treats missing required fields as unauthenticated', () => {
+  const result = logic.profileRecipeProbe({securityDomain: 'account.example.test',
+    canaryURL: 'https://account.example.test/private/jobs', recipe: browserRecipe(), minimumRecords: 1},
+  probeEnvironment(record({})));
+  assert.deepEqual(result, {authenticated: false, recordCount: 0});
+});
+
+test('profile canary rejects invalid selectors and non-browser Recipes', () => {
+  const recipe = browserRecipe('listing');
+  recipe.extraction.collection = '[';
+  const documentRoot = {querySelectorAll: () => { throw new Error('bad selector'); }};
+  assert.throws(() => logic.profileRecipeProbe({securityDomain: 'account.example.test',
+    canaryURL: 'https://account.example.test/private/jobs', recipe, minimumRecords: 1},
+  probeEnvironment(documentRoot)), /profile_canary_selector_invalid/);
+  assert.throws(() => logic.profileRecipeProbe({securityDomain: 'account.example.test',
+    canaryURL: 'https://account.example.test/private/jobs', recipe: {...browserRecipe(), transport: 'http_html'},
+    minimumRecords: 1}, probeEnvironment(record({}))), /profile_canary_recipe_invalid/);
+});
+
 test('manifest grants no blanket recruitment-site host access', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../extension/manifest.json'), 'utf8'));
   assert.equal(manifest.manifest_version, 3);

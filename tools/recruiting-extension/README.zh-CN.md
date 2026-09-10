@@ -6,7 +6,7 @@
 
 - `extension/`：可加载的 Chrome Manifest V3 扩展；只在用户点击后取得当前页 `activeTab` 权限，不申请全部招聘网站访问权限；
 - `bridge/`：严格验证浏览器 Draft、从 Atoll 读取 Source/Endpoint 和真实消息发送者、生成三个不可变 Resource，并调用公开 Recipe 提案命令；
-- `cmd/recruiting-extension-bridge`：仅监听显式 loopback IP、使用随机配对令牌的本机 Bridge 进程。
+- `cmd/recruiting-extension-bridge`：仅监听显式 loopback IP、使用随机插件配对令牌的本机 Bridge 进程；可选启用使用独立 Executor 令牌的 Profile 修复入口。
 
 扩展不能直接连接 Atoll `/ws`。Atoll 的 WebSocket 使用同源 Cookie 和 Origin 检查防止 CSWSH；为扩展放宽该边界会破坏核心安全模型。Bridge 使用普通用户登录会话连接现有协议，扩展只连接 `127.0.0.1`/`::1`。
 
@@ -37,6 +37,27 @@ bin/atoll-recruiting-extension-bridge \
 
 Bridge 在标准输出打印一次 JSON，其中包含随机 `endpoint` 和 `token`。在 Chrome 的扩展管理页选择“加载已解压的扩展程序”，目录指向 `tools/recruiting-extension/extension`，把这两个值填入插件并连接。
 
+需要执行设备绑定的 Profile 修复时，另建一个只允许当前用户读取、内容至少 32 字符的 Executor 令牌文件：
+
+```bash
+install -m 0600 /dev/null /tmp/atoll-recruiting-executor-token
+```
+
+写入随机令牌后，给 Bridge 增加 `--executor-token-file /tmp/atoll-recruiting-executor-token`。Bridge 输出会额外包含 `browser_broker_url`，但不会打印 Executor 令牌。绑定到该设备、capability 为 `browser.profile.repair` 的同一 `recruiting-executor` class 使用以下配置：
+
+```json
+{
+  "execution_enabled": true,
+  "capability": "browser.profile.repair",
+  "browser_broker_url": "http://127.0.0.1:<port>",
+  "browser_broker_token_file": "/tmp/atoll-recruiting-executor-token",
+  "browser_broker_timeout_ms": 900000,
+  "artifact_redaction": "redacted"
+}
+```
+
+其余 control actor 与 Artifact Resource 配置仍按 Recruiting Executor 的既有严格配置提供。插件配对令牌与 Executor 令牌必须不同；两个入口都只接受 loopback 请求。
+
 操作顺序：
 
 1. Listing 模式打开已登记 Source 的确切 active Endpoint；Detail 模式打开一个已入库样本 Job 的确切 `detail_url`（均必须是 HTTPS）；
@@ -46,13 +67,16 @@ Bridge 在标准输出打印一次 JSON，其中包含随机 `endpoint` 和 `tok
 5. 提交 Draft。Bridge 会重新读取 Source/version/Endpoint 和消息信封身份，再上传 Evidence、Recipe、Capture Resource 并提案；
 6. 后续仍必须运行 `recipe.validate`，验证通过后由用户独立审批，插件本身没有发布权限。
 
+Profile 修复流程：运营员通过 `recruiting.profile.repair.begin` 创建一次性会话；控制面只向 Profile 绑定设备派发 `browser.profile.repair` Work；插件提示用户在该安全域完成登录，确认后导航到 Profile 冻结的 HTTPS canary 地址并执行冻结的 Browser Recipe。插件只返回 Recipe 身份、记录数和是否通过，不返回提取值。提交新 opaque `secret://` 引用后，控制面创建独立 verification Work，再次自动运行同一 canary；最后仍需既有 RepairIncident validation/resolve 才能把 Profile 恢复为 `ready`。
+
 ## 安全与限制
 
 - Bridge 拒绝非 loopback 监听地址、非 `chrome-extension://` Origin、错误配对令牌、远程明文 Atoll URL和权限过宽的密码文件；
 - 浏览器 Draft 无法声明 `captured_by`、Source version、Endpoint revision、Job version、Resource hash、Recipe status、Assignment 或 Checkpoint；这些事实由 Bridge/Actor 生成或验证。Detail 捕获的页面 URL 必须同时匹配经公开 `job.get` 读取、并在提案事务中再次锁定的同 Source Job；
 - 页面证据只保留最多三张岗位卡片的清理后 HTML，删除表单、输入控件、脚本、事件属性、secret-shaped 属性和 URL 查询；
 - 新捕获使用 `recruiting.extension-capture.v2` 双重页面围栏；严格解码仍接受原始 v1 Listing 形状，并保持其旧哈希算法，已有不可变 Resource 可安全重放；
-- 当前 UI 生成声明式 HTTP/HTML Listing Recipe。需要登录、复杂交互或纯 JavaScript 重放的网站仍需 Browser Broker/Profile 后续切片；
+- 捕获 UI 生成声明式 HTTP/HTML Listing 或 Detail Recipe；Profile 修复 UI 只能运行控制面冻结、与安全域和精确 canary URL 绑定的 Browser Recipe，不能把一次普通页面加载当作认证证明；
+- Profile 修复 Bridge/Executor/插件协议已经接通并有纯逻辑、Bridge、Executor 和非 root MySQL 合同测试；尚未在真实授权登录站点完成整包 Chrome 验收，也尚未实现供日常 Browser Driver 解析 `secret://chrome-profile/...` 的设备侧 Profile provider，因此 S12 仍未完成；
 - 当前环境的官方 Google Chrome 144 不接受命令行加载 unpacked extension，因此自动门分别验证扩展静态/协议、真实 Chrome DOM 捕获内核和普通用户 Bridge→Atoll 纵向链路。整包自动加载门需在 Chrome for Testing 或 Chromium 执行，不能用放宽 Atoll Origin 检查替代。
 
 ## 验证

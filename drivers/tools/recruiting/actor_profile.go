@@ -91,6 +91,10 @@ func handleProfileRepairBegin(sys actorbase.Sys, cfg Config, repository *store.R
 		_, _ = sys.Fail(msg, ErrorExecutionRejected, "Profile is not repairing on an authorized tool device")
 		return
 	}
+	if profile.Verification == nil || profile.Verification.Validate(profile.SecurityDomain) != nil {
+		_, _ = sys.Fail(msg, ErrorExecutionRejected, "Profile has no valid site-specific authentication canary Recipe")
+		return
+	}
 	incident, err := repository.GetRepairIncidentAggregate(msg.Ctx(), payload.RepairIncidentID)
 	if err != nil || incident.Domain != model.FailureProfile || incident.DomainKey != profile.ProfileID ||
 		incident.Status != model.RepairOpen {

@@ -46,6 +46,7 @@ type wakePayload = executioncontract.WakeRequest
 
 type productionRuntime struct {
 	driver       *httpdriver.Driver
+	broker       browserBroker
 	options      executeOfferOptions
 	batchOptions companyImportOptions
 }
@@ -129,6 +130,14 @@ func newProductionRuntime(cfg Config) (*productionRuntime, error) {
 			Artifact: options.Artifact, MaxBytes: cfg.BatchMaxBytes, ChunkSize: cfg.BatchChunkSize,
 		}}, nil
 	}
+	if cfg.Capability == "browser.profile.repair" {
+		broker, err := newHTTPBrowserBroker(cfg.BrowserBrokerURL, cfg.BrowserBrokerTokenFile,
+			time.Duration(cfg.BrowserBrokerTimeoutMS)*time.Millisecond)
+		if err != nil {
+			return nil, fmt.Errorf("prepare browser Profile broker: %w", err)
+		}
+		return &productionRuntime{broker: broker, options: options}, nil
+	}
 	robots, err := httpdriver.NewRobotsTxtChecker(httpdriver.RobotsPolicy{Timeout: time.Duration(cfg.RobotsTimeoutMS) * time.Millisecond,
 		MaxBytes: cfg.RobotsMaxBytes, CacheTTL: time.Duration(cfg.RobotsCacheTTLMS) * time.Millisecond})
 	if err != nil {
@@ -180,7 +189,10 @@ func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, in
 	}
 	control := messageExecutionControl{caller: sys, cause: msg.Cause(), controlActor: cfg.ControlActorID,
 		executorActorID: string(sys.Self()), wait: time.Duration(cfg.ControlWaitMS) * time.Millisecond}
-	if offer.Kind == "company_import" {
+	if offer.Kind == "profile_repair" || offer.Kind == "profile_verification" {
+		err = executeProfileOffer(msg.Ctx(), control, sys.Resource(), *offer, profileExecutionOptions{
+			Artifact: production.options.Artifact, Broker: production.broker, Now: production.options.Now})
+	} else if offer.Kind == "company_import" {
 		err = executeCompanyImportOffer(msg.Ctx(), control, sys.Resource(), *offer, production.batchOptions)
 	} else if offer.Kind == "company_import_apply" {
 		err = executeCompanyImportApplyOffer(msg.Ctx(), control, *offer)

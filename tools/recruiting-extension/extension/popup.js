@@ -10,6 +10,8 @@ function phaseLabel(phase) {
   if (phase === 'completed') return '已提交';
   if (phase === 'capturing' || phase?.startsWith('mark_')) return '标注中';
   if (phase === 'ready') return '已连接';
+	if (phase === 'profile_repair') return '等待登录';
+	if (phase === 'profile_verifying') return '正在验证';
   if (phase === 'error') return '需要处理';
   return '未连接';
 }
@@ -21,6 +23,10 @@ function render(state) {
     button.classList.toggle('done', Boolean(state.marks?.[button.dataset.role]));
   }
   $('#result').textContent = state.result ? JSON.stringify(state.result, null, 2) : '';
+	const repairing = state.profileTask?.kind === 'profile_repair';
+	$('#profile-repair').hidden = !repairing;
+	$('#capture').hidden = repairing || state.profileTask?.kind === 'profile_verification';
+	$('#profile-domain').textContent = repairing ? state.profileTask.canary_url : '';
 }
 
 function renderKind() {
@@ -57,6 +63,9 @@ for (const button of document.querySelectorAll('[data-role]')) {
 
 $('#submit').addEventListener('click', () => act(() => request({type: 'capture.submit.request',
   userConfirmed: $('#confirm').checked})));
+
+$('#profile-complete').addEventListener('click', () => act(() => request({type: 'profile.complete.request',
+	userConfirmed: $('#profile-confirm').checked})));
 
 chrome.runtime.onMessage.addListener(message => {
   if (message.type === 'capture.state') render(message.state);

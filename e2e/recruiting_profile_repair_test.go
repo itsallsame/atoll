@@ -89,8 +89,13 @@ func seedProfileRepairForPublicE2E(t *testing.T, dsn string,
 	repository, _ := store.NewRepository(db)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	profile, _ := model.NewBrowserProfile("e2e-profile-repair-profile", "jobs.example.test",
-		"tool:e2e-authorized-browser", "secret://e2e/profile/v1")
+	profile, _ := model.NewBrowserProfileWithVerification("e2e-profile-repair-profile", "jobs.example.test",
+		"tool:e2e-authorized-browser", "secret://e2e/profile/v1", model.ProfileVerificationRecipe{
+			EndpointURL: "https://jobs.example.test/private/canary", RecipeID: "e2e-profile-canary", RecipeVersion: 1,
+			ContentHash: "sha256:" + strings.Repeat("a", 64), ContractHash: "sha256:" + strings.Repeat("b", 64),
+			Kind: model.RecipeDetail, Execution: model.RecipeExecution{ABIVersion: model.RecipeABIVersion,
+				ContentRef: "recipe://e2e/profile-canary", RequiredCapability: store.ProfileRepairCapability,
+				Transport: model.RecipeTransportBrowser}, MinimumRecordCount: 1})
 	if err := repository.CreateProfile(ctx, profile, now); err != nil {
 		t.Fatal(err)
 	}

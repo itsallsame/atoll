@@ -68,6 +68,9 @@ func (r *Repository) ApplyProfileRepairBeginCommand(ctx context.Context, expecte
 	if profile.AuthStatus != model.ProfileRepairing || profile.DeviceID != session.DeviceActorID {
 		return CommandResult{}, &model.InvalidTransitionError{Entity: "profile", From: string(profile.AuthStatus), Action: "begin secure repair session"}
 	}
+	if profile.Verification == nil || profile.Verification.Validate(profile.SecurityDomain) != nil {
+		return CommandResult{}, fmt.Errorf("Profile has no valid site-specific authentication canary Recipe")
+	}
 	for _, publicPayload := range [][]byte{receipt.Response, event.Payload} {
 		if jsonPayloadContainsString(publicPayload, profile.SecretRef) || jsonPayloadContainsString(publicPayload, profile.DeviceID) {
 			return CommandResult{}, fmt.Errorf("Profile repair public facts contain private Profile references")
