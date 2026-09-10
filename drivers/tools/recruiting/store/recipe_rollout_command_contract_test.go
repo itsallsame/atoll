@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -220,5 +221,136 @@ func TestDetailRecipeRolloutCommandIsFencedReplayableAndAtomic(t *testing.T) {
 	storedRollback, err := repository.GetAssignmentVersion(ctx, source.SourceID, model.RecipeDetail, 3)
 	if err != nil || storedRollback != rollbackAssignment || storedRollback.RecipeVersion != detailV1.Version {
 		t.Fatalf("rollback history v3=%+v err=%v", storedRollback, err)
+	}
+}
+
+func TestListingRecipeRollbackRebindsCheckpointWithoutMovingFrontier(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	now := time.Date(2090, 9, 9, 2, 0, 0, 0, time.UTC)
+
+	company, _ := model.NewCompany("listing-rollback-company", "Listing Rollback", "https://listing-rollback.example.com")
+	if err := repository.CreateCompany(ctx, company, now); err != nil {
+		t.Fatal(err)
+	}
+	source, _ := model.NewRecruitmentSource("listing-rollback-source", company.CompanyID,
+		"https://listing-rollback.example.com/jobs", "all", 1)
+	if err := repository.CreateSource(ctx, source, now); err != nil {
+		t.Fatal(err)
+	}
+	validating, _ := source.BeginValidation(source.Version)
+	if err := repository.UpdateSourceCAS(ctx, source.Version, validating, now); err != nil {
+		t.Fatal(err)
+	}
+	listingV1 := activeRecipe(t, "listing-rollback-v1", model.RecipeListing,
+		"listing-rollback.example.com", 1, "stable-listing-contract")
+	listingV2 := activeRecipe(t, "listing-rollback-v2", model.RecipeListing,
+		"listing-rollback.example.com", 1, "stable-listing-contract")
+	for _, recipe := range []model.Recipe{listingV1, listingV2} {
+		if err := repository.CreateRecipe(ctx, recipe, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assignmentV1, _ := model.NewSourceRecipeAssignment(source.SourceID, model.RecipeListing,
+		listingV1.RecipeID, listingV1.Version, listingV1.ContractHash, now.Format(time.RFC3339Nano))
+	readyV1, _ := validating.PublishValidated(validating.Version, assignmentV1,
+		verifiedStoreAssessment(validating, assignmentV1, now))
+	if err := repository.PublishSourceAssignment(ctx, validating.Version, 0, readyV1, assignmentV1, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed a previously validated compatible rollout so immutable history has
+	// v1 as the known-good rollback target and v2 as the current assignment.
+	assignmentV2, _ := assignmentV1.Replace(assignmentV1.AssignmentVersion, listingV2.RecipeID,
+		listingV2.Version, listingV2.ContractHash, now.Add(time.Minute).Format(time.RFC3339Nano))
+	repairingV2, _ := readyV1.AssignRecipe(readyV1.Version, assignmentV2, true)
+	if err := repository.PublishSourceAssignment(ctx, readyV1.Version, assignmentV1.AssignmentVersion,
+		repairingV2, assignmentV2, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	validatingV2, _ := repairingV2.BeginValidation(repairingV2.Version)
+	if err := repository.UpdateSourceCAS(ctx, repairingV2.Version, validatingV2, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	readyV2, _ := validatingV2.PublishValidated(validatingV2.Version, assignmentV2,
+		verifiedStoreAssessment(validatingV2, assignmentV2, now.Add(2*time.Minute)))
+	if err := repository.UpdateSourceCAS(ctx, validatingV2.Version, readyV2, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	checkpoint, err := model.EstablishCheckpoint(model.IncrementalCheckpoint{
+		SourceID: source.SourceID, RecipeID: listingV2.RecipeID, RecipeVersion: listingV2.Version,
+		ContractHash: listingV2.ContractHash, Strategy: model.CheckpointActivityTime,
+		FrontierActivityAt: now.Add(-24 * time.Hour).Format(time.RFC3339),
+		FrontierJobKeys:    []string{"job-frontier-a", "job-frontier-b"}, OverlapPages: 3, OverlapItems: 21,
+		LastOccurrenceID: "daily-before-listing-rollback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointState, _ := json.Marshal(checkpoint)
+	if _, err := db.ExecContext(ctx, `INSERT INTO recruiting_checkpoints(
+  source_id, checkpoint_version, recipe_id, recipe_version, contract_hash,
+  frontier_activity_at, frontier_keys_json, last_occurrence_id, state_json, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, checkpoint.SourceID, checkpoint.Version, checkpoint.RecipeID,
+		checkpoint.RecipeVersion, checkpoint.ContractHash, now.Add(-24*time.Hour), json.RawMessage(`["job-frontier-a","job-frontier-b"]`),
+		checkpoint.LastOccurrenceID, checkpointState, now); err != nil {
+		t.Fatal(err)
+	}
+
+	rollbackAt := now.Add(3 * time.Minute)
+	historical, err := repository.GetAssignmentVersion(ctx, source.SourceID, model.RecipeListing, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackAssignment, _ := assignmentV2.Replace(assignmentV2.AssignmentVersion, historical.RecipeID,
+		historical.RecipeVersion, historical.ContractHash, rollbackAt.Format(time.RFC3339Nano))
+	rollbackUnderstood := readyV2
+	rollbackSource, _ := rollbackUnderstood.AssignRecipe(rollbackUnderstood.Version, rollbackAssignment, true)
+	receipt, _ := model.NewCommandReceipt("listing-rollback", "recruiting.recipe.rollback",
+		"sha256:listing-rollback", json.RawMessage(`{"status":"rolled_back"}`))
+	event, _ := model.NewEventIntent("listing-rollback-event", "source.listing_recipe_rolled_back", "source",
+		rollbackSource.SourceID, rollbackSource.Version, rollbackAt.Format(time.RFC3339Nano), receipt.CommandID,
+		json.RawMessage(`{}`))
+	result, err := repository.ApplyRecipeAssignmentChangeCommand(ctx, readyV2.Version,
+		assignmentV2.AssignmentVersion, rollbackSource, rollbackAssignment, receipt, event, rollbackAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := repository.ApplyRecipeAssignmentChangeCommand(ctx, readyV2.Version,
+		assignmentV2.AssignmentVersion, rollbackSource, rollbackAssignment, receipt, event, rollbackAt)
+	if err != nil || !replay.Replayed || string(replay.Response) != string(result.Response) {
+		t.Fatalf("Listing rollback replay=%+v err=%v", replay, err)
+	}
+
+	storedSource, _ := repository.GetSource(ctx, source.SourceID)
+	storedAssignment, _ := repository.GetAssignment(ctx, source.SourceID, model.RecipeListing)
+	storedCheckpoint, _ := repository.GetCheckpoint(ctx, source.SourceID)
+	if storedSource.ReadinessStatus != model.SourceRepairing || storedSource.ContractAssessment != nil ||
+		storedSource.CandidateEndpoint == nil || storedSource.ActiveEndpoint == nil ||
+		*storedSource.CandidateEndpoint != *storedSource.ActiveEndpoint || storedSource.HasVerifiedIncrementalContract() {
+		t.Fatalf("Listing rollback did not require recalibration: %+v", storedSource)
+	}
+	if storedAssignment != rollbackAssignment || storedAssignment.AssignmentVersion != 3 ||
+		storedAssignment.RecipeID != listingV1.RecipeID {
+		t.Fatalf("Listing rollback assignment=%+v", storedAssignment)
+	}
+	if storedCheckpoint.Version != checkpoint.Version+1 || storedCheckpoint.RecipeID != listingV1.RecipeID ||
+		storedCheckpoint.RecipeVersion != listingV1.Version || storedCheckpoint.ContractHash != checkpoint.ContractHash ||
+		storedCheckpoint.FrontierActivityAt != checkpoint.FrontierActivityAt ||
+		storedCheckpoint.LastOccurrenceID != checkpoint.LastOccurrenceID || storedCheckpoint.OverlapPages != checkpoint.OverlapPages ||
+		storedCheckpoint.OverlapItems != checkpoint.OverlapItems || !reflect.DeepEqual(storedCheckpoint.FrontierJobKeys, checkpoint.FrontierJobKeys) {
+		t.Fatalf("Listing rollback moved checkpoint frontier: before=%+v after=%+v", checkpoint, storedCheckpoint)
 	}
 }

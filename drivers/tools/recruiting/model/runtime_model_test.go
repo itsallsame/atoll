@@ -35,6 +35,38 @@ func TestCheckpointRequiresCompleteBoundaryProofAndCAS(t *testing.T) {
 	}
 }
 
+func TestCheckpointRecipeRebindPreservesWaterlineAndAdvancesFence(t *testing.T) {
+	checkpoint, err := EstablishCheckpoint(IncrementalCheckpoint{
+		SourceID: "source-rebind", RecipeID: "listing-v2", RecipeVersion: 2, ContractHash: "contract-a",
+		Strategy: CheckpointActivityTime, FrontierActivityAt: "2026-09-01T00:00:00Z",
+		FrontierJobKeys: []string{"job-a", "job-b"}, OverlapPages: 2, OverlapItems: 17,
+		LastOccurrenceID: "daily-before-rollback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rebound, err := checkpoint.RebindRecipe(checkpoint.Version, "listing-v1", 1, checkpoint.ContractHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebound.Version != checkpoint.Version+1 || rebound.RecipeID != "listing-v1" || rebound.RecipeVersion != 1 {
+		t.Fatalf("rebound checkpoint identity/fence = %+v", rebound)
+	}
+	if rebound.SourceID != checkpoint.SourceID || rebound.ContractHash != checkpoint.ContractHash ||
+		rebound.Strategy != checkpoint.Strategy || rebound.FrontierActivityAt != checkpoint.FrontierActivityAt ||
+		rebound.OverlapPages != checkpoint.OverlapPages || rebound.OverlapItems != checkpoint.OverlapItems ||
+		rebound.LastOccurrenceID != checkpoint.LastOccurrenceID || len(rebound.FrontierJobKeys) != 2 ||
+		rebound.FrontierJobKeys[0] != "job-a" || rebound.FrontierJobKeys[1] != "job-b" {
+		t.Fatalf("Recipe rebind moved checkpoint waterline: before=%+v after=%+v", checkpoint, rebound)
+	}
+	if _, err := checkpoint.RebindRecipe(checkpoint.Version, "listing-v1", 1, "different-contract"); err == nil {
+		t.Fatal("Recipe rebind accepted a different result contract")
+	}
+	if _, err := checkpoint.RebindRecipe(checkpoint.Version+1, "listing-v1", 1, checkpoint.ContractHash); err == nil {
+		t.Fatal("Recipe rebind accepted a stale checkpoint fence")
+	}
+}
+
 func TestCheckpointRejectsEveryIncompleteBoundaryProof(t *testing.T) {
 	checkpoint, _ := EstablishCheckpoint(IncrementalCheckpoint{
 		SourceID: "source-1", RecipeID: "listing-1", RecipeVersion: 1, ContractHash: "contract-a",

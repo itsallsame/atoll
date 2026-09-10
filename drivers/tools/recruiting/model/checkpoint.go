@@ -70,6 +70,25 @@ func (c IncrementalCheckpoint) Commit(expected uint64, progress ListingProgress)
 	return next, nil
 }
 
+// RebindRecipe records a compatibility-approved Listing Recipe change without
+// moving the observed frontier. The version advances as a fence, while all
+// collection waterline fields remain unchanged.
+func (c IncrementalCheckpoint) RebindRecipe(expected uint64, recipeID string, recipeVersion uint64, contractHash string) (IncrementalCheckpoint, error) {
+	if err := requireVersion(expected, c.Version); err != nil {
+		return IncrementalCheckpoint{}, err
+	}
+	if strings.TrimSpace(recipeID) == "" || recipeVersion == 0 || strings.TrimSpace(contractHash) == "" {
+		return IncrementalCheckpoint{}, fmt.Errorf("checkpoint Recipe identity and contract are required")
+	}
+	if contractHash != c.ContractHash {
+		return IncrementalCheckpoint{}, fmt.Errorf("checkpoint contract changed without compatibility validation")
+	}
+	c.RecipeID = recipeID
+	c.RecipeVersion = recipeVersion
+	c.Version++
+	return c, nil
+}
+
 func validateCheckpoint(c IncrementalCheckpoint) error {
 	if strings.TrimSpace(c.SourceID) == "" || strings.TrimSpace(c.RecipeID) == "" || c.RecipeVersion == 0 || strings.TrimSpace(c.ContractHash) == "" || strings.TrimSpace(c.LastOccurrenceID) == "" {
 		return fmt.Errorf("checkpoint source, recipe, contract, and occurrence are required")

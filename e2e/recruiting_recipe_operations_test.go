@@ -79,7 +79,6 @@ func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing
 		nestedNumberField(t, rolledBack, "assignment", "recipe_version") != 1 {
 		t.Fatalf("Recipe rollback=%v", rolledBack)
 	}
-
 	candidateSpec := recruitingLiveRecipe()
 	candidateBytes, _ := json.Marshal(candidateSpec)
 	candidateHash, _ := candidateSpec.ContentHash()
@@ -184,6 +183,17 @@ func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing
 		stringField(t, rejectedCandidate, "next_action") != "edit_or_revalidate_recipe" {
 		t.Fatalf("Recipe rejection=%v", rejectedCandidate)
 	}
+	listingRollbackPayload := map[string]any{
+		"command_id": "e2e-listing-recipe-rollback", "target": map[string]any{"target_type": "source", "target_id": source.SourceID},
+		"expected_version": nestedNumberField(t, rolledBack, "source", "version"), "kind": "listing", "to_assignment_version": 1,
+		"expected_assignment_version": 2, "reason": "restore a compatible known-good listing Recipe before recalibration",
+	}
+	listingRolledBack := ws.request(homeID, "recruiting.recipe.rollback", controlID, listingRollbackPayload)
+	if nestedNumberField(t, listingRolledBack, "assignment", "assignment_version") != 3 ||
+		nestedStringField(t, listingRolledBack, "source", "readiness_status") != "repairing" ||
+		stringField(t, listingRolledBack, "next_action") != "validate_source_before_resuming_schedule" {
+		t.Fatalf("Listing Recipe rollback=%v", listingRolledBack)
+	}
 
 	h.restartServer()
 	recoveredOperator := newAPIClient(t, h.base)
@@ -194,14 +204,16 @@ func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing
 	waitRecruitingReady(t, recovered, homeID, controlID, h.server)
 	replayedQuarantine := recovered.request(homeID, "recruiting.recipe.quarantine", controlID, quarantinePayload)
 	replayedRollback := recovered.request(homeID, "recruiting.recipe.rollback", controlID, rollbackPayload)
+	replayedListingRollback := recovered.request(homeID, "recruiting.recipe.rollback", controlID, listingRollbackPayload)
 	replayedProposal := recovered.request(homeID, "recruiting.recipe.propose", controlID, proposalPayload)
 	replayedRejection := recovered.request(homeID, "recruiting.recipe.reject", controlID, rejectPayload)
 	if nestedNumberField(t, replayedQuarantine, "recipe", "state_version") != float64(detailV2.StateVersion+1) ||
 		nestedNumberField(t, replayedRollback, "assignment", "assignment_version") != 3 ||
+		nestedNumberField(t, replayedListingRollback, "assignment", "assignment_version") != 3 ||
 		nestedStringField(t, replayedProposal, "recipe", "status") != "draft" ||
 		nestedStringField(t, replayedRejection, "recipe", "status") != "draft" {
-		t.Fatalf("durable command replay quarantine=%v rollback=%v proposal=%v rejection=%v",
-			replayedQuarantine, replayedRollback, replayedProposal, replayedRejection)
+		t.Fatalf("durable command replay quarantine=%v detail_rollback=%v listing_rollback=%v proposal=%v rejection=%v",
+			replayedQuarantine, replayedRollback, replayedListingRollback, replayedProposal, replayedRejection)
 	}
 }
 
@@ -243,8 +255,11 @@ func seedRecipeOperations(t *testing.T, dsn string, now time.Time) (model.Recrui
 		t.Fatal(err)
 	}
 	listing := activeE2ERecipe(t, "e2e-recipe-listing", model.RecipeListing, 1, "listing-contract")
-	if err := repository.CreateRecipe(ctx, listing, now); err != nil {
-		t.Fatal(err)
+	listingCurrent := activeE2ERecipe(t, "e2e-recipe-listing-current", model.RecipeListing, 1, "listing-contract")
+	for _, recipe := range []model.Recipe{listing, listingCurrent} {
+		if err := repository.CreateRecipe(ctx, recipe, now); err != nil {
+			t.Fatal(err)
+		}
 	}
 	listingAssignment, _ := model.NewSourceRecipeAssignment(source.SourceID, model.RecipeListing, listing.RecipeID,
 		listing.Version, listing.ContractHash, now.Format(time.RFC3339Nano))
@@ -255,6 +270,26 @@ func seedRecipeOperations(t *testing.T, dsn string, now time.Time) (model.Recrui
 		EvidenceArtifactIDs: []string{"artifact:e2e-recipe-listing"}, AssessedAt: now.Format(time.RFC3339Nano), Version: 1}
 	ready, _ := validating.PublishValidated(validating.Version, listingAssignment, assessment)
 	if err := repository.PublishSourceAssignment(ctx, validating.Version, 0, ready, listingAssignment, now); err != nil {
+		t.Fatal(err)
+	}
+	listingAssignmentV2, _ := listingAssignment.Replace(listingAssignment.AssignmentVersion, listingCurrent.RecipeID,
+		listingCurrent.Version, listingCurrent.ContractHash, now.Add(time.Second).Format(time.RFC3339Nano))
+	repairing, _ := ready.AssignRecipe(ready.Version, listingAssignmentV2, true)
+	if err := repository.PublishSourceAssignment(ctx, ready.Version, listingAssignment.AssignmentVersion,
+		repairing, listingAssignmentV2, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	revalidating, _ := repairing.BeginValidation(repairing.Version)
+	if err := repository.UpdateSourceCAS(ctx, repairing.Version, revalidating, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	revalidatedAssessment := model.SourceContractAssessment{SourceID: source.SourceID, EndpointRevision: 1,
+		RecipeID: listingCurrent.RecipeID, RecipeVersion: listingCurrent.Version, ContractHash: listingCurrent.ContractHash,
+		Identity: model.ContractVerified, Pagination: model.ContractVerified, Ordering: model.ContractVerified,
+		UpdateRetop: model.ContractVerified, CheckpointStrategy: model.CheckpointActivityTime, OverlapPages: 2,
+		EvidenceArtifactIDs: []string{"artifact:e2e-recipe-listing-current"}, AssessedAt: now.Add(2 * time.Second).Format(time.RFC3339Nano), Version: 1}
+	ready, _ = revalidating.PublishValidated(revalidating.Version, listingAssignmentV2, revalidatedAssessment)
+	if err := repository.UpdateSourceCAS(ctx, revalidating.Version, ready, now.Add(2*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	detailV1 := activeE2ERecipe(t, "e2e-recipe-detail", model.RecipeDetail, 1, "detail-contract")

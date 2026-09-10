@@ -886,11 +886,12 @@ func handleRecipeRollback(sys actorbase.Sys, repository *store.Repository, msg a
 		return
 	}
 	commandContext, err := NewCommandContext(payload.MutationCommand, string(msg.Sender.ID))
-	if err != nil || payload.Target.Type != "source" || payload.Kind != model.RecipeDetail ||
+	if err != nil || payload.Target.Type != "source" ||
+		(payload.Kind != model.RecipeDetail && payload.Kind != model.RecipeListing) ||
 		payload.ToAssignmentVersion == 0 || payload.ExpectedAssignmentVersion == 0 ||
 		payload.ToAssignmentVersion >= payload.ExpectedAssignmentVersion {
 		if err == nil {
-			err = fmt.Errorf("source target, detail kind, older to_assignment_version, and expected_assignment_version are required")
+			err = fmt.Errorf("source target, detail or listing kind, older to_assignment_version, and expected_assignment_version are required")
 		}
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
 		return
@@ -908,12 +909,12 @@ func handleRecipeRollback(sys actorbase.Sys, repository *store.Repository, msg a
 		failStoreError(sys, msg, err)
 		return
 	}
-	existing, err := repository.GetAssignment(msg.Ctx(), current.SourceID, model.RecipeDetail)
+	existing, err := repository.GetAssignment(msg.Ctx(), current.SourceID, payload.Kind)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
 	}
-	historical, err := repository.GetAssignmentVersion(msg.Ctx(), current.SourceID, model.RecipeDetail, payload.ToAssignmentVersion)
+	historical, err := repository.GetAssignmentVersion(msg.Ctx(), current.SourceID, payload.Kind, payload.ToAssignmentVersion)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
@@ -923,7 +924,7 @@ func handleRecipeRollback(sys actorbase.Sys, repository *store.Repository, msg a
 		failStoreError(sys, msg, err)
 		return
 	}
-	if targetRecipe.Status != model.RecipeActive {
+	if targetRecipe.Status != model.RecipeActive || targetRecipe.Kind != payload.Kind {
 		failStoreError(sys, msg, fmt.Errorf("%w: rollback target Recipe must be active", store.ErrRecipeRolloutRejected))
 		return
 	}
@@ -932,11 +933,18 @@ func handleRecipeRollback(sys actorbase.Sys, repository *store.Repository, msg a
 		historical.RecipeVersion, historical.ContractHash, businessAt.Format(time.RFC3339Nano))
 	if err == nil {
 		var next model.RecruitmentSource
-		next, err = current.AssignRecipe(payload.ExpectedVersion, replacement, false)
+		checkpointCompatible := payload.Kind == model.RecipeListing && existing.ContractHash == historical.ContractHash
+		next, err = current.AssignRecipe(payload.ExpectedVersion, replacement, checkpointCompatible)
 		if err == nil {
+			nextAction := "retry_failed_detail_work"
+			eventType := "source.detail_recipe_rolled_back"
+			if payload.Kind == model.RecipeListing {
+				nextAction = "validate_source_before_resuming_schedule"
+				eventType = "source.listing_recipe_rolled_back"
+			}
 			response := recipeRolloutResponse{ContractVersion: ContractVersion, CorrelationID: string(msg.CorrelationID),
 				RequestedBy: commandContext.RequestedBy, Source: next, Assignment: replacement,
-				Target: Target{Type: "source", ID: next.SourceID}, NextAction: "retry_failed_detail_work"}
+				Target: Target{Type: "source", ID: next.SourceID}, NextAction: nextAction}
 			responseBytes, _ := json.Marshal(response)
 			var receipt model.CommandReceipt
 			receipt, err = model.NewCommandReceipt(payload.CommandID, msg.Type, requestHash, responseBytes)
@@ -946,13 +954,13 @@ func handleRecipeRollback(sys actorbase.Sys, repository *store.Repository, msg a
 				"recipe_version": replacement.RecipeVersion})
 			var event model.EventIntent
 			if err == nil {
-				event, err = model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|source.detail_recipe_rolled_back"),
-					"source.detail_recipe_rolled_back", "source", next.SourceID, next.Version,
+				event, err = model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|"+eventType),
+					eventType, "source", next.SourceID, next.Version,
 					businessAt.Format(time.RFC3339Nano), payload.CommandID, auditPayload)
 			}
 			var result store.CommandResult
 			if err == nil {
-				result, err = repository.ApplyDetailRecipeRolloutCommand(msg.Ctx(), payload.ExpectedVersion,
+				result, err = repository.ApplyRecipeAssignmentChangeCommand(msg.Ctx(), payload.ExpectedVersion,
 					payload.ExpectedAssignmentVersion, next, replacement, receipt, event, businessAt)
 			}
 			if err == nil {
