@@ -281,7 +281,7 @@ Daily Run 截点固化 Source 及其当时的 Company/Source 配置版本和 occ
 - 公司恢复进入 `paused`，经入口验证后再显式恢复调度。公司及子数据的物理删除属于 M5 独立合规操作，必须展示影响范围、执行权限/审批、保留期和删除结果；岗位下架或普通采集失败不得触发它。
 - 批量更新、删除和 Recipe 发布必须逐项记录结果，允许部分失败重试，不能只返回一个模糊的整体成功。
 - 第一版公司合并只建立带生效区间的 canonical/alias 映射，不批量改写历史事实；拆分和 Source 改归属使用预览、二次确认及显式归属分配。入口身份改变时默认归档旧 Source、创建带 `supersedes/split_from` 谱系的新 Source。
-- 原始 `ListingObservation`、已验证详情版本和 `CuratedOverride` 分层保存。有效字段优先级为 `manual override > verified detail > listing observation`；人工覆盖可撤销或过期，后续抓取仍保存来源事实但不静默覆盖有效人工值。
+- 原始 `ListingObservation`、已验证详情版本和 `CuratedOverride` 分层保存。有效字段优先级为 `manual override > verified detail > listing observation`；人工覆盖可撤销或过期，后续抓取仍保存来源事实但不静默覆盖有效人工值。公开 `job.correct` 的 set/clear 命令同时使用 Job version 与当前 override-head identity/version 双重 CAS；每次变更追加不可变 override version，并把命令 receipt 和不含字段值的审计事件原子提交，绝不改写 Job、Observation 或 DetailVersion。`job.correction.get` 按 Job+field 返回当前 head 与有界历史，让其他会话无需数据库权限即可安全接续；撤销只移除人工优先级，底层最新 verified/listing 事实会重新生效。
 - 历史回填必须声明 `artifact_recompute|live_refetch`。后者只是重新访问当前网页，不得声称恢复历史快照；普通回填永不读取或推进日常 Incremental Checkpoint。
 
 ### 5.10 浏览器插件与 Recipe 复用闭环

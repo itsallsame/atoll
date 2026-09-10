@@ -113,7 +113,7 @@ func TestManifestExposesControlAndExecutorResultWords(t *testing.T) {
 		TypeRunDiagnostic,
 		TypeRunProduction,
 		TypeRecipeInspect, TypeRecipePropose, TypeRecipeValidate, TypeRecipeApprove, TypeRecipeReject, TypeRecipeRollout, TypeRecipeQuarantine, TypeRecipeRollback,
-		TypeJobGet, TypeJobList, TypeWorkGet, TypeWorkList, TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary,
+		TypeJobGet, TypeJobList, TypeJobCorrect, TypeJobCorrectionGet, TypeWorkGet, TypeWorkList, TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary,
 		TypeWorkCreate, TypeWorkPause, TypeWorkResume, TypeWorkRetry, TypeWorkCancel, TypeWorkResolve,
 		TypeSystemReconcile, TypeExecutionWakeCompleted,
 	} {

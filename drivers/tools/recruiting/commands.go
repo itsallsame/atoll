@@ -46,9 +46,10 @@ const (
 	TypeSourceList                     = "recruiting.source.list"
 	TypeBaselineStart                  = "recruiting.baseline.start"
 
-	TypeJobGet     = "recruiting.job.get"
-	TypeJobList    = "recruiting.job.list"
-	TypeJobCorrect = "recruiting.job.correct"
+	TypeJobGet           = "recruiting.job.get"
+	TypeJobList          = "recruiting.job.list"
+	TypeJobCorrect       = "recruiting.job.correct"
+	TypeJobCorrectionGet = "recruiting.job.correction.get"
 
 	TypeWorkCreate  = "recruiting.work.create"
 	TypeWorkGet     = "recruiting.work.get"

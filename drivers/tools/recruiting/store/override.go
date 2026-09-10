@@ -15,11 +15,11 @@ import (
 )
 
 type OverrideHead struct {
-	TargetID        string
-	Field           string
-	OverrideID      string
-	OverrideVersion uint64
-	Active          bool
+	TargetID        string `json:"target_id"`
+	Field           string `json:"field"`
+	OverrideID      string `json:"override_id"`
+	OverrideVersion uint64 `json:"override_version"`
+	Active          bool   `json:"active"`
 }
 
 // ApplyOverrideCAS appends the immutable override version and moves the
@@ -40,6 +40,17 @@ func (r *Repository) ApplyOverrideCAS(ctx context.Context, expected *OverrideHea
 	}
 	defer tx.Rollback()
 
+	if err := applyOverrideTx(ctx, tx, expected, override, businessAt); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit override: %w", err)
+	}
+	return nil
+}
+
+func applyOverrideTx(ctx context.Context, tx *sql.Tx, expected *OverrideHead,
+	override model.CuratedOverride, businessAt time.Time) error {
 	current, exists, err := getOverrideHeadTx(ctx, tx, override.TargetID, override.Field)
 	if err != nil {
 		return err
@@ -94,9 +105,6 @@ WHERE target_id = ? AND field_name = ? AND override_id = ? AND override_version 
 			return ErrOverrideConflict
 		}
 		return fmt.Errorf("move override head: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit override: %w", err)
 	}
 	return nil
 }

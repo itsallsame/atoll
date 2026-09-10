@@ -431,6 +431,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 执行状态补充（2026-09-09，Repair 验证、结案与有界恢复）：普通运营员现可在公开消息边界执行 `recruiting.repair.validation.begin → recruiting.repair.resolve → recruiting.repair.recover`。开始验证必须引用一个已由 Executor 成功完成、且因果源 Work 属于该 Incident affected 集合的 Retry Work；普通用户文本不能伪造成功证据。该事务同步把 Repair Work 推进到 running；resolve 再次验证证据，原子解决 Incident、完成唯一 Repair Work 并释放活动单飞键。相同 key 后续回归创建新的历史 Incident，同时并发回归仍只保留一个活动事件。恢复命令按 Incident version 串行，每批至多 100 个仍被该 Repair Work 阻塞的 Work，保留失败 Attempt/分类事实并清除运行阻塞；每个 capability 只投递一个初始 wake，实际 offer 继续受全局、capability、origin、company 和 Profile 预算限制。公开 Server E2E 覆盖无效证据拒绝且零状态变化、完成 canary、过早恢复拒绝、resolve、单条恢复、命令重放和 Server 重启；真实网站 Detail 修复旅程在成功访问修正版 Recipe 后也完成 Incident validation/resolve。另一个非 root MySQL 合同创建 201 个 affected Work，以 1 个 canary 后严格执行两个 100 条恢复事务，验证首批重放不重复开放、最终 `recovered_work_count=200`、无 waiting member 且活动键已释放。Recipe 候选创建、quarantine/rollback、Profile 安全修复以及全自动分批协调仍待完成，因此 P7 退出门仍未关闭。
 
+执行状态补充（2026-09-10，岗位字段人工修正）：公开 `recruiting.job.correct` 已把既有 `CuratedOverride` 领域/存储能力接入普通运营员消息边界。set/clear 同时冻结 Job version 与 override-head identity/version，客户端不能自报操作者；命令事务先锁定真实 Job，再追加不可变 override version、移动 head、保存稳定 receipt 和不含字段值的审计事件，原始 Job、ListingObservation 和 DetailVersion 都不被改写。值为非 null、有效且至多 64 KiB 的 JSON，字段名有界且拒绝控制字符。`recruiting.job.correction.get` 返回指定 Job+field 的当前 head 和至多 100 条历史。隔离非 root MySQL 合同验证了原子性、陈旧 head 回滚、set/clear 与重放；普通用户真实 server E2E 又验证后续新抓取推进 Job 版本但人工覆盖仍生效、旧浏览器页被版本栅栏拒绝、撤销后恢复底层事实优先级，以及 server 重启后命令重放与两版历史一致。该切片不实现岗位下架，也不把人工修正反写成抓取事实。
+
 ## 13. P8：25 场景验收矩阵
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。
