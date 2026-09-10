@@ -17,9 +17,9 @@ import (
 )
 
 // TestRecruitingLiveRecipeValidationRejectsBadCandidateThroughAtoll proves
-// both validation outcomes against public Greenhouse data: a Listing candidate
-// with a false ordering claim is rejected, while a Detail candidate produces
-// evidence-only output and can be approved without publishing Job data.
+// all validation outcomes against public recruiting data: a Listing candidate
+// with a false ordering claim is rejected, while Detail and Discovery candidates
+// produce evidence-only output and can be approved without publishing business data.
 func TestRecruitingLiveRecipeValidationRejectsBadCandidateThroughAtoll(t *testing.T) {
 	if os.Getenv("ATOLL_RECRUITING_LIVE_E2E") != "1" {
 		t.Skip("set ATOLL_RECRUITING_LIVE_E2E=1 to run the real-website Recipe validation test")
@@ -184,6 +184,102 @@ func TestRecruitingLiveRecipeValidationRejectsBadCandidateThroughAtoll(t *testin
 	}
 	assertLiveDetailValidationHasNoBusinessWrites(t, runtimeDSN, sourceID, jobID,
 		detailCandidate.RecipeID, detailCandidate.Version)
+
+	discoverySpec := recipeabi.Spec{ABIVersion: recipeabi.Version, Kind: recipeabi.KindDiscovery,
+		RequiredCapability: "http.fetch", Transport: recipeabi.TransportHTTPHTML,
+		Request: recipeabi.ReadRequest{Method: "GET", Headers: map[string]string{"Accept": "text/html"}, TimeoutMS: 30_000,
+			MaxResponseBytes: 2 << 20, MaxRedirects: 2, UserAgent: "Atoll-Recruiting-Discovery-Validation/1.0"},
+		Extraction: recipeabi.Extraction{Collection: "body", Fields: map[string]string{
+			"endpoint": `a[href="/company/careers/see-jobs"]`, "confidence_basis": `a[href="/company/careers/see-jobs"]`},
+			Attributes: map[string]string{"endpoint": "href"}},
+	}
+	discoveryRaw, err := json.Marshal(discoverySpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const discoveryRef = "recipe://e2e-live-discovery-validation-candidate"
+	ws.resource(map[string]any{"channel_id": homeID, "op": "create", "resource_id": discoveryRef,
+		"args": json.RawMessage(discoveryRaw)})
+	discoveryHash, _ := discoverySpec.ContentHash()
+	discoveryCompany := ws.request(homeID, "recruiting.company.add", controlID, map[string]any{
+		"command_id": "e2e-live-discovery-validation-company", "company_id": "e2e-live-discovery-validation-mongodb",
+		"name": "MongoDB Discovery Validation", "website": "https://www.mongodb.com/careers",
+		"reason": "add a public Company sample for Discovery Recipe validation",
+	})
+	discoveryCompanyVersion := nestedNumberField(t, discoveryCompany, "company", "version")
+	discoveryProposed := ws.request(homeID, "recruiting.recipe.propose", controlID, map[string]any{
+		"command_id":       "e2e-live-discovery-validation-propose",
+		"target":           map[string]any{"target_type": "company", "target_id": "e2e-live-discovery-validation-mongodb"},
+		"expected_version": discoveryCompanyVersion, "recipe_id": "e2e-live-discovery-validation", "recipe_version": 1,
+		"content_ref": discoveryRef, "expected_content_hash": discoveryHash,
+		"reason": "propose the Discovery candidate before running its real Company sample",
+	})
+	discoveryStateVersion := nestedNumberField(t, discoveryProposed, "recipe", "state_version")
+	discoveryStarted := ws.request(homeID, "recruiting.recipe.validate", controlID, map[string]any{
+		"command_id":       "e2e-live-discovery-validation-start",
+		"target":           map[string]any{"target_type": "recipe", "target_id": "e2e-live-discovery-validation"},
+		"expected_version": discoveryStateVersion, "recipe_version": 1,
+		"company_id": "e2e-live-discovery-validation-mongodb",
+		"run_id":     "e2e-live-discovery-recipe-validation-run", "work_id": "e2e-live-discovery-recipe-validation-work",
+		"reason": "execute the candidate against the frozen public Company careers page",
+	})
+	discoveryRun, _ := discoveryStarted["validation_run"].(map[string]any)
+	if nestedStringField(t, discoveryStarted, "validation_run", "company_id") != "e2e-live-discovery-validation-mongodb" ||
+		discoveryRun["source_id"] != nil {
+		t.Fatalf("live Discovery Recipe validation start=%v", discoveryStarted)
+	}
+	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 20})
+	discoveryWork, discoveryAttemptStatus := waitLiveWorkByID(t, runtimeDSN,
+		"e2e-live-discovery-recipe-validation-work", 90*time.Second, daemonLog, h.server.logPath)
+	if discoveryWork.Status != model.WorkCompleted || discoveryWork.Resolution != model.ResolutionSucceeded ||
+		discoveryAttemptStatus != string(model.AttemptSucceeded) {
+		t.Fatalf("live Discovery Recipe validation work=%+v attempt=%s", discoveryWork, discoveryAttemptStatus)
+	}
+	discoveryApproved := ws.request(homeID, "recruiting.recipe.approve", controlID, map[string]any{
+		"command_id":       "e2e-live-discovery-validation-approve",
+		"target":           map[string]any{"target_type": "recipe", "target_id": "e2e-live-discovery-validation"},
+		"expected_version": discoveryStateVersion + 1, "recipe_version": 1,
+		"validation_work_id": discoveryWork.WorkID,
+		"reason":             "approve only the candidate proven on the frozen Company sample",
+	})
+	if nestedStringField(t, discoveryApproved, "recipe", "status") != "active" {
+		t.Fatalf("live Discovery Recipe approval=%v", discoveryApproved)
+	}
+	assertLiveDiscoveryValidationHasNoBusinessWrites(t, runtimeDSN,
+		"e2e-live-discovery-validation-mongodb", discoveryCompanyVersion)
+}
+
+func assertLiveDiscoveryValidationHasNoBusinessWrites(t *testing.T, dsn, companyID string, companyVersion float64) {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var sources, discoveries, candidates int
+	var state []byte
+	if err := db.QueryRow(`SELECT state_json FROM recruiting_companies WHERE company_id = ?`, companyID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	var company model.Company
+	if err := json.Unmarshal(state, &company); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recruiting_sources WHERE company_id = ?`, companyID).Scan(&sources); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recruiting_source_discoveries WHERE company_id = ?`, companyID).Scan(&discoveries); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recruiting_source_discovery_candidates c
+JOIN recruiting_source_discoveries d ON d.discovery_id = c.discovery_id WHERE d.company_id = ?`, companyID).Scan(&candidates); err != nil {
+		t.Fatal(err)
+	}
+	if float64(company.Version) != companyVersion || company.OnboardingStatus != model.CompanyNew ||
+		sources != 0 || discoveries != 0 || candidates != 0 {
+		t.Fatalf("Discovery Recipe validation wrote business facts company=%+v sources=%d discoveries=%d candidates=%d",
+			company, sources, discoveries, candidates)
+	}
 }
 
 func seedLiveListingCandidate(t *testing.T, dsn, contentRef string, spec recipeabi.Spec, now time.Time) model.Recipe {

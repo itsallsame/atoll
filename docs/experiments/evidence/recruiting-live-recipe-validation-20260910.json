@@ -1,9 +1,10 @@
 {
-  "schema": "atoll.recruiting.live-recipe-validation.v2",
+  "schema": "atoll.recruiting.live-recipe-validation.v3",
   "observed_at": "2026-09-10",
   "targets": [
     "https://boards-api.greenhouse.io/v1/boards/discord/jobs",
-    "https://boards-api.greenhouse.io/v1/boards/mongodb/jobs/{current_job_id}"
+    "https://boards-api.greenhouse.io/v1/boards/mongodb/jobs/{current_job_id}",
+    "https://www.mongodb.com/careers"
   ],
   "access": "public read-only GET",
   "test": "TestRecruitingLiveRecipeValidationRejectsBadCandidateThroughAtoll",
@@ -14,7 +15,8 @@
     "result_kinds": ["recipe_validation", "recipe_sample_validation"],
     "artifacts_required": {
       "listing": ["page", "trace"],
-      "detail": ["response", "trace"]
+      "detail": ["response", "trace"],
+      "discovery": ["response", "trace"]
     }
   },
   "observed_results": {
@@ -33,12 +35,23 @@
       "candidate_status_after_approval": "active",
       "candidate_assignment_count": 0,
       "job_detail_versions_written": 0
+    },
+    "discovery_positive": {
+      "request_and_parse_succeeded": true,
+      "record_count_minimum": 1,
+      "artifact_count": 2,
+      "candidate_status_after_approval": "active",
+      "company_version_changed": false,
+      "sources_written": 0,
+      "production_discoveries_written": 0,
+      "source_candidates_written": 0
     }
   },
   "claim_limits": [
     "The live sample is negative evidence for newest_activity_desc.",
     "A single sample does not prove update-retop.",
     "The Listing target is not declared production-incremental eligible.",
-    "Detail validation proves this frozen public sample only; rollout is a separate command."
+    "Detail validation proves this frozen public sample only; rollout is a separate command.",
+    "Discovery validation proves this frozen Company page only; production Source discovery is a separate command."
   ]
 }

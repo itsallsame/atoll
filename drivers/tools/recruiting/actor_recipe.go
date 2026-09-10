@@ -553,9 +553,10 @@ func handleRecipeValidate(sys actorbase.Sys, cfg Config, repository *store.Repos
 	}
 	context, err := NewCommandContext(payload.MutationCommand, string(msg.Sender.ID))
 	if err != nil || payload.Target.Type != "recipe" || payload.RecipeVersion == 0 ||
-		strings.TrimSpace(payload.SourceID) == "" || strings.TrimSpace(payload.RunID) == "" || strings.TrimSpace(payload.WorkID) == "" {
+		(strings.TrimSpace(payload.SourceID) == "") == (strings.TrimSpace(payload.CompanyID) == "") ||
+		strings.TrimSpace(payload.RunID) == "" || strings.TrimSpace(payload.WorkID) == "" {
 		if err == nil {
-			err = fmt.Errorf("recipe target, recipe_version, source_id, run_id, and work_id are required")
+			err = fmt.Errorf("recipe target, recipe_version, exactly one of source_id or company_id, run_id, and work_id are required")
 		}
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
 		return
