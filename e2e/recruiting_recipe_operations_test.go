@@ -9,6 +9,8 @@ import (
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/extensioncapture"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
 
 func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing.T) {
@@ -84,13 +86,40 @@ func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing
 	const candidateID = "e2e-recipe-listing"
 	const candidateVersion = 2
 	const candidateRef = "recipe://e2e-rejected-listing-candidate"
+	const captureRef = "artifact://e2e-recipe-extension-capture"
 	ws.resource(map[string]any{"channel_id": homeID, "op": "create", "resource_id": candidateRef,
 		"args": json.RawMessage(candidateBytes)})
+	capture := extensioncapture.Capture{Version: extensioncapture.Version, CaptureID: "e2e-extension-capture",
+		SourceID: source.SourceID, EndpointVersion: 1, SourceURL: source.ActiveEndpoint.URL,
+		CapturedBy: stringField(t, rolledOut, "requested_by"), CapturedAt: seedAt.Format(time.RFC3339), UserConfirmed: true,
+		Candidate: candidateSpec,
+		Artifacts: []recipeabi.ArtifactRef{{ArtifactID: "e2e-extension-page", ContentHash: "sha256:e2e-extension-page",
+			ObjectRef: "artifact://e2e-recipe-extension/page"}},
+		Trace: []extensioncapture.TraceStep{{Kind: extensioncapture.TraceNavigate},
+			{Kind: extensioncapture.TraceCollection, Selector: candidateSpec.Extraction.Collection},
+			{Kind: extensioncapture.TraceArtifact}}}
+	captureProposal, err := capture.Proposal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	captureBytes, _ := json.Marshal(capture)
+	ws.resource(map[string]any{"channel_id": homeID, "op": "create", "resource_id": captureRef,
+		"args": json.RawMessage(captureBytes)})
+	spoofedCapture := capture
+	spoofedCapture.CaptureID = "e2e-spoofed-extension-capture"
+	spoofedCapture.CapturedBy = "human:another-operator:spoofed"
+	spoofedProposal, _ := spoofedCapture.Proposal()
+	spoofedBytes, _ := json.Marshal(spoofedCapture)
+	const spoofedCaptureRef = "artifact://e2e-spoofed-recipe-extension-capture"
+	ws.resource(map[string]any{"channel_id": homeID, "op": "create", "resource_id": spoofedCaptureRef,
+		"args": json.RawMessage(spoofedBytes)})
 	proposalPayload := map[string]any{
 		"command_id": "e2e-recipe-proposal", "target": map[string]any{"target_type": "source", "target_id": source.SourceID},
 		"expected_version": nestedNumberField(t, rolledBack, "source", "version"), "recipe_id": candidateID,
 		"recipe_version": candidateVersion, "endpoint_revision": 1, "content_ref": candidateRef,
-		"expected_content_hash": candidateHash, "reason": "register an operator-confirmed candidate Resource",
+		"expected_content_hash": candidateHash, "capture_ref": captureRef,
+		"expected_capture_hash": captureProposal.ContentHash,
+		"reason":                "register an operator-confirmed extension capture and candidate Resource",
 	}
 	badProposal := map[string]any{
 		"command_id": "e2e-recipe-proposal-bad-hash", "target": map[string]any{"target_type": "source", "target_id": source.SourceID},
@@ -102,11 +131,29 @@ func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing
 		terminal["error_code"] != "quality_rejected" {
 		t.Fatalf("bad Recipe Resource hash terminal=%v err=%v", terminal, err)
 	}
+	spoofedPayload := map[string]any{
+		"command_id": "e2e-recipe-proposal-spoofed-actor", "target": map[string]any{"target_type": "source", "target_id": source.SourceID},
+		"expected_version": nestedNumberField(t, rolledBack, "source", "version"), "recipe_id": candidateID,
+		"recipe_version": candidateVersion, "endpoint_revision": 1, "content_ref": candidateRef,
+		"expected_content_hash": candidateHash, "capture_ref": spoofedCaptureRef,
+		"expected_capture_hash": spoofedProposal.ContentHash, "reason": "prove capture actor identity is envelope-bound",
+	}
+	if _, terminal, err := ws.tryRequest(homeID, "recruiting.recipe.propose", controlID, spoofedPayload); err == nil ||
+		terminal["error_code"] != "quality_rejected" {
+		t.Fatalf("spoofed Capture actor terminal=%v err=%v", terminal, err)
+	}
 	proposal := ws.request(homeID, "recruiting.recipe.propose", controlID, proposalPayload)
 	if nestedStringField(t, proposal, "recipe", "status") != "draft" ||
 		nestedStringField(t, proposal, "recipe", "scope") != "recipe.example.test" ||
+		nestedStringField(t, proposal, "proposal", "capture_id") != capture.CaptureID ||
 		stringField(t, proposal, "next_action") != "validate_recipe" {
 		t.Fatalf("Recipe proposal=%v", proposal)
+	}
+	inspectedProposal := ws.request(homeID, "recruiting.recipe.inspect", controlID,
+		map[string]any{"recipe_id": candidateID, "recipe_version": candidateVersion})
+	if nestedStringField(t, inspectedProposal, "capture_proposal", "capture_id") != capture.CaptureID ||
+		nestedStringField(t, inspectedProposal, "capture_proposal", "captured_by") != capture.CapturedBy {
+		t.Fatalf("Recipe capture provenance inspect=%v", inspectedProposal)
 	}
 	validationPayload := map[string]any{
 		"command_id": "e2e-recipe-validation", "target": map[string]any{"target_type": "recipe", "target_id": candidateID},

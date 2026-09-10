@@ -1,6 +1,7 @@
 package recruiting
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -167,8 +168,18 @@ func handleRecipeInspectQuery(sys actorbase.Sys, repository *store.Repository, m
 		failStoreError(sys, msg, err)
 		return
 	}
+	proposal, proposalErr := repository.GetRecipeProposal(msg.Ctx(), payload.RecipeID, payload.RecipeVersion)
+	if proposalErr != nil && !errors.Is(proposalErr, store.ErrNotFound) {
+		failStoreError(sys, msg, proposalErr)
+		return
+	}
+	var captureProposal *recipeProposalSummary
+	if proposalErr == nil {
+		summary := summarizeRecipeProposal(proposal)
+		captureProposal = &summary
+	}
 	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "recipe": recipe,
-		"current_assignment_count": assignments})
+		"current_assignment_count": assignments, "capture_proposal": captureProposal})
 }
 
 func handleRepairListQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

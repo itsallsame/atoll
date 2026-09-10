@@ -18,7 +18,7 @@ import (
 // changed until validation and approval complete in later commands.
 func (r *Repository) ApplyRecipeProposalCommand(ctx context.Context, expectedSourceVersion, endpointRevision uint64,
 	sourceID string, recipe model.Recipe, receipt model.CommandReceipt, event model.EventIntent,
-	businessAt time.Time) (CommandResult, error) {
+	businessAt time.Time, proposal *model.RecipeProposal) (CommandResult, error) {
 	aggregateID := fmt.Sprintf("%s@%d", recipe.RecipeID, recipe.Version)
 	if expectedSourceVersion == 0 || endpointRevision == 0 || sourceID == "" || recipe.Status != model.RecipeDraft ||
 		recipe.StateVersion != 1 || receipt.CommandID == "" || event.AggregateType != "recipe" ||
@@ -28,6 +28,17 @@ func (r *Repository) ApplyRecipeProposalCommand(ctx context.Context, expectedSou
 	}
 	if err := recipe.Validate(); err != nil {
 		return CommandResult{}, err
+	}
+	if proposal != nil {
+		if err := proposal.Validate(); err != nil {
+			return CommandResult{}, err
+		}
+		if proposal.SourceID != sourceID || proposal.SourceVersion != expectedSourceVersion ||
+			proposal.EndpointRevision != endpointRevision || proposal.RecipeID != recipe.RecipeID ||
+			proposal.RecipeVersion != recipe.Version || proposal.RecipeContentRef != recipe.Execution.ContentRef ||
+			proposal.RecipeContentHash != recipe.ContentHash {
+			return CommandResult{}, fmt.Errorf("browser capture proposal does not identify the proposed Recipe and Source fence")
+		}
 	}
 	eventAt, err := time.Parse(time.RFC3339, event.BusinessAt)
 	if err != nil || !eventAt.Equal(businessAt) {
@@ -59,6 +70,9 @@ func (r *Repository) ApplyRecipeProposalCommand(ctx context.Context, expectedSou
 	if err != nil || endpoint.Hostname() == "" || !strings.EqualFold(recipe.Scope, endpoint.Hostname()) {
 		return CommandResult{}, fmt.Errorf("Recipe proposal scope does not match the locked Source endpoint")
 	}
+	if proposal != nil && proposal.SourceURL != current.ActiveEndpoint.URL {
+		return CommandResult{}, fmt.Errorf("browser capture proposal URL does not match the locked Source endpoint")
+	}
 	if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {
 		if errors.Is(err, ErrCommandConflict) {
 			_ = tx.Rollback()
@@ -78,6 +92,32 @@ func (r *Repository) ApplyRecipeProposalCommand(ctx context.Context, expectedSou
 		}
 		return CommandResult{}, fmt.Errorf("create proposed Recipe: %w", err)
 	}
+	if proposal != nil {
+		proposalState, marshalErr := json.Marshal(proposal)
+		if marshalErr != nil {
+			return CommandResult{}, fmt.Errorf("encode browser capture proposal: %w", marshalErr)
+		}
+		capturedAt, parseErr := time.Parse(time.RFC3339, proposal.CapturedAt)
+		if parseErr != nil {
+			return CommandResult{}, fmt.Errorf("parse browser capture time: %w", parseErr)
+		}
+		if capturedAt.After(businessAt.Add(5 * time.Minute)) {
+			return CommandResult{}, fmt.Errorf("browser capture time is ahead of the command clock")
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO recruiting_recipe_proposals(
+  capture_id, source_id, source_version, endpoint_revision, recipe_id, recipe_version,
+  capture_ref, capture_hash, captured_by, captured_at, state_version, state_json, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, proposal.CaptureID, proposal.SourceID,
+			proposal.SourceVersion, proposal.EndpointRevision, proposal.RecipeID, proposal.RecipeVersion,
+			proposal.CaptureRef, proposal.CaptureHash, proposal.CapturedBy, capturedAt.UTC(),
+			proposal.StateVersion, proposalState, businessAt.UTC())
+		if err != nil {
+			if isDuplicateKey(err) {
+				return CommandResult{}, fmt.Errorf("%w: capture ID or Recipe proposal", ErrBusinessKeyExists)
+			}
+			return CommandResult{}, fmt.Errorf("create browser capture proposal: %w", err)
+		}
+	}
 	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
 		return CommandResult{}, err
 	}
@@ -85,4 +125,24 @@ func (r *Repository) ApplyRecipeProposalCommand(ctx context.Context, expectedSou
 		return CommandResult{}, fmt.Errorf("commit Recipe proposal: %w", err)
 	}
 	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
+}
+
+func (r *Repository) GetRecipeProposal(ctx context.Context, recipeID string, version uint64) (model.RecipeProposal, error) {
+	var state []byte
+	err := r.db.QueryRowContext(ctx, `SELECT state_json FROM recruiting_recipe_proposals
+WHERE recipe_id = ? AND recipe_version = ?`, recipeID, version).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.RecipeProposal{}, ErrNotFound
+	}
+	if err != nil {
+		return model.RecipeProposal{}, fmt.Errorf("get Recipe proposal: %w", err)
+	}
+	var proposal model.RecipeProposal
+	if err := json.Unmarshal(state, &proposal); err != nil {
+		return model.RecipeProposal{}, fmt.Errorf("decode Recipe proposal: %w", err)
+	}
+	if err := proposal.Validate(); err != nil {
+		return model.RecipeProposal{}, fmt.Errorf("invalid stored Recipe proposal: %w", err)
+	}
+	return proposal, nil
 }

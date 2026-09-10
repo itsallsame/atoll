@@ -5,10 +5,13 @@
 package extensioncapture
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 	"time"
@@ -19,6 +22,10 @@ import (
 )
 
 const Version = "recruiting.extension-capture.v1"
+
+// MaxCaptureBytes bounds the Resource before JSON decoding. Captures contain
+// only a structural trace and evidence references, never page bodies.
+const MaxCaptureBytes = 1 << 20
 
 type TraceKind string
 
@@ -66,6 +73,32 @@ type Proposal struct {
 	CapturedBy      string                  `json:"captured_by"`
 	CapturedAt      string                  `json:"captured_at"`
 	ContentHash     string                  `json:"content_hash"`
+}
+
+// DecodeCapture is the single strict decoder used at the browser-extension
+// trust boundary. Unknown fields and concatenated JSON values are rejected so
+// the extension and control plane cannot silently disagree about semantics.
+func DecodeCapture(raw []byte) (Capture, error) {
+	if len(raw) == 0 || len(raw) > MaxCaptureBytes {
+		return Capture{}, fmt.Errorf("extension capture resource size must be in [1,%d] bytes", MaxCaptureBytes)
+	}
+	var capture Capture
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&capture); err != nil {
+		return Capture{}, fmt.Errorf("decode extension capture resource: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return Capture{}, errors.New("decode extension capture resource: multiple JSON values")
+		}
+		return Capture{}, fmt.Errorf("decode extension capture resource: %w", err)
+	}
+	if err := capture.Validate(); err != nil {
+		return Capture{}, fmt.Errorf("validate extension capture resource: %w", err)
+	}
+	return capture, nil
 }
 
 func (c Capture) Validate() error {
@@ -124,11 +157,12 @@ func (c Capture) Validate() error {
 				return fmt.Errorf("extension trace %d stores unexpected values", index)
 			}
 		case TraceCollection, TracePagination:
-			if err := validateSelector(step.Selector); err != nil || step.Field != "" {
+			if step.Field != "" || step.Attribute != "" || !c.traceSelectorValid(step) {
 				return fmt.Errorf("extension trace %d has invalid structural selector", index)
 			}
 		case TraceField:
-			if err := validateSelector(step.Selector); err != nil || strings.TrimSpace(step.Field) == "" {
+			if strings.TrimSpace(step.Field) == "" || c.Candidate.Extraction.Fields[step.Field] != step.Selector ||
+				c.Candidate.Extraction.Attributes[step.Field] != step.Attribute {
 				return fmt.Errorf("extension trace %d has invalid field marker", index)
 			}
 		default:
@@ -136,6 +170,16 @@ func (c Capture) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (c Capture) traceSelectorValid(step TraceStep) bool {
+	if step.Kind == TraceCollection {
+		return step.Selector == c.Candidate.Extraction.Collection
+	}
+	if c.Candidate.Transport == recipeabi.TransportHTTPJSON {
+		return strings.HasPrefix(step.Selector, "/")
+	}
+	return validateSelector(step.Selector) == nil
 }
 
 func (c Capture) Proposal() (Proposal, error) {

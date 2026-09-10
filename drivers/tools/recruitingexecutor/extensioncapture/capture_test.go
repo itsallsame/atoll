@@ -87,3 +87,25 @@ func TestBrowserCandidateRequiresConstrainedPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDecodeCaptureUsesStrictBoundedResourceContract(t *testing.T) {
+	raw, err := json.Marshal(validCapture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeCapture(raw)
+	if err != nil || decoded.CaptureID != "capture-1" {
+		t.Fatalf("decode=%+v err=%v", decoded, err)
+	}
+	for name, invalid := range map[string][]byte{
+		"unknown field":   append(raw[:len(raw)-1], []byte(`,"cookie":"secret"}`)...),
+		"multiple values": append(append([]byte(nil), raw...), []byte(` {}`)...),
+		"oversize":        make([]byte, MaxCaptureBytes+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeCapture(invalid); err == nil {
+				t.Fatal("invalid capture Resource was accepted")
+			}
+		})
+	}
+}

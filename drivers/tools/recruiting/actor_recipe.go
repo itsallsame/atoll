@@ -9,6 +9,7 @@ import (
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/extensioncapture"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 	"github.com/wanpengxie/atoll/lib/actorbase"
 	"github.com/wanpengxie/atoll/protocol/resource"
@@ -58,16 +59,41 @@ type recipeProposePayload struct {
 	EndpointRevision    uint64 `json:"endpoint_revision"`
 	ContentRef          string `json:"content_ref"`
 	ExpectedContentHash string `json:"expected_content_hash"`
+	CaptureRef          string `json:"capture_ref,omitempty"`
+	ExpectedCaptureHash string `json:"expected_capture_hash,omitempty"`
 }
 
 type recipeProposalResponse struct {
-	ContractVersion  string       `json:"contract_version"`
-	CorrelationID    string       `json:"correlation_id"`
-	RequestedBy      string       `json:"requested_by"`
-	SourceID         string       `json:"source_id"`
-	EndpointRevision uint64       `json:"endpoint_revision"`
-	Recipe           model.Recipe `json:"recipe"`
-	NextAction       string       `json:"next_action"`
+	ContractVersion  string                 `json:"contract_version"`
+	CorrelationID    string                 `json:"correlation_id"`
+	RequestedBy      string                 `json:"requested_by"`
+	SourceID         string                 `json:"source_id"`
+	EndpointRevision uint64                 `json:"endpoint_revision"`
+	Recipe           model.Recipe           `json:"recipe"`
+	Proposal         *recipeProposalSummary `json:"proposal,omitempty"`
+	NextAction       string                 `json:"next_action"`
+}
+
+// recipeProposalSummary keeps Atoll messages compact. The immutable Capture
+// Resource and MySQL proposal fact retain the bounded trace and evidence list.
+type recipeProposalSummary struct {
+	CaptureID        string `json:"capture_id"`
+	SourceID         string `json:"source_id"`
+	SourceVersion    uint64 `json:"source_version"`
+	EndpointRevision uint64 `json:"endpoint_revision"`
+	CaptureRef       string `json:"capture_ref"`
+	CaptureHash      string `json:"capture_hash"`
+	CapturedBy       string `json:"captured_by"`
+	CapturedAt       string `json:"captured_at"`
+	EvidenceCount    int    `json:"evidence_count"`
+	TraceStepCount   int    `json:"trace_step_count"`
+}
+
+func summarizeRecipeProposal(proposal model.RecipeProposal) recipeProposalSummary {
+	return recipeProposalSummary{CaptureID: proposal.CaptureID, SourceID: proposal.SourceID,
+		SourceVersion: proposal.SourceVersion, EndpointRevision: proposal.EndpointRevision,
+		CaptureRef: proposal.CaptureRef, CaptureHash: proposal.CaptureHash, CapturedBy: proposal.CapturedBy,
+		CapturedAt: proposal.CapturedAt, EvidenceCount: len(proposal.Evidence), TraceStepCount: len(proposal.Trace)}
 }
 
 type recipeQuarantineResponse struct {
@@ -137,10 +163,12 @@ func handleRecipePropose(sys actorbase.Sys, repository *store.Repository, msg ac
 	commandContext, err := NewCommandContext(payload.MutationCommand, string(msg.Sender.ID))
 	payload.RecipeID, payload.ContentRef, payload.ExpectedContentHash = strings.TrimSpace(payload.RecipeID),
 		strings.TrimSpace(payload.ContentRef), strings.TrimSpace(payload.ExpectedContentHash)
+	payload.CaptureRef, payload.ExpectedCaptureHash = strings.TrimSpace(payload.CaptureRef), strings.TrimSpace(payload.ExpectedCaptureHash)
 	if err != nil || payload.Target.Type != "source" || payload.RecipeID == "" || payload.RecipeVersion == 0 ||
-		payload.EndpointRevision == 0 || payload.ContentRef == "" || payload.ExpectedContentHash == "" {
+		payload.EndpointRevision == 0 || payload.ContentRef == "" || payload.ExpectedContentHash == "" ||
+		((payload.CaptureRef == "") != (payload.ExpectedCaptureHash == "")) {
 		if err == nil {
-			err = fmt.Errorf("source target, Recipe identity, endpoint_revision, content_ref, and expected_content_hash are required")
+			err = fmt.Errorf("source target, Recipe identity, endpoint_revision, content_ref, and expected_content_hash are required; capture_ref and expected_capture_hash must be supplied together")
 		}
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
 		return
@@ -198,15 +226,61 @@ func handleRecipePropose(sys actorbase.Sys, repository *store.Repository, msg ac
 		_, _ = sys.Fail(msg, ErrorQualityRejected, err.Error())
 		return
 	}
+	var storedProposal *model.RecipeProposal
+	if payload.CaptureRef != "" {
+		captureOutcome, captureReadErr := sys.Resource().Read(resource.ResourceID(payload.CaptureRef))
+		if captureReadErr != nil || !captureOutcome.Accepted() || !captureOutcome.Found {
+			_, _ = sys.Fail(msg, ErrorQualityRejected, "Extension Capture Resource is not readable by the proposing actor")
+			return
+		}
+		capture, captureErr := extensioncapture.DecodeCapture(captureOutcome.Value)
+		if captureErr != nil {
+			_, _ = sys.Fail(msg, ErrorQualityRejected, captureErr.Error())
+			return
+		}
+		proposal, proposalErr := capture.Proposal()
+		candidateHash, candidateHashErr := capture.Candidate.ContentHash()
+		if proposalErr != nil || candidateHashErr != nil || proposal.ContentHash != payload.ExpectedCaptureHash ||
+			candidateHash != contentHash || capture.SourceID != source.SourceID ||
+			capture.EndpointVersion != payload.EndpointRevision || capture.SourceURL != source.ActiveEndpoint.URL ||
+			capture.CapturedBy != commandContext.RequestedBy {
+			_, _ = sys.Fail(msg, ErrorQualityRejected, "Extension Capture identity, actor, endpoint fence, candidate, or hash does not match the proposal")
+			return
+		}
+		storedProposal = &model.RecipeProposal{CaptureID: capture.CaptureID, SourceID: source.SourceID,
+			SourceVersion: source.Version, EndpointRevision: capture.EndpointVersion, SourceURL: capture.SourceURL,
+			RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, CaptureRef: payload.CaptureRef,
+			CaptureHash: proposal.ContentHash, RecipeContentRef: payload.ContentRef, RecipeContentHash: contentHash,
+			CapturedBy: capture.CapturedBy, CapturedAt: capture.CapturedAt, StateVersion: 1,
+			Evidence: make([]model.RecipeProposalEvidence, len(proposal.Evidence)),
+			Trace:    make([]model.RecipeProposalTrace, len(proposal.Trace))}
+		for index, evidence := range proposal.Evidence {
+			storedProposal.Evidence[index] = model.RecipeProposalEvidence{ArtifactID: evidence.ArtifactID,
+				ContentHash: evidence.ContentHash, ObjectRef: evidence.ObjectRef, Kind: evidence.Kind}
+		}
+		for index, step := range proposal.Trace {
+			storedProposal.Trace[index] = model.RecipeProposalTrace{Kind: string(step.Kind), Selector: step.Selector,
+				Field: step.Field, Attribute: step.Attribute}
+		}
+		if proposalErr = storedProposal.Validate(); proposalErr != nil {
+			_, _ = sys.Fail(msg, ErrorQualityRejected, proposalErr.Error())
+			return
+		}
+	}
 	businessAt := time.UnixMilli(msg.TS).UTC()
 	response := recipeProposalResponse{ContractVersion: ContractVersion, CorrelationID: string(msg.CorrelationID),
 		RequestedBy: commandContext.RequestedBy, SourceID: source.SourceID, EndpointRevision: payload.EndpointRevision,
 		Recipe: recipe, NextAction: "validate_recipe"}
+	if storedProposal != nil {
+		summary := summarizeRecipeProposal(*storedProposal)
+		response.Proposal = &summary
+	}
 	responseBytes, _ := json.Marshal(response)
 	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, requestHash, responseBytes)
 	audit, _ := json.Marshal(map[string]any{"requested_by": commandContext.RequestedBy, "reason": payload.Reason,
 		"source_id": source.SourceID, "source_version": source.Version, "endpoint_revision": payload.EndpointRevision,
-		"content_ref": payload.ContentRef, "content_hash": contentHash})
+		"content_ref": payload.ContentRef, "content_hash": contentHash, "capture_ref": payload.CaptureRef,
+		"capture_hash": payload.ExpectedCaptureHash})
 	var event model.EventIntent
 	if err == nil {
 		event, err = model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|recipe.proposed"), "recipe.proposed",
@@ -216,7 +290,7 @@ func handleRecipePropose(sys actorbase.Sys, repository *store.Repository, msg ac
 	var result store.CommandResult
 	if err == nil {
 		result, err = repository.ApplyRecipeProposalCommand(msg.Ctx(), payload.ExpectedVersion, payload.EndpointRevision,
-			source.SourceID, recipe, receipt, event, businessAt)
+			source.SourceID, recipe, receipt, event, businessAt, storedProposal)
 	}
 	if err != nil {
 		failStoreError(sys, msg, err)
