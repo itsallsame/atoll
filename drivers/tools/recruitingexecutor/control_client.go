@@ -118,7 +118,7 @@ func transitionExecution(ctx context.Context, caller executionCallFace, cause me
 func submitExecutionResult(ctx context.Context, caller executionCallFace, cause message.Cause, controlActor actor.ActorID,
 	executorActorID, resultKind string, payload any, wait time.Duration) error {
 	switch resultKind {
-	case "listing_page", "listing_completion", "diagnostic", "source_validation", "recipe_validation", "detail", "source_discovery", "company_import_preview_chunk", "company_import_preview_completion", "company_import_apply":
+	case "listing_page", "listing_completion", "diagnostic", "source_validation", "recipe_validation", "recipe_sample_validation", "detail", "source_discovery", "company_import_preview_chunk", "company_import_preview_completion", "company_import_apply":
 	default:
 		return fmt.Errorf("unsupported execution result kind %q", resultKind)
 	}
@@ -137,6 +137,8 @@ func submitExecutionResult(ctx context.Context, caller executionCallFace, cause 
 	expectedAcknowledgement := resultKind
 	if resultKind == "company_import_preview_chunk" || resultKind == "company_import_preview_completion" || resultKind == "company_import_apply" {
 		expectedAcknowledgement = "company_import"
+	} else if resultKind == "recipe_sample_validation" {
+		expectedAcknowledgement = "recipe_validation"
 	}
 	present := map[string]bool{"listing_page": len(decoded.Page) != 0, "listing_completion": len(decoded.Completion) != 0,
 		"diagnostic": len(decoded.Diagnostic) != 0, "detail": len(decoded.Detail) != 0,

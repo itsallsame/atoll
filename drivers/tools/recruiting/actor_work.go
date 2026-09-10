@@ -259,6 +259,23 @@ func standaloneListingPlacement(run model.ListingRun, profileID string, priority
 		Origin: run.ListingExecution.Origin, ProfileID: profileID, NotBefore: notBefore, DeadlineAt: deadlineAt}, nil
 }
 
+func recipeSampleValidationPlacement(run model.RecipeSampleValidation, profileID string, priority int,
+	deadline string, businessAt time.Time) (store.WorkPlacement, error) {
+	profileID = strings.TrimSpace(profileID)
+	if err := run.Validate(); err != nil {
+		return store.WorkPlacement{}, err
+	}
+	if priority < -1000 || priority > 1000 || len(profileID) > 191 || strings.ContainsAny(profileID, "\r\n\t ") {
+		return store.WorkPlacement{}, fmt.Errorf("priority must be in [-1000,1000] and profile_id must be normalized")
+	}
+	notBefore, deadlineAt, err := retrySchedule("", deadline, businessAt)
+	if err != nil {
+		return store.WorkPlacement{}, err
+	}
+	return store.WorkPlacement{Priority: priority, Capability: run.Candidate.Execution.RequiredCapability,
+		Origin: run.Origin, ProfileID: profileID, NotBefore: notBefore, DeadlineAt: deadlineAt}, nil
+}
+
 func handleWorkCreate(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	var payload workCreatePayload
 	if !decode(sys, msg, &payload) {

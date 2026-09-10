@@ -59,6 +59,7 @@
 - Listing 候选 Recipe 已有真实执行式验证和独立审批：`recipe.validate` 原子冻结候选 version 与 ready Source 的生产 Endpoint/Company/Source fence，创建 `recipe_validation` ListingRun、Work 和 capability dispatch；拟议 Assignment 只用于 immutable offer，不写入 Source 当前 Assignment 或历史。Executor 复用 Listing validation driver，只提交 page/trace Artifact 与质量证明；结果不写 Job、Observation 或 Checkpoint。
 - `recipe.approve` 重新核对 candidate content/contract/execution、指定 Work/run、唯一成功 Attempt、绑定该 Attempt 的未拒绝 Artifact 数量，以及 identity/ordering/pagination 三项证明；失败统一为 `quality_rejected` 且不发布。共享 execution result contract 与客户端 acknowledgement 已显式增加 `recipe_validation` 分支，避免执行完成后因客户端闭集遗漏而把 Attempt 留在 running。
 - `recipe.reject` 不允许用 Recipe 状态切换隐式遗弃运行中的验证。它要求精确 validation Work 已为 completed/failed/canceled 且没有活动 Attempt，否则返回 `waiting_human`；成功时仅把候选返回 draft，保留全部 Work/Attempt/Artifact 证据并支持命令重放。普通用户 server E2E 已覆盖 open Work 拒绝失败、显式 cancel、拒绝成功及 server restart 后重放。
+- Detail 候选现使用独立 `RecipeSampleValidation`，不复用 ListingRun，也不新增 Worker class。`recipe.validate` 必须绑定同 Source 的真实 Job，并从权限受控的 Recipe Resource 重新计算 content hash 与预期字段数；run/Attempt 冻结 Company、Source、当前 Detail Assignment、候选、Job version/URL 和拟议 Assignment。统一 Detail Driver 成功后只提交 response/trace、单记录证明、字段数和规范 hash；控制面精确核对 fence 和字段数，只完成 Attempt/Work/run 并释放 Permit，绝不创建 JobDetailVersion 或改变 Assignment。审批要求唯一成功 Attempt 与两个未拒绝 Artifact，拒绝则要求 Work 已终结。migration 27 的非 root MySQL 8.4 race 合同及 Executor 生命周期测试已通过；真实站点 Detail validate→approve 的组合进程 E2E 尚待补齐。
 
 ## 候选 Recipe 真实网站验证（负向证据通过）
 
@@ -91,7 +92,7 @@ make recruiting-live-smoke
 
 ## 尚未完成
 
-- Browser Broker 的 Chromium/CDP 实现、OS/container 级隔离，以及插件整包在 Chrome for Testing/Chromium 中的自动加载点击门；开发预览插件、本机安全 Bridge、真实 DOM 捕获内核及 Extension Proposal→持久 Draft/验证/人工审批链已接通；
+- Browser Broker 的 Chromium/CDP 实现、OS/container 级隔离，以及插件整包在 Chrome for Testing/Chromium 中的自动加载点击门；开发预览插件、本机安全 Bridge、真实 DOM 捕获内核及 Extension Proposal→持久 Draft 已接通，Listing 候选完成真实负向验证，Detail 候选完成隔离 MySQL/Executor evidence-only 验证与审批，真实站点 Detail validate→approve 组合进程 E2E 尚待补齐；
 - 本地确定性站点的全部异常矩阵；
 - 更多站型的 Nightly/Weekly Live 验证，以及由正式 Artifact 存储提供保留期，而不是验收机本地文件；
 - Recipe KV 与 Artifact File 已在真实 Atoll server/daemon 的允许路径通过；权限拒绝和重启保持 e2e 仍待补齐；

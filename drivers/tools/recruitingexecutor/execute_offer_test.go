@@ -134,6 +134,64 @@ func TestExecuteOfferRunsDetailThroughControlLifecycle(t *testing.T) {
 	}
 }
 
+func TestExecuteOfferSubmitsDetailRecipeValidationEvidenceOnly(t *testing.T) {
+	now := time.Date(2026, 9, 8, 10, 15, 0, 0, time.UTC)
+	base, spec, raw := detailExecutionOffer(t, now)
+	candidate, _ := model.NewRecipe("candidate-detail", model.RecipeDetail, "jobs.example.net", 4,
+		base.Detail.Recipe.ContentHash, base.Detail.Recipe.ContractHash, base.Detail.Recipe.Execution)
+	candidate, _ = candidate.BeginValidation(candidate.StateVersion)
+	proposed, _ := base.Detail.Assignment.Replace(base.Detail.Assignment.AssignmentVersion, candidate.RecipeID,
+		candidate.Version, candidate.ContractHash, now.Format(time.RFC3339Nano))
+	work, _ := model.NewWork("detail-recipe-validation-work", "recipe",
+		candidate.RecipeID+"@4", "recipe_validation", "manual")
+	run := model.RecipeSampleValidation{ValidationRunID: "detail-recipe-validation-run", WorkID: work.WorkID,
+		RecipeKind: model.RecipeDetail, SourceID: base.Detail.Job.SourceID, CompanyVersion: 4, SourceVersion: 6,
+		Candidate: candidate, ProposedAssignment: proposed, SampleJobID: base.Detail.Job.JobID,
+		SampleJobVersion: base.Detail.Job.Version, ExpectedFieldCount: len(spec.Extraction.Fields),
+		EndpointURL: base.Detail.Job.DetailURL, EndpointVersion: base.Detail.Job.Version,
+		Origin: "https://jobs.example.net", Status: model.RecipeSampleValidationRunning, Version: 2}
+	if err := run.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	attempt, _ := model.NewAttempt("detail-recipe-validation-attempt", work)
+	attempt, _ = attempt.BindExecutor("executor-1", "boot-1", "http.public")
+	attempt, _ = attempt.WithFence(model.AttemptFence{CompanyVersion: run.CompanyVersion,
+		SourceVersion: run.SourceVersion, AssignmentVersion: proposed.AssignmentVersion,
+		RecipeID: candidate.RecipeID, RecipeVersion: candidate.Version, SampleVersion: run.SampleJobVersion})
+	permit, _ := model.NewBudgetPermit("detail-recipe-validation-permit", attempt.AttemptID, run.Origin, "",
+		attempt.Capability, "company-2", 5)
+	offer := executioncontract.Offer{Kind: "detail", Attempt: attempt, Work: work, RecipeValidation: &run,
+		Budget: permit, BudgetExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano),
+		RequestedCapability: attempt.Capability}
+	ref := recipeabi.ArtifactRef{ArtifactID: "validation-response", ContentHash: "sha256:response",
+		ObjectRef: "artifact://validation-response"}
+	detail := json.RawMessage(`{"title":"Engineer"}`)
+	driverResult := httpdriver.DetailRunResult{ResponseArtifact: ref, Detail: detail,
+		NormalizedContentHash: normalizedJSONHash(detail), Output: recipeabi.RunOutput{ABIVersion: recipeabi.Version,
+			AttemptID: attempt.AttemptID, Artifacts: []recipeabi.ArtifactRef{ref}, Result: detail,
+			Quality: recipeabi.QualityProof{ItemCount: 1}}}
+	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}}, recipe: raw}
+	control := &executeControlStub{}
+	if err := executeOffer(context.Background(), control, resources, executeDriverStub{detail: driverResult},
+		offer, executeTestOptions(now)); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"accept", "started", "submit:recipe_sample_validation"}
+	if len(control.calls) != len(want) {
+		t.Fatalf("validation lifecycle=%v", control.calls)
+	}
+	for index := range want {
+		if control.calls[index] != want[index] {
+			t.Fatalf("validation lifecycle=%v", control.calls)
+		}
+	}
+	submission, ok := control.submissions[0].(executioncontract.RecipeSampleValidationResult)
+	if !ok || submission.RecordCount != 1 || submission.ExtractedFieldCount != run.ExpectedFieldCount ||
+		len(submission.Artifacts) != 2 {
+		t.Fatalf("validation submission=%#v", control.submissions)
+	}
+}
+
 func TestExecuteOfferSubmitsListingPagesBeforeCompletion(t *testing.T) {
 	now := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
 	offer, spec, recipe := listingExecutionOffer(t, now)

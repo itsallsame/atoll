@@ -317,6 +317,7 @@ type Attempt struct {
 	RecipeVersion       uint64        `json:"recipe_version,omitempty"`
 	CheckpointVersion   uint64        `json:"checkpoint_version,omitempty"`
 	RefreshGeneration   uint64        `json:"refresh_generation,omitempty"`
+	SampleVersion       uint64        `json:"sample_version,omitempty"`
 	ProfileID           string        `json:"profile_id,omitempty"`
 	ProfileVersion      uint64        `json:"profile_version,omitempty"`
 	BatchVersion        uint64        `json:"batch_version,omitempty"`
@@ -331,6 +332,7 @@ type AttemptFence struct {
 	RecipeVersion       uint64
 	CheckpointVersion   uint64
 	RefreshGeneration   uint64
+	SampleVersion       uint64
 	ProfileID           string
 	ProfileVersion      uint64
 	BatchVersion        uint64
@@ -356,7 +358,7 @@ func (a Attempt) WithBatchFence(batchVersion uint64) (Attempt, error) {
 func (a Attempt) WithDiscoveryFence(f AttemptFence) (Attempt, error) {
 	if a.Status != AttemptOffered || f.CompanyVersion == 0 || f.DiscoveryGeneration == 0 ||
 		strings.TrimSpace(f.RecipeID) == "" || f.RecipeVersion == 0 || f.SourceVersion != 0 ||
-		f.AssignmentVersion != 0 || f.CheckpointVersion != 0 || f.RefreshGeneration != 0 || f.BatchVersion != 0 {
+		f.AssignmentVersion != 0 || f.CheckpointVersion != 0 || f.RefreshGeneration != 0 || f.SampleVersion != 0 || f.BatchVersion != 0 {
 		return Attempt{}, fmt.Errorf("offered attempt and company/discovery/recipe fence are required")
 	}
 	if (f.ProfileID == "") != (f.ProfileVersion == 0) {
@@ -393,7 +395,7 @@ func (a Attempt) WithFence(f AttemptFence) (Attempt, error) {
 	}
 	a.CompanyVersion, a.SourceVersion, a.AssignmentVersion = f.CompanyVersion, f.SourceVersion, f.AssignmentVersion
 	a.RecipeID, a.RecipeVersion = f.RecipeID, f.RecipeVersion
-	a.CheckpointVersion, a.RefreshGeneration = f.CheckpointVersion, f.RefreshGeneration
+	a.CheckpointVersion, a.RefreshGeneration, a.SampleVersion = f.CheckpointVersion, f.RefreshGeneration, f.SampleVersion
 	a.ProfileID, a.ProfileVersion = f.ProfileID, f.ProfileVersion
 	return a, nil
 }
@@ -418,6 +420,7 @@ func (a Attempt) CanAcceptResult(work Work, current AttemptFence, executorActorI
 	if current.CompanyVersion != a.CompanyVersion || current.SourceVersion != a.SourceVersion ||
 		current.AssignmentVersion != a.AssignmentVersion || current.RecipeID != a.RecipeID || current.RecipeVersion != a.RecipeVersion ||
 		current.CheckpointVersion != a.CheckpointVersion || current.RefreshGeneration != a.RefreshGeneration ||
+		current.SampleVersion != a.SampleVersion ||
 		current.ProfileID != a.ProfileID || current.ProfileVersion != a.ProfileVersion ||
 		current.DiscoveryGeneration != a.DiscoveryGeneration {
 		return fmt.Errorf("attempt result fenced by changed domain version")

@@ -110,7 +110,7 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	      AND validation_recipe.status = 'active'
 	      AND validation_recipe.content_hash = JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.listing_execution.content_hash'))
 	      AND validation_recipe.contract_hash = JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.listing_execution.contract_hash'))
-	  )) OR (w.purpose = 'recipe_validation' AND EXISTS (
+	  )) OR (w.purpose = 'recipe_validation' AND (EXISTS (
 	    SELECT 1 FROM recruiting_listing_runs lr
 	    JOIN recruiting_sources sample_source ON sample_source.source_id = lr.source_id
 	    JOIN recruiting_recipes candidate_recipe
@@ -122,7 +122,23 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	      AND candidate_recipe.status = 'validating'
 	      AND candidate_recipe.content_hash = JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.listing_execution.content_hash'))
 	      AND candidate_recipe.contract_hash = JSON_UNQUOTE(JSON_EXTRACT(lr.state_json, '$.listing_execution.contract_hash'))
-	  )) OR (w.purpose = 'detail_sync' AND EXISTS (
+	  ) OR EXISTS (
+	    SELECT 1 FROM recruiting_recipe_validation_runs rv
+	    JOIN recruiting_sources sample_source ON sample_source.source_id = rv.source_id
+	    JOIN recruiting_companies sample_company ON sample_company.company_id = sample_source.company_id
+	    JOIN recruiting_recipes candidate_recipe
+	      ON candidate_recipe.recipe_id = rv.recipe_id AND candidate_recipe.recipe_version = rv.recipe_version
+	    JOIN recruiting_source_jobs sample_job ON sample_job.job_id = rv.sample_job_id AND sample_job.source_id = rv.source_id
+	    WHERE rv.work_id = w.work_id AND rv.recipe_kind = 'detail' AND rv.run_status IN ('queued', 'running')
+	      AND sample_company.onboarding_status = 'ready' AND sample_company.control_status = 'active'
+	      AND sample_source.readiness_status = 'ready' AND sample_source.control_status = 'active'
+	      AND sample_source.health_status = 'healthy' AND candidate_recipe.status = 'validating'
+	      AND CAST(JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.company_version')) AS UNSIGNED) = sample_company.version
+	      AND CAST(JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.source_version')) AS UNSIGNED) = sample_source.version
+	      AND CAST(JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.sample_job_version')) AS UNSIGNED) = sample_job.version
+	      AND candidate_recipe.content_hash = JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.candidate.content_hash'))
+	      AND candidate_recipe.contract_hash = JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.candidate.contract_hash'))
+	  ))) OR (w.purpose = 'detail_sync' AND EXISTS (
 	    SELECT 1 FROM recruiting_source_jobs j
 	    WHERE j.job_id = w.target_id AND j.job_status IN ('detail_pending', 'update_pending')
 	  )) OR (w.purpose = 'company_import' AND EXISTS (
@@ -206,6 +222,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 
 	var occurrence model.SourceOccurrence
 	var listingRun model.ListingRun
+	var recipeSampleValidation model.RecipeSampleValidation
 	var baseline model.BaselineGeneration
 	var checkpoint *model.IncrementalCheckpoint
 	var detail *DetailExecutionInput
@@ -232,7 +249,12 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		}
 	case "recipe_validation":
 		listingRun, err = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
-		if err == nil {
+		if errors.Is(err, ErrNotFound) {
+			recipeSampleValidation, err = getRecipeSampleValidationByWorkWith(ctx, tx, work.WorkID, true)
+			if err == nil {
+				fence, err = loadRecipeSampleValidationOfferFence(ctx, tx, recipeSampleValidation, placement.ProfileID)
+			}
+		} else if err == nil {
 			fence, err = loadRecipeValidationOfferFence(ctx, tx, listingRun, placement.ProfileID)
 		}
 	case "detail_sync":
@@ -271,6 +293,9 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	}
 	if detail != nil {
 		sourceID = detail.Job.SourceID
+	}
+	if recipeSampleValidation.ValidationRunID != "" {
+		sourceID = recipeSampleValidation.SourceID
 	}
 	var companyID string
 	if work.Purpose == "source_discovery" {
@@ -314,7 +339,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	if !permitExpiresAt.IsZero() {
 		offer.BudgetExpiresAt = permitExpiresAt.Format(time.RFC3339Nano)
 	}
-	if work.Purpose == "listing_sync" || work.Purpose == "source_validation" || work.Purpose == "recipe_validation" {
+	if work.Purpose == "listing_sync" || work.Purpose == "source_validation" ||
+		(work.Purpose == "recipe_validation" && recipeSampleValidation.ValidationRunID == "") {
 		if listingRun.ListingRunID != "" {
 			offer.ListingRun = &listingRun
 		} else {
@@ -323,6 +349,9 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		if work.Purpose == "source_validation" || work.Purpose == "recipe_validation" {
 			offer.Kind = "listing"
 		}
+	} else if work.Purpose == "recipe_validation" {
+		offer.Kind = string(recipeSampleValidation.RecipeKind)
+		offer.RecipeValidation = &recipeSampleValidation
 	} else if isCompanyImportPurpose(work.Purpose) {
 		offer.CompanyImport = &companyImport
 		offer.CompanyImportItems = companyImportItems
@@ -610,6 +639,70 @@ WHERE s.source_id = ? FOR UPDATE`, run.ListingExecution.RecipeID, run.ListingExe
 		var profile model.BrowserProfile
 		if err := json.Unmarshal(profileState, &profile); err != nil || profile.AuthStatus != model.ProfileReady {
 			return model.AttemptFence{}, fmt.Errorf("Recipe validation Profile is not ready")
+		}
+		fence.ProfileID, fence.ProfileVersion = profile.ProfileID, profile.Version
+	}
+	return fence, nil
+}
+
+func loadRecipeSampleValidationOfferFence(ctx context.Context, tx *sql.Tx, run model.RecipeSampleValidation,
+	profileID string) (model.AttemptFence, error) {
+	if err := run.Validate(); err != nil || (run.Status != model.RecipeSampleValidationQueued &&
+		run.Status != model.RecipeSampleValidationRunning) {
+		return model.AttemptFence{}, fmt.Errorf("Recipe sample validation run is not executable")
+	}
+	var companyState, sourceState, assignmentState, recipeState, jobState []byte
+	err := tx.QueryRowContext(ctx, `SELECT c.state_json, s.state_json, a.state_json, r.state_json, j.state_json
+FROM recruiting_sources s
+JOIN recruiting_companies c ON c.company_id = s.company_id
+JOIN recruiting_source_assignments a ON a.source_id = s.source_id AND a.recipe_kind = 'detail'
+JOIN recruiting_recipes r ON r.recipe_id = ? AND r.recipe_version = ?
+JOIN recruiting_source_jobs j ON j.job_id = ? AND j.source_id = s.source_id
+WHERE s.source_id = ? FOR UPDATE`, run.Candidate.RecipeID, run.Candidate.Version, run.SampleJobID,
+		run.SourceID).Scan(&companyState, &sourceState, &assignmentState, &recipeState, &jobState)
+	if err != nil {
+		return model.AttemptFence{}, fmt.Errorf("load Recipe sample validation fence: %w", err)
+	}
+	var company model.Company
+	var source model.RecruitmentSource
+	var assignment model.SourceRecipeAssignment
+	var recipe model.Recipe
+	var job model.SourceJob
+	for _, item := range []struct {
+		data   []byte
+		target any
+	}{{companyState, &company}, {sourceState, &source}, {assignmentState, &assignment},
+		{recipeState, &recipe}, {jobState, &job}} {
+		if err := json.Unmarshal(item.data, item.target); err != nil {
+			return model.AttemptFence{}, err
+		}
+	}
+	if company.Version != run.CompanyVersion || company.OnboardingStatus != model.CompanyReady ||
+		company.ControlStatus != model.ControlActive || source.Version != run.SourceVersion ||
+		source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive ||
+		source.HealthStatus != model.HealthHealthy || source.DetailAssignment == nil ||
+		!reflect.DeepEqual(*source.DetailAssignment, assignment) || recipe != run.Candidate ||
+		recipe.Status != model.RecipeValidating || job.SourceID != run.SourceID ||
+		job.JobID != run.SampleJobID || job.Version != run.SampleJobVersion ||
+		job.DetailURL != run.EndpointURL {
+		return model.AttemptFence{}, fmt.Errorf("Recipe sample validation run is fenced by changed candidate or Job")
+	}
+	proposed, err := assignment.Replace(assignment.AssignmentVersion, recipe.RecipeID, recipe.Version,
+		recipe.ContractHash, run.ProposedAssignment.EffectiveAt)
+	if err != nil || proposed != run.ProposedAssignment {
+		return model.AttemptFence{}, fmt.Errorf("Recipe sample validation proposed Assignment changed")
+	}
+	fence := model.AttemptFence{CompanyVersion: run.CompanyVersion, SourceVersion: run.SourceVersion,
+		AssignmentVersion: proposed.AssignmentVersion, RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version,
+		SampleVersion: job.Version}
+	if profileID != "" {
+		var profileState []byte
+		if err := tx.QueryRowContext(ctx, "SELECT state_json FROM recruiting_profiles WHERE profile_id = ?", profileID).Scan(&profileState); err != nil {
+			return model.AttemptFence{}, fmt.Errorf("load Recipe sample validation Profile: %w", err)
+		}
+		var profile model.BrowserProfile
+		if err := json.Unmarshal(profileState, &profile); err != nil || profile.AuthStatus != model.ProfileReady {
+			return model.AttemptFence{}, fmt.Errorf("Recipe sample validation Profile is not ready")
 		}
 		fence.ProfileID, fence.ProfileVersion = profile.ProfileID, profile.Version
 	}
@@ -1032,6 +1125,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 	}
 	var occurrence model.SourceOccurrence
 	var listingRun model.ListingRun
+	var recipeSampleValidation model.RecipeSampleValidation
 	var currentDiscovery model.SourceDiscovery
 	var currentFence model.AttemptFence
 	// A failure closes execution authority but does not publish business data,
@@ -1058,7 +1152,12 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			}
 		case "recipe_validation":
 			listingRun, fenceErr = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
-			if fenceErr == nil {
+			if errors.Is(fenceErr, ErrNotFound) {
+				recipeSampleValidation, fenceErr = getRecipeSampleValidationByWorkWith(ctx, tx, work.WorkID, true)
+				if fenceErr == nil {
+					currentFence, fenceErr = loadRecipeSampleValidationOfferFence(ctx, tx, recipeSampleValidation, attempt.ProfileID)
+				}
+			} else if fenceErr == nil {
 				currentFence, fenceErr = loadRecipeValidationOfferFence(ctx, tx, listingRun, attempt.ProfileID)
 			}
 		case "detail_sync":
@@ -1123,11 +1222,19 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			}
 		}
 		if err == nil && (work.Purpose == "listing_sync" || work.Purpose == "source_validation" ||
-			work.Purpose == "recipe_validation") && listingRun.Status == model.ListingRunQueued {
+			work.Purpose == "recipe_validation") && listingRun.ListingRunID != "" && listingRun.Status == model.ListingRunQueued {
 			previousRunVersion := listingRun.Version
 			listingRun, err = listingRun.Start(listingRun.Version)
 			if err == nil {
 				err = updateListingRunInTx(ctx, tx, previousRunVersion, listingRun, businessAt)
+			}
+		}
+		if err == nil && work.Purpose == "recipe_validation" &&
+			recipeSampleValidation.ValidationRunID != "" && recipeSampleValidation.Status == model.RecipeSampleValidationQueued {
+			previousRunVersion := recipeSampleValidation.Version
+			recipeSampleValidation, err = recipeSampleValidation.Start(recipeSampleValidation.Version)
+			if err == nil {
+				err = updateRecipeSampleValidationTx(ctx, tx, previousRunVersion, recipeSampleValidation, businessAt)
 			}
 		}
 		if err == nil && work.Purpose == "source_discovery" {
@@ -1273,6 +1380,7 @@ func sameAttemptFence(attempt model.Attempt, current model.AttemptFence) bool {
 		attempt.AssignmentVersion == current.AssignmentVersion && attempt.RecipeID == current.RecipeID &&
 		attempt.RecipeVersion == current.RecipeVersion && attempt.CheckpointVersion == current.CheckpointVersion &&
 		attempt.RefreshGeneration == current.RefreshGeneration && attempt.ProfileID == current.ProfileID &&
+		attempt.SampleVersion == current.SampleVersion &&
 		attempt.ProfileVersion == current.ProfileVersion && attempt.BatchVersion == current.BatchVersion &&
 		attempt.DiscoveryGeneration == current.DiscoveryGeneration
 }

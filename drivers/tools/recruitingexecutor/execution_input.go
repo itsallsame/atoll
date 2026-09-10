@@ -157,7 +157,34 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 			Capability: snapshot.Execution.RequiredCapability, Transport: recipeabi.Transport(snapshot.Execution.Transport)}
 
 	case "detail":
-		if offer.Detail == nil || offer.Occurrence != nil || offer.ListingRun != nil || offer.Baseline != nil || offer.Checkpoint != nil || work.Purpose != "detail_sync" ||
+		if offer.RecipeValidation != nil {
+			run := offer.RecipeValidation
+			if offer.Detail != nil || offer.Occurrence != nil || offer.ListingRun != nil || offer.Baseline != nil ||
+				offer.Checkpoint != nil || work.Purpose != "recipe_validation" || work.TargetType != "recipe" ||
+				work.TargetID != fmt.Sprintf("%s@%d", run.Candidate.RecipeID, run.Candidate.Version) ||
+				run.WorkID != work.WorkID || (run.Status != model.RecipeSampleValidationQueued &&
+				run.Status != model.RecipeSampleValidationRunning) || run.RecipeKind != model.RecipeDetail ||
+				run.CompanyVersion != attempt.CompanyVersion || run.SourceVersion != attempt.SourceVersion ||
+				run.ProposedAssignment.AssignmentVersion != attempt.AssignmentVersion ||
+				run.Candidate.RecipeID != attempt.RecipeID || run.Candidate.Version != attempt.RecipeVersion ||
+				run.Candidate.Execution.RequiredCapability != attempt.Capability ||
+				run.SampleJobVersion != attempt.SampleVersion || run.Origin != permit.Origin {
+				return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("Detail Recipe validation offer is inconsistent")
+			}
+			if err := run.Validate(); err != nil {
+				return recipeabi.RunInput{}, recipeExpectation{}, "", err
+			}
+			input.Target = recipeabi.TargetRef{Kind: "job", ID: run.SampleJobID}
+			input.Endpoint = recipeabi.EndpointRef{URL: run.EndpointURL, Version: run.EndpointVersion}
+			input.Assignment = assignmentRef(run.ProposedAssignment)
+			contentRef = run.Candidate.Execution.ContentRef
+			expectation = recipeExpectation{ContentHash: run.Candidate.ContentHash, Kind: recipeabi.KindDetail,
+				Capability: run.Candidate.Execution.RequiredCapability,
+				Transport:  recipeabi.Transport(run.Candidate.Execution.Transport)}
+			break
+		}
+		if offer.Detail == nil || offer.Occurrence != nil || offer.ListingRun != nil || offer.Baseline != nil ||
+			offer.Checkpoint != nil || work.Purpose != "detail_sync" ||
 			work.TargetType != "job" || work.TargetID != offer.Detail.Job.JobID {
 			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("detail offer shape does not match its work and job")
 		}

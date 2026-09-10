@@ -30,7 +30,7 @@ type executionControlResponse struct {
 	Completion       *store.ListingCompletionOutcome     `json:"completion,omitempty"`
 	Diagnostic       *store.DiagnosticResultOutcome      `json:"diagnostic,omitempty"`
 	SourceValidation *store.DiagnosticResultOutcome      `json:"source_validation,omitempty"`
-	RecipeValidation *store.DiagnosticResultOutcome      `json:"recipe_validation,omitempty"`
+	RecipeValidation any                                 `json:"recipe_validation,omitempty"`
 	Detail           *store.DetailResultOutcome          `json:"detail,omitempty"`
 	CompanyImport    *store.CompanyImportResultOutcome   `json:"company_import,omitempty"`
 	SourceDiscovery  *store.SourceDiscoveryResultOutcome `json:"source_discovery,omitempty"`
@@ -41,6 +41,7 @@ type listingCompletionResultPayload = executioncontract.ListingCompletionResult
 type listingQualityPayload = executioncontract.ListingQuality
 type listingCheckpointPayload = executioncontract.ListingCheckpointCandidate
 type diagnosticResultPayload = executioncontract.DiagnosticResult
+type recipeSampleValidationResultPayload = executioncontract.RecipeSampleValidationResult
 type detailResultPayload = executioncontract.DetailResult
 type companyImportPreviewChunkPayload = executioncontract.CompanyImportPreviewChunkResult
 type companyImportPreviewCompletionPayload = executioncontract.CompanyImportPreviewCompletionResult
@@ -70,6 +71,8 @@ func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, s
 		handleListingCompletionResult(sys, repository, msg)
 	case "diagnostic", "source_validation", "recipe_validation":
 		handleDiagnosticResult(sys, repository, msg)
+	case "recipe_sample_validation":
+		handleRecipeSampleValidationResult(sys, repository, msg)
 	case "detail":
 		handleDetailResult(sys, repository, msg)
 	case "source_discovery":
@@ -83,6 +86,31 @@ func handleAnyExecutionResult(sys actorbase.Sys, repository *store.Repository, s
 	default:
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "unknown execution result_kind")
 	}
+}
+
+func handleRecipeSampleValidationResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload recipeSampleValidationResultPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if strings.TrimSpace(payload.CommandID) == "" || payload.ResultKind != "recipe_sample_validation" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "Recipe sample validation command_id and result_kind are required")
+		return
+	}
+	outcome, err := repository.AcceptRecipeSampleValidationResult(msg.Ctx(), store.RecipeSampleValidationResult{
+		CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), AttemptID: payload.AttemptID,
+		ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
+		ResultKind: payload.ResultKind, RecipeKind: payload.RecipeKind, Artifacts: payload.Artifacts,
+		RecordCount: payload.RecordCount, ExtractedFieldCount: payload.ExtractedFieldCount,
+		NormalizedContentHash: payload.NormalizedContentHash, CompletedAt: time.UnixMilli(msg.TS).UTC(),
+	})
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := executionControlResponse{ContractVersion: executioncontract.Version,
+		CorrelationID: string(msg.CorrelationID), RequestedBy: string(msg.Sender.ID), RecipeValidation: &outcome}
+	_, _ = sys.Reply(msg, response)
 }
 
 func handleSourceDiscoveryResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

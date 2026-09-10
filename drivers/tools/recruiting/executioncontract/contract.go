@@ -188,23 +188,24 @@ func (f FailureReport) EvidenceArtifacts() []model.ArtifactMetadata {
 // domain payload while Work/Attempt and routing stay uniform, so listing and
 // detail execution remain one executor class.
 type Offer struct {
-	Kind                string                       `json:"kind"`
-	Attempt             model.Attempt                `json:"attempt"`
-	Work                model.Work                   `json:"work"`
-	Occurrence          *model.SourceOccurrence      `json:"occurrence,omitempty"`
-	ListingRun          *model.ListingRun            `json:"listing_run,omitempty"`
-	Baseline            *model.BaselineGeneration    `json:"baseline,omitempty"`
-	CompanyImport       *model.CompanyImport         `json:"company_import,omitempty"`
-	CompanyImportItems  []CompanyImportApplyItem     `json:"company_import_items,omitempty"`
-	Checkpoint          *model.IncrementalCheckpoint `json:"checkpoint,omitempty"`
-	Detail              *DetailInput                 `json:"detail,omitempty"`
-	Discovery           *model.SourceDiscovery       `json:"discovery,omitempty"`
-	Recipe              *model.Recipe                `json:"recipe,omitempty"`
-	Budget              model.BudgetPermit           `json:"budget"`
-	BudgetExpiresAt     string                       `json:"budget_expires_at"`
-	RequestedCapability string                       `json:"requested_capability"`
-	RequestedOrigin     string                       `json:"requested_origin,omitempty"`
-	RequestedProfileID  string                       `json:"requested_profile_id,omitempty"`
+	Kind                string                        `json:"kind"`
+	Attempt             model.Attempt                 `json:"attempt"`
+	Work                model.Work                    `json:"work"`
+	Occurrence          *model.SourceOccurrence       `json:"occurrence,omitempty"`
+	ListingRun          *model.ListingRun             `json:"listing_run,omitempty"`
+	Baseline            *model.BaselineGeneration     `json:"baseline,omitempty"`
+	CompanyImport       *model.CompanyImport          `json:"company_import,omitempty"`
+	CompanyImportItems  []CompanyImportApplyItem      `json:"company_import_items,omitempty"`
+	Checkpoint          *model.IncrementalCheckpoint  `json:"checkpoint,omitempty"`
+	Detail              *DetailInput                  `json:"detail,omitempty"`
+	Discovery           *model.SourceDiscovery        `json:"discovery,omitempty"`
+	Recipe              *model.Recipe                 `json:"recipe,omitempty"`
+	RecipeValidation    *model.RecipeSampleValidation `json:"recipe_validation,omitempty"`
+	Budget              model.BudgetPermit            `json:"budget"`
+	BudgetExpiresAt     string                        `json:"budget_expires_at"`
+	RequestedCapability string                        `json:"requested_capability"`
+	RequestedOrigin     string                        `json:"requested_origin,omitempty"`
+	RequestedProfileID  string                        `json:"requested_profile_id,omitempty"`
 }
 
 // CompanyImportApplyItem is a bounded, immutable slice of the confirmed
@@ -329,6 +330,20 @@ type DetailResult struct {
 	DetailVersionID       string                 `json:"detail_version_id"`
 	NormalizedContentHash string                 `json:"normalized_content_hash"`
 	Detail                json.RawMessage        `json:"detail"`
+}
+
+// RecipeSampleValidationResult proves that a candidate Recipe executed against
+// its frozen sample without carrying normalized business data into production.
+type RecipeSampleValidationResult struct {
+	CommandID             string                   `json:"command_id"`
+	ResultKind            string                   `json:"result_kind"`
+	AttemptID             string                   `json:"attempt_id"`
+	ExecutorIncarnation   string                   `json:"executor_incarnation"`
+	RecipeKind            model.RecipeKind         `json:"recipe_kind"`
+	Artifacts             []model.ArtifactMetadata `json:"artifacts"`
+	RecordCount           int                      `json:"record_count"`
+	ExtractedFieldCount   int                      `json:"extracted_field_count"`
+	NormalizedContentHash string                   `json:"normalized_content_hash"`
 }
 
 type SourceDiscoveryResult struct {

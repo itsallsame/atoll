@@ -167,6 +167,16 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 		if run.Output.Failure != nil {
 			return failRunExecution(ctx, control, sink, offer, run.Output)
 		}
+		if offer.RecipeValidation != nil {
+			submission, err := prepareDetailRecipeValidationSubmission(ctx, offer, spec, run, sink)
+			if err != nil {
+				return failLocalExecution(ctx, control, sink, offer, "contract_violated", "recipe_validation_result", err)
+			}
+			if err := control.Submit(ctx, submission.ResultKind, submission); err != nil {
+				return fmt.Errorf("submit Detail Recipe validation result: %w", err)
+			}
+			return nil
+		}
 		submission, err := prepareDetailSubmission(offer, run, sink)
 		if err != nil {
 			return failLocalExecution(ctx, control, sink, offer, "contract_violated", "detail_result", err)
@@ -244,6 +254,9 @@ func executionTargetURL(offer executioncontract.Offer) string {
 	}
 	if offer.Discovery != nil {
 		return offer.Discovery.SeedURL
+	}
+	if offer.RecipeValidation != nil {
+		return offer.RecipeValidation.EndpointURL
 	}
 	return ""
 }

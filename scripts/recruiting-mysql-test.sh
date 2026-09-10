@@ -87,6 +87,7 @@ DROP TABLE IF EXISTS
   recruiting_artifacts,
   recruiting_listing_page_progress,
   recruiting_listing_runs,
+  recruiting_recipe_validation_runs,
   recruiting_attempts,
   recruiting_works,
   recruiting_source_occurrences,

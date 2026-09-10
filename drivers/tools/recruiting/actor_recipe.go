@@ -121,19 +121,20 @@ type recipeValidatePayload struct {
 	SourceID      string `json:"source_id"`
 	RunID         string `json:"run_id"`
 	WorkID        string `json:"work_id"`
+	SampleJobID   string `json:"sample_job_id,omitempty"`
 	ProfileID     string `json:"profile_id,omitempty"`
 	Priority      int    `json:"priority,omitempty"`
 	DeadlineAt    string `json:"deadline_at,omitempty"`
 }
 
 type recipeValidationResponse struct {
-	ContractVersion string           `json:"contract_version"`
-	CorrelationID   string           `json:"correlation_id"`
-	RequestedBy     string           `json:"requested_by"`
-	Recipe          model.Recipe     `json:"recipe"`
-	ValidationWork  model.Work       `json:"validation_work"`
-	ValidationRun   model.ListingRun `json:"validation_run"`
-	NextAction      string           `json:"next_action"`
+	ContractVersion string       `json:"contract_version"`
+	CorrelationID   string       `json:"correlation_id"`
+	RequestedBy     string       `json:"requested_by"`
+	Recipe          model.Recipe `json:"recipe"`
+	ValidationWork  model.Work   `json:"validation_work"`
+	ValidationRun   any          `json:"validation_run"`
+	NextAction      string       `json:"next_action"`
 }
 
 func handleRecipeMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -474,6 +475,19 @@ func handleRecipeValidate(sys actorbase.Sys, cfg Config, repository *store.Repos
 		_, _ = sys.Reply(msg, json.RawMessage(replay.Response))
 		return
 	}
+	candidate, err := repository.GetRecipe(msg.Ctx(), payload.Target.ID, payload.RecipeVersion)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	if candidate.Kind == model.RecipeDetail {
+		handleDetailRecipeValidate(sys, cfg, repository, msg, payload, context, requestHash)
+		return
+	}
+	if candidate.Kind != model.RecipeListing || strings.TrimSpace(payload.SampleJobID) != "" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "Listing validation cannot carry sample_job_id; Discovery candidate validation is not implemented")
+		return
+	}
 	preparation, err := repository.PrepareRecipeValidation(msg.Ctx(), strings.TrimSpace(payload.SourceID),
 		payload.Target.ID, payload.RecipeVersion)
 	if err != nil {
@@ -527,6 +541,89 @@ func handleRecipeValidate(sys actorbase.Sys, cfg Config, repository *store.Repos
 	if err == nil {
 		result, err = repository.ApplyRecipeValidationCommand(msg.Ctx(), payload.ExpectedVersion, nextRecipe, run,
 			work, placement, receipt, event, dispatch, businessAt)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
+}
+
+func handleDetailRecipeValidate(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg,
+	payload recipeValidatePayload, commandContext CommandContext, requestHash string) {
+	if strings.TrimSpace(payload.SampleJobID) == "" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "Detail Recipe validation requires sample_job_id")
+		return
+	}
+	preparation, err := repository.PrepareDetailRecipeValidation(msg.Ctx(), strings.TrimSpace(payload.SourceID),
+		payload.Target.ID, payload.RecipeVersion, strings.TrimSpace(payload.SampleJobID))
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	if preparation.Recipe.StateVersion != payload.ExpectedVersion {
+		failStoreError(sys, msg, &model.VersionConflictError{Expected: payload.ExpectedVersion, Actual: preparation.Recipe.StateVersion})
+		return
+	}
+	resourceOutcome, readErr := sys.Resource().Read(resource.ResourceID(preparation.Recipe.Execution.ContentRef))
+	if readErr != nil || !resourceOutcome.Accepted() || !resourceOutcome.Found {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, "Detail Recipe Resource is not readable by the validating actor")
+		return
+	}
+	spec, err := recipeabi.DecodeSpec(resourceOutcome.Value)
+	if err != nil || spec.Kind != recipeabi.KindDetail || len(spec.Extraction.Fields) == 0 {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, "Detail Recipe Resource is not a valid Detail extraction")
+		return
+	}
+	contentHash, hashErr := spec.ContentHash()
+	if hashErr != nil || contentHash != preparation.Recipe.ContentHash {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, "Detail Recipe Resource no longer matches the candidate")
+		return
+	}
+	businessAt := time.UnixMilli(msg.TS).UTC()
+	nextRecipe, run, err := preparation.NewRun(strings.TrimSpace(payload.RunID), strings.TrimSpace(payload.WorkID),
+		len(spec.Extraction.Fields), businessAt.Format(time.RFC3339Nano))
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	placement, err := recipeSampleValidationPlacement(run, payload.ProfileID, payload.Priority, payload.DeadlineAt, businessAt)
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	placement.BusinessKey = "recipe-validation|" + run.ValidationRunID
+	targetID := fmt.Sprintf("%s@%d", nextRecipe.RecipeID, nextRecipe.Version)
+	work, err := model.NewWork(run.WorkID, "recipe", targetID, "recipe_validation", "manual")
+	if err == nil {
+		work, err = work.WithCausality(commandContext.RequestedBy, string(msg.ID), "")
+	}
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	response := recipeValidationResponse{ContractVersion: ContractVersion, CorrelationID: string(msg.CorrelationID),
+		RequestedBy: commandContext.RequestedBy, Recipe: nextRecipe, ValidationWork: work, ValidationRun: run,
+		NextAction: "await_recipe_validation"}
+	responseBytes, _ := json.Marshal(response)
+	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, requestHash, responseBytes)
+	audit, _ := json.Marshal(map[string]any{"requested_by": commandContext.RequestedBy, "reason": payload.Reason,
+		"source_id": run.SourceID, "work_id": work.WorkID, "validation_run_id": run.ValidationRunID,
+		"sample_job_id": run.SampleJobID})
+	var event model.EventIntent
+	if err == nil {
+		event, err = model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|recipe.validation_started"),
+			"recipe.validation_started", "recipe", targetID, nextRecipe.StateVersion,
+			businessAt.Format(time.RFC3339Nano), payload.CommandID, audit)
+	}
+	dispatch, dispatchErr := workCommandDispatch(cfg, work, placement, payload.CommandID, "recipe_validation")
+	if err == nil {
+		err = dispatchErr
+	}
+	var result store.CommandResult
+	if err == nil {
+		result, err = repository.ApplyDetailRecipeValidationCommand(msg.Ctx(), payload.ExpectedVersion, nextRecipe,
+			run, work, placement, receipt, event, dispatch, businessAt)
 	}
 	if err != nil {
 		failStoreError(sys, msg, err)
