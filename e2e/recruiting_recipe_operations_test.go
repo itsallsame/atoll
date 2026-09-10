@@ -33,7 +33,8 @@ func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing
 	controlID := stringField(t, intro, "member")
 	waitRecruitingReady(t, ws, homeID, controlID, h.server)
 
-	source, detailV2 := seedRecipeOperations(t, runtimeDSN, time.Now().UTC().Truncate(time.Second))
+	seedAt := time.Now().UTC().Truncate(time.Second)
+	source, detailV2 := seedRecipeOperations(t, runtimeDSN, seedAt)
 	rolloutPayload := map[string]any{
 		"command_id": "e2e-recipe-rollout", "target": map[string]any{"target_type": "source", "target_id": source.SourceID},
 		"expected_version": source.Version, "recipe_id": detailV2.RecipeID, "recipe_version": detailV2.Version,
@@ -76,6 +77,37 @@ func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing
 		t.Fatalf("Recipe rollback=%v", rolledBack)
 	}
 
+	candidate := seedRecipeValidationCandidate(t, runtimeDSN, source.SourceID, seedAt.Add(time.Second))
+	validationPayload := map[string]any{
+		"command_id": "e2e-recipe-validation", "target": map[string]any{"target_type": "recipe", "target_id": candidate.RecipeID},
+		"expected_version": candidate.StateVersion, "recipe_version": candidate.Version, "source_id": source.SourceID,
+		"run_id": "e2e-recipe-rejection-run", "work_id": "e2e-recipe-rejection-work",
+		"reason": "validate candidate before an operator decision",
+	}
+	validation := ws.request(homeID, "recruiting.recipe.validate", controlID, validationPayload)
+	if nestedStringField(t, validation, "recipe", "status") != "validating" ||
+		nestedStringField(t, validation, "validation_work", "work_status") != "open" {
+		t.Fatalf("Recipe validation before rejection=%v", validation)
+	}
+	rejectPayload := map[string]any{
+		"command_id": "e2e-recipe-reject", "target": map[string]any{"target_type": "recipe", "target_id": candidate.RecipeID},
+		"expected_version": candidate.StateVersion + 1, "recipe_version": candidate.Version,
+		"validation_work_id": "e2e-recipe-rejection-work", "reason": "operator rejects this candidate",
+	}
+	if _, terminal, err := ws.tryRequest(homeID, "recruiting.recipe.reject", controlID, rejectPayload); err == nil ||
+		terminal["error_code"] != "waiting_human" {
+		t.Fatalf("active validation rejection terminal=%v err=%v", terminal, err)
+	}
+	ws.request(homeID, "recruiting.work.cancel", controlID, map[string]any{
+		"command_id": "e2e-recipe-validation-cancel", "target": map[string]any{"target_type": "work", "target_id": "e2e-recipe-rejection-work"},
+		"expected_version": 1, "reason": "close validation execution before rejecting its candidate",
+	})
+	rejectedCandidate := ws.request(homeID, "recruiting.recipe.reject", controlID, rejectPayload)
+	if nestedStringField(t, rejectedCandidate, "recipe", "status") != "draft" ||
+		stringField(t, rejectedCandidate, "next_action") != "edit_or_revalidate_recipe" {
+		t.Fatalf("Recipe rejection=%v", rejectedCandidate)
+	}
+
 	h.restartServer()
 	recoveredOperator := newAPIClient(t, h.base)
 	if login := recoveredOperator.login("recipe-operator@example.test", "operator-local-password"); login["id"] != "recipe-operator" {
@@ -85,10 +117,44 @@ func TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer(t *testing
 	waitRecruitingReady(t, recovered, homeID, controlID, h.server)
 	replayedQuarantine := recovered.request(homeID, "recruiting.recipe.quarantine", controlID, quarantinePayload)
 	replayedRollback := recovered.request(homeID, "recruiting.recipe.rollback", controlID, rollbackPayload)
+	replayedRejection := recovered.request(homeID, "recruiting.recipe.reject", controlID, rejectPayload)
 	if nestedNumberField(t, replayedQuarantine, "recipe", "state_version") != float64(detailV2.StateVersion+1) ||
-		nestedNumberField(t, replayedRollback, "assignment", "assignment_version") != 3 {
-		t.Fatalf("durable command replay quarantine=%v rollback=%v", replayedQuarantine, replayedRollback)
+		nestedNumberField(t, replayedRollback, "assignment", "assignment_version") != 3 ||
+		nestedStringField(t, replayedRejection, "recipe", "status") != "draft" {
+		t.Fatalf("durable command replay quarantine=%v rollback=%v rejection=%v",
+			replayedQuarantine, replayedRollback, replayedRejection)
 	}
+}
+
+func seedRecipeValidationCandidate(t *testing.T, dsn, sourceID string, now time.Time) model.Recipe {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repository, _ := store.NewRepository(db)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	assignment, err := repository.GetAssignment(ctx, sourceID, model.RecipeListing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := repository.GetRecipe(ctx, assignment.RecipeID, assignment.RecipeVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := model.NewRecipe(active.RecipeID, model.RecipeListing, active.Scope, active.Version+1,
+		"e2e-rejected-candidate-content", active.ContractHash, model.RecipeExecution{ABIVersion: model.RecipeABIVersion,
+			ContentRef: "recipe://e2e-rejected-listing-candidate", RequiredCapability: "http.fetch",
+			Transport: model.RecipeTransportHTTPJSON})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.CreateRecipe(ctx, candidate, now); err != nil {
+		t.Fatal(err)
+	}
+	return candidate
 }
 
 func seedRecipeOperations(t *testing.T, dsn string, now time.Time) (model.RecruitmentSource, model.Recipe) {
@@ -104,6 +170,20 @@ func seedRecipeOperations(t *testing.T, dsn string, now time.Time) (model.Recrui
 	company, _ := model.NewCompany("e2e-recipe-company", "Recipe Company", "https://recipe.example.test")
 	if err := repository.CreateCompany(ctx, company, now); err != nil {
 		t.Fatal(err)
+	}
+	for _, transition := range []func(model.Company) (model.Company, error){
+		func(value model.Company) (model.Company, error) { return value.StartDiscovery(value.Version) },
+		func(value model.Company) (model.Company, error) { return value.StartInitialization(value.Version) },
+		func(value model.Company) (model.Company, error) { return value.MarkReady(value.Version) },
+	} {
+		next, err := transition(company)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.UpdateCompanyCAS(ctx, company.Version, next, now); err != nil {
+			t.Fatal(err)
+		}
+		company = next
 	}
 	source, _ := model.NewRecruitmentSource("e2e-recipe-source", company.CompanyID,
 		"https://recipe.example.test/jobs", "all", 1)

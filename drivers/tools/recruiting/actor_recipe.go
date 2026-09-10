@@ -42,6 +42,12 @@ type recipeApprovePayload struct {
 	ValidationWorkID string `json:"validation_work_id"`
 }
 
+type recipeRejectPayload struct {
+	MutationCommand
+	RecipeVersion    uint64 `json:"recipe_version"`
+	ValidationWorkID string `json:"validation_work_id"`
+}
+
 type recipeQuarantineResponse struct {
 	ContractVersion string       `json:"contract_version"`
 	CorrelationID   string       `json:"correlation_id"`
@@ -84,6 +90,8 @@ func handleRecipeMessage(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		handleRecipeValidate(sys, cfg, repository, msg)
 	case TypeRecipeApprove:
 		handleRecipeApprove(sys, repository, msg)
+	case TypeRecipeReject:
+		handleRecipeReject(sys, repository, msg)
 	case TypeRecipeRollout:
 		handleRecipeRollout(sys, repository, msg)
 	case TypeRecipeQuarantine:
@@ -91,6 +99,68 @@ func handleRecipeMessage(sys actorbase.Sys, cfg Config, repository *store.Reposi
 	case TypeRecipeRollback:
 		handleRecipeRollback(sys, repository, msg)
 	}
+}
+
+func handleRecipeReject(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	if repository == nil {
+		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
+		return
+	}
+	var payload recipeRejectPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	commandContext, err := NewCommandContext(payload.MutationCommand, string(msg.Sender.ID))
+	if err != nil || payload.Target.Type != "recipe" || payload.RecipeVersion == 0 ||
+		strings.TrimSpace(payload.ValidationWorkID) == "" {
+		if err == nil {
+			err = fmt.Errorf("recipe target, recipe_version, and validation_work_id are required")
+		}
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	requestHash := commandRequestHash(msg)
+	if replay, found, lookupErr := repository.LookupCommand(msg.Ctx(), payload.CommandID, requestHash); lookupErr != nil {
+		failStoreError(sys, msg, lookupErr)
+		return
+	} else if found {
+		_, _ = sys.Reply(msg, json.RawMessage(replay.Response))
+		return
+	}
+	current, err := repository.GetRecipe(msg.Ctx(), payload.Target.ID, payload.RecipeVersion)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	next, err := current.ValidationFailed(payload.ExpectedVersion)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	businessAt := time.UnixMilli(msg.TS).UTC()
+	response := recipeQuarantineResponse{ContractVersion: ContractVersion, CorrelationID: string(msg.CorrelationID),
+		RequestedBy: commandContext.RequestedBy, Recipe: next, NextAction: "edit_or_revalidate_recipe"}
+	responseBytes, _ := json.Marshal(response)
+	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, requestHash, responseBytes)
+	audit, _ := json.Marshal(map[string]any{"requested_by": commandContext.RequestedBy, "reason": payload.Reason,
+		"validation_work_id": strings.TrimSpace(payload.ValidationWorkID)})
+	var event model.EventIntent
+	aggregateID := fmt.Sprintf("%s@%d", next.RecipeID, next.Version)
+	if err == nil {
+		event, err = model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|recipe.validation_rejected"),
+			"recipe.validation_rejected", "recipe", aggregateID, next.StateVersion,
+			businessAt.Format(time.RFC3339Nano), payload.CommandID, audit)
+	}
+	var result store.CommandResult
+	if err == nil {
+		result, err = repository.ApplyRecipeRejectionCommand(msg.Ctx(), payload.ExpectedVersion, next.RecipeID,
+			next.Version, strings.TrimSpace(payload.ValidationWorkID), receipt, event, businessAt)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
 }
 
 func handleRecipeApprove(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

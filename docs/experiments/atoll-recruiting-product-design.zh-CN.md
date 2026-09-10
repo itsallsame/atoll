@@ -622,6 +622,8 @@ Recipe 共享故障时先把该 Recipe version 原子推进到 `quarantined`。�
 
 `recipe.approve` 是其后的独立证据闸门。它必须锁定同一 validating Recipe，反查调用方指定的 validation Work/run 是否精确冻结该 content/contract/execution version，要求恰好一个成功 Attempt，并要求结果声明的全部 page/trace Artifact 都属于该 Attempt、未被拒绝且数量一致；identity、ordering、pagination 三项当前样本证明全部成立后才可发布 active。任何串版、证据缺失、重复成功 Attempt 或质量失败都返回 `quality_rejected`，Recipe 保持 validating，Source Assignment 与业务数据保持不变。单次样本仍不能证明历史岗位“更新后重新置顶”；`update-retop` 继续属于 Source 多次校准契约，不能由 Recipe 审批冒充已验证。第一阶段只开放 Listing Recipe 的真实执行验证，Detail/Discovery 候选验证需各自定义结果契约后再接入。
 
+操作者可用 `recipe.reject` 明确放弃本次候选，但必须引用创建它的精确 validation Work。若该 Work 仍为 open/running/waiting，或仍有 offered/accepted/running Attempt，拒绝返回 `waiting_human`；操作者需先使用已有 Work cancel/resolve 流程关闭执行权。只有 Work 已终结且候选快照仍匹配时，拒绝才把 validating Recipe 返回 draft，并原子保存命令 receipt 与审计事件。该动作不删除 Work、Attempt 或 Artifact，后续修改候选必须创建新不可变 Recipe version，或在未改变不可变内容的前提下重新验证同一 draft version。
+
 Attempt 固定引用 `recipe_id + recipe_version`，不能静默漂移版本。
 
 ### 9.3 Work

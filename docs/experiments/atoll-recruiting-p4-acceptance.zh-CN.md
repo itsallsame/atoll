@@ -57,6 +57,7 @@
 - 插件轨迹没有输入值、请求体、Cookie/storage 或凭据字段，候选仍受 Recipe GET/header/预算校验；带凭据 URL、疑似 secret query、signed object URL、任意交互以及“仍依赖 extension 执行”的候选均拒绝。Browser 候选必须转成受控 Browser Plan，HTTP 候选不能夹带 Browser action；发布、灰度和 Assignment 仍只能由 Recruiting Actor 后续审批命令完成。
 - Listing 候选 Recipe 已有真实执行式验证和独立审批：`recipe.validate` 原子冻结候选 version 与 ready Source 的生产 Endpoint/Company/Source fence，创建 `recipe_validation` ListingRun、Work 和 capability dispatch；拟议 Assignment 只用于 immutable offer，不写入 Source 当前 Assignment 或历史。Executor 复用 Listing validation driver，只提交 page/trace Artifact 与质量证明；结果不写 Job、Observation 或 Checkpoint。
 - `recipe.approve` 重新核对 candidate content/contract/execution、指定 Work/run、唯一成功 Attempt、绑定该 Attempt 的未拒绝 Artifact 数量，以及 identity/ordering/pagination 三项证明；失败统一为 `quality_rejected` 且不发布。共享 execution result contract 与客户端 acknowledgement 已显式增加 `recipe_validation` 分支，避免执行完成后因客户端闭集遗漏而把 Attempt 留在 running。
+- `recipe.reject` 不允许用 Recipe 状态切换隐式遗弃运行中的验证。它要求精确 validation Work 已为 completed/failed/canceled 且没有活动 Attempt，否则返回 `waiting_human`；成功时仅把候选返回 draft，保留全部 Work/Attempt/Artifact 证据并支持命令重放。普通用户 server E2E 已覆盖 open Work 拒绝失败、显式 cancel、拒绝成功及 server restart 后重放。
 
 ## 候选 Recipe 真实网站验证（负向证据通过）
 

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -77,6 +78,16 @@ func TestRecipeValidationExecutesEvidenceOnlyBeforeApproval(t *testing.T) {
 	storedCandidate, _ := repository.GetRecipe(ctx, candidate.RecipeID, candidate.Version)
 	if storedCandidate.Status != model.RecipeValidating || storedCandidate.StateVersion != validating.StateVersion {
 		t.Fatalf("validating Recipe=%+v", storedCandidate)
+	}
+	rejectAt := now.Add(500 * time.Millisecond)
+	rejected, _ := validating.ValidationFailed(validating.StateVersion)
+	rejectReceipt, _ := model.NewCommandReceipt("recipe-reject-active-command", "recruiting.recipe.reject",
+		"sha256:recipe-reject-active", json.RawMessage(`{"status":"draft"}`))
+	rejectEvent, _ := model.NewEventIntent("recipe-reject-active-event", "recipe.validation_rejected", "recipe", targetID,
+		rejected.StateVersion, rejectAt.Format(time.RFC3339Nano), rejectReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyRecipeRejectionCommand(ctx, validating.StateVersion, candidate.RecipeID,
+		candidate.Version, work.WorkID, rejectReceipt, rejectEvent, rejectAt); !errors.Is(err, ErrRecipeValidationInProgress) {
+		t.Fatalf("active Recipe validation rejection err=%v", err)
 	}
 	offer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "recipe-validation-attempt",
 		ExecutorActorID: "tool:recipe-validation-executor:1", ExecutorIncarnation: "boot-recipe-validation",

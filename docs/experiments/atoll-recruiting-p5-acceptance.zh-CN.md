@@ -24,6 +24,7 @@
 - 每个 baseline Detail Work 在物化事务中写入独立成员账本；详情成功事务同时接受 JobDetailVersion、完成 Work/Attempt、释放 Permit、把成员由 pending 变为 succeeded，并以 Baseline CAS 增加核算数。终态异常先进入 `waiting_human`；只有认证用户通过既有 `recruiting.work.resolve` 明确提交 `accepted_gap` 和理由，才在同一命令事务核算缺口，运行中的 Work 不能直接伪装成缺口。用户拒绝缺口并以 `terminated` 结束旧 Work 时，成员仍为 pending；`work.retry` 原子创建因果 Work、重绑该成员和 dispatch，重试的真实详情结果才核算成功。Company 不在每条详情事务中加锁；Recruiting Actor 的既有 reconcile 只在所有 active/ready Source 的最新 baseline 均完成或缺口已被接受时，原子推进 `initializing → ready` 并写领域事件。
 - Recipe 运维公开入口现提供 inspect、quarantine、Source 级兼容 Detail rollout/rollback。quarantine 是常量规模的 Recipe 状态事务，不改写所有引用它的 Source；领取时 active fence 阻止新 Attempt。rollback 从不可变 Assignment 历史选择已知良好 Recipe，但追加新的 Assignment version，并与 Source 投影、receipt/event 同事务提交。
 - Listing 候选 Recipe 可基于一个 ready Source 启动独立真实样本验证，复用统一 Listing Executor 且只落 page/trace 证据。审批必须反查唯一成功 Attempt 及其完整质量证明；2026-09-10 的 Discord Greenhouse 真实样本因活动时间非倒序被正确拒绝，未发布候选、未改 Assignment，也未产生 Job/Observation/Checkpoint。该能力验证 Recipe 发布闸门，不等于该站点通过 Source 增量资格校准。
+- 操作者显式拒绝候选 Recipe 前必须先关闭关联 validation Work；公开 server 旅程证明 open Work 不能被悄悄遗弃，cancel 后候选才能回到 draft，审计命令在重启后稳定重放。
 
 ## 已执行证据
 

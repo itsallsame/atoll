@@ -272,6 +272,8 @@ func failStoreError(sys actorbase.Sys, msg actorbase.Msg, err error) {
 		code = ErrorQualityRejected
 	case errors.Is(err, store.ErrRecipeValidationRejected):
 		code = ErrorQualityRejected
+	case errors.Is(err, store.ErrRecipeValidationInProgress):
+		code = ErrorWaitingHuman
 	case errors.Is(err, store.ErrRepairEvidenceRejected):
 		code = ErrorQualityRejected
 	default:
