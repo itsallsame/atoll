@@ -132,6 +132,9 @@ func newProductionRuntime(cfg Config) (*productionRuntime, error) {
 			Artifact: options.Artifact, MaxBytes: cfg.BatchMaxBytes, ChunkSize: cfg.BatchChunkSize,
 		}}, nil
 	}
+	if cfg.Capability == "artifact.recompute" {
+		return &productionRuntime{options: options}, nil
+	}
 	if cfg.Capability == "browser.profile.repair" {
 		broker, err := newHTTPBrowserBroker(cfg.BrowserBrokerURL, cfg.BrowserBrokerTokenFile,
 			time.Duration(cfg.BrowserBrokerTimeoutMS)*time.Millisecond)

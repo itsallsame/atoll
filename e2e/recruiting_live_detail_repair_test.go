@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -68,12 +69,16 @@ func TestRecruitingLiveDetailRecipeRepairThroughAtoll(t *testing.T) {
 
 	const controlName = "live-detail-repair-control"
 	const executorName = "live-detail-repair-executor"
+	const artifactExecutorName = "live-detail-repair-artifact-executor"
 	registrarRequest(t, ws, homeID, systemActor, "system.actor.template.create", map[string]any{
 		"id": controlName, "name": controlName, "class": "recruiting",
 		"description": "Recruiting live detail repair control.",
 		"config": map[string]any{
-			"executor_id":           "tool:" + executorName,
-			"executors":             []map[string]any{{"actor_id": "tool:" + executorName, "capability": "http.fetch"}},
+			"executor_id": "tool:" + executorName,
+			"executors": []map[string]any{
+				{"actor_id": "tool:" + executorName, "capability": "http.fetch"},
+				{"actor_id": "tool:" + artifactExecutorName, "capability": "artifact.recompute"},
+			},
 			"reconcile_interval_ms": 30000, "daily_schedule_enabled": false,
 		},
 		"visibility": "private",
@@ -117,6 +122,22 @@ func TestRecruitingLiveDetailRecipeRepairThroughAtoll(t *testing.T) {
 	})
 	executorID := stringField(t, executorIntro, "member")
 	waitActorPresenceInChannel(t, ws, homeID, executorID, daemon, daemonLog)
+	registrarRequest(t, ws, homeID, systemActor, "system.actor.template.create", map[string]any{
+		"id": artifactExecutorName, "name": artifactExecutorName, "class": "recruiting-executor",
+		"description": "Recruiting offline Artifact recompute executor using the same executor class.",
+		"config": map[string]any{
+			"capability": "artifact.recompute", "execution_enabled": true, "control_actor_id": "tool:" + controlName,
+			"control_wait_ms": 30000, "artifact_device_name": deviceName, "artifact_channel_name": qualifiedChannel,
+			"artifact_directory": "live-detail-repair-artifacts", "artifact_access_scope": "operators",
+			"artifact_retention": "7d", "artifact_redaction": "raw", "artifact_max_bytes": 2 << 20,
+		},
+		"visibility": "private",
+	})
+	artifactExecutorIntro := ws.request(homeID, "system.member.create", systemActor, map[string]any{
+		"decl_id": artifactExecutorName, "desired_host": deviceID,
+	})
+	artifactExecutorID := stringField(t, artifactExecutorIntro, "member")
+	waitActorPresenceInChannel(t, ws, homeID, artifactExecutorID, daemon, daemonLog)
 	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 50})
 
 	failed, failedAttemptStatus := waitLiveWorkByID(t, runtimeDSN, detailWorkID, 60*time.Second, daemonLog, h.server.logPath)
@@ -221,6 +242,8 @@ func TestRecruitingLiveDetailRecipeRepairThroughAtoll(t *testing.T) {
 	assertLiveDetailArtifacts(t, daemonHome, deviceID, qualifiedChannel, repairedAttemptID, repairedArtifacts)
 	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 50})
 	assertLiveDetailRepairFacts(t, runtimeDSN, sourceID, failed.WorkID, repaired.WorkID, jobID)
+	exerciseLiveHistoricalBackfills(t, ws, homeID, controlID, runtimeDSN, sourceID, jobID,
+		seed.DetailRecipeID, daemonLog, h.server.logPath)
 	t.Logf("real detail repaired: job=%s failed_attempt=%s repaired_attempt=%s", jobID, failedAttemptID, repairedAttemptID)
 }
 
@@ -548,4 +571,145 @@ func assertLiveDetailRepairFacts(t *testing.T, dsn, sourceID, failedWorkID, repa
 			recipeVersion, assignmentVersion, baselineStatus, detailsAccounted, detailExceptions, companyStatus,
 			memberWorkID, memberStatus, detailVersions, rolloutReceipts, rolloutEvents, activeBudget, failedWorkID)
 	}
+}
+
+func exerciseLiveHistoricalBackfills(t *testing.T, ws *wsClient, homeID, controlID, dsn, sourceID,
+	sourceJobKey, recipeID, daemonLog, serverLog string) {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var jobID, pageArtifactID, listingRecipeID string
+	var listingRecipeVersion, checkpointBefore uint64
+	var jobStateBefore []byte
+	if err := db.QueryRowContext(ctx, `SELECT job_id, state_json FROM recruiting_source_jobs
+WHERE source_id = ? AND source_job_key = ?`, sourceID, sourceJobKey).Scan(&jobID, &jobStateBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT recipe_id, recipe_version FROM recruiting_source_assignments
+WHERE source_id = ? AND recipe_kind = 'listing'`, sourceID).Scan(&listingRecipeID, &listingRecipeVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT artifact_id FROM recruiting_artifacts
+WHERE artifact_kind = 'page' AND rejected = FALSE ORDER BY created_at DESC, artifact_id DESC LIMIT 1`).Scan(&pageArtifactID); err != nil {
+		t.Fatalf("real baseline left no listing page Artifact for live-refetch selection: %v", err)
+	}
+	_ = db.QueryRowContext(ctx, `SELECT checkpoint_version FROM recruiting_checkpoints WHERE source_id = ?`, sourceID).
+		Scan(&checkpointBefore)
+	now := time.Now().UTC()
+	if _, err := db.ExecContext(ctx, `INSERT INTO recruiting_listing_observations(
+observation_id, occurrence_id, source_id, job_id, source_job_key, detail_url, activity_at,
+listing_fingerprint, recipe_id, recipe_version, artifact_id, observed_at, observation_json)
+SELECT 'e2e-live-backfill-observation', 'e2e-live-backfill-occurrence', source_id, job_id, source_job_key,
+       detail_url, ?, 'sha256:e2e-live-backfill-listing', ?, ?, ?, ?, JSON_OBJECT('job_id', job_id)
+FROM recruiting_source_jobs WHERE job_id = ?`, now, listingRecipeID, listingRecipeVersion, pageArtifactID, now, jobID); err != nil {
+		t.Fatal(err)
+	}
+
+	rangeStart, rangeEnd := now.Add(-10*time.Minute).Format(time.RFC3339), now.Add(10*time.Minute).Format(time.RFC3339)
+	for index, mode := range []string{"artifact_recompute", "live_refetch"} {
+		backfillID := "e2e-live-backfill-" + mode
+		created := ws.request(homeID, "recruiting.backfill.create", controlID, map[string]any{
+			"command_id": "command-" + backfillID, "backfill_id": backfillID,
+			"target_type": "source", "target_id": sourceID, "mode": mode,
+			"range_start": rangeStart, "range_end": rangeEnd, "fields": []string{"id", "title", "url"},
+			"recipe_id": recipeID, "recipe_version": 2, "policy_version": 1,
+			"reason": "read-only real website S21 acceptance",
+		})
+		if nestedStringField(t, created, "backfill", "backfill_id") != backfillID {
+			t.Fatalf("create %s backfill=%v", mode, created)
+		}
+		preview := ws.request(homeID, "recruiting.backfill.get", controlID, map[string]any{"backfill_id": backfillID})
+		if nestedStringField(t, preview, "backfill", "status") != "previewed" ||
+			nestedNumberField(t, preview, "backfill", "previewed_items") != 1 {
+			t.Fatalf("preview %s backfill=%v", mode, preview)
+		}
+		confirmed := ws.request(homeID, "recruiting.backfill.confirm", controlID, map[string]any{
+			"command_id": "confirm-" + backfillID, "backfill_id": backfillID,
+			"expected_version":      nestedNumberField(t, preview, "backfill", "version"),
+			"expected_work_version": nestedNumberField(t, preview, "work", "version"),
+			"preview_hash":          nestedStringField(t, preview, "backfill", "preview_hash"),
+			"reason":                "confirm the exact real website backfill preview",
+		})
+		if nestedStringField(t, confirmed, "backfill", "status") != "running" {
+			t.Fatalf("confirm %s backfill=%v", mode, confirmed)
+		}
+		reconciled := ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 50})
+		if numberField(t, reconciled, "backfill_materialized") != 1 ||
+			numberField(t, reconciled, "backfill_dispatches") < 1 {
+			t.Fatalf("reconcile %s backfill=%v", mode, reconciled)
+		}
+		waitLiveBackfillCompleted(t, db, backfillID, 60*time.Second, daemonLog, serverLog)
+		outputs := ws.request(homeID, "recruiting.backfill.outputs", controlID,
+			map[string]any{"backfill_id": backfillID, "limit": 10})
+		items, _ := outputs["outputs"].([]any)
+		if len(items) != 1 {
+			t.Fatalf("%s output list=%v", mode, outputs)
+		}
+		output := items[0].(map[string]any)
+		claimsHistorical, _ := output["claims_historical_snapshot"].(bool)
+		if claimsHistorical != (mode == "artifact_recompute") {
+			t.Fatalf("%s historical claim=%v output=%v", mode, claimsHistorical, output)
+		}
+		body := ws.request(homeID, "recruiting.backfill.output.get", controlID, map[string]any{
+			"backfill_id": backfillID, "output_id": stringField(t, output, "output_id"),
+		})
+		if _, ok := body["output_json"].(map[string]any); !ok {
+			t.Fatalf("%s output body=%v", mode, body)
+		}
+		gaps := ws.request(homeID, "recruiting.backfill.gaps", controlID,
+			map[string]any{"backfill_id": backfillID, "limit": 10})
+		if values, _ := gaps["gaps"].([]any); len(values) != 0 {
+			t.Fatalf("%s unexpected gaps=%v", mode, gaps)
+		}
+		if index == 0 {
+			t.Logf("real historical Artifact recompute completed: backfill=%s output=%s", backfillID,
+				stringField(t, output, "output_id"))
+		} else {
+			t.Logf("real present-time live refetch completed: backfill=%s output=%s", backfillID,
+				stringField(t, output, "output_id"))
+		}
+	}
+	var jobStateAfter []byte
+	var checkpointAfter uint64
+	var detailVersions, outputs, activeBudget int
+	if err := db.QueryRowContext(ctx, `SELECT state_json FROM recruiting_source_jobs WHERE job_id = ?`, jobID).Scan(&jobStateAfter); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.QueryRowContext(ctx, `SELECT checkpoint_version FROM recruiting_checkpoints WHERE source_id = ?`, sourceID).
+		Scan(&checkpointAfter)
+	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_job_detail_versions WHERE job_id = ?`, jobID).Scan(&detailVersions)
+	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_backfill_outputs`).Scan(&outputs)
+	_ = db.QueryRowContext(ctx, `SELECT COALESCE(SUM(active_count), 0) FROM recruiting_budget_usage`).Scan(&activeBudget)
+	if !bytes.Equal(jobStateBefore, jobStateAfter) || checkpointAfter != checkpointBefore || detailVersions != 1 ||
+		outputs != 2 || activeBudget != 0 {
+		t.Fatalf("real backfills changed current facts: job_equal=%v checkpoint=%d/%d details=%d outputs=%d budget=%d",
+			bytes.Equal(jobStateBefore, jobStateAfter), checkpointBefore, checkpointAfter, detailVersions, outputs, activeBudget)
+	}
+}
+
+func waitLiveBackfillCompleted(t *testing.T, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, backfillID string, timeout time.Duration, logPaths ...string) {
+	t.Helper()
+	var status string
+	var outputs int
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		err := db.QueryRowContext(context.Background(), `SELECT backfill_status,
+  (SELECT COUNT(*) FROM recruiting_backfill_outputs output WHERE output.backfill_id = backfill.backfill_id)
+FROM recruiting_backfills backfill WHERE backfill_id = ?`, backfillID).Scan(&status, &outputs)
+		if err == nil && status == string(model.BackfillCompleted) && outputs == 1 {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	logs := ""
+	for _, path := range logPaths {
+		logs += "\n" + path + ":\n" + tailLog(path, 120)
+	}
+	t.Fatalf("live backfill %s timed out: status=%s outputs=%d%s", backfillID, status, outputs, logs)
 }

@@ -1,0 +1,57 @@
+{
+  "schema": "atoll.recruiting.live-historical-backfill.v1",
+  "observed_at": "2026-09-11",
+  "targets": [
+    "https://boards-api.greenhouse.io/v1/boards/mongodb/jobs",
+    "https://boards-api.greenhouse.io/v1/boards/mongodb/jobs/{current_job_id}"
+  ],
+  "access": "public read-only GET",
+  "test": "TestRecruitingLiveDetailRecipeRepairThroughAtoll",
+  "duration_seconds": 48.56,
+  "execution": {
+    "atoll_server": true,
+    "daemon_executor": true,
+    "executor_class_count": 1,
+    "capabilities": ["http.fetch", "artifact.recompute"],
+    "mysql_accounts": "non-root migration/runtime",
+    "operator_commands": [
+      "recruiting.backfill.create",
+      "recruiting.backfill.get",
+      "recruiting.backfill.confirm",
+      "recruiting.system.reconcile",
+      "recruiting.backfill.outputs",
+      "recruiting.backfill.output.get",
+      "recruiting.backfill.gaps"
+    ]
+  },
+  "observed_results": {
+    "artifact_recompute": {
+      "previewed_items": 1,
+      "completed_items": 1,
+      "output_count": 1,
+      "input_is_real_response_artifact": true,
+      "network_driver_required": false,
+      "historical_claim": true
+    },
+    "live_refetch": {
+      "previewed_items": 1,
+      "completed_items": 1,
+      "output_count": 1,
+      "public_detail_request_succeeded": true,
+      "historical_claim": false
+    },
+    "isolation": {
+      "job_state_changed": false,
+      "detail_version_count_changed": false,
+      "checkpoint_version_changed": false,
+      "total_backfill_outputs": 2,
+      "gap_count": 0,
+      "active_budget_after_completion": 0
+    }
+  },
+  "claim_limits": [
+    "Artifact recompute reproduces a frozen historical response; it does not claim the current page is unchanged.",
+    "Live refetch records a present-time result; it does not claim to reconstruct historical content.",
+    "The live sample proves this observed public endpoint and execution path only, not perpetual third-party availability."
+  ]
+}

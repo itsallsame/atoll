@@ -70,6 +70,22 @@ func TestParseConfigEnablesCompanyImportInSameExecutorClassWithoutHTTPPolicy(t *
 	}
 }
 
+func TestParseConfigEnablesArtifactRecomputeWithoutHTTPPolicy(t *testing.T) {
+	raw := json.RawMessage(`{
+		"capability":"artifact.recompute","execution_enabled":true,"control_actor_id":"tool:control",
+		"artifact_device_name":"worker-a","artifact_channel_name":"recruiting","artifact_directory":"artifacts",
+		"artifact_access_scope":"operators","artifact_retention":"30d","artifact_redaction":"redacted"
+	}`)
+	cfg, err := parseConfig(raw)
+	if err != nil || cfg.Capability != "artifact.recompute" || cfg.TermsPolicyVersion != 0 {
+		t.Fatalf("artifact recompute config = %+v err=%v", cfg, err)
+	}
+	runtime, err := newProductionRuntime(cfg)
+	if err != nil || runtime.driver != nil || runtime.broker != nil {
+		t.Fatalf("artifact recompute runtime = %+v err=%v", runtime, err)
+	}
+}
+
 func TestParseConfigEnablesProfileBrokerInSameExecutorClass(t *testing.T) {
 	raw := json.RawMessage(`{
 		"capability":"browser.profile.repair","execution_enabled":true,"control_actor_id":"tool:control",

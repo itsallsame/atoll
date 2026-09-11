@@ -58,6 +58,12 @@ type outboxReconcileResponse struct {
 	RepairBatchesRecovered  int    `json:"repair_batches_recovered"`
 	RepairWorksRecovered    int    `json:"repair_works_recovered"`
 	RepairRecoveryConflicts int    `json:"repair_recovery_conflicts"`
+	BackfillPreviews        int    `json:"backfill_previews"`
+	BackfillID              string `json:"backfill_id,omitempty"`
+	BackfillMaterialized    int    `json:"backfill_materialized"`
+	BackfillDispatches      int    `json:"backfill_dispatches"`
+	BackfillCanceled        int    `json:"backfill_canceled"`
+	BackfillCancelCompleted bool   `json:"backfill_cancel_completed"`
 }
 
 type outboxReconcileDuePayload struct {
@@ -131,6 +137,29 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 	response.RepairBatchesRecovered = repairRecovery.BatchesRecovered
 	response.RepairWorksRecovered = repairRecovery.WorksRecovered
 	response.RepairRecoveryConflicts = repairRecovery.Conflicts
+	previews, err := reconcileBackfillPreviews(msg.Ctx(), repository, payload.Limit, now)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response.BackfillPreviews = previews
+	canceled, err := repository.CancelNextBackfillPage(msg.Ctx(), cfg.BackfillMaterializeLimit, now)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response.BackfillID, response.BackfillCanceled = canceled.BackfillID, canceled.CanceledItems
+	response.BackfillCancelCompleted = canceled.Completed
+	materializedBackfill, err := repository.MaterializeNextBackfillPage(msg.Ctx(), cfg.BackfillMaterializeLimit, now,
+		cfg.executionDispatchTargets())
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	if materializedBackfill.BackfillID != "" {
+		response.BackfillID = materializedBackfill.BackfillID
+	}
+	response.BackfillMaterialized, response.BackfillDispatches = materializedBackfill.Queued, materializedBackfill.Dispatches
 	dispatch, err := reconcileExecutionDispatches(msg.Ctx(), sys, repository, payload.Limit, now,
 		time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond)
 	if err != nil {

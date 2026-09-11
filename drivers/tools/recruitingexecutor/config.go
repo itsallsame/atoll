@@ -74,7 +74,7 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 		return Config{}, fmt.Errorf("recruiting executor config: capability is required")
 	}
 	if cfg.ExecutionEnabled {
-		if (cfg.Capability != "http.fetch" && cfg.Capability != "company.import" && cfg.Capability != "browser.public" && cfg.Capability != "browser.recipe" && cfg.Capability != "browser.profile.repair") || !executioncontract.ValidToolTarget(string(cfg.ControlActorID)) || cfg.ControlWaitMS < 100 || cfg.ControlWaitMS > 300_000 ||
+		if (cfg.Capability != "http.fetch" && cfg.Capability != "company.import" && cfg.Capability != "artifact.recompute" && cfg.Capability != "browser.public" && cfg.Capability != "browser.recipe" && cfg.Capability != "browser.profile.repair") || !executioncontract.ValidToolTarget(string(cfg.ControlActorID)) || cfg.ControlWaitMS < 100 || cfg.ControlWaitMS > 300_000 ||
 			cfg.ArtifactDeviceName == "" || cfg.ArtifactChannelName == "" || cfg.ArtifactDirectory == "" ||
 			cfg.ArtifactAccessScope == "" || cfg.ArtifactRetention == "" || cfg.ArtifactMaxBytes < 1 || cfg.ArtifactMaxBytes > 20<<20 ||
 			(cfg.ArtifactRedaction != "raw" && cfg.ArtifactRedaction != "redacted") {

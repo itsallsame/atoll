@@ -47,15 +47,21 @@ type executeOfferOptions struct {
 // wake-up, retry timing, and fleet capacity remain outside this function.
 func executeOffer(ctx context.Context, control executionControl, resources executionResourceAccess, driver executionHTTPDriver,
 	offer executioncontract.Offer, options executeOfferOptions) error {
-	if ctx == nil || control == nil || resources == nil || driver == nil || options.Now == nil {
-		return errors.New("offer execution requires context, control, Resource access, driver, and clock")
+	if ctx == nil || control == nil || resources == nil || options.Now == nil {
+		return errors.New("offer execution requires context, control, Resource access, and clock")
 	}
 	input, expectation, contentRef, err := buildRunInput(offer, options.Now().UTC())
 	if err != nil {
 		return fmt.Errorf("validate immutable execution offer: %w", err)
 	}
-	if err := options.Compliance.Validate(); err != nil {
-		return fmt.Errorf("validate execution compliance evidence: %w", err)
+	offlineArtifactRecompute := offer.Kind == "backfill_artifact_recompute"
+	if !offlineArtifactRecompute {
+		if driver == nil {
+			return errors.New("network execution requires a driver")
+		}
+		if err := options.Compliance.Validate(); err != nil {
+			return fmt.Errorf("validate execution compliance evidence: %w", err)
+		}
 	}
 	sinkConfig := options.Artifact
 	sinkConfig.WorkID, sinkConfig.AttemptID = offer.Work.WorkID, offer.Attempt.AttemptID

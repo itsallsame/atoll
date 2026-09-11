@@ -151,7 +151,9 @@ func TestExecuteOfferRunsBothBackfillModesWithoutDetailResult(t *testing.T) {
 	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}},
 		recipe: recipe, inputRef: resource.ResourceID(historical.Backfill.InputArtifact.ObjectRef), input: historicalBody}
 	control := &executeControlStub{}
-	if err := executeOffer(context.Background(), control, resources, executeDriverStub{}, historical, executeTestOptions(now)); err != nil {
+	artifactOptions := executeTestOptions(now)
+	artifactOptions.Compliance = httpdriver.ComplianceEvidence{}
+	if err := executeOffer(context.Background(), control, resources, nil, historical, artifactOptions); err != nil {
 		t.Fatal(err)
 	}
 	if len(control.calls) != 3 || control.calls[0] != "accept" || control.calls[1] != "started" ||
