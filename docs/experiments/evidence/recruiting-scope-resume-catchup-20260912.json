@@ -1,0 +1,43 @@
+{
+  "version": "recruiting.scope-resume-catchup-evidence.v1",
+  "observed_at": "2026-09-12T02:28:07+08:00",
+  "scope": "bounded Company/Source resume and one current production catch-up through the Recruiting extension",
+  "implementation": {
+    "bounded_resume_commit": "bdae9c3a",
+    "catch_up_commit": "8e9ab445f71f885e4d204e2a14866e49f6ebad9e",
+    "work_projection_limit": 500,
+    "company_catch_up_transaction_unit": "one Source",
+    "membership_cut": "resume-time maximum Source ID plus created_at cutoff",
+    "historical_daily_runs_created": 0,
+    "checkpoint_advanced_during_planning": false,
+    "public_query": "recruiting.scope_control.get"
+  },
+  "contract_observation": {
+    "premature_resume": "entity CAS, receipt, event, and resume operation all rolled back",
+    "source_resume": "open and waiting_human Work restored only when owned by the reversed pause operation",
+    "company_resume": "all pre-cut Sources in the Company scanned by stable cursor; another Company and a post-cut Source were untouched",
+    "eligible_source": "exactly one production ListingRun, Work, catch-up occurrence, and executor dispatch queued",
+    "ineligible_source": "one explicit skipped catch-up occurrence with a stable reason",
+    "checkpoint": "unchanged until the shared production result transaction succeeds"
+  },
+  "verification": {
+    "database": "ephemeral MySQL 8.4",
+    "migration_identity": "staircase_migrator (non-root)",
+    "runtime_identity": "staircase_runtime (non-root, DML only)",
+    "full_store_suite": "pass in 218.338s",
+    "server_restart_e2e": "TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart pass in 35.35s",
+    "targeted_tests": [
+      "TestSourceResumeIsAtomicBoundedAndRestoresOnlyItsPauseProjection",
+      "TestCompanyResumeProjectsAllAndOnlyItsSourceWorks",
+      "TestResumeCreatesOneCurrentProductionCatchUpWithoutMovingCheckpoint",
+      "TestInFlightResultDistinguishesDrainFromCancelFence"
+    ],
+    "race_and_vet": "pass for ./drivers/tools/recruiting/...",
+    "core_boundary": "pass from a94d2b8d; no protocol/runtime/lib/platform/registry changes"
+  },
+  "limits": [
+    "Listing execution has the drain-versus-cancel result matrix; every non-Listing execution/result type still needs the equivalent combined terminal-state matrix.",
+    "Full pause/resume/cancel crash-point and concurrent operator timing matrices remain P8/P9 work.",
+    "This evidence proves deterministic planning and shared-queue executability, not long-running external throughput or production SLOs."
+  ]
+}

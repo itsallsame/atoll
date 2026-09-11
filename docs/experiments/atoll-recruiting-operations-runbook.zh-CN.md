@@ -108,6 +108,8 @@ repair.get
 ## 7. 暂停、取消、归档和回滚
 
 - Company/Source pause mode：`drain` 停止新调度并让在途结算；`finish_causal_chain` 允许当前因果链完成；`cancel` 提升接受围栏并取消适用的未完成工作。选择前必须用查询记录影响范围。
+- pause/resume 响应中的 `scope_control_operation_id` 是后续操作的权威身份；用 `recruiting.scope_control.get` 查询 operation 终态和分页 catch-up decisions。对应 pause 未完成时 resume 会整体拒绝，不要靠重复 resume 或猜测下一次 reconcile 的返回项判断完成。
+- resume 先有界恢复属于该 pause 的安全 Work，再按恢复截点冻结的 Source 上界逐 Source 创建至多一个当前 production catch-up。`active_listing_work_exists`、`source_not_currently_eligible`、`checkpoint_not_established`、`profile_not_ready` 等 skipped reason 必须显式处置；系统不会按暂停天数补造 DailyRun，也不会在 catch-up 规划时移动 Checkpoint。
 - Work pause/resume 只管理一个业务 Work；有活动 Attempt 或不允许转换时，使用专用领域命令，不直接改状态。
 - cancel 会保留历史和 rejected Artifact。旧 Executor 的迟到结果不得恢复业务事实。
 - archive 是逻辑归档，不删除 Job、Observation、DetailVersion、Artifact 引用或审计事实；restore 后先验证再 catch-up。

@@ -501,9 +501,11 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。
 
-逐场景当前状态、权威测试映射和缺口统一维护在 `docs/experiments/atoll-recruiting-scenario-acceptance.zh-CN.md`。截至 2026-09-12，S15、S17 尚未完成，S12、S13、S16、S18、S19、S25 部分完成，因此 P8/P9 与整体产品均不得宣称完成。
+逐场景当前状态、权威测试映射和缺口统一维护在 `docs/experiments/atoll-recruiting-scenario-acceptance.zh-CN.md`。截至 2026-09-12，S17 未完成，S12、S13、S15、S16、S18、S19、S25 部分完成，因此 P8/P9 与整体产品均不得宣称完成。
 
-S15/S16 实现契约已在产品设计冻结：使用 Company/Source 的配置版本、控制 epoch、cancel execution fence，以及扩展内部有界 `ScopeControlOperation`；Work 保存不可变调度归属，既有 Recruiting reconcile 每轮最多处理 500 项。`drain`、`finish_causal_chain`、`cancel` 分别表示当前 Work 结算后冻结、仅有限活动根的因果后代继续、立即拒绝旧结果并有界取消。恢复只产生一次当前 catch-up，不补造暂停期间的逐日日报。当前代码尚未接入这些事实，本段是下一实现切片的验收输入，不代表 S15/S16 已完成。
+S15/S16 实现契约已在产品设计冻结：使用 Company/Source 的配置版本、控制 epoch、cancel execution fence，以及扩展内部有界 `ScopeControlOperation`；Work 保存不可变调度归属，既有 Recruiting reconcile 每轮最多处理 500 项。`drain`、`finish_causal_chain`、`cancel` 分别表示当前 Work 结算后冻结、仅有限活动根的因果后代继续、立即拒绝旧结果并有界取消。恢复只产生一次当前 catch-up，不补造暂停期间的逐日日报。
+
+执行状态补充（2026-09-12，Company/Source 有界恢复与一次当前 catch-up）：pause/resume 的实体 CAS、稳定 receipt、审计 event 和 `ScopeControlOperation` 均在同一短事务提交；resume 只有在对应 pause projection/活动因果根完全收口后才允许提交，过早恢复会连同实体版本和 receipt 全事务回滚。Scope 暂停的 Work 保存所属 pause operation，普通单 Work resume 不能绕过；恢复按相同 seek owner 每轮至多 500 项，并恢复 `open/waiting_retry/waiting_human` 的原等待语义，旧 `running` 只回到 `open`。Company catch-up 在恢复事务冻结当时的 Source 上界，之后由既有 reconcile 逐 Source、逐短事务读取当前配置：已有活动 Listing Work、当前不 eligible、未建立 Checkpoint 或 Profile 未就绪均形成一条显式 skipped occurrence；其余 Source 只创建一个 event-triggered production ListingRun/Work 和统一 Executor dispatch。它不创建暂停天数对应的 DailyRun，不修改历史 occurrence，也不在规划时移动 Checkpoint。公开 `recruiting.scope_control.get` 按 operation ID 返回状态并 seek-page catch-up decisions，解决多操作并发时不能靠“下一次 reconcile 返回谁”判断完成的问题。隔离非 root MySQL 8.4 完整 Store 回归 218.338 秒、公开普通运营员 Server/restart E2E 35.35 秒和核心冻结检查均通过；机读证据见 `evidence/recruiting-scope-resume-catchup-20260912.json`。Listing 之外执行类型的完整 pause/result 联合矩阵仍未关闭，因此 S15/S16 保持部分完成。
 
 | ID | 场景 | 必须自动化的核心断言 |
 |---|---|---|
