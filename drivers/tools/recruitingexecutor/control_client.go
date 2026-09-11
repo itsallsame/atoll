@@ -41,6 +41,15 @@ func (c messageExecutionControl) Failed(ctx context.Context, offer executioncont
 }
 
 func (c messageExecutionControl) Submit(ctx context.Context, kind string, payload any) error {
+	err := submitExecutionResult(ctx, c.caller, c.cause, c.controlActor, c.executorActorID, kind, payload, c.wait)
+	if err == nil || ctx.Err() != nil || !isAmbiguousControlDelivery(err) {
+		return err
+	}
+	// Result command identities are deterministic and the control plane stores
+	// their response receipt in the same transaction as the business facts. A
+	// lost response is therefore safe to retry once with the exact payload: the
+	// retry either obtains that receipt or leaves the dispatch pending for its
+	// normal durable redelivery path.
 	return submitExecutionResult(ctx, c.caller, c.cause, c.controlActor, c.executorActorID, kind, payload, c.wait)
 }
 
@@ -58,6 +67,22 @@ type controlFailure struct {
 	Operation string
 	Code      string
 	Detail    string
+}
+
+type ambiguousControlDeliveryError struct {
+	operation string
+	cause     error
+}
+
+func (e *ambiguousControlDeliveryError) Error() string {
+	return fmt.Sprintf("recruiting control %s delivery outcome is unknown: %v", e.operation, e.cause)
+}
+
+func (e *ambiguousControlDeliveryError) Unwrap() error { return e.cause }
+
+func isAmbiguousControlDelivery(err error) bool {
+	var ambiguous *ambiguousControlDeliveryError
+	return errors.As(err, &ambiguous)
 }
 
 func (e *controlFailure) Error() string {
@@ -161,20 +186,20 @@ func callExecutionControl(ctx context.Context, caller executionCallFace, cause m
 	}
 	pending, err := caller.Call(cause, controlActor, operation, request)
 	if err != nil {
-		return actorbase.Msg{}, fmt.Errorf("call recruiting control %s: %w", operation, err)
+		return actorbase.Msg{}, &ambiguousControlDeliveryError{operation: operation, cause: err}
 	}
 	response, err := pending.Wait(ctx, wait)
 	if err != nil {
 		_ = pending.Cancel()
-		return actorbase.Msg{}, fmt.Errorf("wait recruiting control %s: %w", operation, err)
+		return actorbase.Msg{}, &ambiguousControlDeliveryError{operation: operation, cause: err}
 	}
 	if response.Kind != message.KindResponse || response.Type != operation {
 		return actorbase.Msg{}, fmt.Errorf("recruiting control %s returned an unrelated response", operation)
 	}
 	var terminal struct {
-		Status    string `json:"status"`
-		ErrorCode string `json:"error_code"`
-		Detail    string `json:"detail"`
+		Status    string          `json:"status"`
+		ErrorCode string          `json:"error_code"`
+		Detail    json.RawMessage `json:"detail"`
 	}
 	if err := json.Unmarshal(response.Payload, &terminal); err != nil {
 		return actorbase.Msg{}, fmt.Errorf("decode recruiting control %s terminal: %w", operation, err)
@@ -183,7 +208,13 @@ func callExecutionControl(ctx context.Context, caller executionCallFace, cause m
 		if terminal.Status != message.StatusFailed || strings.TrimSpace(terminal.ErrorCode) == "" {
 			return actorbase.Msg{}, fmt.Errorf("recruiting control %s returned invalid terminal status %q", operation, terminal.Status)
 		}
-		return actorbase.Msg{}, &controlFailure{Operation: operation, Code: terminal.ErrorCode, Detail: terminal.Detail}
+		var detail string
+		if len(terminal.Detail) != 0 && !bytes.Equal(terminal.Detail, []byte("null")) {
+			if err := json.Unmarshal(terminal.Detail, &detail); err != nil {
+				return actorbase.Msg{}, fmt.Errorf("recruiting control %s returned invalid failure detail: %w", operation, err)
+			}
+		}
+		return actorbase.Msg{}, &controlFailure{Operation: operation, Code: terminal.ErrorCode, Detail: detail}
 	}
 	return response, nil
 }

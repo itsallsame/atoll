@@ -40,6 +40,23 @@ func (c *callerStub) Call(_ message.Cause, target actor.ActorID, operation strin
 	return c.pending, nil
 }
 
+type callerSequenceStub struct {
+	pending    []*pendingStub
+	operations []string
+	payloads   []any
+}
+
+func (c *callerSequenceStub) Call(_ message.Cause, _ actor.ActorID, operation string, payload any) (actorbase.Pending, error) {
+	c.operations = append(c.operations, operation)
+	c.payloads = append(c.payloads, payload)
+	if len(c.pending) == 0 {
+		return nil, errors.New("unexpected extra control call")
+	}
+	next := c.pending[0]
+	c.pending = c.pending[1:]
+	return next, nil
+}
+
 func controlResponse(t *testing.T, operation string, body any) actorbase.Msg {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -166,6 +183,46 @@ func TestSubmitExecutionResultRequiresMatchingAcknowledgement(t *testing.T) {
 	if err := submitExecutionResult(context.Background(), caller, message.Root(), "control-1", "executor-1",
 		"listing_page", payload, time.Second); err == nil {
 		t.Fatal("expected cross-kind acknowledgement rejection")
+	}
+}
+
+func TestMessageExecutionControlRetriesAmbiguousResultResponseWithExactCommand(t *testing.T) {
+	waitErr := errors.New("connection closed after request delivery")
+	first := &pendingStub{err: waitErr}
+	response := executioncontract.ResultResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-result-replay", RequestedBy: "executor-1",
+		Detail: json.RawMessage(`{"content_changed":true,"replayed":true}`)}
+	caller := &callerSequenceStub{pending: []*pendingStub{
+		first,
+		{response: controlResponse(t, executioncontract.TypeResult, response)},
+	}}
+	control := messageExecutionControl{caller: caller, cause: message.Root(), controlActor: "control-1",
+		executorActorID: "executor-1", wait: time.Second}
+	payload := executioncontract.DetailResult{CommandID: "detail-result-attempt-1", ResultKind: "detail",
+		AttemptID: "attempt-1", ExecutorIncarnation: "boot-1"}
+	if err := control.Submit(context.Background(), payload.ResultKind, payload); err != nil {
+		t.Fatal(err)
+	}
+	if !first.cancelled || len(caller.operations) != 2 || caller.operations[0] != executioncontract.TypeResult ||
+		caller.operations[1] != executioncontract.TypeResult {
+		t.Fatalf("ambiguous result retry calls=%v first_cancelled=%v", caller.operations, first.cancelled)
+	}
+	if !reflect.DeepEqual(caller.payloads[0], payload) || !reflect.DeepEqual(caller.payloads[1], payload) {
+		t.Fatalf("result retry changed immutable payload: %#v %#v", caller.payloads[0], caller.payloads[1])
+	}
+}
+
+func TestMessageExecutionControlDoesNotRetryResultRejection(t *testing.T) {
+	response := map[string]any{"status": message.StatusFailed, "error_code": "result_fenced", "detail": "attempt is stale"}
+	caller := &callerSequenceStub{pending: []*pendingStub{{response: controlResponse(t, executioncontract.TypeResult, response)}}}
+	control := messageExecutionControl{caller: caller, cause: message.Root(), controlActor: "control-1",
+		executorActorID: "executor-1", wait: time.Second}
+	payload := executioncontract.DetailResult{CommandID: "detail-result-stale", ResultKind: "detail",
+		AttemptID: "attempt-stale", ExecutorIncarnation: "boot-1"}
+	err := control.Submit(context.Background(), payload.ResultKind, payload)
+	var remote *controlFailure
+	if !errors.As(err, &remote) || remote.Code != "result_fenced" || len(caller.operations) != 1 {
+		t.Fatalf("result rejection err=%v calls=%v", err, caller.operations)
 	}
 }
 

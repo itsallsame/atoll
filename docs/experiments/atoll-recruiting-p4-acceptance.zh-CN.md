@@ -23,6 +23,7 @@
 - 生产 wake 默认关闭，启用时配置必须显式提供唯一允许唤醒的 Recruiting Actor、`http.fetch` capability、调用超时、Artifact 的设备/Channel/目录/访问/保留/是否脱敏/字节上限、条款版本与复核时间，以及 HTTP/robots 限流参数。每次 Actor incarnation 使用新身份；offer command 在同一 delivery 内稳定，在 redelivery 或 Actor 重启时变化，以便重新观察队列而不是重放已经完成的旧 Offer。非配置控制 Actor、缺失安全配置和 Browser capability 均在网络 I/O 前拒绝。控制面的 capability-aware fleet 持久派发及跨真实进程正常执行已接通；崩溃切点 e2e 尚未全部接通；
 - HTTP Detail runner 已实现“先证据、后解析”：成功响应先保存 response Artifact，再由同一声明式 JSON/HTML Recipe 离线提取且必须恰好得到一条记录，规范 JSON 和 normalized SHA-256 随稳定 detail-version ID 提交；HTTP 失败保留 failure Artifact，解析失败同时保留原始 response 与独立分类 failure Artifact。JSON 字符串字段现在与 DOM 一样去除首尾空白，确保规范详情重放稳定；
 - Executor 的 result 客户端已通过共享 `recruiting.execution.result` 类型提交，并严格要求控制面 acknowledgement 的 `page|completion|detail` 分支与所提交 result_kind 唯一匹配；
+- Result 提交遇到 `Call/Wait` 返回的模糊传输错误时，Executor 只以完全相同的 payload 和确定性 command ID 有界重试一次；业务失败和已收到但不合法的协议响应不重试。控制面的 result receipt 与业务事实同事务，因而重试只会读取首次稳定 outcome，不会重复创建详情版本。该测试同时发现并修复了成功 Detail acknowledgement 与通用失败文本共用 JSON `detail` 字段的解析冲突：通用客户端现在先解析 terminal status，只有 failed terminal 才把 `detail` 解码为错误字符串；
 - result command 的请求哈希包含 word、原始 payload 与 authenticated Executor sender；Listing Page、Listing Completion、Detail 的稳定 response receipt 和各自业务事实处于同一 MySQL 事务。MySQL 8.4 合同已验证相同页面命令并发只接受一次、另一次稳定重放，以及相同 command ID 改请求明确冲突；这关闭了“Artifact 可重放但 command ID 可被另一结果复用”的缺口；
 - 固定 Recipe 类型 `listing|detail|discovery` 和执行 transport `http_json|http_html|browser`，但 capability 仍为可扩展字符串，不制造多种 Worker class；Extension 是候选 Recipe 捕获入口，不是日常执行 transport；
 - 声明式请求只能为 GET；timeout、响应大小和 redirect 次数有硬上限；Recipe 只能声明 Accept/Accept-Language，不能携带 Cookie、Authorization 等秘密；
@@ -100,6 +101,6 @@ make recruiting-live-smoke
 - Recipe KV 与 Artifact File 已在真实 Atoll server/daemon 的允许路径通过；权限拒绝和重启保持 e2e 仍待补齐；
 - 已有 Repository 合同证明旧 listing Attempt 只保存 rejected Artifact、不能提交业务结果；仍缺真实 Executor Actor 经 Atoll Message 提交该迟到结果的进程级端到端证明。
 - 页面进度已改为 Attempt 作用域，并通过 MySQL 8.4 的 crash/retry 合同：Attempt A 接受第一页后失败，Attempt B 可从第一页重新运行；A/B 页面证据同时保留，B 的 completion 只统计 B 的页面。Failure Artifact 的原子控制面合同及真实进程自动执行正常路径已闭合；启用前仍须补齐真实进程崩溃切点。
-- accept/start/failed 以及 page/completion/detail 的 command receipt 已闭合，控制面也已有 capability-aware fleet 的持久单次 wake 和 authenticated completion acknowledgement；“控制面已提交 dispatch、首次投递前 server 退出”和“Executor 已处理、控制面未保存 completion acknowledgement”已有真实 Atoll 进程恢复证明，尚缺“Executor 处理中退出”和“业务结果已提交但响应丢失”等切点。
+- accept/start/failed 以及 page/completion/detail 的 command receipt 已闭合，控制面也已有 capability-aware fleet 的持久单次 wake 和 authenticated completion acknowledgement；“控制面已提交 dispatch、首次投递前 server 退出”和“Executor 已处理、控制面未保存 completion acknowledgement”已有真实 Atoll 进程恢复证明。“业务结果已提交但响应丢失”已有 Executor 精确重试合同与非 root MySQL 稳定 receipt 两层证据，但尚缺在真实 Server/daemon 连接上强制切断回包的进程级证据；“Executor 处理中退出”同样仍缺进程切点。
 
 P4 仍为进行中；ABI 冻结不等于 Driver 与真实站点验收完成。

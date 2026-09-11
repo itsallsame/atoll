@@ -281,6 +281,8 @@ Work 查询现已分离面向人的 operational Work Center 与面向执行面�
 
 进展补充（2026-09-11，Server 重启与 ledger 重复投递）：新增进程级 `TestRecruitingRecoveryAcrossServerRestart`，使用普通运营员、真实 Server、非 root MySQL 和真实 Channel SQLite。测试在领域事件首次交付后只回退应用 outbox checkpoint，模拟 crash 位于 ledger append 与 MySQL delivered 之间；强杀/重启后重复 reconcile 使用相同 event ID/fingerprint，MySQL 再次收口为 delivered，Atoll ledger 仍只有一行。相同 restart 同时验证 Company receipt 和 closed-report production recovery 唯一头重放，原 DailyRun/Occurrence 不变。该证据关闭 P3 点名的 `recruiting_recovery_test.go` 缺口，不替代仍待执行的 Executor 处理中退出、业务结果 response 丢失和 P9 依赖故障矩阵。
 
+进展补充（2026-09-11，业务结果 response 丢失的有界恢复）：Executor result 客户端只对 `Call/Wait` 的模糊传输结果使用原 payload、原确定性 command ID 重试一次；明确业务拒绝和协议错误不重试，第二次仍不确定则返回错误并由持久 dispatch 恢复。单元合同模拟控制面已经处理请求但连接在回包前关闭，断言第一次 pending 被取消、两次 payload 逐字段相同且第二次 receipt acknowledgement 收口；非 root MySQL Detail 合同同时证明业务事实、详情版本、Artifact、event、receipt 与 dispatch 各只有一份。该切片还发现成功 Detail outcome 与通用错误文本复用 `detail` 键导致的客户端解码冲突，现已改为只在 failed terminal 解码错误文本。真实 Server/daemon 连接级强制丢回包仍作为 P3/P9 进程切点保留，不能用分层合同冒充已完成。
+
 进展补充（2026-09-11，DailyRun 人工控制）：设计审计确认 DailyRun 的 cutoff roster、window、expected count 和关闭 summary 都是不可变覆盖事实，因此不新增通用 `daily_run.update`。公开 `recruiting.daily_run.occurrence.exclude` 以 DailyRun/Occurrence 双 version 只排除窗口内仍为 planned 且没有 Work 的项，保留 occurrence 和当日分母；receipt、`source_occurrence.excluded` event 与状态转换在同一事务提交。窗口到期、日报已关闭、已 queued/running 或跨 DailyRun 的 occurrence 均拒绝。非 root MySQL 8.4 合同覆盖稳定重放、到期后零副作用、DailyRun 逐字段不变，并让人工排除与到期物化真实并发，证明最终只能得到 excluded/无 Work/有 receipt 或 queued/有 Work/无 receipt 两种一致结论。普通用户真实 Server 旅程完成 summary→exclude→server restart→replay→summary，显示 expected=1、excluded=1、uncovered=1、DailyRun version 不变，且没有创建 listing Work。
 
 ### 开发顺序

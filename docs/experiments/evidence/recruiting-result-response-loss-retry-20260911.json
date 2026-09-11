@@ -1,0 +1,33 @@
+{
+  "evidence_version": "recruiting-evidence.v1",
+  "recorded_at": "2026-09-11T00:00:00Z",
+  "scope": "P3/P4 ambiguous business-result response recovery",
+  "branch": "codex/atoll-recruiting",
+  "core_boundary_base": "a94d2b8d",
+  "fault_cut": "the control request may have committed, but Executor Pending.Wait observes a connection error before receiving the result acknowledgement",
+  "claims": [
+    "Executor retries an ambiguous result delivery exactly once with the same deterministic command and payload",
+    "an explicit domain rejection is not retried",
+    "a successful Detail acknowledgement is not confused with the terminal failure detail string",
+    "the MySQL result receipt and Detail business facts replay without duplication"
+  ],
+  "verification": [
+    {
+      "command": "go test ./drivers/tools/recruitingexecutor/... -count=1",
+      "result": "pass",
+      "environment": "local deterministic protocol and executor tests",
+      "observed_seconds": 1.7
+    },
+    {
+      "command": "RECRUITING_MYSQL_TEST_RUN='^TestDetailResultAcceptsAtomicallyAndReplays$' scripts/recruiting-mysql-test.sh",
+      "result": "pass",
+      "environment": "ephemeral MySQL 8.4 with separate non-root migration and runtime accounts",
+      "observed_seconds": 8.6
+    }
+  ],
+  "limitations": [
+    "the real Server-to-daemon socket has not yet been forcibly cut after commit and before acknowledgement"
+  ],
+  "third_party_writes": false,
+  "atoll_core_modified": false
+}
