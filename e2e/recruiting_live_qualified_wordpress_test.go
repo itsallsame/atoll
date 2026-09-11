@@ -133,7 +133,7 @@ func TestRecruitingLiveQualifiedWordPressSourceThroughAtoll(t *testing.T) {
 	}
 	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 20})
 	candidate := waitQualifiedWordPressCandidate(t, ws, homeID, controlID, daemon, daemonLog, h.server.logPath)
-	if stringField(t, candidate, "final_url") != "https://womensaid.org.uk/jobs/" {
+	if stringField(t, candidate, "final_url") != "https://womensaid.org.uk/jobs" {
 		t.Fatalf("discovered unexpected careers entry: %v", candidate)
 	}
 	accepted := ws.request(homeID, "recruiting.source.discovery.candidate.accept", controlID, map[string]any{
