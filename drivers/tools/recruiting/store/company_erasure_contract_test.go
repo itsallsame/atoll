@@ -53,6 +53,26 @@ func TestCompanyErasureBuildsBoundedFrozenPreview(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	historicalWork, _ := model.NewWork("erasure-historical-work", "company", company.CompanyID,
+		"diagnostic", "manual")
+	if err := repository.CreateWork(ctx, historicalWork,
+		WorkPlacement{CompanyID: company.CompanyID, NotBefore: now}, now); err != nil {
+		t.Fatal(err)
+	}
+	runningHistoricalWork, _ := historicalWork.Start(historicalWork.Version)
+	if err := repository.UpdateWorkCAS(ctx, historicalWork.Version, runningHistoricalWork, now); err != nil {
+		t.Fatal(err)
+	}
+	completedHistoricalWork, _ := runningHistoricalWork.Complete(runningHistoricalWork.Version,
+		model.ResolutionSucceeded, "", "")
+	if err := repository.UpdateWorkCAS(ctx, runningHistoricalWork.Version, completedHistoricalWork, now); err != nil {
+		t.Fatal(err)
+	}
+	artifact, _ := model.NewArtifactMetadata("erasure-artifact", model.ArtifactResponse, "sha256:artifact",
+		"resource://erasure/object", historicalWork.WorkID, "", "company", "compliance", false)
+	if err := insertArtifact(ctx, db, artifact, false, now); err != nil {
+		t.Fatal(err)
+	}
 	archivedCompany, err := company.Archive(company.Version)
 	if err != nil || repository.UpdateCompanyCAS(ctx, company.Version, archivedCompany, now) != nil {
 		t.Fatalf("archive Company=%+v err=%v", archivedCompany, err)
@@ -183,5 +203,25 @@ func TestCompanyErasureBuildsBoundedFrozenPreview(t *testing.T) {
 	if err != nil || storedWork.Status != model.WorkWaitingHuman ||
 		storedWork.WaitingReason != "compliance_retention_wait" || storedWork.Version != approvedWork.Version {
 		t.Fatalf("approved control Work=%+v err=%v", storedWork, err)
+	}
+	startedErasure, err := repository.BeginNextCompanyErasure(ctx, now.Add(25*time.Hour))
+	if err != nil || startedErasure.Status != model.CompanyErasureErasing ||
+		startedErasure.PurgePhase != "materialize_resources" {
+		t.Fatalf("start due erasure=%+v err=%v", startedErasure, err)
+	}
+	manifest, err := repository.MaterializeNextCompanyErasureResourcePage(ctx, 1, now.Add(25*time.Hour+time.Minute))
+	if err != nil || !manifest.Completed || manifest.Processed != 1 || manifest.Erasure.ResourceCount != 1 ||
+		manifest.Erasure.PurgePhase != "purge_database" {
+		t.Fatalf("Resource manifest=%+v err=%v", manifest, err)
+	}
+	storedWork, err = repository.GetWork(ctx, work.WorkID)
+	if err != nil || storedWork.Status != model.WorkRunning {
+		t.Fatalf("executing erasure Work=%+v err=%v", storedWork, err)
+	}
+	var manifestedResources int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_company_erasure_resources
+WHERE erasure_id = ? AND cleanup_status = 'pending'`, erasure.ErasureID).Scan(&manifestedResources); err != nil ||
+		manifestedResources != 1 {
+		t.Fatalf("manifested Resource count=%d err=%v", manifestedResources, err)
 	}
 }

@@ -18,6 +18,12 @@ type CompanyErasurePreviewProgress struct {
 	Completed bool                 `json:"completed"`
 }
 
+type CompanyErasureExecutionProgress struct {
+	Erasure   model.CompanyErasure `json:"erasure"`
+	Processed int                  `json:"processed"`
+	Completed bool                 `json:"completed"`
+}
+
 func (r *Repository) ApplyCreateCompanyErasureCommand(ctx context.Context, erasure model.CompanyErasure,
 	parent model.Work, placement WorkPlacement, receipt model.CommandReceipt, event model.EventIntent,
 	businessAt time.Time) (CommandResult, error) {
@@ -235,6 +241,195 @@ WHERE erasure_status = 'previewing' ORDER BY created_at, erasure_id LIMIT 1`).Sc
 	return erasure, nil
 }
 
+func (r *Repository) BeginNextCompanyErasure(ctx context.Context, businessAt time.Time) (model.CompanyErasure, error) {
+	if businessAt.IsZero() {
+		return model.CompanyErasure{}, fmt.Errorf("Company erasure execution time is required")
+	}
+	var erasureID string
+	err := r.db.QueryRowContext(ctx, `SELECT erasure_id FROM recruiting_company_erasures
+WHERE erasure_status = 'approved' AND execute_after <= ? ORDER BY execute_after, erasure_id LIMIT 1`,
+		businessAt.UTC()).Scan(&erasureID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.CompanyErasure{}, ErrNotFound
+	}
+	if err != nil {
+		return model.CompanyErasure{}, fmt.Errorf("find due Company erasure: %w", err)
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return model.CompanyErasure{}, fmt.Errorf("begin Company erasure execution: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	current, err := getCompanyErasureWith(ctx, tx, erasureID, true)
+	if err != nil {
+		return model.CompanyErasure{}, err
+	}
+	if current.Status != model.CompanyErasureApproved {
+		return model.CompanyErasure{}, ErrNotFound
+	}
+	company, err := readCompanyForMerge(ctx, tx, current.CompanyID, true)
+	if err != nil {
+		return model.CompanyErasure{}, err
+	}
+	if err := validateCompanyErasureFrozenScope(ctx, tx, current, company); err != nil {
+		return model.CompanyErasure{}, err
+	}
+	next, err := current.Begin(current.Version, businessAt)
+	if err != nil {
+		return model.CompanyErasure{}, err
+	}
+	work, err := getWorkForErasureUpdate(ctx, tx, current.WorkID)
+	if err != nil {
+		return model.CompanyErasure{}, err
+	}
+	if work.Status != model.WorkWaitingHuman || work.WaitingReason != "compliance_retention_wait" {
+		return model.CompanyErasure{}, fmt.Errorf("Company erasure Work is not waiting for retention")
+	}
+	running, err := work.Start(work.Version)
+	if err != nil {
+		return model.CompanyErasure{}, err
+	}
+	if err := updateCompanyErasureCAS(ctx, tx, current.Version, next, businessAt); err != nil {
+		return model.CompanyErasure{}, err
+	}
+	if err := updateWorkTx(ctx, tx, work.Version, running, businessAt); err != nil {
+		return model.CompanyErasure{}, err
+	}
+	audit, _ := json.Marshal(map[string]any{"approved_by": current.ApprovedBy,
+		"policy_version": current.PolicyVersion, "preview_hash": current.PreviewHash})
+	event, err := model.NewEventIntent("event-company-erasure-begin-"+current.ErasureID,
+		"company.erasure.started", "company_erasure", next.ErasureID, next.Version,
+		businessAt.Format(time.RFC3339Nano), "system:company-erasure-begin:"+current.ErasureID, audit)
+	if err != nil {
+		return model.CompanyErasure{}, err
+	}
+	if err := appendEventIntent(ctx, tx, event, businessAt, businessAt); err != nil {
+		return model.CompanyErasure{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.CompanyErasure{}, fmt.Errorf("commit Company erasure execution: %w", err)
+	}
+	return next, nil
+}
+
+func (r *Repository) MaterializeNextCompanyErasureResourcePage(ctx context.Context, limit int,
+	businessAt time.Time) (CompanyErasureExecutionProgress, error) {
+	if limit < 1 || limit > 500 || businessAt.IsZero() {
+		return CompanyErasureExecutionProgress{}, fmt.Errorf("bounded Company erasure Resource limit and time are required")
+	}
+	var erasureID string
+	err := r.db.QueryRowContext(ctx, `SELECT erasure_id FROM recruiting_company_erasures
+WHERE erasure_status = 'erasing' AND purge_phase = 'materialize_resources'
+ORDER BY updated_at, erasure_id LIMIT 1`).Scan(&erasureID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return CompanyErasureExecutionProgress{}, ErrNotFound
+	}
+	if err != nil {
+		return CompanyErasureExecutionProgress{}, fmt.Errorf("find Company erasure Resource manifest: %w", err)
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return CompanyErasureExecutionProgress{}, fmt.Errorf("begin Company erasure Resource manifest: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	current, err := getCompanyErasureWith(ctx, tx, erasureID, true)
+	if err != nil {
+		return CompanyErasureExecutionProgress{}, err
+	}
+	if current.Status != model.CompanyErasureErasing || current.PurgePhase != "materialize_resources" {
+		return CompanyErasureExecutionProgress{}, ErrNotFound
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT artifact.artifact_id, artifact.object_ref, artifact.content_hash
+FROM recruiting_artifacts artifact JOIN recruiting_works work ON work.work_id = artifact.work_id
+WHERE work.company_id = ? AND work.work_id <> ? AND artifact.artifact_id > ?
+ORDER BY artifact.artifact_id LIMIT ?`, current.CompanyID, current.WorkID, current.ArtifactCursor, limit+1)
+	if err != nil {
+		return CompanyErasureExecutionProgress{}, fmt.Errorf("read Company erasure Artifact page: %w", err)
+	}
+	resources := make([]model.CompanyErasureResource, 0, limit+1)
+	for rows.Next() {
+		var artifact model.ArtifactMetadata
+		if err := rows.Scan(&artifact.ArtifactID, &artifact.ObjectRef, &artifact.ContentHash); err != nil {
+			_ = rows.Close()
+			return CompanyErasureExecutionProgress{}, err
+		}
+		item, err := model.NewCompanyErasureResource(current.ErasureID, artifact)
+		if err != nil {
+			_ = rows.Close()
+			return CompanyErasureExecutionProgress{}, err
+		}
+		resources = append(resources, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return CompanyErasureExecutionProgress{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return CompanyErasureExecutionProgress{}, err
+	}
+	hasMore := len(resources) > limit
+	if hasMore {
+		resources = resources[:limit]
+	}
+	for _, item := range resources {
+		state, err := json.Marshal(item)
+		if err != nil {
+			return CompanyErasureExecutionProgress{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO recruiting_company_erasure_resources(
+  erasure_id, artifact_id, object_ref, cleanup_status, version, state_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, item.ErasureID, item.ArtifactID, item.ObjectRef, item.Status,
+			item.Version, state, businessAt.UTC(), businessAt.UTC()); err != nil {
+			return CompanyErasureExecutionProgress{}, fmt.Errorf("insert Company erasure Resource: %w", err)
+		}
+	}
+	nextCursor := ""
+	if hasMore {
+		nextCursor = resources[len(resources)-1].ArtifactID
+	}
+	next, err := current.AdvanceResourceManifest(current.Version, nextCursor, uint64(len(resources)), hasMore)
+	if err != nil {
+		return CompanyErasureExecutionProgress{}, err
+	}
+	if err := updateCompanyErasureCAS(ctx, tx, current.Version, next, businessAt); err != nil {
+		return CompanyErasureExecutionProgress{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CompanyErasureExecutionProgress{}, fmt.Errorf("commit Company erasure Resource manifest: %w", err)
+	}
+	return CompanyErasureExecutionProgress{Erasure: next, Processed: len(resources), Completed: !hasMore}, nil
+}
+
+func validateCompanyErasureFrozenScope(ctx context.Context, tx *sql.Tx, current model.CompanyErasure,
+	company model.Company) error {
+	if company.Version != current.CompanyVersion {
+		return &model.VersionConflictError{Expected: current.CompanyVersion, Actual: company.Version}
+	}
+	if company.ControlStatus != model.ControlArchived {
+		return &model.InvalidTransitionError{Entity: "company", From: string(company.ControlStatus), Action: "execute compliance erasure"}
+	}
+	var sources, members, changedMembers, activeWorks uint64
+	if err := tx.QueryRowContext(ctx, `SELECT
+  (SELECT COUNT(*) FROM recruiting_sources WHERE company_id = ?),
+  (SELECT COUNT(*) FROM recruiting_company_erasure_sources WHERE erasure_id = ?),
+  (SELECT COUNT(*) FROM recruiting_sources source
+     LEFT JOIN recruiting_company_erasure_sources member
+       ON member.erasure_id = ? AND member.source_id = source.source_id
+   WHERE source.company_id = ? AND
+     (member.source_id IS NULL OR member.source_version <> source.version OR
+      member.execution_fence <> source.execution_fence OR source.control_status <> 'archived')),
+  (SELECT COUNT(*) FROM recruiting_works
+   WHERE company_id = ? AND work_id <> ? AND status IN ('open','waiting_retry','running','waiting_human','paused'))`,
+		current.CompanyID, current.ErasureID, current.ErasureID, current.CompanyID,
+		current.CompanyID, current.WorkID).Scan(&sources, &members, &changedMembers, &activeWorks); err != nil {
+		return fmt.Errorf("revalidate Company erasure frozen scope: %w", err)
+	}
+	if sources != current.SourceCount || members != current.SourceCount || changedMembers != 0 || activeWorks != 0 {
+		return fmt.Errorf("Company erasure preview is stale or execution has not settled")
+	}
+	return nil
+}
+
 func (r *Repository) ApplyApproveCompanyErasureCommand(ctx context.Context, erasureID string,
 	expectedVersion uint64, previewHash, approver string, receipt model.CommandReceipt,
 	eventID, reason string, businessAt time.Time) (CommandResult, error) {
@@ -407,9 +602,11 @@ func updateCompanyErasureCAS(ctx context.Context, tx *sql.Tx, expected uint64, e
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE recruiting_company_erasures
 SET erasure_status = ?, preview_cursor = ?, source_count = ?, preview_accumulator = ?, preview_hash = ?,
-    version = ?, state_json = ?, updated_at = ? WHERE erasure_id = ? AND version = ?`, erasure.Status,
+    artifact_cursor = ?, resource_count = ?, purge_phase = ?, version = ?, state_json = ?, updated_at = ?
+WHERE erasure_id = ? AND version = ?`, erasure.Status,
 		nullableString(erasure.PreviewCursor), erasure.SourceCount, nullableString(erasure.PreviewAccumulator),
-		nullableString(erasure.PreviewHash), erasure.Version, state, at.UTC(), erasure.ErasureID, expected)
+		nullableString(erasure.PreviewHash), nullableString(erasure.ArtifactCursor), erasure.ResourceCount,
+		nullableString(erasure.PurgePhase), erasure.Version, state, at.UTC(), erasure.ErasureID, expected)
 	if err != nil {
 		return fmt.Errorf("update Company erasure: %w", err)
 	}

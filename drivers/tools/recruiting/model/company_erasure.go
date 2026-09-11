@@ -45,6 +45,37 @@ type CompanyErasureMember struct {
 	ExecutionFence uint64 `json:"execution_fence"`
 }
 
+type CompanyErasureResourceStatus string
+
+const (
+	CompanyErasureResourcePending  CompanyErasureResourceStatus = "pending"
+	CompanyErasureResourceDeleted  CompanyErasureResourceStatus = "deleted"
+	CompanyErasureResourceRetained CompanyErasureResourceStatus = "retained_by_policy"
+)
+
+type CompanyErasureResource struct {
+	ErasureID        string                       `json:"erasure_id"`
+	ArtifactID       string                       `json:"artifact_id"`
+	ObjectRef        string                       `json:"object_ref"`
+	ContentHash      string                       `json:"content_hash"`
+	Status           CompanyErasureResourceStatus `json:"status"`
+	ResolutionBy     string                       `json:"resolution_by,omitempty"`
+	ResolutionReason string                       `json:"resolution_reason,omitempty"`
+	ResolvedAt       string                       `json:"resolved_at,omitempty"`
+	Version          uint64                       `json:"version"`
+}
+
+func NewCompanyErasureResource(erasureID string, artifact ArtifactMetadata) (CompanyErasureResource, error) {
+	erasureID = strings.TrimSpace(erasureID)
+	if erasureID == "" || artifact.ArtifactID == "" || strings.TrimSpace(artifact.ObjectRef) == "" ||
+		strings.TrimSpace(artifact.ContentHash) == "" {
+		return CompanyErasureResource{}, fmt.Errorf("Company erasure Resource requires request and immutable Artifact identity")
+	}
+	return CompanyErasureResource{ErasureID: erasureID, ArtifactID: artifact.ArtifactID,
+		ObjectRef: artifact.ObjectRef, ContentHash: artifact.ContentHash,
+		Status: CompanyErasureResourcePending, Version: 1}, nil
+}
+
 func NewCompanyErasureMember(erasureID string, source RecruitmentSource) (CompanyErasureMember, error) {
 	erasureID = strings.TrimSpace(erasureID)
 	if erasureID == "" || source.SourceID == "" || source.Version == 0 || source.ExecutionFence == 0 ||
@@ -71,6 +102,9 @@ type CompanyErasure struct {
 	SourceCount        uint64               `json:"source_count"`
 	PreviewAccumulator string               `json:"preview_accumulator,omitempty"`
 	PreviewHash        string               `json:"preview_hash,omitempty"`
+	ArtifactCursor     string               `json:"artifact_cursor,omitempty"`
+	ResourceCount      uint64               `json:"resource_count"`
+	PurgePhase         string               `json:"purge_phase,omitempty"`
 	Impact             CompanyErasureImpact `json:"impact"`
 	ApprovedBy         string               `json:"approved_by,omitempty"`
 	ApprovedAt         string               `json:"approved_at,omitempty"`
@@ -196,7 +230,26 @@ func (e CompanyErasure) Begin(expected uint64, at time.Time) (CompanyErasure, er
 	if err != nil || e.Status != CompanyErasureApproved || at.IsZero() || at.Before(executeAfter) {
 		return CompanyErasure{}, &InvalidTransitionError{Entity: "company erasure", From: string(e.Status), Action: "begin after retention time"}
 	}
-	e.Status, e.StartedAt = CompanyErasureErasing, at.UTC().Format(time.RFC3339Nano)
+	e.Status, e.StartedAt, e.PurgePhase = CompanyErasureErasing, at.UTC().Format(time.RFC3339Nano), "materialize_resources"
+	e.Version++
+	return e, nil
+}
+
+func (e CompanyErasure) AdvanceResourceManifest(expected uint64, artifactCursor string, added uint64,
+	hasMore bool) (CompanyErasure, error) {
+	if err := requireVersion(expected, e.Version); err != nil {
+		return CompanyErasure{}, err
+	}
+	artifactCursor = strings.TrimSpace(artifactCursor)
+	if e.Status != CompanyErasureErasing || e.PurgePhase != "materialize_resources" ||
+		(hasMore && artifactCursor == "") || (!hasMore && artifactCursor != "") || added > 500 {
+		return CompanyErasure{}, fmt.Errorf("erasing Company requires a bounded Resource manifest page")
+	}
+	e.ResourceCount += added
+	e.ArtifactCursor = artifactCursor
+	if !hasMore {
+		e.PurgePhase = "purge_database"
+	}
 	e.Version++
 	return e, nil
 }

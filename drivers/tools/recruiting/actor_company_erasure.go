@@ -25,6 +25,22 @@ func reconcileCompanyErasurePreview(ctx context.Context, repository *store.Repos
 	return repository.BuildNextCompanyErasurePreview(ctx, next.ErasureID, limit, now)
 }
 
+func reconcileCompanyErasureExecution(ctx context.Context, repository *store.Repository, limit int,
+	now time.Time) (store.CompanyErasureExecutionProgress, error) {
+	started, err := repository.BeginNextCompanyErasure(ctx, now)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return store.CompanyErasureExecutionProgress{}, err
+	}
+	progress, err := repository.MaterializeNextCompanyErasureResourcePage(ctx, limit, now)
+	if errors.Is(err, store.ErrNotFound) {
+		if started.ErasureID != "" {
+			return store.CompanyErasureExecutionProgress{Erasure: started}, nil
+		}
+		return store.CompanyErasureExecutionProgress{}, nil
+	}
+	return progress, err
+}
+
 type companyErasurePreviewPayload struct {
 	CommandID       string `json:"command_id"`
 	ErasureID       string `json:"erasure_id"`

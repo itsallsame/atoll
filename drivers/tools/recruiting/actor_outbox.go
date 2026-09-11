@@ -57,6 +57,9 @@ type outboxReconcileResponse struct {
 	CompanyErasureID            string `json:"company_erasure_id,omitempty"`
 	CompanyErasurePreviewed     int    `json:"company_erasure_previewed"`
 	CompanyErasurePreviewDone   bool   `json:"company_erasure_preview_done"`
+	CompanyErasureResources     int    `json:"company_erasure_resources"`
+	CompanyErasureManifestDone  bool   `json:"company_erasure_manifest_done"`
+	CompanyErasurePurgePhase    string `json:"company_erasure_purge_phase,omitempty"`
 	RepairCandidatesScanned     int    `json:"repair_candidates_scanned"`
 	RepairBatchesRecovered      int    `json:"repair_batches_recovered"`
 	RepairWorksRecovered        int    `json:"repair_works_recovered"`
@@ -166,6 +169,17 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 	response.CompanyErasureID = erasurePreview.Erasure.ErasureID
 	response.CompanyErasurePreviewed = erasurePreview.Processed
 	response.CompanyErasurePreviewDone = erasurePreview.Completed
+	erasureExecution, err := reconcileCompanyErasureExecution(msg.Ctx(), repository, payload.Limit, now)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	if erasureExecution.Erasure.ErasureID != "" {
+		response.CompanyErasureID = erasureExecution.Erasure.ErasureID
+		response.CompanyErasurePurgePhase = erasureExecution.Erasure.PurgePhase
+	}
+	response.CompanyErasureResources = erasureExecution.Processed
+	response.CompanyErasureManifestDone = erasureExecution.Completed
 	repairRecovery, err := reconcileRepairRecoveryBatch(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
 	if err != nil {
 		failStoreError(sys, msg, err)
@@ -341,6 +355,7 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 			cfg.executionDispatchTargets())
 		_, _ = repository.PromoteNextReadyCompany(msg.Ctx(), now)
 		_, _ = reconcileCompanyErasurePreview(msg.Ctx(), repository, maxReconcileLimit, now)
+		_, _ = reconcileCompanyErasureExecution(msg.Ctx(), repository, maxReconcileLimit, now)
 		_, _ = reconcileRepairRecoveryBatch(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
 		_, _ = reconcileScopeControl(msg.Ctx(), repository, maxReconcileLimit, now, cfg.executionDispatchTargets())
 		_, _ = reconcileRecipeRolloutBatches(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
