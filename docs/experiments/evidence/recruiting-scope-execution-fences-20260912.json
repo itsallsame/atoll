@@ -1,0 +1,43 @@
+{
+  "version": "recruiting.scope-execution-fences-evidence.v1",
+  "observed_at": "2026-09-12T02:45:26+08:00",
+  "scope": "Company/Source operational, configuration, and cancellation fences across Recruiting execution types",
+  "implementation": {
+    "commit": "e1e235ca",
+    "core_modified": false,
+    "new_worker_types": 0,
+    "new_attempt_authority": "current eligibility gates new claims; configuration_version and execution_fence authorize issued Attempts",
+    "rejected_evidence": "DiagnosticResult and RecipeSampleValidationResult retain bounded rejected Artifacts after rolling back fenced business mutations"
+  },
+  "contract_observation": {
+    "listing": "drain accepted; cancel and configuration change fenced",
+    "detail": "drain accepted; cancel and Endpoint configuration change fenced with rejected Artifact retained",
+    "baseline": "drain accepted an issued page; resume preserved the ability to claim a retry Attempt",
+    "live_backfill": "drain accepted an issued result without changing current Job or Checkpoint",
+    "diagnostic": "drain accepted bounded evidence without business writes",
+    "detail_recipe_sample": "drain accepted evidence-only response/trace Artifacts",
+    "aggregate_version": "ordinary control/health version churn is no longer treated as configuration drift"
+  },
+  "verification": {
+    "database": "ephemeral MySQL 8.4",
+    "migration_identity": "staircase_migrator (non-root)",
+    "runtime_identity": "staircase_runtime (non-root, DML only)",
+    "full_store_suite": "pass in 218.254s",
+    "actor_suite": "pass in 3.030s",
+    "targeted_tests": [
+      "TestInFlightResultDistinguishesDrainFromCancelFence",
+      "TestDetailResultUsesSeparatedScopeFences",
+      "TestExecutableBaselineCreatesCheckpointFromStagedPages",
+      "TestLiveBackfillResultCreatesIndependentOutputWithoutChangingJobOrCheckpoint",
+      "TestDiagnosticRunExecutesWithEvidenceAndNoBusinessWrites",
+      "TestDetailRecipeValidationRecordsEvidenceWithoutPublishingJobData"
+    ],
+    "race_and_vet": "pass for ./drivers/tools/recruiting/...",
+    "core_boundary": "pass from a94d2b8d; no protocol/runtime/lib/platform/registry changes"
+  },
+  "limits": [
+    "Source discovery, Source validation, Listing/Discovery Recipe validation, Backfill, and Baseline still need explicit cancel and configuration-change result cases even though they share the same authority function.",
+    "All-business-aggregate cancellation terminal-state and cutoff race matrices remain open.",
+    "S15 and S16 remain partially complete."
+  ]
+}
