@@ -215,6 +215,7 @@ type Offer struct {
 	CompanyImportItems    []CompanyImportApplyItem         `json:"company_import_items,omitempty"`
 	Checkpoint            *model.IncrementalCheckpoint     `json:"checkpoint,omitempty"`
 	Detail                *DetailInput                     `json:"detail,omitempty"`
+	Backfill              *BackfillInput                   `json:"backfill,omitempty"`
 	Discovery             *model.SourceDiscovery           `json:"discovery,omitempty"`
 	Recipe                *model.Recipe                    `json:"recipe,omitempty"`
 	RecipeValidation      *model.RecipeSampleValidation    `json:"recipe_validation,omitempty"`
@@ -243,6 +244,13 @@ type DetailInput struct {
 	Job        model.SourceJob              `json:"job"`
 	Assignment model.SourceRecipeAssignment `json:"assignment"`
 	Recipe     model.Recipe                 `json:"recipe"`
+}
+
+type BackfillInput struct {
+	Backfill      model.Backfill          `json:"backfill"`
+	Item          model.BackfillItem      `json:"item"`
+	Recipe        model.Recipe            `json:"recipe"`
+	InputArtifact *model.ArtifactMetadata `json:"input_artifact,omitempty"`
 }
 
 // OfferResponse is the completed response body after Atoll merges its core
@@ -353,6 +361,16 @@ type DetailResult struct {
 	Detail                json.RawMessage        `json:"detail"`
 }
 
+type BackfillResult struct {
+	CommandID             string                 `json:"command_id"`
+	ResultKind            string                 `json:"result_kind"`
+	AttemptID             string                 `json:"attempt_id"`
+	ExecutorIncarnation   string                 `json:"executor_incarnation"`
+	Artifact              model.ArtifactMetadata `json:"artifact"`
+	NormalizedContentHash string                 `json:"normalized_content_hash"`
+	Output                json.RawMessage        `json:"output"`
+}
+
 // RecipeSampleValidationResult proves that a candidate Recipe executed against
 // its frozen sample without carrying normalized business data into production.
 type RecipeSampleValidationResult struct {
@@ -413,6 +431,7 @@ type ResultResponse struct {
 	SourceValidation    json.RawMessage `json:"source_validation,omitempty"`
 	RecipeValidation    json.RawMessage `json:"recipe_validation,omitempty"`
 	Detail              json.RawMessage `json:"detail,omitempty"`
+	Backfill            json.RawMessage `json:"backfill,omitempty"`
 	CompanyImport       json.RawMessage `json:"company_import,omitempty"`
 	SourceDiscovery     json.RawMessage `json:"source_discovery,omitempty"`
 	ProfileRepair       json.RawMessage `json:"profile_repair,omitempty"`

@@ -19,6 +19,206 @@ type BackfillItemPage struct {
 	NextCursor string               `json:"next_cursor,omitempty"`
 }
 
+type BackfillMaterializationResult struct {
+	BackfillID string `json:"backfill_id,omitempty"`
+	Queued     int    `json:"queued"`
+	Failed     int    `json:"failed"`
+	Dispatches int    `json:"dispatches"`
+}
+
+func (r *Repository) MaterializeNextBackfillPage(ctx context.Context, limit int, at time.Time,
+	targets []ExecutionDispatchTarget) (BackfillMaterializationResult, error) {
+	if limit < 1 || limit > 500 || at.IsZero() {
+		return BackfillMaterializationResult{}, fmt.Errorf("backfill materialization limit must be in [1,500]")
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return BackfillMaterializationResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var state []byte
+	err = tx.QueryRowContext(ctx, `SELECT b.state_json
+FROM recruiting_backfills b
+WHERE b.backfill_status = 'running' AND EXISTS (
+  SELECT 1 FROM recruiting_backfill_items item
+  WHERE item.backfill_id = b.backfill_id AND item.item_status = 'pending'
+)
+ORDER BY b.updated_at, b.backfill_id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return BackfillMaterializationResult{}, nil
+	}
+	if err != nil {
+		return BackfillMaterializationResult{}, err
+	}
+	var backfill model.Backfill
+	if err := json.Unmarshal(state, &backfill); err != nil {
+		return BackfillMaterializationResult{}, err
+	}
+	parent, err := getWorkWith(ctx, tx, backfill.WorkID, true)
+	if err != nil || parent.Status != model.WorkRunning {
+		return BackfillMaterializationResult{}, fmt.Errorf("running backfill requires running parent Work")
+	}
+	recipe, err := getRecipeForUpdate(ctx, tx, backfill.RecipeID, backfill.RecipeVersion)
+	if err != nil {
+		return BackfillMaterializationResult{}, err
+	}
+	if recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDetail {
+		return BackfillMaterializationResult{}, fmt.Errorf("backfill Recipe is no longer active Detail execution")
+	}
+	capability := recipe.Execution.RequiredCapability
+	if backfill.Mode == model.BackfillArtifactRecompute {
+		capability = "artifact.recompute"
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT item.state_json, company.version, source.version, job.version,
+       binding.binding_version, profile.version, profile.auth_status
+FROM recruiting_backfill_items item
+JOIN recruiting_companies company ON company.company_id = item.company_id
+JOIN recruiting_sources source ON source.source_id = item.source_id AND source.company_id = item.company_id
+JOIN recruiting_source_jobs job ON job.job_id = item.job_id AND job.source_id = item.source_id
+LEFT JOIN recruiting_source_profile_bindings binding
+  ON binding.source_id = item.source_id AND binding.recipe_kind = 'detail' AND binding.profile_id = item.profile_id
+LEFT JOIN recruiting_profiles profile ON profile.profile_id = item.profile_id
+WHERE item.backfill_id = ? AND item.item_status = 'pending'
+ORDER BY item.item_id LIMIT ? FOR UPDATE`, backfill.BackfillID, limit)
+	if err != nil {
+		return BackfillMaterializationResult{}, err
+	}
+	type candidate struct {
+		item                                      model.BackfillItem
+		companyVersion, sourceVersion, jobVersion uint64
+		bindingVersion, profileVersion            sql.NullInt64
+		profileStatus                             sql.NullString
+	}
+	candidates := make([]candidate, 0, limit)
+	for rows.Next() {
+		var candidateState []byte
+		var value candidate
+		if err := rows.Scan(&candidateState, &value.companyVersion, &value.sourceVersion, &value.jobVersion,
+			&value.bindingVersion, &value.profileVersion, &value.profileStatus); err != nil {
+			_ = rows.Close()
+			return BackfillMaterializationResult{}, err
+		}
+		if err := json.Unmarshal(candidateState, &value.item); err != nil {
+			_ = rows.Close()
+			return BackfillMaterializationResult{}, err
+		}
+		candidates = append(candidates, value)
+	}
+	if err := rows.Close(); err != nil {
+		return BackfillMaterializationResult{}, err
+	}
+	result := BackfillMaterializationResult{BackfillID: backfill.BackfillID}
+	unprofiled := make(map[string]int)
+	type profileKey struct{ capability, profileID string }
+	profiled := make(map[profileKey]int)
+	for _, candidate := range candidates {
+		item := candidate.item
+		fenceValid := candidate.companyVersion == item.CompanyVersion && candidate.sourceVersion == item.SourceVersion &&
+			candidate.jobVersion == item.JobVersion
+		if item.ProfileID != "" {
+			fenceValid = fenceValid && candidate.bindingVersion.Valid && candidate.profileVersion.Valid &&
+				uint64(candidate.bindingVersion.Int64) == item.ProfileBindingVersion &&
+				uint64(candidate.profileVersion.Int64) == item.ProfileVersion &&
+				candidate.profileStatus.String == string(model.ProfileReady)
+		}
+		if !fenceValid {
+			failed, transitionErr := item.RejectBeforeQueue(item.Version, "contract_violated")
+			if transitionErr != nil {
+				return BackfillMaterializationResult{}, transitionErr
+			}
+			if err := updateBackfillItemCASTx(ctx, tx, item.Version, failed, at); err != nil {
+				return BackfillMaterializationResult{}, err
+			}
+			result.Failed++
+			continue
+		}
+		workID := "work-backfill-item-" + backfillStoreDigest(backfill.BackfillID + "\x00" + item.ItemID)[:32]
+		targetID := "backfill-item-" + backfillStoreDigest(backfill.BackfillID + "\x00" + item.ItemID)[:32]
+		work, err := model.NewChildWork(parent, workID, "backfill_item", targetID, "historical_backfill_item", "parent")
+		if err == nil {
+			work, err = work.WithCausality(parent.InitiatorActorID, "", parent.WorkID)
+		}
+		if err != nil {
+			return BackfillMaterializationResult{}, err
+		}
+		origin, err := canonicalOrigin(item.DetailURL)
+		if err != nil {
+			return BackfillMaterializationResult{}, err
+		}
+		placement := WorkPlacement{BusinessKey: "backfill-item|" + backfill.BackfillID + "|" + item.ItemID,
+			Priority: 50, Capability: capability, Origin: origin, ProfileID: item.ProfileID, NotBefore: at.UTC()}
+		if err := insertWork(ctx, tx, work, placement, at); err != nil {
+			return BackfillMaterializationResult{}, err
+		}
+		queued, err := item.Queue(item.Version, work.WorkID)
+		if err != nil {
+			return BackfillMaterializationResult{}, err
+		}
+		if err := updateBackfillItemCASTx(ctx, tx, item.Version, queued, at); err != nil {
+			return BackfillMaterializationResult{}, err
+		}
+		if item.ProfileID == "" {
+			unprofiled[capability]++
+		} else {
+			profiled[profileKey{capability, item.ProfileID}]++
+		}
+		result.Queued++
+	}
+	causeSeed := backfill.BackfillID + fmt.Sprintf("\x00%d", backfill.Version)
+	if len(candidates) > 0 {
+		causeSeed += "\x00" + candidates[0].item.ItemID + "\x00" + candidates[len(candidates)-1].item.ItemID
+	}
+	causeID := "backfill-materialize-" + backfillStoreDigest(causeSeed)
+	if len(unprofiled) > 0 {
+		created, err := appendCapabilityDispatches(ctx, tx, targets, unprofiled, causeID, at.UTC())
+		if err != nil {
+			return BackfillMaterializationResult{}, err
+		}
+		if created == 0 {
+			return BackfillMaterializationResult{}, fmt.Errorf("no executor target serves backfill capability")
+		}
+		result.Dispatches += created
+	}
+	if len(profiled) > 0 {
+		demands := make([]profileDispatchDemand, 0, len(profiled))
+		for key, count := range profiled {
+			demands = append(demands, profileDispatchDemand{Capability: key.capability, ProfileID: key.profileID, Count: count})
+		}
+		created, err := appendProfileDispatches(ctx, tx, demands, causeID, at.UTC())
+		if err != nil {
+			return BackfillMaterializationResult{}, err
+		}
+		result.Dispatches += created
+	}
+	if result.Failed > 0 {
+		var succeeded, gaps, failed uint64
+		if err := tx.QueryRowContext(ctx, `SELECT
+SUM(item_status = 'succeeded'), SUM(item_status = 'accepted_gap'), SUM(item_status = 'failed')
+FROM recruiting_backfill_items WHERE backfill_id = ?`, backfill.BackfillID).Scan(&succeeded, &gaps, &failed); err != nil {
+			return BackfillMaterializationResult{}, err
+		}
+		next, err := backfill.ReconcileCounts(backfill.Version, succeeded, gaps, failed)
+		if err != nil {
+			return BackfillMaterializationResult{}, err
+		}
+		waiting, err := parent.WaitHuman(parent.Version, "backfill_item_failed")
+		if err != nil {
+			return BackfillMaterializationResult{}, err
+		}
+		if err := updateBackfillCASTx(ctx, tx, backfill.Version, next, at); err != nil {
+			return BackfillMaterializationResult{}, err
+		}
+		if err := updateWorkTx(ctx, tx, parent.Version, waiting, at); err != nil {
+			return BackfillMaterializationResult{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return BackfillMaterializationResult{}, err
+	}
+	return result, nil
+}
+
 func (r *Repository) ApplyConfirmBackfillCommand(ctx context.Context, backfillID string,
 	expectedBackfillVersion, expectedWorkVersion uint64, previewHash string, receipt model.CommandReceipt,
 	event model.EventIntent, businessAt time.Time) (CommandResult, error) {
@@ -185,8 +385,8 @@ INSERT INTO recruiting_backfills(
   backfill_id, work_id, requested_by, target_type, target_id, backfill_mode,
   range_start, range_end, fields_json, recipe_id, recipe_version, policy_version,
   backfill_status, preview_cursor, previewed_items, preview_accumulator, preview_hash,
-  succeeded_items, accepted_gap_items, failed_items, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL, NULL, 0, 0, 0, ?, ?, ?, ?)`,
+  succeeded_items, accepted_gap_items, failed_items, canceled_items, version, state_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL, NULL, 0, 0, 0, 0, ?, ?, ?, ?)`,
 		backfill.BackfillID, backfill.WorkID, backfill.RequestedBy, backfill.TargetType, backfill.TargetID,
 		backfill.Mode, start.UTC(), end.UTC(), fields, backfill.RecipeID, backfill.RecipeVersion,
 		backfill.PolicyVersion, backfill.Status, backfill.Version, state, businessAt.UTC(), businessAt.UTC())
@@ -282,16 +482,32 @@ func backfillStoreDigest(value string) string {
 	return hex.EncodeToString(digest[:])
 }
 
+func nullableUint64(value uint64) any {
+	if value == 0 {
+		return nil
+	}
+	return value
+}
+
 func selectBackfillCandidatesTx(ctx context.Context, tx *sql.Tx, backfill model.Backfill) ([]model.BackfillItem, bool, error) {
 	start, _ := time.Parse(time.RFC3339, backfill.RangeStart)
 	end, _ := time.Parse(time.RFC3339, backfill.RangeEnd)
+	recipe, err := getRecipeForUpdate(ctx, tx, backfill.RecipeID, backfill.RecipeVersion)
+	if err != nil {
+		return nil, false, err
+	}
+	if recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDetail {
+		return nil, false, fmt.Errorf("backfill preview Recipe is no longer active Detail execution")
+	}
 	if backfill.Mode == model.BackfillArtifactRecompute {
 		rows, err := tx.QueryContext(ctx, `
 SELECT d.detail_version_id, d.artifact_id, d.refresh_generation, d.detail_version,
-       d.content_hash, d.recipe_id, d.recipe_version, d.observed_at, j.state_json, s.state_json
+       d.content_hash, d.recipe_id, d.recipe_version, d.observed_at,
+       j.state_json, s.state_json, c.state_json
 FROM recruiting_job_detail_versions d
 JOIN recruiting_source_jobs j ON j.job_id = d.job_id
 JOIN recruiting_sources s ON s.source_id = j.source_id
+JOIN recruiting_companies c ON c.company_id = s.company_id
 JOIN recruiting_artifacts a ON a.artifact_id = d.artifact_id AND a.rejected = FALSE
 WHERE d.detail_version_id > ? AND d.observed_at >= ? AND d.observed_at < ?
   AND ((? = 'source' AND s.source_id = ?) OR (? = 'company' AND s.company_id = ?))
@@ -306,10 +522,10 @@ LIMIT 501`, backfill.PreviewCursor, start.UTC(), end.UTC(), backfill.TargetType,
 		for rows.Next() {
 			var detail model.JobDetailVersion
 			var observed time.Time
-			var jobState, sourceState []byte
+			var jobState, sourceState, companyState []byte
 			if err := rows.Scan(&detail.DetailVersionID, &detail.ArtifactID, &detail.RefreshGeneration,
 				&detail.Version, &detail.ContentHash, &detail.RecipeID, &detail.RecipeVersion, &observed,
-				&jobState, &sourceState); err != nil {
+				&jobState, &sourceState, &companyState); err != nil {
 				return nil, false, err
 			}
 			if len(items) == 500 {
@@ -317,15 +533,19 @@ LIMIT 501`, backfill.PreviewCursor, start.UTC(), end.UTC(), backfill.TargetType,
 			}
 			var job model.SourceJob
 			var source model.RecruitmentSource
+			var company model.Company
 			if err := json.Unmarshal(jobState, &job); err != nil {
 				return nil, false, err
 			}
 			if err := json.Unmarshal(sourceState, &source); err != nil {
 				return nil, false, err
 			}
+			if err := json.Unmarshal(companyState, &company); err != nil {
+				return nil, false, err
+			}
 			detail.JobID, detail.ObservedAt = job.JobID, observed.UTC().Format(time.RFC3339Nano)
 			item, err := model.NewBackfillItem(backfill.BackfillID, detail.DetailVersionID, backfill.Mode,
-				job, source.Version, &detail)
+				job, source, company, &detail, nil, nil)
 			if err != nil {
 				return nil, false, err
 			}
@@ -335,9 +555,14 @@ LIMIT 501`, backfill.PreviewCursor, start.UTC(), end.UTC(), backfill.TargetType,
 	}
 
 	rows, err := tx.QueryContext(ctx, `
-SELECT j.job_id, j.state_json, s.state_json
+SELECT j.job_id, j.state_json, s.state_json, c.state_json,
+       binding.state_json, profile.state_json
 FROM recruiting_source_jobs j
 JOIN recruiting_sources s ON s.source_id = j.source_id
+JOIN recruiting_companies c ON c.company_id = s.company_id
+LEFT JOIN recruiting_source_profile_bindings binding
+  ON binding.source_id = s.source_id AND binding.recipe_kind = 'detail'
+LEFT JOIN recruiting_profiles profile ON profile.profile_id = binding.profile_id
 WHERE j.job_id > ?
   AND ((? = 'source' AND s.source_id = ?) OR (? = 'company' AND s.company_id = ?))
   AND EXISTS (
@@ -354,8 +579,8 @@ LIMIT 501`, backfill.PreviewCursor, backfill.TargetType, backfill.TargetID, back
 	items := make([]model.BackfillItem, 0, 500)
 	for rows.Next() {
 		var itemID string
-		var jobState, sourceState []byte
-		if err := rows.Scan(&itemID, &jobState, &sourceState); err != nil {
+		var jobState, sourceState, companyState, bindingState, profileState []byte
+		if err := rows.Scan(&itemID, &jobState, &sourceState, &companyState, &bindingState, &profileState); err != nil {
 			return nil, false, err
 		}
 		if len(items) == 500 {
@@ -363,13 +588,33 @@ LIMIT 501`, backfill.PreviewCursor, backfill.TargetType, backfill.TargetID, back
 		}
 		var job model.SourceJob
 		var source model.RecruitmentSource
+		var company model.Company
 		if err := json.Unmarshal(jobState, &job); err != nil {
 			return nil, false, err
 		}
 		if err := json.Unmarshal(sourceState, &source); err != nil {
 			return nil, false, err
 		}
-		item, err := model.NewBackfillItem(backfill.BackfillID, itemID, backfill.Mode, job, source.Version, nil)
+		if err := json.Unmarshal(companyState, &company); err != nil {
+			return nil, false, err
+		}
+		var binding *model.SourceProfileBinding
+		var profile *model.BrowserProfile
+		if recipe.Execution.RequiredCapability == "browser.recipe" {
+			if len(bindingState) == 0 || len(profileState) == 0 {
+				return nil, false, fmt.Errorf("live Browser backfill requires a ready frozen Detail Profile")
+			}
+			var bindingValue model.SourceProfileBinding
+			var profileValue model.BrowserProfile
+			if err := json.Unmarshal(bindingState, &bindingValue); err != nil {
+				return nil, false, err
+			}
+			if err := json.Unmarshal(profileState, &profileValue); err != nil {
+				return nil, false, err
+			}
+			binding, profile = &bindingValue, &profileValue
+		}
+		item, err := model.NewBackfillItem(backfill.BackfillID, itemID, backfill.Mode, job, source, company, nil, binding, profile)
 		if err != nil {
 			return nil, false, err
 		}
@@ -394,14 +639,37 @@ func insertBackfillItemTx(ctx context.Context, tx *sql.Tx, item model.BackfillIt
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO recruiting_backfill_items(
   backfill_id, item_id, job_id, job_version, refresh_generation, source_id, source_version,
-  detail_url, input_detail_version_id, input_artifact_id, input_observed_at, work_id, output_id,
+  company_id, company_version, detail_url, profile_id, profile_version, profile_binding_version,
+  input_detail_version_id, input_artifact_id, input_observed_at, work_id, output_id,
   item_status, failure_class, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?, ?, ?)`,
 		item.BackfillID, item.ItemID, item.JobID, item.JobVersion, item.RefreshGeneration, item.SourceID,
-		item.SourceVersion, item.DetailURL, nullableString(item.InputDetailVersionID), nullableString(item.InputArtifactID),
+		item.SourceVersion, item.CompanyID, item.CompanyVersion, item.DetailURL, nullableString(item.ProfileID),
+		nullableUint64(item.ProfileVersion), nullableUint64(item.ProfileBindingVersion),
+		nullableString(item.InputDetailVersionID), nullableString(item.InputArtifactID),
 		observed, item.Status, item.Version, state, businessAt.UTC(), businessAt.UTC())
 	if err != nil {
 		return fmt.Errorf("insert backfill item: %w", err)
+	}
+	return nil
+}
+
+func updateBackfillItemCASTx(ctx context.Context, tx *sql.Tx, expected uint64, next model.BackfillItem,
+	businessAt time.Time) error {
+	state, err := json.Marshal(next)
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE recruiting_backfill_items
+SET work_id = ?, output_id = ?, item_status = ?, failure_class = ?, version = ?, state_json = ?, updated_at = ?
+WHERE backfill_id = ? AND item_id = ? AND version = ?`, nullableString(next.WorkID), nullableString(next.OutputID),
+		next.Status, nullableString(next.FailureClass), next.Version, state, businessAt.UTC(), next.BackfillID,
+		next.ItemID, expected)
+	if err != nil {
+		return err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return &model.VersionConflictError{Expected: expected, Actual: next.Version}
 	}
 	return nil
 }
@@ -460,10 +728,10 @@ func updateBackfillCASTx(ctx context.Context, tx *sql.Tx, expected uint64, next 
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_backfills
 SET backfill_status = ?, preview_cursor = ?, previewed_items = ?, preview_accumulator = ?, preview_hash = ?,
-    succeeded_items = ?, accepted_gap_items = ?, failed_items = ?, version = ?, state_json = ?, updated_at = ?
+    succeeded_items = ?, accepted_gap_items = ?, failed_items = ?, canceled_items = ?, version = ?, state_json = ?, updated_at = ?
 WHERE backfill_id = ? AND version = ?`, next.Status, nullableString(next.PreviewCursor), next.PreviewedItems,
 		nullableString(next.PreviewAccumulator), nullableString(next.PreviewHash), next.SucceededItems,
-		next.AcceptedGapItems, next.FailedItems, next.Version, state, businessAt.UTC(), next.BackfillID, expected)
+		next.AcceptedGapItems, next.FailedItems, next.CanceledItems, next.Version, state, businessAt.UTC(), next.BackfillID, expected)
 	if err != nil {
 		return err
 	}

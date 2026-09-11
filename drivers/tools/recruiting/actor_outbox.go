@@ -276,6 +276,9 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 		_, _ = reconcileRepairRecoveryBatch(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
 		_, _ = reconcileRecipeRolloutBatches(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
 		_, _ = reconcileBackfillPreviews(msg.Ctx(), repository, defaultReconcileLimit, now)
+		_, _ = repository.CancelNextBackfillPage(msg.Ctx(), cfg.BackfillMaterializeLimit, now)
+		_, _ = repository.MaterializeNextBackfillPage(msg.Ctx(), cfg.BackfillMaterializeLimit, now,
+			cfg.executionDispatchTargets())
 		_, _ = reconcileExecutionDispatches(msg.Ctx(), sys, repository, defaultReconcileLimit, now,
 			time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond)
 	}

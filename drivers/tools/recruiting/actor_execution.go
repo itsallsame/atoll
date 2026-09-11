@@ -33,6 +33,7 @@ type executionControlResponse struct {
 	SourceValidation    *store.DiagnosticResultOutcome        `json:"source_validation,omitempty"`
 	RecipeValidation    any                                   `json:"recipe_validation,omitempty"`
 	Detail              *store.DetailResultOutcome            `json:"detail,omitempty"`
+	Backfill            *store.BackfillResultOutcome          `json:"backfill,omitempty"`
 	CompanyImport       *store.CompanyImportResultOutcome     `json:"company_import,omitempty"`
 	SourceDiscovery     *store.SourceDiscoveryResultOutcome   `json:"source_discovery,omitempty"`
 	ProfileRepair       *store.ProfileRepairSubmissionOutcome `json:"profile_repair,omitempty"`
@@ -46,6 +47,7 @@ type listingCheckpointPayload = executioncontract.ListingCheckpointCandidate
 type diagnosticResultPayload = executioncontract.DiagnosticResult
 type recipeSampleValidationResultPayload = executioncontract.RecipeSampleValidationResult
 type detailResultPayload = executioncontract.DetailResult
+type backfillResultPayload = executioncontract.BackfillResult
 type companyImportPreviewChunkPayload = executioncontract.CompanyImportPreviewChunkResult
 type companyImportPreviewCompletionPayload = executioncontract.CompanyImportPreviewCompletionResult
 type companyImportApplyPayload = executioncontract.CompanyImportApplyResult
@@ -80,6 +82,8 @@ func handleAnyExecutionResult(sys actorbase.Sys, cfg Config, repository *store.R
 		handleRecipeSampleValidationResult(sys, repository, msg)
 	case "detail":
 		handleDetailResult(sys, repository, msg)
+	case "backfill":
+		handleBackfillResult(sys, repository, msg)
 	case "source_discovery":
 		handleSourceDiscoveryResult(sys, repository, msg)
 	case "company_import_preview_chunk":
@@ -95,6 +99,30 @@ func handleAnyExecutionResult(sys actorbase.Sys, cfg Config, repository *store.R
 	default:
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "unknown execution result_kind")
 	}
+}
+
+func handleBackfillResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload backfillResultPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if strings.TrimSpace(payload.CommandID) == "" || payload.ResultKind != "backfill" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "backfill command_id and result_kind are required")
+		return
+	}
+	outcome, err := repository.AcceptBackfillResult(msg.Ctx(), store.BackfillResult{
+		CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), AttemptID: payload.AttemptID,
+		ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
+		Artifact: payload.Artifact, NormalizedContentHash: payload.NormalizedContentHash,
+		OutputJSON: payload.Output, CompletedAt: time.UnixMilli(msg.TS).UTC(),
+	})
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := executionControlResponse{ContractVersion: executioncontract.Version,
+		CorrelationID: string(msg.CorrelationID), RequestedBy: string(msg.Sender.ID), Backfill: &outcome}
+	_, _ = sys.Reply(msg, response)
 }
 
 func handleProfileVerificationResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

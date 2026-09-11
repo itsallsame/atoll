@@ -291,6 +291,8 @@ DailyRun 本身不提供修改窗口、名单、期望数或终态摘要的通�
 
 回填预览按稳定 seek cursor、每块最多 500 项冻结，不能在确认时重新执行范围查询。preview hash 使用绑定 Target、模式、半开时间范围、字段、Recipe/policy 版本和全部冻结项的增量 SHA-256 accumulator；因此内存和事务大小不随总项数增长。预览结束后父 Work 才进入 `waiting_human(preview_ready)`，用户必须同时提交精确 Backfill version、父 Work version 和 preview hash 才能启动。历史 Artifact 缺失、已拒绝或不可读必须成为逐项可审计 gap/failed 事实，不能悄悄退化为 live refetch。
 
+回填运维沿用 Atoll 的 Work、Attempt、Artifact 和 durable reconcile 原语，不增加专用 Worker。暂停采用 drain：停止新成员物化与领取，已经运行的成员仍可按确认时的不可变围栏结算；恢复只允许没有未处置失败项的人工暂停批次。失败成员可由用户接受为永久 gap，或在修复后创建有因果链接的新 Work；已经在物化前因版本漂移失败的成员不得重用旧预览。运行中取消先写入 `canceling` 栅栏，再由协调器以每轮最多 500 项的小事务取消成员、拒绝活动 Attempt 和释放预算，所有成员有明确终态后才把父 Work 标为 canceled。Output 列表只返回血缘元数据，正文按单条、有界查询读取；gap 报告必须同时保留未处理失败与 accepted gap，后者不能计入成功覆盖率。
+
 ### 5.10 浏览器插件与 Recipe 复用闭环
 
 Recipe 是已经确认的核心产品资产，不只是待选技术。其价值是把一次性分析成本转换成可重复执行的代码：

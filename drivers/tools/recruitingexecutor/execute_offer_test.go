@@ -24,6 +24,7 @@ type executeResourceStub struct {
 	artifactCreatorStub
 	recipe   []byte
 	inputRef resource.ResourceID
+	input    []byte
 }
 
 func (s *executeResourceStub) Read(resource.ResourceID) (accessdoor.Outcome, error) {
@@ -32,7 +33,11 @@ func (s *executeResourceStub) Read(resource.ResourceID) (accessdoor.Outcome, err
 
 func (s *executeResourceStub) Open(id resource.ResourceID, mode access.Operation) (accessdoor.FileAccess, accessdoor.Outcome, error) {
 	if s.inputRef != "" && id == s.inputRef && mode == access.OpRead {
-		return accessdoor.FileAccess{Remote: &accessdoor.RemoteFile{Read: io.NopCloser(bytes.NewReader(s.recipe))}}, accessdoor.Outcome{}, nil
+		content := s.input
+		if content == nil {
+			content = s.recipe
+		}
+		return accessdoor.FileAccess{Remote: &accessdoor.RemoteFile{Read: io.NopCloser(bytes.NewReader(content))}}, accessdoor.Outcome{}, nil
 	}
 	return s.artifactCreatorStub.Open(id, mode)
 }
@@ -140,6 +145,46 @@ func TestExecuteOfferRunsDetailThroughControlLifecycle(t *testing.T) {
 	}
 }
 
+func TestExecuteOfferRunsBothBackfillModesWithoutDetailResult(t *testing.T) {
+	now := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
+	historical, _, recipe, historicalBody := backfillExecutionOffer(t, now, model.BackfillArtifactRecompute)
+	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}},
+		recipe: recipe, inputRef: resource.ResourceID(historical.Backfill.InputArtifact.ObjectRef), input: historicalBody}
+	control := &executeControlStub{}
+	if err := executeOffer(context.Background(), control, resources, executeDriverStub{}, historical, executeTestOptions(now)); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.calls) != 3 || control.calls[0] != "accept" || control.calls[1] != "started" ||
+		control.calls[2] != "submit:backfill" || control.kind != "backfill" {
+		t.Fatalf("historical backfill lifecycle=%v kind=%q failure=%+v", control.calls, control.kind, control.failed)
+	}
+	historicalResult, ok := control.submissions[0].(executioncontract.BackfillResult)
+	if !ok || historicalResult.Artifact.Kind != model.ArtifactDerived ||
+		string(historicalResult.Output) != `{"id":"historical-job"}` {
+		t.Fatalf("historical backfill submission=%#v", control.submissions)
+	}
+
+	live, _, liveRecipe, _ := backfillExecutionOffer(t, now, model.BackfillLiveRefetch)
+	liveDetail := json.RawMessage(`{"detail_url":"https://jobs.example.net/roles/live","id":"live-job"}`)
+	response := recipeabi.ArtifactRef{ArtifactID: "live-backfill-response", ContentHash: "sha256:response",
+		ObjectRef: "artifact://live-backfill-response", Kind: "response"}
+	run := httpdriver.DetailRunResult{ResponseArtifact: response, Detail: liveDetail,
+		NormalizedContentHash: normalizedJSONHash(liveDetail), Output: recipeabi.RunOutput{ABIVersion: recipeabi.Version,
+			AttemptID: live.Attempt.AttemptID, Artifacts: []recipeabi.ArtifactRef{response}, Result: liveDetail,
+			Quality: recipeabi.QualityProof{ItemCount: 1}}}
+	liveResources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}}, recipe: liveRecipe}
+	liveControl := &executeControlStub{}
+	if err := executeOffer(context.Background(), liveControl, liveResources, executeDriverStub{detail: run}, live,
+		executeTestOptions(now)); err != nil {
+		t.Fatal(err)
+	}
+	liveResult, ok := liveControl.submissions[0].(executioncontract.BackfillResult)
+	if !ok || len(liveControl.calls) != 3 || liveControl.calls[2] != "submit:backfill" ||
+		liveResult.Artifact.Kind != model.ArtifactResponse || string(liveResult.Output) != `{"id":"live-job"}` {
+		t.Fatalf("live backfill lifecycle=%v submission=%#v", liveControl.calls, liveControl.submissions)
+	}
+}
+
 func TestExecuteOfferSubmitsDetailRecipeValidationEvidenceOnly(t *testing.T) {
 	now := time.Date(2026, 9, 8, 10, 15, 0, 0, time.UTC)
 	base, spec, raw := detailExecutionOffer(t, now)
@@ -166,7 +211,7 @@ func TestExecuteOfferSubmitsDetailRecipeValidationEvidenceOnly(t *testing.T) {
 		SourceVersion: run.SourceVersion, AssignmentVersion: proposed.AssignmentVersion,
 		RecipeID: candidate.RecipeID, RecipeVersion: candidate.Version, SampleVersion: run.SampleJobVersion})
 	permit, _ := model.NewBudgetPermit("detail-recipe-validation-permit", attempt.AttemptID, run.Origin, "",
-		attempt.Capability, "company-2", 5)
+		attempt.Capability, "company-2", 5, "calibration")
 	offer := executioncontract.Offer{Kind: "detail", Attempt: attempt, Work: work, RecipeValidation: &run,
 		Budget: permit, BudgetExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano),
 		RequestedCapability: attempt.Capability}
@@ -221,7 +266,7 @@ func TestExecuteOfferSubmitsDiscoveryRecipeValidationEvidenceOnly(t *testing.T) 
 	attempt, _ = attempt.WithCompanyRecipeFence(model.AttemptFence{CompanyVersion: run.CompanyVersion,
 		RecipeID: candidate.RecipeID, RecipeVersion: candidate.Version})
 	permit, _ := model.NewBudgetPermit("discovery-recipe-validation-permit", attempt.AttemptID, run.Origin, "",
-		attempt.Capability, run.CompanyID, 5)
+		attempt.Capability, run.CompanyID, 5, "calibration")
 	offer := executioncontract.Offer{Kind: "discovery", Attempt: attempt, Work: work, RecipeValidation: &run,
 		Budget: permit, BudgetExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano),
 		RequestedCapability: attempt.Capability}
@@ -339,7 +384,7 @@ func baselineExecutionOffer(t *testing.T, now time.Time) (executioncontract.Offe
 		t.Fatal(err)
 	}
 	permit, _ := model.NewBudgetPermit("baseline-permit-1", attempt.AttemptID, original.Occurrence.ListingExecution.Origin,
-		"", attempt.Capability, "company-1", 5)
+		"", attempt.Capability, "company-1", 5, "baseline")
 	baseline := model.BaselineGeneration{
 		SourceID: original.Occurrence.SourceID, WorkID: work.WorkID, Generation: 1,
 		CompanyVersion: original.Occurrence.CompanyVersion, SourceVersion: original.Occurrence.SourceVersion,

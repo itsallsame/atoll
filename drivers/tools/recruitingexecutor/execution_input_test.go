@@ -134,7 +134,7 @@ func sourceValidationExecutionOffer(t *testing.T, now time.Time) (executioncontr
 		t.Fatal(err)
 	}
 	permit, _ := model.NewBudgetPermit("permit-source-validation", attempt.AttemptID, run.ListingExecution.Origin, "",
-		attempt.Capability, "company-1", 5)
+		attempt.Capability, "company-1", 5, "calibration")
 	offer.Work, offer.Attempt, offer.ListingRun, offer.Budget = work, attempt, &run, permit
 	return offer, spec, raw
 }
@@ -180,6 +180,53 @@ func detailExecutionOffer(t *testing.T, now time.Time) (executioncontract.Offer,
 	return executioncontract.Offer{Kind: "detail", Attempt: attempt, Work: work,
 		Detail: &executioncontract.DetailInput{Job: job, Assignment: assignment, Recipe: recipe},
 		Budget: permit, BudgetExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano), RequestedCapability: attempt.Capability}, spec, raw
+}
+
+func backfillExecutionOffer(t *testing.T, now time.Time,
+	mode model.BackfillMode) (executioncontract.Offer, recipeabi.Spec, []byte, []byte) {
+	t.Helper()
+	base, spec, raw := detailExecutionOffer(t, now)
+	work, _ := model.NewWork("backfill-work-"+string(mode), "backfill_item", "backfill-item-1",
+		"historical_backfill_item", "parent")
+	backfill := model.Backfill{BackfillID: "backfill-1-" + string(mode), WorkID: "backfill-parent-1-" + string(mode),
+		RequestedBy: "human:operator", TargetType: "source", TargetID: base.Detail.Job.SourceID, Mode: mode,
+		RangeStart: now.Add(-time.Hour).Format(time.RFC3339Nano), RangeEnd: now.Add(time.Hour).Format(time.RFC3339Nano),
+		Fields: []string{"id"}, RecipeID: base.Detail.Recipe.RecipeID, RecipeVersion: base.Detail.Recipe.Version,
+		PolicyVersion: 1, Status: model.BackfillRunning, PreviewedItems: 1, ConfirmationVersion: 3, Version: 3}
+	item := model.BackfillItem{BackfillID: backfill.BackfillID, ItemID: "backfill-item-1", JobID: base.Detail.Job.JobID,
+		JobVersion: base.Detail.Job.Version, RefreshGeneration: base.Detail.Job.RefreshGeneration,
+		SourceID: base.Detail.Job.SourceID, SourceVersion: 6, CompanyID: "company-2", CompanyVersion: 4,
+		DetailURL: base.Detail.Job.DetailURL, WorkID: work.WorkID, Status: model.BackfillItemQueued, Version: 2}
+	capability := base.Detail.Recipe.Execution.RequiredCapability
+	var inputArtifact *model.ArtifactMetadata
+	historicalBody := []byte(`{"id":"historical-job","url":"https://jobs.example.net/roles/historical"}`)
+	if mode == model.BackfillArtifactRecompute {
+		capability = "artifact.recompute"
+		item.InputDetailVersionID, item.InputArtifactID = "detail-version-historical", "artifact-historical"
+		item.InputObservedAt = now.Add(-time.Hour).Format(time.RFC3339Nano)
+		hash := normalizedJSONHash(historicalBody)
+		artifact, err := model.NewArtifactMetadata(item.InputArtifactID, model.ArtifactResponse, hash,
+			"artifact://history/response-1", "old-detail-work", "old-detail-attempt", "operators", "30d", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inputArtifact = &artifact
+	}
+	attempt, _ := model.NewAttempt("backfill-attempt-"+string(mode), work)
+	attempt, _ = attempt.BindExecutor("executor-1", "boot-1", capability)
+	attempt, err := attempt.WithBackfillFence(model.AttemptFence{CompanyVersion: item.CompanyVersion,
+		SourceVersion: item.SourceVersion, RecipeID: backfill.RecipeID, RecipeVersion: backfill.RecipeVersion,
+		RefreshGeneration: item.RefreshGeneration, SampleVersion: item.JobVersion, BatchVersion: backfill.ConfirmationVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	permit, _ := model.NewBudgetPermit("backfill-permit-"+string(mode), attempt.AttemptID,
+		"https://jobs.example.net", "", capability, item.CompanyID, 5, "backfill")
+	offer := executioncontract.Offer{Kind: "backfill_" + string(mode), Attempt: attempt, Work: work,
+		Backfill: &executioncontract.BackfillInput{Backfill: backfill, Item: item, Recipe: base.Detail.Recipe,
+			InputArtifact: inputArtifact}, Budget: permit, BudgetExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano),
+		RequestedCapability: capability}
+	return offer, spec, raw, historicalBody
 }
 
 func TestPrepareListingExecutionBuildsFencedRunInputAndResolvesRecipe(t *testing.T) {

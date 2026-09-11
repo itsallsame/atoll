@@ -14,25 +14,32 @@ import (
 )
 
 type ExecutionBudgetPolicy struct {
-	Version          uint64
-	MaxActive        int
-	MaxPerCapability int
-	MaxPerOrigin     int
-	MaxPerCompany    int
-	MaxPerProfile    int
-	PermitTTL        time.Duration
+	Version              uint64
+	MaxActive            int
+	MaxPerCapability     int
+	MaxPerOrigin         int
+	MaxPerCompany        int
+	MaxPerProfile        int
+	MaxBaselineActive    int
+	MaxCalibrationActive int
+	MaxBackfillActive    int
+	PermitTTL            time.Duration
 }
 
 func DefaultExecutionBudgetPolicy() ExecutionBudgetPolicy {
 	return ExecutionBudgetPolicy{Version: 1, MaxActive: 1_000, MaxPerCapability: 1_000,
-		MaxPerOrigin: 8, MaxPerCompany: 50, MaxPerProfile: 1, PermitTTL: 15 * time.Minute}
+		MaxPerOrigin: 8, MaxPerCompany: 50, MaxPerProfile: 1, MaxBaselineActive: 200,
+		MaxCalibrationActive: 100, MaxBackfillActive: 100, PermitTTL: 15 * time.Minute}
 }
 
 func (p ExecutionBudgetPolicy) validate() error {
 	if p.Version == 0 || p.MaxActive < 1 || p.MaxActive > 100_000 || p.MaxPerCapability < 1 ||
 		p.MaxPerCapability > p.MaxActive || p.MaxPerOrigin < 1 || p.MaxPerOrigin > p.MaxActive ||
 		p.MaxPerCompany < 1 || p.MaxPerCompany > p.MaxActive || p.MaxPerProfile < 1 ||
-		p.MaxPerProfile > p.MaxActive || p.PermitTTL < time.Second || p.PermitTTL > 24*time.Hour {
+		p.MaxPerProfile > p.MaxActive || p.MaxBaselineActive < 1 || p.MaxBaselineActive > p.MaxActive ||
+		p.MaxCalibrationActive < 1 || p.MaxCalibrationActive > p.MaxActive ||
+		p.MaxBackfillActive < 1 || p.MaxBackfillActive > p.MaxActive ||
+		p.PermitTTL < time.Second || p.PermitTTL > 24*time.Hour {
 		return fmt.Errorf("execution budget policy has invalid version, limits, or permit TTL")
 	}
 	return nil
@@ -54,6 +61,20 @@ func budgetDimensions(permit model.BudgetPermit, policy ExecutionBudgetPolicy) [
 	if permit.ProfileID != "" {
 		dimensions = append(dimensions, budgetDimension{"profile", permit.ProfileID, policy.MaxPerProfile})
 	}
+	if permit.WorkloadClass != "" {
+		limit := 0
+		switch permit.WorkloadClass {
+		case "baseline":
+			limit = policy.MaxBaselineActive
+		case "calibration":
+			limit = policy.MaxCalibrationActive
+		case "backfill":
+			limit = policy.MaxBackfillActive
+		}
+		if limit > 0 {
+			dimensions = append(dimensions, budgetDimension{"workload", permit.WorkloadClass, limit})
+		}
+	}
 	sort.Slice(dimensions, func(i, j int) bool {
 		if dimensions[i].typeName == dimensions[j].typeName {
 			return dimensions[i].key < dimensions[j].key
@@ -63,14 +84,14 @@ func budgetDimensions(permit model.BudgetPermit, policy ExecutionBudgetPolicy) [
 	return dimensions
 }
 
-func acquireBudgetPermitTx(ctx context.Context, tx *sql.Tx, attemptID, origin, profileID, capability, companyID string,
-	policy ExecutionBudgetPolicy, grantedAt time.Time) (model.BudgetPermit, time.Time, error) {
+func acquireBudgetPermitTx(ctx context.Context, tx *sql.Tx, attemptID, origin, profileID, capability, companyID,
+	workloadClass string, policy ExecutionBudgetPolicy, grantedAt time.Time) (model.BudgetPermit, time.Time, error) {
 	if err := policy.validate(); err != nil {
 		return model.BudgetPermit{}, time.Time{}, err
 	}
 	permitSum := sha256.Sum256([]byte("recruiting.execution.permit.v1\n" + attemptID))
 	permitID := "permit-" + hex.EncodeToString(permitSum[:16])
-	permit, err := model.NewBudgetPermit(permitID, attemptID, origin, profileID, capability, companyID, policy.Version)
+	permit, err := model.NewBudgetPermit(permitID, attemptID, origin, profileID, capability, companyID, policy.Version, workloadClass)
 	if err != nil {
 		return model.BudgetPermit{}, time.Time{}, err
 	}
@@ -106,10 +127,10 @@ WHERE dimension_type = ? AND dimension_key = ?`, grantedAt.UTC(), dimension.type
 	state, _ := json.Marshal(permit)
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO recruiting_budget_permits(
-  permit_id, attempt_id, origin, profile_id, capability, company_id,
+  permit_id, attempt_id, origin, profile_id, capability, company_id, workload_class,
   policy_version, permit_status, version, expires_at, state_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, permit.PermitID, permit.AttemptID, permit.Origin,
-		nullableString(permit.ProfileID), permit.Capability, permit.CompanyID, permit.PolicyVersion,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, permit.PermitID, permit.AttemptID, permit.Origin,
+		nullableString(permit.ProfileID), permit.Capability, permit.CompanyID, nullableString(permit.WorkloadClass), permit.PolicyVersion,
 		permit.Status, permit.Version, expiresAt, state); err != nil {
 		return model.BudgetPermit{}, time.Time{}, fmt.Errorf("create execution budget permit: %w", err)
 	}
@@ -146,6 +167,7 @@ SELECT state_json FROM recruiting_budget_permits WHERE attempt_id = ? FOR UPDATE
 	// same order as acquisition to avoid cross-dimensional deadlocks.
 	dimensions := budgetDimensions(permit, ExecutionBudgetPolicy{
 		MaxActive: 1, MaxPerCapability: 1, MaxPerOrigin: 1, MaxPerCompany: 1, MaxPerProfile: 1,
+		MaxBaselineActive: 1, MaxCalibrationActive: 1, MaxBackfillActive: 1,
 	})
 	for _, dimension := range dimensions {
 		var active int

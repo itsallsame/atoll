@@ -16,6 +16,7 @@ const (
 	ArtifactCandidateRecipe ArtifactKind = "candidate_recipe"
 	ArtifactValidation      ArtifactKind = "validation"
 	ArtifactTrace           ArtifactKind = "trace"
+	ArtifactDerived         ArtifactKind = "derived"
 )
 
 type ArtifactMetadata struct {
@@ -40,7 +41,7 @@ func NewArtifactMetadata(id string, kind ArtifactKind, contentHash, objectRef, w
 		}
 	}
 	switch kind {
-	case ArtifactPage, ArtifactScreenshot, ArtifactResponse, ArtifactListingDelta, ArtifactFailure, ArtifactCandidateRecipe, ArtifactValidation, ArtifactTrace:
+	case ArtifactPage, ArtifactScreenshot, ArtifactResponse, ArtifactListingDelta, ArtifactFailure, ArtifactCandidateRecipe, ArtifactValidation, ArtifactTrace, ArtifactDerived:
 	default:
 		return ArtifactMetadata{}, fmt.Errorf("unknown artifact kind %q", kind)
 	}

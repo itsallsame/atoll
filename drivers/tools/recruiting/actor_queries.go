@@ -331,7 +331,9 @@ func handleOperationalStatusQuery(sys actorbase.Sys, cfg Config, repository *sto
 		"budget_policy": map[string]any{
 			"version": policy.Version, "max_active": policy.MaxActive, "max_per_capability": policy.MaxPerCapability,
 			"max_per_origin": policy.MaxPerOrigin, "max_per_company": policy.MaxPerCompany,
-			"max_per_profile": policy.MaxPerProfile, "permit_ttl_ms": policy.PermitTTL.Milliseconds(),
+			"max_per_profile": policy.MaxPerProfile, "max_baseline_active": policy.MaxBaselineActive,
+			"max_calibration_active": policy.MaxCalibrationActive, "max_backfill_active": policy.MaxBackfillActive,
+			"permit_ttl_ms": policy.PermitTTL.Milliseconds(),
 		},
 	})
 }

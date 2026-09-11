@@ -447,6 +447,23 @@ func (a Attempt) WithFence(f AttemptFence) (Attempt, error) {
 	return a, nil
 }
 
+func (a Attempt) WithBackfillFence(f AttemptFence) (Attempt, error) {
+	if a.Status != AttemptOffered || f.CompanyVersion == 0 || f.SourceVersion == 0 ||
+		strings.TrimSpace(f.RecipeID) == "" || f.RecipeVersion == 0 || f.RefreshGeneration == 0 ||
+		f.SampleVersion == 0 || f.BatchVersion == 0 || f.AssignmentVersion != 0 || f.CheckpointVersion != 0 ||
+		f.DiscoveryGeneration != 0 {
+		return Attempt{}, fmt.Errorf("offered attempt and complete backfill fence are required")
+	}
+	if (f.ProfileID == "") != (f.ProfileVersion == 0) {
+		return Attempt{}, fmt.Errorf("profile identity and version must be supplied together")
+	}
+	a.CompanyVersion, a.SourceVersion = f.CompanyVersion, f.SourceVersion
+	a.RecipeID, a.RecipeVersion = f.RecipeID, f.RecipeVersion
+	a.RefreshGeneration, a.SampleVersion, a.BatchVersion = f.RefreshGeneration, f.SampleVersion, f.BatchVersion
+	a.ProfileID, a.ProfileVersion = f.ProfileID, f.ProfileVersion
+	return a, nil
+}
+
 func (a Attempt) CanSubmit(work Work) error {
 	if a.WorkID != work.WorkID || a.AcceptanceVersion != work.AcceptanceVersion {
 		return fmt.Errorf("attempt fenced by work acceptance version")
@@ -469,6 +486,7 @@ func (a Attempt) CanAcceptResult(work Work, current AttemptFence, executorActorI
 		current.CheckpointVersion != a.CheckpointVersion || current.RefreshGeneration != a.RefreshGeneration ||
 		current.SampleVersion != a.SampleVersion ||
 		current.ProfileID != a.ProfileID || current.ProfileVersion != a.ProfileVersion ||
+		current.BatchVersion != a.BatchVersion ||
 		current.DiscoveryGeneration != a.DiscoveryGeneration {
 		return fmt.Errorf("attempt result fenced by changed domain version")
 	}

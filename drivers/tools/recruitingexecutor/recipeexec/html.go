@@ -19,7 +19,10 @@ func ExecuteHTML(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 	if err := spec.Validate(); err != nil {
 		return DocumentResult{}, err
 	}
-	if spec.Transport != recipeabi.TransportHTTPHTML {
+	// Browser response Artifacts contain the final bounded DOM. Replaying that
+	// immutable DOM uses the same declarative selector engine without opening a
+	// browser or executing the BrowserPlan again.
+	if spec.Transport != recipeabi.TransportHTTPHTML && spec.Transport != recipeabi.TransportBrowser {
 		return DocumentResult{}, fmt.Errorf("HTML executor cannot run transport %q", spec.Transport)
 	}
 	root, err := html.Parse(bytes.NewReader(document))

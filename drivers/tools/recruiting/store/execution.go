@@ -176,6 +176,10 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	  )) OR (w.purpose = 'baseline_listing' AND EXISTS (
 	    SELECT 1 FROM recruiting_baseline_generations bg
 	    WHERE bg.work_id = w.work_id AND bg.generation_status = 'listing' AND bg.listing_finalized = FALSE
+	  )) OR (w.purpose = 'historical_backfill_item' AND EXISTS (
+	    SELECT 1 FROM recruiting_backfill_items item
+	    JOIN recruiting_backfills backfill ON backfill.backfill_id = item.backfill_id
+	    WHERE item.work_id = w.work_id AND item.item_status = 'queued' AND backfill.backfill_status = 'running'
 	  )) OR (w.purpose = 'profile_repair' AND EXISTS (
 	    SELECT 1 FROM recruiting_profile_repair_sessions prs
 	    WHERE prs.work_id = w.work_id AND prs.session_status = 'awaiting_device'
@@ -255,6 +259,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	var baseline model.BaselineGeneration
 	var checkpoint *model.IncrementalCheckpoint
 	var detail *DetailExecutionInput
+	var backfillInput *executioncontract.BackfillInput
 	var companyImport model.CompanyImport
 	var companyImportItems []executioncontract.CompanyImportApplyItem
 	var discovery model.SourceDiscovery
@@ -291,6 +296,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		}
 	case "detail_sync":
 		detail, fence, err = loadDetailOfferFence(ctx, tx, work, placement)
+	case "historical_backfill_item":
+		backfillInput, fence, err = loadBackfillOfferFence(ctx, tx, work, placement)
 	case "company_import":
 		companyImport, err = getCompanyImportByWorkWith(ctx, tx, work.WorkID, true)
 		if err == nil {
@@ -371,6 +378,9 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	if detail != nil {
 		sourceID = detail.Job.SourceID
 	}
+	if backfillInput != nil {
+		sourceID = backfillInput.Item.SourceID
+	}
 	if recipeSampleValidation.ValidationRunID != "" {
 		sourceID = recipeSampleValidation.SourceID
 	}
@@ -395,6 +405,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 			attempt, err = attempt.WithProfileRepairFence(fence.ProfileID, fence.ProfileVersion)
 		} else if work.Purpose == "source_discovery" {
 			attempt, err = attempt.WithDiscoveryFence(fence)
+		} else if work.Purpose == "historical_backfill_item" {
+			attempt, err = attempt.WithBackfillFence(fence)
 		} else if work.Purpose == "recipe_validation" && recipeSampleValidation.RecipeKind == model.RecipeDiscovery {
 			attempt, err = attempt.WithCompanyRecipeFence(fence)
 		} else {
@@ -407,8 +419,12 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	var permit model.BudgetPermit
 	var permitExpiresAt time.Time
 	if !isBudgetlessPurpose(work.Purpose) {
+		workloadClass, classErr := executionWorkloadClassTx(ctx, tx, work)
+		if classErr != nil {
+			return ExecutionOffer{}, classErr
+		}
 		permit, permitExpiresAt, err = acquireBudgetPermitTx(ctx, tx, attempt.AttemptID, placement.Origin, placement.ProfileID,
-			placement.Capability, companyID, request.BudgetPolicy, request.OfferedAt)
+			placement.Capability, companyID, workloadClass, request.BudgetPolicy, request.OfferedAt)
 		if err != nil {
 			return ExecutionOffer{}, err
 		}
@@ -416,6 +432,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	offer := ExecutionOffer{
 		Kind: strings.TrimSuffix(work.Purpose, "_sync"), Attempt: attempt, Work: work, Checkpoint: checkpoint,
 		Detail: detail, Budget: permit,
+		Backfill:            backfillInput,
 		RequestedCapability: strings.TrimSpace(request.Capability), RequestedOrigin: strings.TrimSpace(request.Origin),
 		RequestedProfileID:    strings.TrimSpace(request.ProfileID),
 		ProfileSecurityDomain: profileSecurityDomain,
@@ -455,6 +472,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	} else if work.Purpose == "profile_verify" {
 		offer.Kind = "profile_verification"
 		offer.ProfileRepair = &profileRepair
+	} else if work.Purpose == "historical_backfill_item" {
+		offer.Kind = "backfill_" + string(backfillInput.Backfill.Mode)
 	}
 	offerState, err := json.Marshal(offer)
 	if err != nil {
@@ -467,6 +486,33 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		return ExecutionOffer{}, fmt.Errorf("commit execution offer: %w", err)
 	}
 	return offer, nil
+}
+
+func executionWorkloadClassTx(ctx context.Context, tx *sql.Tx, work model.Work) (string, error) {
+	switch work.Purpose {
+	case "baseline_listing":
+		return "baseline", nil
+	case "source_validation", "recipe_validation":
+		return "calibration", nil
+	case "historical_backfill_item":
+		return "backfill", nil
+	case "detail_sync":
+		if work.ParentWorkID == "" {
+			return "", nil
+		}
+		var parentPurpose string
+		err := tx.QueryRowContext(ctx, "SELECT purpose FROM recruiting_works WHERE work_id = ?", work.ParentWorkID).Scan(&parentPurpose)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("classify detail execution workload: %w", err)
+		}
+		if parentPurpose == "baseline_listing" {
+			return "baseline", nil
+		}
+	}
+	return "", nil
 }
 
 func getExecutionOfferReplay(ctx context.Context, tx *sql.Tx, request ListingOfferRequest, requiredPurpose string) (ExecutionOffer, bool, error) {
@@ -969,6 +1015,151 @@ WHERE s.source_id = ?`, job.SourceID).Scan(&companyState, &sourceState, &assignm
 	return &DetailExecutionInput{Job: job, Assignment: assignment, Recipe: recipe}, fence, nil
 }
 
+func loadBackfillOfferFence(ctx context.Context, tx *sql.Tx, work model.Work,
+	placement WorkPlacement) (*executioncontract.BackfillInput, model.AttemptFence, error) {
+	if work.TargetType != "backfill_item" || work.Purpose != "historical_backfill_item" {
+		return nil, model.AttemptFence{}, fmt.Errorf("backfill execution requires a historical backfill item Work")
+	}
+	var backfillState, itemState []byte
+	if err := tx.QueryRowContext(ctx, `
+SELECT backfill.state_json, item.state_json
+FROM recruiting_backfill_items item
+JOIN recruiting_backfills backfill ON backfill.backfill_id = item.backfill_id
+WHERE item.work_id = ? FOR UPDATE`, work.WorkID).Scan(&backfillState, &itemState); err != nil {
+		return nil, model.AttemptFence{}, fmt.Errorf("load backfill execution: %w", err)
+	}
+	var backfill model.Backfill
+	var item model.BackfillItem
+	if err := json.Unmarshal(backfillState, &backfill); err != nil {
+		return nil, model.AttemptFence{}, err
+	}
+	if err := json.Unmarshal(itemState, &item); err != nil {
+		return nil, model.AttemptFence{}, err
+	}
+	if (backfill.Status != model.BackfillRunning && backfill.Status != model.BackfillPaused) || backfill.ConfirmationVersion == 0 ||
+		item.BackfillID != backfill.BackfillID || item.WorkID != work.WorkID ||
+		item.Status != model.BackfillItemQueued || work.TargetID == "" {
+		return nil, model.AttemptFence{}, fmt.Errorf("backfill item is not authorized for execution")
+	}
+
+	var companyState, sourceState, jobState []byte
+	if err := tx.QueryRowContext(ctx, `
+SELECT company.state_json, source.state_json, job.state_json
+FROM recruiting_companies company
+JOIN recruiting_sources source ON source.company_id = company.company_id
+JOIN recruiting_source_jobs job ON job.source_id = source.source_id
+WHERE company.company_id = ? AND source.source_id = ? AND job.job_id = ? FOR UPDATE`,
+		item.CompanyID, item.SourceID, item.JobID).Scan(&companyState, &sourceState, &jobState); err != nil {
+		return nil, model.AttemptFence{}, fmt.Errorf("load backfill item facts: %w", err)
+	}
+	var company model.Company
+	var source model.RecruitmentSource
+	var job model.SourceJob
+	for _, value := range []struct {
+		state []byte
+		into  any
+	}{{companyState, &company}, {sourceState, &source}, {jobState, &job}} {
+		if err := json.Unmarshal(value.state, value.into); err != nil {
+			return nil, model.AttemptFence{}, err
+		}
+	}
+	recipe, err := getRecipeForUpdate(ctx, tx, backfill.RecipeID, backfill.RecipeVersion)
+	if err != nil {
+		return nil, model.AttemptFence{}, err
+	}
+	origin, err := canonicalOrigin(item.DetailURL)
+	if err != nil || company.CompanyID != item.CompanyID || company.Version != item.CompanyVersion ||
+		source.SourceID != item.SourceID || source.CompanyID != item.CompanyID || source.Version != item.SourceVersion ||
+		job.JobID != item.JobID || job.SourceID != item.SourceID || job.Version != item.JobVersion ||
+		job.RefreshGeneration != item.RefreshGeneration || job.DetailURL != item.DetailURL ||
+		recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDetail ||
+		recipe.RecipeID != backfill.RecipeID || recipe.Version != backfill.RecipeVersion ||
+		placement.Origin != origin || placement.ProfileID != item.ProfileID {
+		return nil, model.AttemptFence{}, fmt.Errorf("backfill execution is fenced by changed Backfill, Company, Source, Job, Recipe, or placement")
+	}
+	expectedCapability := recipe.Execution.RequiredCapability
+	if backfill.Mode == model.BackfillArtifactRecompute {
+		expectedCapability = "artifact.recompute"
+	}
+	if placement.Capability != expectedCapability {
+		return nil, model.AttemptFence{}, fmt.Errorf("backfill execution capability does not match its mode")
+	}
+
+	input := &executioncontract.BackfillInput{Backfill: backfill, Item: item, Recipe: recipe}
+	if backfill.Mode == model.BackfillArtifactRecompute {
+		if item.InputDetailVersionID == "" || item.InputArtifactID == "" || item.InputObservedAt == "" || item.ProfileID != "" {
+			return nil, model.AttemptFence{}, fmt.Errorf("artifact backfill requires immutable unprofiled input lineage")
+		}
+		observedAt, parseErr := time.Parse(time.RFC3339Nano, item.InputObservedAt)
+		var storedObservedAt time.Time
+		var storedArtifactID string
+		if parseErr != nil {
+			return nil, model.AttemptFence{}, fmt.Errorf("parse artifact backfill observation time: %w", parseErr)
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT artifact_id, observed_at FROM recruiting_job_detail_versions
+WHERE detail_version_id = ? AND job_id = ?`, item.InputDetailVersionID, item.JobID).Scan(
+			&storedArtifactID, &storedObservedAt); err != nil || storedArtifactID != item.InputArtifactID ||
+			!storedObservedAt.UTC().Equal(observedAt.UTC()) {
+			return nil, model.AttemptFence{}, fmt.Errorf("artifact backfill DetailVersion lineage changed or is missing")
+		}
+		artifact, rejected, found, err := getArtifactRecord(ctx, tx, item.InputArtifactID)
+		if err != nil {
+			return nil, model.AttemptFence{}, err
+		}
+		if !found || rejected || artifact.Kind != model.ArtifactResponse {
+			return nil, model.AttemptFence{}, fmt.Errorf("artifact backfill input is missing, rejected, or not a response Artifact")
+		}
+		input.InputArtifact = &artifact
+	} else if backfill.Mode == model.BackfillLiveRefetch {
+		if item.InputDetailVersionID != "" || item.InputArtifactID != "" || item.InputObservedAt != "" {
+			return nil, model.AttemptFence{}, fmt.Errorf("live backfill cannot carry historical input lineage")
+		}
+		if company.ControlStatus != model.ControlActive || company.OnboardingStatus != model.CompanyReady ||
+			source.ControlStatus != model.ControlActive || source.ReadinessStatus != model.SourceReady ||
+			source.HealthStatus != model.HealthHealthy {
+			return nil, model.AttemptFence{}, fmt.Errorf("live backfill requires a ready active Company and healthy Source")
+		}
+	} else {
+		return nil, model.AttemptFence{}, fmt.Errorf("unsupported backfill mode %q", backfill.Mode)
+	}
+
+	fence := model.AttemptFence{CompanyVersion: item.CompanyVersion, SourceVersion: item.SourceVersion,
+		RecipeID: backfill.RecipeID, RecipeVersion: backfill.RecipeVersion,
+		RefreshGeneration: item.RefreshGeneration, SampleVersion: item.JobVersion,
+		BatchVersion: backfill.ConfirmationVersion}
+	if item.ProfileID != "" {
+		if backfill.Mode != model.BackfillLiveRefetch || recipe.Execution.RequiredCapability != "browser.recipe" {
+			return nil, model.AttemptFence{}, fmt.Errorf("only live browser backfill may use a Profile")
+		}
+		var bindingState, profileState []byte
+		if err := tx.QueryRowContext(ctx, `
+SELECT binding.state_json, profile.state_json
+FROM recruiting_source_profile_bindings binding
+JOIN recruiting_profiles profile ON profile.profile_id = binding.profile_id
+WHERE binding.source_id = ? AND binding.recipe_kind = 'detail' AND binding.profile_id = ?`,
+			item.SourceID, item.ProfileID).Scan(&bindingState, &profileState); err != nil {
+			return nil, model.AttemptFence{}, fmt.Errorf("load backfill Profile fence: %w", err)
+		}
+		var binding model.SourceProfileBinding
+		var profile model.BrowserProfile
+		if err := json.Unmarshal(bindingState, &binding); err != nil {
+			return nil, model.AttemptFence{}, err
+		}
+		if err := json.Unmarshal(profileState, &profile); err != nil {
+			return nil, model.AttemptFence{}, err
+		}
+		if binding.Validate() != nil || binding.SourceID != item.SourceID || binding.RecipeKind != model.RecipeDetail ||
+			binding.ProfileID != item.ProfileID || binding.Version != item.ProfileBindingVersion ||
+			profile.ProfileID != item.ProfileID || profile.Version != item.ProfileVersion || profile.AuthStatus != model.ProfileReady {
+			return nil, model.AttemptFence{}, fmt.Errorf("backfill Profile binding changed or is not ready")
+		}
+		fence.ProfileID, fence.ProfileVersion = item.ProfileID, item.ProfileVersion
+	} else if recipe.Execution.RequiredCapability == "browser.recipe" && backfill.Mode == model.BackfillLiveRefetch {
+		return nil, model.AttemptFence{}, fmt.Errorf("live browser backfill requires a frozen Profile binding")
+	}
+	return input, fence, nil
+}
+
 func loadSourceDiscoveryOfferFence(ctx context.Context, tx *sql.Tx, work model.Work, placement WorkPlacement) (model.SourceDiscovery, model.Recipe, model.AttemptFence, error) {
 	if work.TargetType != "company" || work.Purpose != "source_discovery" {
 		return model.SourceDiscovery{}, model.Recipe{}, model.AttemptFence{}, fmt.Errorf("source discovery requires company work")
@@ -1312,6 +1503,13 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			} else {
 				_, currentFence, fenceErr = loadDetailOfferFence(ctx, tx, work, placement)
 			}
+		case "historical_backfill_item":
+			placement, placementErr := getWorkPlacementWith(ctx, tx, work.WorkID)
+			if placementErr != nil {
+				fenceErr = placementErr
+			} else {
+				_, currentFence, fenceErr = loadBackfillOfferFence(ctx, tx, work, placement)
+			}
 		case "company_import":
 			var batch model.CompanyImport
 			batch, fenceErr = getCompanyImportByWorkWith(ctx, tx, work.WorkID, true)
@@ -1366,6 +1564,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 	}
 
 	previousAttemptStatus := attempt.Status
+	var executionFailureDecision *model.ExecutionFailureDecision
 	switch action {
 	case "accept":
 		attempt, err = attempt.Accept()
@@ -1467,6 +1666,9 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			} else {
 				var decision model.ExecutionFailureDecision
 				decision, err = failurePolicy.Decide(work, *report, businessAt)
+				if err == nil {
+					executionFailureDecision = &decision
+				}
 				if err == nil && decision.Route == model.FailureHuman {
 					var placement WorkPlacement
 					placement, err = getWorkPlacementWith(ctx, tx, work.WorkID)
@@ -1505,6 +1707,10 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 					break
 				}
 			}
+		}
+		if err == nil && work.Purpose == "historical_backfill_item" && report != nil &&
+			executionFailureDecision != nil && executionFailureDecision.Route == model.FailureHuman {
+			err = failBackfillItemTx(ctx, tx, work, report.Class, businessAt)
 		}
 	default:
 		err = fmt.Errorf("unknown execution transition %q", action)

@@ -119,6 +119,8 @@ func artifactKind(value string) (model.ArtifactKind, error) {
 		return model.ArtifactTrace, nil
 	case "validation":
 		return model.ArtifactValidation, nil
+	case "derived":
+		return model.ArtifactDerived, nil
 	default:
 		return "", fmt.Errorf("unsupported executor artifact kind %q", value)
 	}

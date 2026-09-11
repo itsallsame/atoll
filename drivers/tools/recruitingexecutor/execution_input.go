@@ -62,7 +62,8 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 
 	input := recipeabi.RunInput{
 		ABIVersion: recipeabi.Version,
-		Budget:     recipeabi.BudgetRef{PermitID: permit.PermitID, PolicyVersion: permit.PolicyVersion},
+		Budget: recipeabi.BudgetRef{PermitID: permit.PermitID, PolicyVersion: permit.PolicyVersion,
+			WorkloadClass: permit.WorkloadClass},
 		Attempt: recipeabi.AttemptFence{
 			WorkID: work.WorkID, AttemptID: attempt.AttemptID, AcceptanceVersion: attempt.AcceptanceVersion,
 			CompanyVersion: attempt.CompanyVersion, SourceVersion: attempt.SourceVersion, ProfileVersion: attempt.ProfileVersion,
@@ -136,6 +137,15 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 			snapshot.Origin != permit.Origin {
 			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("listing offer snapshot does not match its attempt fence or permit")
 		}
+		expectedWorkload := ""
+		if offer.Baseline != nil {
+			expectedWorkload = "baseline"
+		} else if work.Purpose == "source_validation" || work.Purpose == "recipe_validation" {
+			expectedWorkload = "calibration"
+		}
+		if permit.WorkloadClass != expectedWorkload {
+			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("listing workload class does not match its purpose")
+		}
 		input.Target = recipeabi.TargetRef{Kind: "source", ID: sourceID}
 		input.Endpoint = recipeabi.EndpointRef{URL: snapshot.Endpoint.URL, Version: snapshot.Endpoint.Revision}
 		input.Assignment = assignmentRef(snapshot.Assignment)
@@ -168,7 +178,7 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 				run.ProposedAssignment.AssignmentVersion != attempt.AssignmentVersion ||
 				run.Candidate.RecipeID != attempt.RecipeID || run.Candidate.Version != attempt.RecipeVersion ||
 				run.Candidate.Execution.RequiredCapability != attempt.Capability ||
-				run.SampleJobVersion != attempt.SampleVersion || run.Origin != permit.Origin {
+				run.SampleJobVersion != attempt.SampleVersion || run.Origin != permit.Origin || permit.WorkloadClass != "calibration" {
 				return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("Detail Recipe validation offer is inconsistent")
 			}
 			if err := run.Validate(); err != nil {
@@ -197,6 +207,9 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 			detail.Recipe.Execution.RequiredCapability != attempt.Capability || detail.Job.RefreshGeneration != attempt.RefreshGeneration {
 			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("detail offer recipe, assignment, job, or attempt fence is inconsistent")
 		}
+		if permit.WorkloadClass != "" && permit.WorkloadClass != "baseline" {
+			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("detail workload class is not daily or baseline")
+		}
 		origin, err := endpointOrigin(detail.Job.DetailURL)
 		if err != nil || origin != permit.Origin {
 			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("detail endpoint origin does not match its permit")
@@ -207,6 +220,54 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 		contentRef = detail.Recipe.Execution.ContentRef
 		expectation = recipeExpectation{ContentHash: detail.Recipe.ContentHash, Kind: recipeabi.KindDetail,
 			Capability: detail.Recipe.Execution.RequiredCapability, Transport: recipeabi.Transport(detail.Recipe.Execution.Transport)}
+
+	case "backfill_artifact_recompute", "backfill_live_refetch":
+		backfillInput := offer.Backfill
+		if backfillInput == nil || offer.Detail != nil || offer.Occurrence != nil || offer.ListingRun != nil ||
+			offer.Baseline != nil || offer.Checkpoint != nil || offer.Discovery != nil || offer.Recipe != nil ||
+			offer.RecipeValidation != nil || work.Purpose != "historical_backfill_item" || work.TargetType != "backfill_item" {
+			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("backfill offer shape does not match its item Work")
+		}
+		backfill, item, recipe := backfillInput.Backfill, backfillInput.Item, backfillInput.Recipe
+		expectedKind := "backfill_" + string(backfill.Mode)
+		if offer.Kind != expectedKind || backfill.Status != model.BackfillRunning || backfill.ConfirmationVersion == 0 ||
+			item.BackfillID != backfill.BackfillID || item.WorkID != work.WorkID || item.Status != model.BackfillItemQueued ||
+			item.CompanyVersion != attempt.CompanyVersion || item.SourceVersion != attempt.SourceVersion ||
+			item.JobVersion != attempt.SampleVersion || item.RefreshGeneration != attempt.RefreshGeneration ||
+			backfill.ConfirmationVersion != attempt.BatchVersion || backfill.RecipeID != attempt.RecipeID ||
+			backfill.RecipeVersion != attempt.RecipeVersion || recipe.RecipeID != attempt.RecipeID ||
+			recipe.Version != attempt.RecipeVersion || recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDetail ||
+			item.CompanyID != permit.CompanyID || item.ProfileID != attempt.ProfileID || item.ProfileVersion != attempt.ProfileVersion ||
+			permit.WorkloadClass != "backfill" {
+			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("backfill snapshot does not match its Attempt, Recipe, item, or permit")
+		}
+		origin, err := endpointOrigin(item.DetailURL)
+		if err != nil || origin != permit.Origin {
+			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("backfill endpoint origin does not match its permit")
+		}
+		if backfill.Mode == model.BackfillArtifactRecompute {
+			if attempt.Capability != "artifact.recompute" || backfillInput.InputArtifact == nil ||
+				item.InputArtifactID == "" || item.InputArtifactID != backfillInput.InputArtifact.ArtifactID ||
+				item.InputDetailVersionID == "" || item.InputObservedAt == "" || item.ProfileID != "" {
+				return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("artifact backfill requires frozen input Artifact lineage and recompute capability")
+			}
+		} else if backfill.Mode == model.BackfillLiveRefetch {
+			if attempt.Capability != recipe.Execution.RequiredCapability || backfillInput.InputArtifact != nil ||
+				item.InputArtifactID != "" || item.InputDetailVersionID != "" || item.InputObservedAt != "" {
+				return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("live backfill requires Recipe capability without historical input lineage")
+			}
+		} else {
+			return recipeabi.RunInput{}, recipeExpectation{}, "", fmt.Errorf("unsupported backfill mode %q", backfill.Mode)
+		}
+		input.Target = recipeabi.TargetRef{Kind: "job", ID: item.JobID}
+		input.Endpoint = recipeabi.EndpointRef{URL: item.DetailURL, Version: item.JobVersion}
+		input.Recipe = &recipeabi.RecipeRef{RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version,
+			ContractHash: recipe.ContractHash}
+		input.Backfill = &recipeabi.BackfillRef{BackfillID: backfill.BackfillID, ItemID: item.ItemID,
+			Mode: string(backfill.Mode)}
+		contentRef = recipe.Execution.ContentRef
+		expectation = recipeExpectation{ContentHash: recipe.ContentHash, Kind: recipeabi.KindDetail,
+			Capability: recipe.Execution.RequiredCapability, Transport: recipeabi.Transport(recipe.Execution.Transport)}
 
 	case "source_discovery":
 		if offer.Discovery == nil || offer.Recipe == nil || offer.Detail != nil || offer.Occurrence != nil ||
@@ -221,7 +282,7 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 			recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDiscovery || recipe.RecipeID != attempt.RecipeID ||
 			recipe.Version != attempt.RecipeVersion || recipe.ContentHash != discovery.RecipeContentHash ||
 			recipe.ContractHash != discovery.ContractHash || recipe.Execution != discovery.Execution ||
-			recipe.Execution.RequiredCapability != attempt.Capability || permit.CompanyID != discovery.CompanyID {
+			recipe.Execution.RequiredCapability != attempt.Capability || permit.CompanyID != discovery.CompanyID || permit.WorkloadClass != "" {
 			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("source discovery offer snapshot does not match its Attempt, Recipe, or permit")
 		}
 		origin, err := endpointOrigin(discovery.SeedURL)
@@ -244,7 +305,7 @@ func buildRunInput(offer executioncontract.Offer, now time.Time) (recipeabi.RunI
 			(run.Status != model.RecipeSampleValidationQueued && run.Status != model.RecipeSampleValidationRunning) ||
 			run.CompanyVersion != attempt.CompanyVersion || run.Candidate.RecipeID != attempt.RecipeID ||
 			run.Candidate.Version != attempt.RecipeVersion || run.Candidate.Execution.RequiredCapability != attempt.Capability ||
-			run.Origin != permit.Origin || permit.CompanyID != run.CompanyID {
+			run.Origin != permit.Origin || permit.CompanyID != run.CompanyID || permit.WorkloadClass != "calibration" {
 			return recipeabi.RunInput{}, recipeExpectation{}, "", errors.New("Discovery Recipe validation offer is inconsistent")
 		}
 		if err := run.Validate(); err != nil {

@@ -183,6 +183,33 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 		}
 		return nil
 
+	case "backfill_live_refetch":
+		run, runErr := driver.RunDetail(ctx, spec, input, options.Compliance, sink)
+		if runErr != nil {
+			return failLocalExecution(ctx, control, sink, offer, "unexpected_status", "backfill_live_driver", runErr)
+		}
+		if run.Output.Failure != nil {
+			return failRunExecution(ctx, control, sink, offer, run.Output)
+		}
+		submission, err := prepareLiveBackfillSubmission(offer, run, sink)
+		if err != nil {
+			return failLocalExecution(ctx, control, sink, offer, "contract_violated", "backfill_live_result", err)
+		}
+		if err := control.Submit(ctx, submission.ResultKind, submission); err != nil {
+			return fmt.Errorf("submit live backfill result: %w", err)
+		}
+		return nil
+
+	case "backfill_artifact_recompute":
+		submission, err := prepareArtifactBackfillSubmission(ctx, resources, offer, spec, sink)
+		if err != nil {
+			return failLocalExecution(ctx, control, sink, offer, "contract_violated", "backfill_artifact_result", err)
+		}
+		if err := control.Submit(ctx, submission.ResultKind, submission); err != nil {
+			return fmt.Errorf("submit artifact backfill result: %w", err)
+		}
+		return nil
+
 	case "source_discovery", "discovery":
 		discoveryDriver, ok := driver.(executionDiscoveryHTTPDriver)
 		if !ok {
@@ -255,6 +282,9 @@ func executionTargetURL(offer executioncontract.Offer) string {
 	}
 	if offer.Detail != nil {
 		return offer.Detail.Job.DetailURL
+	}
+	if offer.Backfill != nil {
+		return offer.Backfill.Item.DetailURL
 	}
 	if offer.ListingRun != nil {
 		return offer.ListingRun.ListingExecution.Endpoint.URL

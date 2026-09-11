@@ -192,8 +192,10 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleBaselineStart(sys, cfg, repository, msg)
 		case TypeJobCorrect:
 			handleJobCorrect(sys, repository, msg)
-		case TypeBackfillCreate, TypeBackfillGet, TypeBackfillItems, TypeBackfillConfirm:
-			handleBackfillMessage(sys, repository, msg)
+		case TypeBackfillCreate, TypeBackfillGet, TypeBackfillItems, TypeBackfillOutputs, TypeBackfillOutputGet,
+			TypeBackfillGaps, TypeBackfillConfirm, TypeBackfillPause, TypeBackfillResume, TypeBackfillCancel,
+			TypeBackfillItemResolve:
+			handleBackfillMessage(sys, cfg, repository, msg)
 		case TypeProfileRegister:
 			handleProfileRegister(sys, repository, msg)
 		case TypeProfileRepairBegin:

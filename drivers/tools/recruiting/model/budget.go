@@ -20,16 +20,31 @@ type BudgetPermit struct {
 	ProfileID     string             `json:"profile_id,omitempty"`
 	Capability    string             `json:"capability"`
 	CompanyID     string             `json:"company_id"`
+	WorkloadClass string             `json:"workload_class,omitempty"`
 	PolicyVersion uint64             `json:"policy_version"`
 	Status        BudgetPermitStatus `json:"permit_status"`
 	Version       uint64             `json:"version"`
 }
 
-func NewBudgetPermit(id, attemptID, origin, profileID, capability, companyID string, policyVersion uint64) (BudgetPermit, error) {
+func NewBudgetPermit(id, attemptID, origin, profileID, capability, companyID string, policyVersion uint64,
+	workloadClasses ...string) (BudgetPermit, error) {
+	workloadClass := ""
+	if len(workloadClasses) > 1 {
+		return BudgetPermit{}, fmt.Errorf("permit accepts at most one workload class")
+	}
+	if len(workloadClasses) == 1 {
+		workloadClass = strings.TrimSpace(workloadClasses[0])
+		switch workloadClass {
+		case "", "baseline", "calibration", "backfill":
+		default:
+			return BudgetPermit{}, fmt.Errorf("unsupported permit workload class %q", workloadClass)
+		}
+	}
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(attemptID) == "" || strings.TrimSpace(origin) == "" || strings.TrimSpace(capability) == "" || strings.TrimSpace(companyID) == "" || policyVersion == 0 {
 		return BudgetPermit{}, fmt.Errorf("permit, attempt, origin, capability, company, and policy version are required")
 	}
-	return BudgetPermit{PermitID: id, AttemptID: attemptID, Origin: origin, ProfileID: profileID, Capability: capability, CompanyID: companyID, PolicyVersion: policyVersion, Status: PermitGranted, Version: 1}, nil
+	return BudgetPermit{PermitID: id, AttemptID: attemptID, Origin: origin, ProfileID: profileID, Capability: capability,
+		CompanyID: companyID, WorkloadClass: workloadClass, PolicyVersion: policyVersion, Status: PermitGranted, Version: 1}, nil
 }
 
 func (p BudgetPermit) Release(expected uint64) (BudgetPermit, error) {

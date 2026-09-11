@@ -45,6 +45,7 @@ type RunInput struct {
 	Endpoint   EndpointRef    `json:"endpoint"`
 	Assignment AssignmentRef  `json:"assignment"`
 	Recipe     *RecipeRef     `json:"recipe,omitempty"`
+	Backfill   *BackfillRef   `json:"backfill,omitempty"`
 	Checkpoint *CheckpointRef `json:"checkpoint,omitempty"`
 	ProfileRef string         `json:"profile_ref,omitempty"`
 	Budget     BudgetRef      `json:"budget"`
@@ -74,6 +75,12 @@ type RecipeRef struct {
 	ContractHash  string `json:"contract_hash"`
 }
 
+type BackfillRef struct {
+	BackfillID string `json:"backfill_id"`
+	ItemID     string `json:"item_id"`
+	Mode       string `json:"mode"`
+}
+
 type CheckpointRef struct {
 	Version        uint64   `json:"version"`
 	FrontierKeys   []string `json:"frontier_keys,omitempty"`
@@ -83,6 +90,7 @@ type CheckpointRef struct {
 type BudgetRef struct {
 	PermitID      string `json:"permit_id"`
 	PolicyVersion uint64 `json:"policy_version"`
+	WorkloadClass string `json:"workload_class,omitempty"`
 }
 
 type AttemptFence struct {
@@ -104,7 +112,15 @@ func (in RunInput) Validate() error {
 		blank(in.Attempt.WorkID, in.Attempt.AttemptID) || in.Attempt.AcceptanceVersion == 0 || in.Attempt.CompanyVersion == 0 {
 		return fmt.Errorf("complete target, endpoint, budget, and attempt fence are required")
 	}
-	if in.Target.Kind == "company" {
+	if in.Backfill != nil {
+		if in.Target.Kind != "job" || blank(in.Backfill.BackfillID, in.Backfill.ItemID, in.Backfill.Mode) ||
+			(in.Backfill.Mode != "artifact_recompute" && in.Backfill.Mode != "live_refetch") ||
+			in.Recipe == nil || blank(in.Recipe.RecipeID, in.Recipe.ContractHash) || in.Recipe.RecipeVersion == 0 ||
+			in.Assignment != (AssignmentRef{}) || in.Checkpoint != nil || in.Attempt.SourceVersion == 0 ||
+			in.Attempt.DiscoveryGeneration != 0 || in.Attempt.RecipeValidation {
+			return fmt.Errorf("backfill job input requires explicit Recipe and backfill lineage without Assignment or Checkpoint")
+		}
+	} else if in.Target.Kind == "company" {
 		if in.Recipe == nil || blank(in.Recipe.RecipeID, in.Recipe.ContractHash) || in.Recipe.RecipeVersion == 0 ||
 			(in.Attempt.DiscoveryGeneration == 0) != in.Attempt.RecipeValidation || in.Attempt.SourceVersion != 0 ||
 			in.Assignment != (AssignmentRef{}) || in.Checkpoint != nil {
@@ -114,6 +130,11 @@ func (in RunInput) Validate() error {
 		in.Assignment.RecipeVersion == 0 || in.Assignment.AssignmentVersion == 0 || in.Attempt.SourceVersion == 0 ||
 		in.Attempt.DiscoveryGeneration != 0 || in.Attempt.RecipeValidation {
 		return fmt.Errorf("source and job inputs require Assignment and Source fence without discovery Recipe")
+	}
+	switch in.Budget.WorkloadClass {
+	case "", "baseline", "calibration", "backfill":
+	default:
+		return fmt.Errorf("unsupported execution workload class %q", in.Budget.WorkloadClass)
 	}
 	endpoint, err := url.Parse(in.Endpoint.URL)
 	if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" || endpoint.User != nil || endpoint.Fragment != "" {
@@ -601,7 +622,7 @@ func (artifact ArtifactRef) Validate() error {
 	}
 	if artifact.Kind != "" {
 		switch artifact.Kind {
-		case "page", "response", "failure", "listing_delta", "trace", "validation":
+		case "page", "response", "failure", "listing_delta", "trace", "validation", "derived":
 		default:
 			return fmt.Errorf("artifact kind %q is not supported by the Recipe ABI", artifact.Kind)
 		}

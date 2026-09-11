@@ -7,6 +7,7 @@ test_password="atoll_recruiting_test_only_$$"
 runtime_password="atoll_recruiting_runtime_test_only_$$"
 iterations="${RECRUITING_MYSQL_ITERATIONS:-1}"
 test_run="${RECRUITING_MYSQL_TEST_RUN:-}"
+actor_test_run="${RECRUITING_MYSQL_ACTOR_TEST_RUN:-^(TestRecipeRolloutReconcile|TestRepairRecoveryReconcile)}"
 tmpfs_size="${RECRUITING_MYSQL_TMPFS_SIZE:-}"
 test_args=()
 storage_args=()
@@ -82,6 +83,12 @@ for iteration in $(seq 1 "${iterations}"); do
 SET FOREIGN_KEY_CHECKS = 0;
 DROP TABLE IF EXISTS
   recruiting_execution_dispatch_outbox,
+  recruiting_backfill_outputs,
+  recruiting_backfill_items,
+  recruiting_backfills,
+  recruiting_recipe_rollout_items,
+  recruiting_recipe_rollout_batches,
+  recruiting_profile_repair_sessions,
   recruiting_source_profile_binding_history,
   recruiting_source_profile_bindings,
   recruiting_repair_affected_works,
@@ -92,6 +99,8 @@ DROP TABLE IF EXISTS
   recruiting_source_discoveries,
   recruiting_company_import_items,
   recruiting_company_imports,
+  recruiting_company_merge_previews,
+  recruiting_company_aliases,
   recruiting_budget_permits,
   recruiting_budget_usage,
   recruiting_profiles,
@@ -123,8 +132,8 @@ SET FOREIGN_KEY_CHECKS = 1;
 SQL
   fi
   go test -race ./drivers/tools/recruiting/store -count=1 "${test_args[@]}"
-	RECRUITING_ACTOR_MYSQL_TEST_DSN="${RECRUITING_MYSQL_TEST_DSN}" \
-	  go test -race ./drivers/tools/recruiting -run '^(TestRecipeRolloutReconcile|TestRepairRecoveryReconcile)' -count=1
+  env RECRUITING_ACTOR_MYSQL_TEST_DSN="${RECRUITING_MYSQL_TEST_DSN}" \
+    go test -race ./drivers/tools/recruiting -run "${actor_test_run}" -count=1
 done
 
 echo "recruiting mysql: ok (ephemeral MySQL 8.4, migration/runtime non-root accounts, schema=${database_name}, iterations=${iterations})"

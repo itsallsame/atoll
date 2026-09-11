@@ -36,12 +36,16 @@ type Config struct {
 	DailyWorkMaterializeLimit    int                    `json:"daily_work_materialize_limit"`
 	CompanyImportApplyLimit      int                    `json:"company_import_apply_limit"`
 	BaselineMaterializeLimit     int                    `json:"baseline_materialize_limit"`
+	BackfillMaterializeLimit     int                    `json:"backfill_materialize_limit"`
 	BudgetPolicyVersion          uint64                 `json:"budget_policy_version"`
 	BudgetMaxActive              int                    `json:"budget_max_active"`
 	BudgetMaxPerCapability       int                    `json:"budget_max_per_capability"`
 	BudgetMaxPerOrigin           int                    `json:"budget_max_per_origin"`
 	BudgetMaxPerCompany          int                    `json:"budget_max_per_company"`
 	BudgetMaxPerProfile          int                    `json:"budget_max_per_profile"`
+	BudgetMaxBaselineActive      int                    `json:"budget_max_baseline_active"`
+	BudgetMaxCalibrationActive   int                    `json:"budget_max_calibration_active"`
+	BudgetMaxBackfillActive      int                    `json:"budget_max_backfill_active"`
 	BudgetPermitTTLMS            int                    `json:"budget_permit_ttl_ms"`
 	RetryPolicyVersion           uint64                 `json:"retry_policy_version"`
 	RetryMaxAutomaticAttempts    int                    `json:"retry_max_automatic_attempts"`
@@ -116,12 +120,18 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 	if cfg.BaselineMaterializeLimit < 1 || cfg.BaselineMaterializeLimit > 500 {
 		return Config{}, fmt.Errorf("recruiting config: baseline_materialize_limit must be in [1,500]")
 	}
+	if cfg.BackfillMaterializeLimit < 1 || cfg.BackfillMaterializeLimit > 500 {
+		return Config{}, fmt.Errorf("recruiting config: backfill_materialize_limit must be in [1,500]")
+	}
 	budget := cfg.executionBudgetPolicy()
 	if budget.Version == 0 || budget.MaxActive < 1 || budget.MaxActive > 100_000 ||
 		budget.MaxPerCapability < 1 || budget.MaxPerCapability > budget.MaxActive ||
 		budget.MaxPerOrigin < 1 || budget.MaxPerOrigin > budget.MaxActive ||
 		budget.MaxPerCompany < 1 || budget.MaxPerCompany > budget.MaxActive ||
 		budget.MaxPerProfile < 1 || budget.MaxPerProfile > budget.MaxActive ||
+		budget.MaxBaselineActive < 1 || budget.MaxBaselineActive > budget.MaxActive ||
+		budget.MaxCalibrationActive < 1 || budget.MaxCalibrationActive > budget.MaxActive ||
+		budget.MaxBackfillActive < 1 || budget.MaxBackfillActive > budget.MaxActive ||
 		budget.PermitTTL < time.Second || budget.PermitTTL > 24*time.Hour {
 		return Config{}, fmt.Errorf("recruiting config: invalid execution budget policy")
 	}
@@ -175,8 +185,11 @@ func defaultConfig() Config {
 		DailyWorkMaterializeLimit: 100,
 		CompanyImportApplyLimit:   100,
 		BaselineMaterializeLimit:  100,
+		BackfillMaterializeLimit:  100,
 		BudgetPolicyVersion:       1, BudgetMaxActive: 1_000, BudgetMaxPerCapability: 1_000,
-		BudgetMaxPerOrigin: 8, BudgetMaxPerCompany: 50, BudgetMaxPerProfile: 1, BudgetPermitTTLMS: 900_000,
+		BudgetMaxPerOrigin: 8, BudgetMaxPerCompany: 50, BudgetMaxPerProfile: 1,
+		BudgetMaxBaselineActive: 200, BudgetMaxCalibrationActive: 100, BudgetMaxBackfillActive: 100,
+		BudgetPermitTTLMS:  900_000,
 		RetryPolicyVersion: 1, RetryMaxAutomaticAttempts: 4, RetryBaseDelayMS: 30_000,
 		RetryMaxDelayMS: 1_800_000, RetryThrottledDelayMS: 300_000,
 		ProfileRepairSessionTTLMS: 600_000,
@@ -187,7 +200,9 @@ func (c Config) executionBudgetPolicy() store.ExecutionBudgetPolicy {
 	return store.ExecutionBudgetPolicy{Version: c.BudgetPolicyVersion, MaxActive: c.BudgetMaxActive,
 		MaxPerCapability: c.BudgetMaxPerCapability, MaxPerOrigin: c.BudgetMaxPerOrigin,
 		MaxPerCompany: c.BudgetMaxPerCompany, MaxPerProfile: c.BudgetMaxPerProfile,
-		PermitTTL: time.Duration(c.BudgetPermitTTLMS) * time.Millisecond}
+		MaxBaselineActive: c.BudgetMaxBaselineActive, MaxCalibrationActive: c.BudgetMaxCalibrationActive,
+		MaxBackfillActive: c.BudgetMaxBackfillActive,
+		PermitTTL:         time.Duration(c.BudgetPermitTTLMS) * time.Millisecond}
 }
 
 func (c Config) executionFailurePolicy() store.ExecutionFailurePolicy {
@@ -268,12 +283,16 @@ const ConfigSchema = `{
     "daily_work_materialize_limit":{"type":"integer","minimum":1,"maximum":500}
 	,"company_import_apply_limit":{"type":"integer","minimum":1,"maximum":500}
 	,"baseline_materialize_limit":{"type":"integer","minimum":1,"maximum":500}
+	,"backfill_materialize_limit":{"type":"integer","minimum":1,"maximum":500}
 	,"budget_policy_version":{"type":"integer","minimum":1}
 	,"budget_max_active":{"type":"integer","minimum":1,"maximum":100000}
 	,"budget_max_per_capability":{"type":"integer","minimum":1,"maximum":100000}
 	,"budget_max_per_origin":{"type":"integer","minimum":1,"maximum":100000}
 	,"budget_max_per_company":{"type":"integer","minimum":1,"maximum":100000}
 	,"budget_max_per_profile":{"type":"integer","minimum":1,"maximum":100000}
+	,"budget_max_baseline_active":{"type":"integer","minimum":1,"maximum":100000}
+	,"budget_max_calibration_active":{"type":"integer","minimum":1,"maximum":100000}
+	,"budget_max_backfill_active":{"type":"integer","minimum":1,"maximum":100000}
 	,"budget_permit_ttl_ms":{"type":"integer","minimum":1000,"maximum":86400000}
 	,"retry_policy_version":{"type":"integer","minimum":1}
 	,"retry_max_automatic_attempts":{"type":"integer","minimum":1,"maximum":100}

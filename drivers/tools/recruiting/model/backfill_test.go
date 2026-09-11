@@ -10,12 +10,14 @@ func backfillFixture(t *testing.T, mode BackfillMode) (Backfill, BackfillItem) {
 		t.Fatal(err)
 	}
 	job, _ := NewSourceJob("job-1", "source-1", "remote-1", "https://jobs.example.test/1")
+	company, _ := NewCompany("company-1", "Company", "https://example.test")
+	source, _ := NewRecruitmentSource(job.SourceID, company.CompanyID, "https://jobs.example.test", "all", 1)
 	var inputDetail *JobDetailVersion
 	if mode == BackfillArtifactRecompute {
 		inputDetail = &JobDetailVersion{DetailVersionID: "detail-version-1", JobID: job.JobID, Version: 1,
 			ArtifactID: "artifact-original", ObservedAt: "2026-01-05T00:00:00Z"}
 	}
-	item, err := NewBackfillItem(backfill.BackfillID, "item-1", mode, job, 2, inputDetail)
+	item, err := NewBackfillItem(backfill.BackfillID, "item-1", mode, job, source, company, inputDetail, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,15 +47,26 @@ func TestBackfillPreviewAndOutcomeStateMachine(t *testing.T) {
 	if err != nil || paused.Status != BackfillPaused {
 		t.Fatalf("pause=%+v err=%v", paused, err)
 	}
-	resumed, err := paused.Resume(paused.Version)
-	if err != nil || resumed.Status != BackfillRunning || resumed.FailedItems != 0 {
-		t.Fatalf("resume=%+v err=%v", resumed, err)
+	if _, err := paused.Resume(paused.Version); err == nil {
+		t.Fatal("resume erased unresolved failed item count")
+	}
+	resolved, err := paused.ReconcileCounts(paused.Version, 400, 2, 0)
+	if err != nil || resolved.Status != BackfillRunning || resolved.FailedItems != 0 {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+	manuallyPaused, err := resolved.Pause(resolved.Version)
+	if err != nil || manuallyPaused.Status != BackfillPaused {
+		t.Fatalf("manual pause=%+v err=%v", manuallyPaused, err)
+	}
+	resumed, err := manuallyPaused.Resume(manuallyPaused.Version)
+	if err != nil || resumed.Status != BackfillRunning {
+		t.Fatalf("manual resume=%+v err=%v", resumed, err)
 	}
 	completed, err := resumed.ReconcileCounts(resumed.Version, 500, 2, 0)
 	if err != nil || completed.Status != BackfillCompleted {
 		t.Fatalf("complete=%+v err=%v", completed, err)
 	}
-	if _, err := completed.Cancel(completed.Version); err == nil {
+	if _, err := completed.Cancel(completed.Version, "command-too-late"); err == nil {
 		t.Fatal("completed backfill was canceled")
 	}
 }
@@ -80,17 +93,53 @@ func TestBackfillOutputKeepsHistoricalClaimsHonest(t *testing.T) {
 	}
 	forbidden := &JobDetailVersion{DetailVersionID: "detail-bad", JobID: liveItem.JobID, ArtifactID: "artifact-forbidden", ObservedAt: "2026-01-05T00:00:00Z"}
 	job, _ := NewSourceJob(liveItem.JobID, liveItem.SourceID, "remote-bad", liveItem.DetailURL)
-	if _, err := NewBackfillItem(live.BackfillID, "bad", BackfillLiveRefetch, job, 1, forbidden); err == nil {
+	company, _ := NewCompany(liveItem.CompanyID, "Company", "https://example.test")
+	source, _ := NewRecruitmentSource(job.SourceID, company.CompanyID, "https://jobs.example.test", "all", 1)
+	if _, err := NewBackfillItem(live.BackfillID, "bad", BackfillLiveRefetch, job, source, company, forbidden, nil, nil); err == nil {
 		t.Fatal("live refetch accepted an input Artifact")
+	}
+}
+
+func TestBackfillCancellationRequiresEveryNonSuccessfulItemToSettle(t *testing.T) {
+	backfill, item := backfillFixture(t, BackfillArtifactRecompute)
+	hash, _ := AdvanceBackfillPreviewHash(backfill, "", nil)
+	previewed, err := backfill.AdvancePreview(backfill.Version, 2, "", hash, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceling, err := previewed.RequestCancel(previewed.Version, "command-cancel")
+	if err != nil || canceling.Status != BackfillCanceling {
+		t.Fatalf("request cancel=%+v err=%v", canceling, err)
+	}
+	progress, err := canceling.RecordCancellationProgress(canceling.Version, 1, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := progress.FinishCancel(progress.Version, 1); err == nil {
+		t.Fatal("partially settled cancellation completed")
+	}
+	progress, err = progress.RecordCancellationProgress(progress.Version, 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceled, err := progress.FinishCancel(progress.Version, 2)
+	if err != nil || canceled.Status != BackfillCanceled || canceled.CanceledItems != 2 {
+		t.Fatalf("finish cancel=%+v err=%v", canceled, err)
+	}
+	canceledItem, err := item.Cancel(item.Version)
+	if err != nil || canceledItem.Status != BackfillItemCanceled {
+		t.Fatalf("cancel item=%+v err=%v", canceledItem, err)
 	}
 }
 
 func TestBackfillAllowsMultipleHistoricalVersionsOfOneJob(t *testing.T) {
 	backfill, first := backfillFixture(t, BackfillArtifactRecompute)
 	job, _ := NewSourceJob(first.JobID, first.SourceID, "remote-1", first.DetailURL)
+	company, _ := NewCompany(first.CompanyID, "Company", "https://example.test")
+	source, _ := NewRecruitmentSource(job.SourceID, company.CompanyID, "https://jobs.example.test", "all", 1)
 	secondDetail := &JobDetailVersion{DetailVersionID: "detail-version-2", JobID: job.JobID, Version: 2,
 		ArtifactID: "artifact-second", ObservedAt: "2026-01-20T00:00:00Z"}
-	second, err := NewBackfillItem(backfill.BackfillID, "item-2", backfill.Mode, job, first.SourceVersion, secondDetail)
+	second, err := NewBackfillItem(backfill.BackfillID, "item-2", backfill.Mode, job, source, company, secondDetail, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,9 +152,11 @@ func TestBackfillAllowsMultipleHistoricalVersionsOfOneJob(t *testing.T) {
 func TestBackfillPreviewHashBindsHistoricalVersionAndOrder(t *testing.T) {
 	backfill, first := backfillFixture(t, BackfillArtifactRecompute)
 	job, _ := NewSourceJob(first.JobID, first.SourceID, "remote-1", first.DetailURL)
+	company, _ := NewCompany(first.CompanyID, "Company", "https://example.test")
+	source, _ := NewRecruitmentSource(job.SourceID, company.CompanyID, "https://jobs.example.test", "all", 1)
 	input := &JobDetailVersion{DetailVersionID: "detail-version-2", JobID: job.JobID, Version: 2,
 		ArtifactID: "artifact-second", ObservedAt: "2026-01-20T00:00:00Z"}
-	second, _ := NewBackfillItem(backfill.BackfillID, "item-2", backfill.Mode, job, first.SourceVersion, input)
+	second, _ := NewBackfillItem(backfill.BackfillID, "item-2", backfill.Mode, job, source, company, input, nil, nil)
 	hashA, err := BackfillPreviewHash(backfill, []BackfillItem{second, first})
 	hashB, errB := BackfillPreviewHash(backfill, []BackfillItem{first, second})
 	if err != nil || errB != nil || hashA == "" || hashA != hashB {
@@ -133,6 +184,9 @@ func TestBackfillItemRequiresCausalRetryAndExplicitGap(t *testing.T) {
 	if err != nil || failed.Status != BackfillItemFailed {
 		t.Fatalf("fail=%+v err=%v", failed, err)
 	}
+	if failed.RetryAllowed(BackfillArtifactRecompute) || !failed.RetryAllowed(BackfillLiveRefetch) {
+		t.Fatal("deterministic historical parse failure had incorrect retry eligibility")
+	}
 	if _, err := failed.Retry(failed.Version, failed.WorkID); err == nil {
 		t.Fatal("retry reused the failed Work")
 	}
@@ -147,6 +201,20 @@ func TestBackfillItemRequiresCausalRetryAndExplicitGap(t *testing.T) {
 	gap, err := failed.AcceptGap(failed.Version)
 	if err != nil || gap.Status != BackfillItemAcceptedGap || gap.FailureClass != "parse_error" {
 		t.Fatalf("gap=%+v err=%v", gap, err)
+	}
+}
+
+func TestBackfillItemCanRecordFrozenFenceFailureBeforeQueue(t *testing.T) {
+	_, item := backfillFixture(t, BackfillLiveRefetch)
+	failed, err := item.RejectBeforeQueue(item.Version, "contract_violated")
+	if err != nil || failed.Status != BackfillItemFailed || failed.WorkID != "" || failed.FailureClass != "contract_violated" {
+		t.Fatalf("failed=%+v err=%v", failed, err)
+	}
+	if _, err := failed.Queue(failed.Version, "work-too-late"); err == nil {
+		t.Fatal("fence-rejected item was queued")
+	}
+	if _, err := failed.Retry(failed.Version, "work-impossible-retry"); err == nil {
+		t.Fatal("prequeue fence failure reused an obsolete immutable preview")
 	}
 }
 

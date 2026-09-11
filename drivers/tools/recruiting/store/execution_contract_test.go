@@ -20,6 +20,7 @@ func testExecutionBudgetPolicy() ExecutionBudgetPolicy {
 	policy := DefaultExecutionBudgetPolicy()
 	policy.MaxActive, policy.MaxPerCapability = 100, 100
 	policy.MaxPerOrigin, policy.MaxPerCompany, policy.MaxPerProfile = 100, 100, 100
+	policy.MaxBaselineActive, policy.MaxCalibrationActive, policy.MaxBackfillActive = 100, 100, 100
 	return policy
 }
 
