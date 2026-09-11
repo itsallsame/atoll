@@ -43,14 +43,14 @@ func TestBackfillPreviewAndOutcomeStateMachine(t *testing.T) {
 	if err != nil || running.Status != BackfillRunning {
 		t.Fatalf("confirm=%+v err=%v", running, err)
 	}
-	paused, err := running.ReconcileCounts(running.Version, 400, 1, 1)
+	paused, err := running.ReconcileCounts(running.Version, 400, 1, 1, 0)
 	if err != nil || paused.Status != BackfillPaused {
 		t.Fatalf("pause=%+v err=%v", paused, err)
 	}
 	if _, err := paused.Resume(paused.Version); err == nil {
 		t.Fatal("resume erased unresolved failed item count")
 	}
-	resolved, err := paused.ReconcileCounts(paused.Version, 400, 2, 0)
+	resolved, err := paused.ReconcileCounts(paused.Version, 400, 2, 0, 0)
 	if err != nil || resolved.Status != BackfillRunning || resolved.FailedItems != 0 {
 		t.Fatalf("resolved=%+v err=%v", resolved, err)
 	}
@@ -62,12 +62,16 @@ func TestBackfillPreviewAndOutcomeStateMachine(t *testing.T) {
 	if err != nil || resumed.Status != BackfillRunning {
 		t.Fatalf("manual resume=%+v err=%v", resumed, err)
 	}
-	completed, err := resumed.ReconcileCounts(resumed.Version, 500, 2, 0)
+	completed, err := resumed.ReconcileCounts(resumed.Version, 500, 2, 0, 0)
 	if err != nil || completed.Status != BackfillCompleted {
 		t.Fatalf("complete=%+v err=%v", completed, err)
 	}
 	if _, err := completed.Cancel(completed.Version, "command-too-late"); err == nil {
 		t.Fatal("completed backfill was canceled")
+	}
+	partiallyCanceled, err := running.ReconcileCounts(running.Version, 500, 0, 0, 2)
+	if err != nil || partiallyCanceled.Status != BackfillCompleted || partiallyCanceled.CanceledItems != 2 {
+		t.Fatalf("scope-canceled members did not form explicit terminal coverage: %+v err=%v", partiallyCanceled, err)
 	}
 }
 

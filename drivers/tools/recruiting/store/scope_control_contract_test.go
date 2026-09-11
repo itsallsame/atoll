@@ -410,6 +410,128 @@ WHERE backfill_id = ? AND work_id IS NOT NULL`, backfill.BackfillID).Scan(&activ
 	}
 }
 
+func TestSourceCancelIsolatesCompanyBackfillMembers(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	repository, _, ctx, cleanup := detailContractRepository(t)
+	defer cleanup()
+	now := time.Date(2091, 9, 13, 0, 0, 0, 0, time.UTC)
+	company, _ := model.NewCompany("scope-multisource-company", "Scope Multisource",
+		"https://scope-multisource.example.com")
+	if err := repository.CreateCompany(ctx, company, now); err != nil {
+		t.Fatal(err)
+	}
+	recipe := activeRecipe(t, "scope-multisource-recipe", model.RecipeDetail,
+		"scope-multisource.example.com", 1, "scope-multisource-contract")
+	if err := repository.CreateRecipe(ctx, recipe, now); err != nil {
+		t.Fatal(err)
+	}
+	sources := make([]model.RecruitmentSource, 0, 2)
+	itemsBySource := make(map[string]model.BackfillItem)
+	seedTx, err := repository.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, suffix := range []string{"a", "b"} {
+		source, _ := model.NewRecruitmentSource("scope-multisource-source-"+suffix, company.CompanyID,
+			"https://scope-multisource.example.com/jobs/"+suffix, suffix, 1)
+		if err := repository.CreateSource(ctx, source, now.Add(time.Duration(index)*time.Millisecond)); err != nil {
+			_ = seedTx.Rollback()
+			t.Fatal(err)
+		}
+		sources = append(sources, source)
+		job, _ := model.NewSourceJob("scope-multisource-job-"+suffix, source.SourceID, "remote-"+suffix,
+			"https://scope-multisource.example.com/jobs/"+suffix+"/1")
+		if err := insertJob(ctx, seedTx, job, now); err != nil {
+			_ = seedTx.Rollback()
+			t.Fatal(err)
+		}
+		if _, err := seedTx.ExecContext(ctx, `INSERT INTO recruiting_listing_observations(
+observation_id, occurrence_id, source_id, job_id, source_job_key, detail_url, activity_at,
+listing_fingerprint, recipe_id, recipe_version, artifact_id, observed_at, observation_json)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, JSON_OBJECT('job_id', ?))`,
+			"scope-multisource-observation-"+suffix, "scope-multisource-occurrence-"+suffix,
+			source.SourceID, job.JobID, job.SourceJobKey, job.DetailURL, now, "fingerprint-"+suffix,
+			recipe.RecipeID, recipe.Version, "artifact-"+suffix, now, job.JobID); err != nil {
+			_ = seedTx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := seedTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	parent, _ := model.NewWork("scope-multisource-parent", "company", company.CompanyID,
+		"historical_backfill", "human")
+	parent, _ = parent.WithCausality("human:scope-multisource", "scope-multisource-message", "")
+	backfill, _ := model.NewBackfill("scope-multisource-backfill", parent.WorkID, parent.InitiatorActorID,
+		"company", company.CompanyID, model.BackfillLiveRefetch, now.Add(-time.Hour).Format(time.RFC3339),
+		now.Add(time.Hour).Format(time.RFC3339), []string{"title"}, recipe.RecipeID, recipe.Version, 1)
+	response, _ := json.Marshal(backfill)
+	receipt, _ := model.NewCommandReceipt("scope-multisource-create", "recruiting.backfill.create",
+		"sha256:scope-multisource-create", response)
+	event, _ := model.NewEventIntent("scope-multisource-created", "backfill.created", "work", parent.WorkID,
+		parent.Version, now.Add(time.Second).Format(time.RFC3339Nano), receipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyCreateBackfillCommand(ctx, parent,
+		WorkPlacement{BusinessKey: "backfill|scope-multisource", NotBefore: now.Add(time.Second)}, backfill,
+		receipt, event, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	backfill, preview, err := repository.PreviewBackfillChunk(ctx, backfill.BackfillID, backfill.Version,
+		now.Add(2*time.Second))
+	if err != nil || len(preview) != 2 {
+		t.Fatalf("company Backfill preview=%+v items=%+v err=%v", backfill, preview, err)
+	}
+	parent, _ = repository.GetWork(ctx, parent.WorkID)
+	confirmed, _ := backfill.Confirm(backfill.Version, backfill.PreviewHash)
+	runningParent, _ := parent.Start(parent.Version)
+	confirmResponse, _ := json.Marshal(map[string]any{"backfill": confirmed, "work": runningParent})
+	confirmReceipt, _ := model.NewCommandReceipt("scope-multisource-confirm", "recruiting.backfill.confirm",
+		"sha256:scope-multisource-confirm", confirmResponse)
+	confirmEvent, _ := model.NewEventIntent("scope-multisource-confirmed", "backfill.confirmed", "work", parent.WorkID,
+		runningParent.Version, now.Add(3*time.Second).Format(time.RFC3339Nano), confirmReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyConfirmBackfillCommand(ctx, backfill.BackfillID, backfill.Version, parent.Version,
+		backfill.PreviewHash, confirmReceipt, confirmEvent, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if materialized, err := repository.MaterializeNextBackfillPage(ctx, 10, now.Add(4*time.Second),
+		[]ExecutionDispatchTarget{{ActorID: "tool:scope-multisource-executor", Capability: "http.fetch"}}); err != nil || materialized.Queued != 2 {
+		t.Fatalf("company Backfill materialization=%+v err=%v", materialized, err)
+	}
+	page, _ := repository.ListBackfillItems(ctx, backfill.BackfillID, "", 10)
+	for _, item := range page.Items {
+		itemsBySource[item.SourceID] = item
+	}
+	if len(itemsBySource) != 2 {
+		t.Fatalf("Backfill items were not split by Source: %+v", page.Items)
+	}
+
+	firstOperation := cancelSourceScopeAndReconcile(t, ctx, repository, sources[0].SourceID,
+		"scope-multisource-first", now.Add(10*time.Second))
+	firstItemWork, _ := repository.GetWork(ctx, itemsBySource[sources[0].SourceID].WorkID)
+	secondItemWork, _ := repository.GetWork(ctx, itemsBySource[sources[1].SourceID].WorkID)
+	partial, _ := repository.GetBackfill(ctx, backfill.BackfillID)
+	parentAfterFirst, _ := repository.GetWork(ctx, parent.WorkID)
+	if firstOperation.Status != model.ScopeControlCompleted || firstItemWork.Status != model.WorkCanceled ||
+		secondItemWork.Status != model.WorkOpen || partial.Status != model.BackfillRunning || partial.CanceledItems != 1 ||
+		parentAfterFirst.Status != model.WorkRunning {
+		t.Fatalf("first Source cancel leaked across Backfill: operation=%+v first=%+v second=%+v Backfill=%+v parent=%+v",
+			firstOperation, firstItemWork, secondItemWork, partial, parentAfterFirst)
+	}
+
+	secondOperation := cancelSourceScopeAndReconcile(t, ctx, repository, sources[1].SourceID,
+		"scope-multisource-second", now.Add(20*time.Second))
+	finished, _ := repository.GetBackfill(ctx, backfill.BackfillID)
+	finishedParent, _ := repository.GetWork(ctx, parent.WorkID)
+	if secondOperation.Status != model.ScopeControlCompleted || finished.Status != model.BackfillCompleted ||
+		finished.CanceledItems != 2 || finishedParent.Status != model.WorkCompleted ||
+		finishedParent.Resolution != model.ResolutionTerminated {
+		t.Fatalf("second Source cancel did not explicitly close partial Backfill: operation=%+v Backfill=%+v parent=%+v",
+			secondOperation, finished, finishedParent)
+	}
+}
+
 func cancelSourceScopeAndReconcile(t *testing.T, ctx context.Context, repository *Repository,
 	sourceID, prefix string, at time.Time) model.ScopeControlOperation {
 	t.Helper()

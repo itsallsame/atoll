@@ -155,13 +155,13 @@ func (r *Repository) acceptBackfillResultTransaction(ctx context.Context,
 		return BackfillResultOutcome{}, nil, err
 	}
 
-	var succeeded, gaps, failed uint64
+	var succeeded, gaps, failed, canceled uint64
 	if err := tx.QueryRowContext(ctx, `SELECT SUM(item_status = 'succeeded'), SUM(item_status = 'accepted_gap'),
-SUM(item_status = 'failed') FROM recruiting_backfill_items WHERE backfill_id = ?`,
-		offerInput.Backfill.BackfillID).Scan(&succeeded, &gaps, &failed); err != nil {
+SUM(item_status = 'failed'), SUM(item_status = 'canceled') FROM recruiting_backfill_items WHERE backfill_id = ?`,
+		offerInput.Backfill.BackfillID).Scan(&succeeded, &gaps, &failed, &canceled); err != nil {
 		return BackfillResultOutcome{}, nil, err
 	}
-	nextBackfill, err := offerInput.Backfill.ReconcileCounts(offerInput.Backfill.Version, succeeded, gaps, failed)
+	nextBackfill, err := offerInput.Backfill.ReconcileCounts(offerInput.Backfill.Version, succeeded, gaps, failed, canceled)
 	if err != nil {
 		return BackfillResultOutcome{}, err, nil
 	}
@@ -174,7 +174,11 @@ SUM(item_status = 'failed') FROM recruiting_backfill_items WHERE backfill_id = ?
 		if err != nil {
 			return BackfillResultOutcome{}, nil, err
 		}
-		completedParent, err := parent.Complete(parent.Version, model.ResolutionSucceeded, "", "")
+		resolution, actorID, reason := model.ResolutionSucceeded, "", ""
+		if nextBackfill.CanceledItems > 0 {
+			resolution, actorID, reason = model.ResolutionTerminated, "system:scope-control", "one or more scoped Backfill items were canceled"
+		}
+		completedParent, err := parent.Complete(parent.Version, resolution, actorID, reason)
 		if err != nil {
 			return BackfillResultOutcome{}, err, nil
 		}
@@ -293,13 +297,13 @@ WHERE item.work_id = ? FOR UPDATE`, work.WorkID).Scan(&backfillState, &itemState
 	if err := updateBackfillItemCASTx(ctx, tx, item.Version, failedItem, businessAt); err != nil {
 		return err
 	}
-	var succeeded, gaps, failed uint64
+	var succeeded, gaps, failed, canceled uint64
 	if err := tx.QueryRowContext(ctx, `SELECT SUM(item_status = 'succeeded'), SUM(item_status = 'accepted_gap'),
-SUM(item_status = 'failed') FROM recruiting_backfill_items WHERE backfill_id = ?`,
-		backfill.BackfillID).Scan(&succeeded, &gaps, &failed); err != nil {
+SUM(item_status = 'failed'), SUM(item_status = 'canceled') FROM recruiting_backfill_items WHERE backfill_id = ?`,
+		backfill.BackfillID).Scan(&succeeded, &gaps, &failed, &canceled); err != nil {
 		return err
 	}
-	nextBackfill, err := backfill.ReconcileCounts(backfill.Version, succeeded, gaps, failed)
+	nextBackfill, err := backfill.ReconcileCounts(backfill.Version, succeeded, gaps, failed, canceled)
 	if err != nil {
 		return err
 	}

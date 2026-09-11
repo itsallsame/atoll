@@ -196,13 +196,14 @@ ORDER BY item.item_id LIMIT ? FOR UPDATE`, backfill.BackfillID, limit)
 		result.Dispatches += created
 	}
 	if result.Failed > 0 {
-		var succeeded, gaps, failed uint64
+		var succeeded, gaps, failed, canceled uint64
 		if err := tx.QueryRowContext(ctx, `SELECT
-SUM(item_status = 'succeeded'), SUM(item_status = 'accepted_gap'), SUM(item_status = 'failed')
-FROM recruiting_backfill_items WHERE backfill_id = ?`, backfill.BackfillID).Scan(&succeeded, &gaps, &failed); err != nil {
+SUM(item_status = 'succeeded'), SUM(item_status = 'accepted_gap'), SUM(item_status = 'failed'),
+SUM(item_status = 'canceled') FROM recruiting_backfill_items WHERE backfill_id = ?`, backfill.BackfillID).
+			Scan(&succeeded, &gaps, &failed, &canceled); err != nil {
 			return BackfillMaterializationResult{}, err
 		}
-		next, err := backfill.ReconcileCounts(backfill.Version, succeeded, gaps, failed)
+		next, err := backfill.ReconcileCounts(backfill.Version, succeeded, gaps, failed, canceled)
 		if err != nil {
 			return BackfillMaterializationResult{}, err
 		}

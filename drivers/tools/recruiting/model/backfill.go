@@ -219,18 +219,21 @@ func (b Backfill) Confirm(expected uint64, previewHash string) (Backfill, error)
 
 // ReconcileCounts only accepts counts derived from normalized item rows by the
 // repository. Callers cannot report their own aggregate outcome.
-func (b Backfill) ReconcileCounts(expected, succeeded, acceptedGap, failed uint64) (Backfill, error) {
+func (b Backfill) ReconcileCounts(expected, succeeded, acceptedGap, failed, canceled uint64) (Backfill, error) {
 	if err := requireVersion(expected, b.Version); err != nil {
 		return Backfill{}, err
 	}
 	if b.Status != BackfillRunning && b.Status != BackfillPaused {
 		return Backfill{}, &InvalidTransitionError{Entity: "backfill", From: string(b.Status), Action: "reconcile counts"}
 	}
-	terminal := succeeded + acceptedGap + failed
+	if canceled < b.CanceledItems {
+		return Backfill{}, fmt.Errorf("backfill canceled item count cannot decrease")
+	}
+	terminal := succeeded + acceptedGap + failed + canceled
 	if terminal > b.PreviewedItems {
 		return Backfill{}, fmt.Errorf("backfill item counts exceed preview")
 	}
-	b.SucceededItems, b.AcceptedGapItems, b.FailedItems = succeeded, acceptedGap, failed
+	b.SucceededItems, b.AcceptedGapItems, b.FailedItems, b.CanceledItems = succeeded, acceptedGap, failed, canceled
 	switch {
 	case failed > 0:
 		b.Status = BackfillPaused

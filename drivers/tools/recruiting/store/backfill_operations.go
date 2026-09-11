@@ -179,20 +179,22 @@ func (r *Repository) ResolveBackfillItem(ctx context.Context,
 	if err := updateBackfillItemCASTx(ctx, tx, item.Version, nextItem, input.BusinessAt); err != nil {
 		return BackfillItemResolutionOutcome{}, err
 	}
-	var succeeded, gaps, failed uint64
+	var succeeded, gaps, failed, canceled uint64
 	if err := tx.QueryRowContext(ctx, `SELECT SUM(item_status = 'succeeded'), SUM(item_status = 'accepted_gap'),
-SUM(item_status = 'failed') FROM recruiting_backfill_items WHERE backfill_id = ?`, backfill.BackfillID).Scan(
-		&succeeded, &gaps, &failed); err != nil {
+SUM(item_status = 'failed'), SUM(item_status = 'canceled') FROM recruiting_backfill_items WHERE backfill_id = ?`, backfill.BackfillID).Scan(
+		&succeeded, &gaps, &failed, &canceled); err != nil {
 		return BackfillItemResolutionOutcome{}, err
 	}
-	nextBackfill, err := backfill.ReconcileCounts(backfill.Version, succeeded, gaps, failed)
+	nextBackfill, err := backfill.ReconcileCounts(backfill.Version, succeeded, gaps, failed, canceled)
 	if err != nil {
 		return BackfillItemResolutionOutcome{}, err
 	}
 	nextParent := parent
 	if nextBackfill.Status == model.BackfillCompleted {
 		resolution := model.ResolutionSucceeded
-		if nextBackfill.AcceptedGapItems > 0 {
+		if nextBackfill.CanceledItems > 0 {
+			resolution = model.ResolutionTerminated
+		} else if nextBackfill.AcceptedGapItems > 0 {
 			resolution = model.ResolutionAcceptedGap
 		}
 		nextParent, err = parent.Complete(parent.Version, resolution, input.RequestedBy, input.Reason)

@@ -385,7 +385,7 @@ WHERE work_id = ? AND version = ? AND paused_by_scope_operation_id = ?`, value.w
 				batch.ExpiredAttempts += expired
 			}
 			if err == nil {
-				err = cancelScopeBusinessExecutionTx(ctx, tx, value.work, operation.OperationID, businessAt)
+				err = cancelScopeBusinessExecutionTx(ctx, tx, value.work, operation, businessAt)
 			}
 			batch.Canceled++
 		} else {
@@ -456,7 +456,8 @@ WHERE operation_id = ? AND version = ?`, next.Status, next.ProjectionCompleted, 
 // canceled Work can leave an occurrence or validation run permanently marked
 // running, making operational reports disagree with the executor ledger.
 func cancelScopeBusinessExecutionTx(ctx context.Context, tx *sql.Tx, work model.Work,
-	operationID string, at time.Time) error {
+	operation model.ScopeControlOperation, at time.Time) error {
+	operationID := operation.OperationID
 	reason := "scope_canceled:" + operationID
 	switch work.Purpose {
 	case "listing_sync":
@@ -558,7 +559,7 @@ WHERE work_id = ? FOR UPDATE`, work.WorkID).Scan(&state)
 		}
 		return updateBackfillCASTx(ctx, tx, backfill.Version, canceling, at)
 	case "historical_backfill_item":
-		return cancelScopeBackfillItemTx(ctx, tx, work.WorkID, operationID, at)
+		return cancelScopeBackfillItemTx(ctx, tx, work.WorkID, operation, at)
 	}
 	return nil
 }
@@ -714,7 +715,8 @@ WHERE recipe_id = ? AND recipe_version = ? AND state_version = ?`, retryable.Sta
 	return appendEventIntent(ctx, tx, event, at, at)
 }
 
-func cancelScopeBackfillItemTx(ctx context.Context, tx *sql.Tx, workID, operationID string, at time.Time) error {
+func cancelScopeBackfillItemTx(ctx context.Context, tx *sql.Tx, workID string,
+	operation model.ScopeControlOperation, at time.Time) error {
 	var backfillState, itemState []byte
 	err := tx.QueryRowContext(ctx, `SELECT backfill.state_json, item.state_json
 FROM recruiting_backfill_items item
@@ -738,9 +740,14 @@ WHERE item.work_id = ? FOR UPDATE`, workID).Scan(&backfillState, &itemState)
 		item.Status != model.BackfillItemFailed {
 		return nil
 	}
+	wholeBackfill := operation.ScopeType == "company" ||
+		(backfill.TargetType == operation.ScopeType && backfill.TargetID == operation.ScopeID)
+	if !wholeBackfill {
+		return cancelOneScopedBackfillItemTx(ctx, tx, backfill, item, operation, at)
+	}
 	originalBackfillVersion := backfill.Version
 	if backfill.Status != model.BackfillCanceling {
-		backfill, err = backfill.RequestScopeCancel(backfill.Version, operationID)
+		backfill, err = backfill.RequestScopeCancel(backfill.Version, operation.OperationID)
 		if err != nil {
 			return err
 		}
@@ -770,6 +777,60 @@ FROM recruiting_backfill_items WHERE backfill_id = ?`, backfill.BackfillID).Scan
 		}
 	}
 	return updateBackfillCASTx(ctx, tx, originalBackfillVersion, backfill, at)
+}
+
+func cancelOneScopedBackfillItemTx(ctx context.Context, tx *sql.Tx, backfill model.Backfill, item model.BackfillItem,
+	operation model.ScopeControlOperation, at time.Time) error {
+	if operation.ScopeType != "source" || item.SourceID != operation.ScopeID ||
+		(backfill.Status != model.BackfillRunning && backfill.Status != model.BackfillPaused) {
+		return fmt.Errorf("scoped Backfill item cancellation does not match an active Source member")
+	}
+	canceledItem, err := item.Cancel(item.Version)
+	if err != nil {
+		return err
+	}
+	if err := updateBackfillItemCASTx(ctx, tx, item.Version, canceledItem, at); err != nil {
+		return err
+	}
+	var succeeded, gaps, failed, canceled uint64
+	if err := tx.QueryRowContext(ctx, `SELECT
+  COALESCE(SUM(item_status = 'succeeded'), 0), COALESCE(SUM(item_status = 'accepted_gap'), 0),
+  COALESCE(SUM(item_status = 'failed'), 0), COALESCE(SUM(item_status = 'canceled'), 0)
+FROM recruiting_backfill_items WHERE backfill_id = ?`, backfill.BackfillID).
+		Scan(&succeeded, &gaps, &failed, &canceled); err != nil {
+		return err
+	}
+	next, err := backfill.ReconcileCounts(backfill.Version, succeeded, gaps, failed, canceled)
+	if err != nil {
+		return err
+	}
+	if err := updateBackfillCASTx(ctx, tx, backfill.Version, next, at); err != nil {
+		return err
+	}
+	if next.Status == model.BackfillCompleted {
+		parent, err := getWorkWith(ctx, tx, next.WorkID, true)
+		if err != nil {
+			return err
+		}
+		completed, err := parent.Complete(parent.Version, model.ResolutionTerminated, "system:scope-control",
+			"one or more Source-scoped Backfill items were canceled")
+		if err != nil {
+			return err
+		}
+		if err := updateWorkTx(ctx, tx, parent.Version, completed, at); err != nil {
+			return err
+		}
+	}
+	payload, _ := json.Marshal(map[string]any{"item_id": item.ItemID, "source_id": item.SourceID,
+		"operation_id": operation.OperationID, "backfill_completed": next.Status == model.BackfillCompleted})
+	event, err := model.NewEventIntent("backfill-item-scope-canceled-"+
+		backfillStoreDigest(operation.OperationID+"\x00"+backfill.BackfillID+"\x00"+item.ItemID),
+		"backfill.item.scope_canceled", "backfill", backfill.BackfillID, next.Version,
+		at.UTC().Format(time.RFC3339Nano), "scope-control:"+operation.OperationID, payload)
+	if err != nil {
+		return err
+	}
+	return appendEventIntent(ctx, tx, event, at, at)
 }
 
 // cancelScopeBackfillDependencyPageTx settles one Backfill page after all
