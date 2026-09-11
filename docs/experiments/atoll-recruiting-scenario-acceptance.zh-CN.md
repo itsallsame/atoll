@@ -24,8 +24,8 @@
 | S12 Profile 修复 | 部分完成 | `TestRecruitingOperatorStartsDeviceBoundProfileRepairThroughServer`、真实 Chrome Profile 复用、Extension bundle | 第三方真实授权登录 canary、生产 OS/container 出站隔离 |
 | S13 Company 更新 | 部分完成 | `TestCompanyUpdateKeepsIdentityAndReportsWebsiteImpact`、公开 `company.update` E2E | 官网变化后的自动失效/重 discovery、显式回滚旅程 |
 | S14 Company 合并/拆分 | 完成 | `TestRecruitingOperatorLogicallyMergesAndReversesCompanies`、`recruiting-company-logical-merge-20260911.json` | — |
-| S15 Company 暂停/恢复 | 未完成 | Company 状态机、公开 pause/resume 基本 E2E | 三种 mode 目前只记录枚举，尚未控制受影响 Work；截点竞态和一次 catch-up 未闭合 |
-| S16 Source 暂停/恢复 | 部分完成 | Source 状态机、截点后 exclude、公开 pause/archive/restore E2E | 三种 mode 的 Work 语义和恢复时一次 catch-up |
+| S15 Company 暂停/恢复 | 部分完成 | Company 状态机、原子 `ScopeControlOperation`、500-Work seek 投影、独立配置/control/cancel fence、`TestInFlightResultDistinguishesDrainFromCancelFence` | 有界恢复和一次 catch-up；全部业务聚合的 cancel 联合终态与完整截点竞态矩阵 |
+| S16 Source 暂停/恢复 | 部分完成 | Source 状态机、活动因果根捕获/结算、暂停范围候选隔离、`TestSourcePauseAtomicallyCapturesActiveCausalRootsAndReplays`、`TestPausedScopeCannotStarveEligibleExecutionCandidates` | 有界恢复和一次 catch-up；Listing 之外执行类型的完整 pause/result 矩阵与联合终态 |
 | S17 Source redirect/改归属 | 未完成 | Endpoint correction 能建立 candidate 并 fence 旧验证；Company logical merge 不改写 Source 归属 | redirect 谱系/cutover 已有部分事实，但没有显式 Source 改归属命令与兼容性验收 |
 | S18 Company 归档/合规删除 | 部分完成 | 逻辑 archive/restore 和归档后拒绝新增 Source | M5 合规硬删除流程、保留策略和联合 Resource 清理 |
 | S19 Source 归档/恢复 | 部分完成 | `TestSourceArchiveRestoreRequiresValidation`、公开 archive/restore E2E | 同 URL 新增时引导恢复的用户可见合同和完整重新校准旅程 |
