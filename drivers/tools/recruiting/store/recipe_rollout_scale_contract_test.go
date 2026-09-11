@@ -23,7 +23,10 @@ func TestRecipeRolloutPreviewAndWavesRemainBoundedAtTwentyThousandSources(t *tes
 		t.Fatal(err)
 	}
 	defer db.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	// P2 runs four race-enabled MySQL contract shards concurrently. Keep this
+	// functional 20K bound tolerant of shared CPU contention; P9 records the
+	// single-run latency threshold independently.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	migrateTestDatabase(t, ctx, db)
 	repository, _ := NewRepository(db)

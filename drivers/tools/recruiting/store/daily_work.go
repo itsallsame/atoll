@@ -59,40 +59,65 @@ func (r *Repository) materializeDueOccurrenceWorks(ctx context.Context, dueAt ti
 		return DueWorkMaterializationResult{}, fmt.Errorf("begin due work materialization: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	// Lock only occurrence rows. Locking through a JOIN would also lock the
-	// shared DailyRun parent and accidentally serialize all workers for a day.
+	// Read a bounded candidate window without locks, then lock exact primary
+	// keys one by one. A LIMIT range-locking query can next-key lock adjacent
+	// occurrences with the same due_at, causing another coordinator to return
+	// empty even though unlocked work remains. Primary-key SKIP LOCKED keeps
+	// coordinators independent without locking the shared DailyRun parent.
+	candidateLimit := limit * 4
+	if candidateLimit > 2_000 {
+		candidateLimit = 2_000
+	}
 	rows, err := tx.QueryContext(ctx, `
-SELECT state_json
+SELECT occurrence_id
 FROM recruiting_source_occurrences
 WHERE status = 'planned' AND due_at <= ?
 ORDER BY due_at, occurrence_id
-LIMIT ? FOR UPDATE SKIP LOCKED`, dueAt.UTC(), limit)
+LIMIT ?`, dueAt.UTC(), candidateLimit)
 	if err != nil {
-		return DueWorkMaterializationResult{}, fmt.Errorf("lock due occurrences: %w", err)
+		return DueWorkMaterializationResult{}, fmt.Errorf("read due occurrence candidates: %w", err)
+	}
+	candidateIDs := make([]string, 0, candidateLimit)
+	for rows.Next() {
+		var occurrenceID string
+		if err := rows.Scan(&occurrenceID); err != nil {
+			_ = rows.Close()
+			return DueWorkMaterializationResult{}, fmt.Errorf("scan due occurrence candidate: %w", err)
+		}
+		candidateIDs = append(candidateIDs, occurrenceID)
+	}
+	if err := rows.Close(); err != nil {
+		return DueWorkMaterializationResult{}, fmt.Errorf("close due occurrence candidates: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return DueWorkMaterializationResult{}, fmt.Errorf("iterate due occurrence candidates: %w", err)
 	}
 	type selectedOccurrence struct {
 		Occurrence model.SourceOccurrence
 		WindowEnd  time.Time
 	}
 	selected := make([]selectedOccurrence, 0, limit)
-	for rows.Next() {
+	for _, occurrenceID := range candidateIDs {
+		if len(selected) == limit {
+			break
+		}
 		var state []byte
 		var item selectedOccurrence
-		if err := rows.Scan(&state); err != nil {
-			_ = rows.Close()
-			return DueWorkMaterializationResult{}, fmt.Errorf("scan due occurrence: %w", err)
+		err := tx.QueryRowContext(ctx, `
+SELECT state_json
+FROM recruiting_source_occurrences
+WHERE occurrence_id = ? AND status = 'planned' AND due_at <= ?
+FOR UPDATE SKIP LOCKED`, occurrenceID, dueAt.UTC()).Scan(&state)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return DueWorkMaterializationResult{}, fmt.Errorf("lock due occurrence %s: %w", occurrenceID, err)
 		}
 		if err := json.Unmarshal(state, &item.Occurrence); err != nil {
-			_ = rows.Close()
 			return DueWorkMaterializationResult{}, fmt.Errorf("decode due occurrence: %w", err)
 		}
 		selected = append(selected, item)
-	}
-	if err := rows.Close(); err != nil {
-		return DueWorkMaterializationResult{}, fmt.Errorf("close due occurrence rows: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return DueWorkMaterializationResult{}, fmt.Errorf("iterate due occurrences: %w", err)
 	}
 	for index := range selected {
 		var runStatus model.DailyRunStatus
