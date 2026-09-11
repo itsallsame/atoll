@@ -1156,7 +1156,7 @@ Review Queue 是 `status=waiting_human` 的 Work Center 视图，可再按结构
 
 报告必须记录硬件、数据库、Atoll 版本、数据分布、Recipe 类型、预算、并发、P50/P95/P99、错误率和恢复时间，才能作为拆架构的依据。
 
-截至 2026-09-12，容量验证已经分成互不冒充的四层证据：L0—L4 证明 MySQL 中 20K Listing/400K Detail Work 的计划与有界物化；P1 证明普通用户、Server、daemon、四个同 class Executor、Resource 和 Channel ledger 的控制/数据面能完成 1,000 Company；A1 证明同一 Executor class 可并发读取 200 个冻结 response Resource、执行既有 Recipe 并实际写出 200 个 derived Artifact；H1 则在无出站路由的受控 origin 上保持生产 HTTP Driver 的地址安全、robots、terms 和 GET-only 约束，真实抓取并持久化 200 个 response Artifact。A1/H1 的初始 Work 唤醒都按 Executor 数压缩为 4 条，后续分别以 200 条容量释放唤醒持续取活，验证“大量 Work 不等于大量逐 Work 初始消息”的设计。四层仍不能替代 Browser、第三方延迟/限流分布、远程对象存储、H2/5 倍执行峰值、20K Listing + 400K Detail 完整执行或长期 SLO，因此尚不触发拆分 Recruiting Actor、增加 Worker 类型或修改 Atoll 核心。
+截至 2026-09-12，容量验证已经分成互不冒充的四层证据：L0—L4 证明 MySQL 中 20K Listing/400K Detail Work 的计划与有界物化；P1 证明普通用户、Server、daemon、四个同 class Executor、Resource 和 Channel ledger 的控制/数据面能完成 1,000 Company；A1 证明同一 Executor class 可并发读取 200 个冻结 response Resource、执行既有 Recipe 并实际写出 200 个 derived Artifact；H1/H2 则在无出站路由的受控 origin 上保持生产 HTTP Driver 的地址安全、robots、terms 和 GET-only 约束，真实抓取并持久化到 1,000 个 16 KiB response Artifact。A1/H1 的单页初始 Work 唤醒按 Executor 数压缩为 4 条，H2 的两个 500 项物化页各向 8 个 Executor 唤醒一次，验证“大量 Work 不等于大量逐 Work 初始消息”的设计。H2 正确性通过，但 8 Executor 的 5.52/s 相对 H1 四 Executor 的 5.35/s 几乎不扩展；按此速率 400K Detail 的无失败下界约 20.13 小时，高于 8 小时窗口。这个平台必须先按既定顺序定位事务、消息往返和 Resource 写入，不以直接拆 Actor、增加 Worker 类型或修改 Atoll 核心掩盖瓶颈。即使优化完成，四层仍不能替代 Browser、第三方延迟/限流分布、远程对象存储、5 倍执行峰值、20K Listing + 400K Detail 完整执行或长期 SLO。
 
 ### 15.3 真实网站验收
 

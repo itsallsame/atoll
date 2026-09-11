@@ -11,7 +11,7 @@
     "every response Artifact is read through an Atoll File Resource by a real daemon-hosted recruiting-executor",
     "every frozen Detail Recipe execution writes one derived Artifact and one BackfillOutput",
     "input and derived Resource bytes match their MySQL SHA-256 metadata",
-    "Backfill item, Attempt, output, and Artifact counts exactly match the workload; initial dispatches are compacted to one per selected Executor and each completed Attempt emits one capacity-release wake",
+    "Backfill item, Attempt, output, and Artifact counts exactly match the workload; each bounded 500-item materialization page emits at most one wake per selected Executor and each completed Attempt emits one capacity-release wake",
     "all domain event intents reach the Atoll Channel ledger before measurement",
     "Server restart preserves completed Backfill state, byte-stable command replay, Executor presence, and Resource reads",
     "no third-party website is contacted"

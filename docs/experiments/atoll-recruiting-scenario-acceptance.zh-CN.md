@@ -34,7 +34,7 @@
 | S22 Recipe 批量升级 | 完成 | 20,000 Source 多 wave 合同、`TestRecruitingLiveDetailRecipeRolloutBatchThroughAtoll` | — |
 | S23 临时手工运行 | 完成 | join occurrence、diagnostic、production/recovery 与取消合同 | — |
 | S24 重试/人工结案 | 完成 | Work retry/resolve、baseline accepted gap、D0—D6、人工修复 E2E | — |
-| S25 10K/20K 日常运行 | 部分完成 | L0—L4 数据库计划/物化容量、5 倍到期形状、400K Detail Work；P1 四 Executor/1,000 Company 真实进程 Resource/ledger；A1 四 Executor/200 历史 response 读取与 derived 写入；H1 四 Executor/200 受控 HTTP response capture，`recruiting-process-capacity-p1-20260912.json`、`recruiting-artifact-capacity-a1-20260912.json`、`recruiting-http-capacity-h1-20260912.json` | Browser capture、第三方延迟/限流分布与 H2/5 倍执行峰值、20K Listing + 400K Detail 完成、长期指标与生产 SLO |
+| S25 10K/20K 日常运行 | 部分完成 | L0—L4 数据库计划/物化容量、5 倍到期形状、400K Detail Work；P1 四 Executor/1,000 Company；A1 200 历史 response/derived；H1/H2 受控 HTTP response capture 正确性到 1,000×16 KiB，8 Executor 实测 5.52/s，`recruiting-process-capacity-p1-20260912.json`、`recruiting-artifact-capacity-a1-20260912.json`、`recruiting-http-capacity-h1-20260912.json`、`recruiting-http-capacity-h2-20260912.json` | 8 Executor 吞吐平台定位与优化、Browser capture、第三方延迟/限流和 5 倍峰值、20K Listing + 400K Detail 完成、长期指标与生产 SLO |
 
 ## 当前实施顺序
 

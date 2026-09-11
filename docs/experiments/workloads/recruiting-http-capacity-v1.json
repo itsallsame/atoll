@@ -12,7 +12,7 @@
     "a normal user previews and confirms the exact immutable live_refetch Backfill",
     "every job receives exactly one GET and every successful Attempt writes one response Artifact and BackfillOutput",
     "all response Resource bytes match the configured size and MySQL SHA-256 metadata",
-    "initial dispatches are compacted to one per selected Executor and each completed Attempt emits one capacity-release wake",
+    "each bounded 500-item materialization page emits at most one initial wake per selected Executor and each completed Attempt emits one capacity-release wake",
     "all domain event intents reach the Channel ledger and restart preserves state, replay, presence, and Resource reads"
   ],
   "non_claims": [

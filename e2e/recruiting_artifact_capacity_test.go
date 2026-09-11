@@ -192,10 +192,7 @@ func TestRecruitingArtifactRecomputeCapacityThroughRealDataPlanes(t *testing.T) 
 		&materializeDispatches, &releaseDispatches, &usedExecutors, &activeBudget); err != nil {
 		t.Fatal(err)
 	}
-	expectedMaterializeDispatches := input.executors
-	if expectedMaterializeDispatches > input.items {
-		expectedMaterializeDispatches = input.items
-	}
+	expectedMaterializeDispatches := expectedCompactedMaterializeDispatches(input.items, input.executors, 500)
 	if backfillItems != input.items || completedItems != input.items || outputs != input.items ||
 		responseArtifacts != input.items || derivedArtifacts != input.items || succeededAttempts != input.items ||
 		deliveredDispatches != input.items+expectedMaterializeDispatches || materializeDispatches != expectedMaterializeDispatches ||
@@ -517,4 +514,28 @@ func TestArtifactCapacityJSONHasStableTargetSize(t *testing.T) {
 			t.Fatalf("body=%q value=%v err=%v", body, value, err)
 		}
 	}
+	for _, test := range []struct{ items, executors, pages, want int }{
+		{20, 2, 500, 2}, {200, 4, 500, 4}, {1000, 8, 500, 16}, {501, 8, 500, 9},
+	} {
+		if got := expectedCompactedMaterializeDispatches(test.items, test.executors, test.pages); got != test.want {
+			t.Fatalf("compacted dispatches items=%d executors=%d page=%d got=%d want=%d",
+				test.items, test.executors, test.pages, got, test.want)
+		}
+	}
+}
+
+func expectedCompactedMaterializeDispatches(items, executors, pageLimit int) int {
+	dispatches := 0
+	for remaining := items; remaining > 0; remaining -= pageLimit {
+		pageItems := remaining
+		if pageItems > pageLimit {
+			pageItems = pageLimit
+		}
+		pageDispatches := executors
+		if pageDispatches > pageItems {
+			pageDispatches = pageItems
+		}
+		dispatches += pageDispatches
+	}
+	return dispatches
 }

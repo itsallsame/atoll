@@ -1,0 +1,88 @@
+{
+  "schema": "recruiting.http-capacity-evidence.v1",
+  "captured_at": "2026-09-12",
+  "command": "RECRUITING_HTTP_CAPACITY_LEVEL=H2 RECRUITING_HTTP_CAPACITY_LARGE_ACK=isolated-http-large-load make recruiting-http-capacity",
+  "revision_before_commit": "a619b878",
+  "workload_manifest": "docs/experiments/workloads/recruiting-http-capacity-v1.json",
+  "environment": {
+    "cpu_logical": 4,
+    "memory_bytes": 16237535232,
+    "mysql": "8.4 isolated container, separate non-root migration/runtime users",
+    "artifact_provider": "one local Atoll daemon File Resource provider",
+    "controlled_origin": "ephemeral container on a Docker --internal network",
+    "origin_address_class": "public-shaped 11.254.x.x routed only inside the ephemeral internal network",
+    "production_private_network_bypass": false,
+    "third_party_network": false
+  },
+  "workload": {
+    "items": 1000,
+    "response_payload_bytes_each": 16384,
+    "origin_latency_ms": 5,
+    "executors": 8,
+    "materialization_page_size": 500,
+    "backfill_mode": "live_refetch",
+    "recipe_transport": "http_json"
+  },
+  "results": {
+    "used_executors": 8,
+    "origin_job_requests": 1000,
+    "origin_robots_requests": 8,
+    "response_artifacts": 1000,
+    "response_bytes": 16384000,
+    "backfill_items_succeeded": 1000,
+    "backfill_outputs": 1000,
+    "attempts_succeeded": 1000,
+    "active_budget_after_completion": 0,
+    "work_materialized_dispatches_delivered": 16,
+    "capacity_released_dispatches_delivered": 1000,
+    "dispatches_delivered": 1016,
+    "preview_ms": 965,
+    "completion_ms": 181220,
+    "outbox_drain_ms": 182164,
+    "response_artifacts_per_second_during_completion": 5.52,
+    "restart_recovery_ms": 3481,
+    "ledger_messages": 15323,
+    "ledger_payload_bytes": 11246239,
+    "ledger_events": 1365,
+    "recruiting_ledger_events": 1356,
+    "test_total_ms": 208816,
+    "go_test_seconds": 213.670
+  },
+  "capacity_assessment": {
+    "h1_executors": 4,
+    "h1_response_artifacts_per_second": 5.35,
+    "h2_executors": 8,
+    "h2_response_artifacts_per_second": 5.52,
+    "throughput_gain_percent": 3.2,
+    "detail_400k_projected_hours_at_h2_rate": 20.13,
+    "detail_400k_required_rate_for_8h": 13.89,
+    "interpretation": "correctness passes, but doubling Executors does not deliver proportional throughput and the measured rate is below the 400K-in-8h reference target",
+    "projection_scope": "arithmetic gap indicator only; it excludes Listing, failures, third-party latency, Browser, and remote storage"
+  },
+  "correctness": {
+    "normal_user_preview_and_confirm": true,
+    "production_http_address_policy_exercised": true,
+    "origin_job_request_count_exact": true,
+    "all_response_resource_hashes_verified": true,
+    "exact_business_counts": true,
+    "bounded_page_dispatch_count_exact": true,
+    "all_dispatches_delivered": true,
+    "every_delivered_domain_event_present_once_in_ledger": true,
+    "restart_state_and_command_replay_verified": true,
+    "core_architecture_modified": false
+  },
+  "non_claims": [
+    "production throughput readiness",
+    "third-party latency, throttling, CDN, or availability behavior",
+    "Browser response capture",
+    "remote Artifact provider throughput",
+    "five-times execution peak",
+    "20K Listing plus 400K Detail execution completion",
+    "long-window saturation or production SLO"
+  ],
+  "acceptance": {
+    "scenario": "S25",
+    "status": "partial",
+    "reason": "H2 correctness passes, but Executor scaling is flat and measured throughput is below the reference completion window"
+  }
+}

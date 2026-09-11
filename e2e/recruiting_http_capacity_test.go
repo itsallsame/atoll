@@ -179,10 +179,7 @@ func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
 		&releaseDispatches, &usedExecutors, &activeBudget); err != nil {
 		t.Fatal(err)
 	}
-	expectedMaterializeDispatches := input.executors
-	if expectedMaterializeDispatches > input.items {
-		expectedMaterializeDispatches = input.items
-	}
+	expectedMaterializeDispatches := expectedCompactedMaterializeDispatches(input.items, input.executors, 500)
 	if backfillItems != input.items || succeededItems != input.items || outputs != input.items ||
 		responseArtifacts != input.items || succeededAttempts != input.items ||
 		deliveredDispatches != input.items+expectedMaterializeDispatches ||
