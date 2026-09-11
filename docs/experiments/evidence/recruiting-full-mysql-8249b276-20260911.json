@@ -1,0 +1,46 @@
+{
+  "evidence_version": "recruiting-evidence.v1",
+  "recorded_at": "2026-09-11T00:00:00Z",
+  "scope": "final-revision Recruiting build, MySQL, race, browser bundle, and public E2E regression",
+  "branch": "codex/atoll-recruiting",
+  "revision": "8249b276",
+  "core_boundary_base": "a94d2b8d",
+  "verification": [
+    {
+      "command": "make build-go",
+      "result": "pass",
+      "binaries": 6
+    },
+    {
+      "command": "make recruiting-mysql-test",
+      "result": "pass",
+      "store_seconds": 204.224,
+      "actor_seconds": 3.267,
+      "database": "ephemeral MySQL 8.4",
+      "identities": ["staircase_migrator", "staircase_runtime"],
+      "cleanup": "temporary schema and container removed"
+    },
+    {
+      "command": "ATOLL_E2E_BIN=$PWD/bin go test ./e2e -run '^TestRecruiting' -count=1 -timeout 30m",
+      "result": "pass",
+      "seconds": 208.579
+    },
+    {
+      "command": "go test -race ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/... ./cmd/recruiting-extension-bridge ./tools/recruiting-extension/bridge",
+      "result": "pass"
+    },
+    {
+      "command": "RECRUITING_CHROME_BIN=<chrome-for-testing-153>/chrome make recruiting-extension-bundle-test",
+      "result": "pass"
+    },
+    {
+      "command": "./scripts/recruiting-boundary-check.sh a94d2b8d",
+      "result": "pass"
+    }
+  ],
+  "repository_wide_blockers": [
+    "TestCoderunnerHumanJourney: coderunner child presence did not become true; reproduced alone",
+    "TestPortalIdentitySessionAndMessageRoundTrip: initial history returned channel eligibility unavailable; reproduced alone"
+  ],
+  "atoll_core_modified": false
+}

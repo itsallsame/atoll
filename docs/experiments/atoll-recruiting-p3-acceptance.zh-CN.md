@@ -1,6 +1,6 @@
 # Atoll Recruiting P3 验收记录
 
-状态：进行中，尚未通过退出门
+状态：Recruiting P3 范围已通过；仓库级退出门被两个非 Recruiting 核心 E2E 阻塞
 
 日期：2026-09-08
 
@@ -85,6 +85,8 @@ ATOLL_RECRUITING_LIVE_E2E=1 go test ./e2e -run '^TestRecruitingLiveDetailRecipeR
 
 ## 尚未完成
 
-- 本阶段列出的控制面能力与定向故障切点已经实现；尚未完成的是在同一最终 revision 上重跑 P3 全量退出门并归档整套结果，不能用分散的历史通过记录替代。
+- `8249b276` 已在同一 revision 上通过 `make build-go`、完整 `make recruiting-mysql-test`（Store 204.224 秒、Actor 3.267 秒）、全部 `TestRecruiting*` E2E（208.579 秒）、Recruiting/Executor/Bridge race、Chrome for Testing 153 插件整包测试和 core boundary。Recruiting P3 的本地退出证据已闭合。
 
-P3 仍为进行中，Company/Source/Work 纵向切片不能替代完整退出门。
+- 仓库级 `go test ./e2e` 仍不能标绿：`TestCoderunnerHumanJourney` 稳定等待不到 coderunner child presence，`TestPortalIdentitySessionAndMessageRoundTrip` 的初始 history 稳定返回 `channel eligibility unavailable`；二者单独重跑仍失败，且不经过 Recruiting、Profile registry 或 Bridge。按“不修改 Atoll 核心代码和架构”的约束，本分支只记录该 release blocker，不越界修复。
+
+P3 招聘产品范围已完成；整个 Atoll 仓库的发布状态仍需核心维护者解决上述两个既有 E2E 后再判定。
