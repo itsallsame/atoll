@@ -47,6 +47,67 @@ func TestRepositoryTimeoutLeavesNoPartialCompanyUpdate(t *testing.T) {
 	}
 }
 
+func TestRepositoryConnectionExhaustionFailsWithoutPartialWrite(t *testing.T) {
+	db, repository, ctx := faultTestRepository(t)
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	held, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 8, 5, 10, 0, 0, time.UTC)
+	company, _ := model.NewCompany("fault-exhausted-company", "Connection Exhausted", "https://fault-exhausted.example.com")
+	timeoutCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	err = repository.CreateCompany(timeoutCtx, company, now)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		_ = held.Close()
+		t.Fatalf("connection exhaustion did not respect context deadline: %v", err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.GetCompany(ctx, company.CompanyID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("connection exhaustion left a company fact: %v", err)
+	}
+}
+
+func TestRepositoryReadOnlySessionRejectsWriteWithoutPartialFact(t *testing.T) {
+	db, repository, ctx := faultTestRepository(t)
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	connection, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.ExecContext(ctx, "SET SESSION TRANSACTION READ ONLY"); err != nil {
+		_ = connection.Close()
+		t.Fatal(err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 8, 5, 20, 0, 0, time.UTC)
+	company, _ := model.NewCompany("fault-read-only-company", "Read Only", "https://fault-read-only.example.com")
+	if err := repository.CreateCompany(ctx, company, now); err == nil {
+		t.Fatal("read-only MySQL session accepted a recruiting write")
+	}
+	if _, err := repository.GetCompany(ctx, company.CompanyID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("read-only rejection left a company fact: %v", err)
+	}
+	connection, err = db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.ExecContext(ctx, "SET SESSION TRANSACTION READ WRITE"); err != nil {
+		_ = connection.Close()
+		t.Fatal(err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRepositoryDeadlockHasOneAtomicWinner(t *testing.T) {
 	db, _, ctx := faultTestRepository(t)
 	now := time.Date(2026, 9, 8, 5, 30, 0, 0, time.UTC)

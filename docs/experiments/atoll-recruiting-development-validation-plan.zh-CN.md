@@ -545,6 +545,8 @@ S01—S24 至少有 model/Repository/actor 测试中的一种自动化覆盖，�
 
 备份恢复进展（2026-09-11）：新增 `make recruiting-backup-restore`，在一次性 MySQL 8.4 上以 migration/runtime 分离的非 root 身份建立源库和全新恢复库。源库通过正式 Repository 原子写入 Company、Work、两个稳定 receipt、两个领域 event intent 和一个 execution dispatch；脚本用一致性快照逻辑备份，恢复后在另一个测试进程中只以 runtime 身份核对领域状态 JSON、两类 outbox、完整 migration ledger 和命令重放，且再次证明 runtime 无 DDL 权限。正式演练的 90,553 字节 dump 在 394 ms 内恢复，端到端 9.634 秒；凭证未进入 dump。该合同关闭“能否从干净库恢复控制面因果”的机制缺口，但不替代生产数据量 RTO/RPO、加密异地保留、binlog 时间点恢复、Atoll ledger 和 Artifact provider 的联合恢复演练。证据见 `evidence/recruiting-backup-restore-20260911.json`。
 
+MySQL 故障注入进展（2026-09-11）：除既有行锁超时、真实 InnoDB deadlock 单赢家以及子进程在事务提交前/后的 `SIGKILL` 合同外，新增两个非 root runtime 合同。连接池唯一连接被占用时，Repository 必须服从调用方 deadline 且不留下 Company 事实；会话被切到 `TRANSACTION READ ONLY` 时，业务写明确失败、读取仍可核对且不产生半条事实。两项在真实 MySQL 8.4 通过。它们关闭连接耗尽和只读切片，不代表连接抖动、主从切换、全矩阵切点或生产恢复已经验收。
+
 ### 14.1 负载模型
 
 至少运行以下可复现档位：
