@@ -1,0 +1,48 @@
+{
+  "version": "recruiting.source-lineage-cutover-evidence.v1",
+  "observed_at": "2026-09-12T12:00:00+08:00",
+  "scope": "S17 Source endpoint redirect and cross-company reassignment",
+  "implementation": {
+    "commits": ["b76b746c", "07f218e0"],
+    "core_modified": false,
+    "new_worker_types": 0,
+    "endpoint_intent": "an existing active Source stages an immutable redirect or correction change with old/new endpoint revisions and audit identity",
+    "endpoint_revision": "the Source-owned sequence is monotonic; rejected or replaced candidate revisions are never reused",
+    "endpoint_activation": "validation publication atomically appends activation bound to Listing Assignment, Source version, and evidence Artifacts",
+    "reassignment": "preview/confirm creates a new candidate Source under the target Company and immutable supersedes or split_from lineage",
+    "history": "old Source Company ownership, Jobs, Assignment, Checkpoint, observations, and artifacts are not rewritten or copied"
+  },
+  "contract_observation": {
+    "staged_visibility": "public source.endpoint.history shows a change without activation before validation",
+    "cutover": "only evidence-gated validation publication switches active endpoint and appends activation",
+    "rejection": "a rejected correction retains immutable intent and has no activation",
+    "checkpoint": "endpoint cutover retains the existing checkpoint version and baseline occurrence lineage",
+    "supersedes": "old Source is archived and a cancel-mode ScopeControlOperation is created atomically",
+    "split_from": "old Source remains active and no cancellation operation is created",
+    "concurrency": "two confirmations of the same preview produce exactly one new Source and one lineage",
+    "replay": "confirmation returns the identical durable response after Server restart"
+  },
+  "verification": {
+    "database": "ephemeral MySQL 8.4",
+    "migration_identity": "staircase_migrator (non-root)",
+    "runtime_identity": "staircase_runtime (non-root, DML only)",
+    "repository_tests": [
+      "TestSourceReassignmentPreservesHistoryAndCreatesIndependentCandidate",
+      "TestSourceSplitReassignmentRetainsOldSourceAndSerializesConfirmation"
+    ],
+    "process_e2e": [
+      "TestRecruitingOperatorReassignsSourceAcrossCompanyWithoutRewritingHistory passed in 14.62s",
+      "TestRecruitingEndpointRedirectActivatesOnlyAfterValidatedCutover passed in 12.70s"
+    ],
+    "full_store_suite": "pass with race in 228.895s",
+    "unit_race_and_vet": "pass for ./drivers/tools/recruiting/...",
+    "diff_check": "pass",
+    "core_boundary": "pass from a94d2b8d; no protocol/runtime/lib/platform/registry changes"
+  },
+  "acceptance": {
+    "scenario": "S17",
+    "status": "complete",
+    "scenario_completion": "22/25 (88%)",
+    "remaining_production_gate": "none specific to S17; global S12/S18/S25/P9 gates remain"
+  }
+}

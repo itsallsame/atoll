@@ -501,7 +501,9 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。
 
-逐场景当前状态、权威测试映射和缺口统一维护在 `docs/experiments/atoll-recruiting-scenario-acceptance.zh-CN.md`。截至 2026-09-12，S13、S15、S16、S19 已关闭，25 个场景中 21 个完成；S17 未完成，S12、S18、S25 部分完成，因此 P8/P9 与整体产品均不得宣称完成。
+逐场景当前状态、权威测试映射和缺口统一维护在 `docs/experiments/atoll-recruiting-scenario-acceptance.zh-CN.md`。截至 2026-09-12，25 个场景中 22 个完成；S12、S18、S25 部分完成，因此 P8/P9 与整体产品均不得宣称完成。
+
+执行状态补充（2026-09-12，S17 Source Endpoint 谱系与跨 Company 改归属）：同一 Source 的 `source.update` 在已有 active Endpoint 时追加不可变 `SourceEndpointChange`，endpoint revision 使用 Source 内单调序列，被拒绝的 revision 永不复用；验证前公开 history 只能看到 staged change。只有真实 Source validation 的 Work/Attempt/Artifact 通过并发布时，active Endpoint 切换事务才追加绑定旧新 revision、Listing Assignment、Source version 和 evidence Artifact 的独立 `SourceEndpointActivation`；人工拒绝的候选保留 Change 但没有 Activation，Incremental Checkpoint 保持不动。跨 Company 调整新增 `source.reassign.preview/confirm`：精确冻结 Source/Company/Endpoint/Assignment/Checkpoint 版本和影响计数，确认事务重新按确定顺序锁定事实，创建新的 candidate Source 与 `supersedes|split_from` 谱系，绝不修改旧 `Source.CompanyID` 或复制 Job、Assignment、Checkpoint。supersedes 原子归档旧 Source 并创建 cancel-mode ScopeControlOperation；split 保留旧 Source；并发确认只能有一个胜者，命令可跨 Server 重启精确重放。提交 `b76b746c`、`07f218e0`；进程 E2E 分别 14.62s、12.70s 通过，全量非 root MySQL 8.4 race Store 回归 228.895s、Recruiting race/vet 和冻结核心检查通过。机读证据见 `evidence/recruiting-source-lineage-cutover-20260912.json`，S17 关闭。
 
 S15/S16 实现契约已在产品设计冻结：使用 Company/Source 的配置版本、控制 epoch、cancel execution fence，以及扩展内部有界 `ScopeControlOperation`；Work 保存不可变调度归属，既有 Recruiting reconcile 每轮最多处理 500 项。`drain`、`finish_causal_chain`、`cancel` 分别表示当前 Work 结算后冻结、仅有限活动根的因果后代继续、立即拒绝旧结果并有界取消。恢复只产生一次当前 catch-up，不补造暂停期间的逐日日报。
 

@@ -26,7 +26,7 @@
 | S14 Company 合并/拆分 | 完成 | `TestRecruitingOperatorLogicallyMergesAndReversesCompanies`、`recruiting-company-logical-merge-20260911.json` | — |
 | S15 Company 暂停/恢复 | 完成 | 三种 pause mode、原子 `ScopeControlOperation`、500-Work seek 暂停/恢复、冻结 Source 上界、逐 Source catch-up、公开 operation 查询、跨执行类型 fence/owner/cutpoint；35 组 scope/result 并发与 10 组 scope/general Backfill 协调器并发；`TestCompletedExecutionOwnersSurviveLaterScopeCancel`、`TestScopeCancelRejectsLateExecutionOwnerResults`、`TestScopeCancelAndResultsConvergeUnderConcurrentStress`、`TestScopeAndGeneralBackfillCancelCoordinatorsConvergeUnderConcurrentStress` | — |
 | S16 Source 暂停/恢复 | 完成 | 活动因果根、一次当前 production catch-up、Checkpoint 不前移、其他 Source 隔离、验证取消可重试、Company Backfill Source-only cancel、全执行类型 drain/cancel/config/result 和并发协调器合同；`TestSourceCancelIsolatesCompanyBackfillMembers`、`TestBackfillResultAndScopeCancelConvergeAtBothCommitCutpoints`、`recruiting-scope-execution-fences-20260912.json` | — |
-| S17 Source redirect/改归属 | 未完成 | Endpoint correction 能建立 candidate 并 fence 旧验证；Company logical merge 不改写 Source 归属 | redirect 谱系/cutover 已有部分事实，但没有显式 Source 改归属命令与兼容性验收 |
+| S17 Source redirect/改归属 | 完成 | `TestRecruitingEndpointRedirectActivatesOnlyAfterValidatedCutover`、`TestRecruitingOperatorReassignsSourceAcrossCompanyWithoutRewritingHistory`、`TestSourceReassignmentPreservesHistoryAndCreatesIndependentCandidate`、`TestSourceSplitReassignmentRetainsOldSourceAndSerializesConfirmation`、`recruiting-source-lineage-cutover-20260912.json` | — |
 | S18 Company 归档/合规删除 | 部分完成 | 逻辑 archive/restore 和归档后拒绝新增 Source | M5 合规硬删除流程、保留策略和联合 Resource 清理 |
 | S19 Source 归档/恢复 | 完成 | `TestSourceArchiveRestoreRequiresValidation`、`TestCreateSourceReturnsActionableRestoreForArchivedCanonicalIdentity`、`TestRecruitingArchivedSourceGuidesRestoreAndRequiresRecalibration`、`recruiting-source-restore-recalibration-20260912.json` | — |
 | S20 数据纠正与重算 | 完成 | `TestRecruitingOperatorCorrectsAndClearsJobWithoutRewritingCrawlFacts`、override CAS、S21 artifact recompute | — |
@@ -38,8 +38,7 @@
 
 ## 当前实施顺序
 
-1. S17：补 Source redirect/归属迁移、谱系、cutover 和兼容性验收。
-2. S18：按独立 M5 合规流程设计保留、擦除、Resource 删除和证明，绝不把普通 archive 伪装成硬删除。
-3. S12/S25/P9：在授权部署环境完成真实登录、出站隔离、执行吞吐、联合恢复和长期监控。
+1. S18：按独立 M5 合规流程设计保留、擦除、Resource 删除和证明，绝不把普通 archive 伪装成硬删除。
+2. S12/S25/P9：在授权部署环境完成真实登录、出站隔离、执行吞吐、联合恢复和长期监控。
 
 每关闭一项，必须同时更新本账本、开发验证计划和对应机读证据。账本状态为 `部分完成` 或 `未完成` 时，不得宣称 P8/P9 或整体产品开发完成。
