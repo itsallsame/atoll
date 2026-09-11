@@ -722,4 +722,6 @@ CI 层级：
 - 上线、监控、值班、quarantine、回滚和灾难恢复 runbook；
 - 核心冻结检查报告，证明 Atoll 核心代码和架构零修改。
 
+运行手册已形成预生产版本：`docs/experiments/atoll-recruiting-operations-runbook.zh-CN.md`。它只引用现有公开消息、非 root migration/runtime、既有分层验证入口和已经实现的状态语义，并把尚未关闭的真实站点、出站隔离、联合恢复和仓库级阻塞继续列为发布门；文档存在不等于这些生产门已经通过。
+
 只有上述清单都有可复现证据，并且 P9 正确性门槛全部满足，Atoll Recruiting 才可以从“产品与架构可行”转为“可生产运行”。
