@@ -109,7 +109,7 @@ SQL
   fi
   go test -race ./drivers/tools/recruiting/store -count=1 "${test_args[@]}"
 	RECRUITING_ACTOR_MYSQL_TEST_DSN="${RECRUITING_MYSQL_TEST_DSN}" \
-	  go test -race ./drivers/tools/recruiting -run '^TestRecipeRolloutReconcile' -count=1
+	  go test -race ./drivers/tools/recruiting -run '^(TestRecipeRolloutReconcile|TestRepairRecoveryReconcile)' -count=1
 done
 
 echo "recruiting mysql: ok (ephemeral MySQL 8.4, migration/runtime non-root accounts, schema=${database_name}, iterations=${iterations})"

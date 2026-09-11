@@ -24,6 +24,7 @@ type OperationalStatus struct {
 	AttemptCounts       map[string]uint64 `json:"attempt_counts"`
 	DailyRunCounts      map[string]uint64 `json:"daily_run_counts"`
 	RepairCounts        map[string]uint64 `json:"repair_counts"`
+	RepairRecoveryQueue uint64            `json:"repair_recovery_queue"`
 	EventOutbox         DeliveryBacklog   `json:"event_outbox"`
 	ExecutionDispatches DeliveryBacklog   `json:"execution_dispatches"`
 }
@@ -81,6 +82,10 @@ WHERE status IN ('open','running','waiting_retry','waiting_human','paused') AND 
 	}
 	if status.RepairCounts, err = groupedCounts(ctx, tx, "SELECT repair_status, COUNT(*) FROM recruiting_repair_incidents GROUP BY repair_status"); err != nil {
 		return OperationalStatus{}, fmt.Errorf("count repair status: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_repair_incidents
+WHERE recovery_pending = 1`).Scan(&status.RepairRecoveryQueue); err != nil {
+		return OperationalStatus{}, fmt.Errorf("count repair recovery queue: %w", err)
 	}
 	if status.EventOutbox, err = deliveryBacklog(ctx, tx, "recruiting_event_outbox", asOf); err != nil {
 		return OperationalStatus{}, fmt.Errorf("read event outbox status: %w", err)

@@ -27,6 +27,31 @@ type RepairIncidentPage struct {
 	HasMore    bool
 }
 
+type RepairRecoveryCandidate struct {
+	IncidentID string
+	Version    uint64
+}
+
+// NextRepairRecoveryCandidate reads the explicit indexed recovery queue. A
+// successful batch updates updated_at, so repeated ticks naturally rotate
+// across large incidents instead of draining one while starving the rest.
+func (r *Repository) NextRepairRecoveryCandidate(ctx context.Context) (RepairRecoveryCandidate, bool, error) {
+	var candidate RepairRecoveryCandidate
+	err := r.db.QueryRowContext(ctx, `
+SELECT i.incident_id, i.version
+FROM recruiting_repair_incidents i
+WHERE i.recovery_pending = 1 AND i.repair_status = 'resolved'
+ORDER BY i.updated_at, i.incident_id
+LIMIT 1`).Scan(&candidate.IncidentID, &candidate.Version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RepairRecoveryCandidate{}, false, nil
+	}
+	if err != nil {
+		return RepairRecoveryCandidate{}, false, fmt.Errorf("select next repair recovery candidate: %w", err)
+	}
+	return candidate, true, nil
+}
+
 type repairListCursor struct {
 	Status     model.RepairStatus `json:"status,omitempty"`
 	UpdatedAt  string             `json:"updated_at"`

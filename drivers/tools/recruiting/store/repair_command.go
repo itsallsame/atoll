@@ -235,6 +235,9 @@ func (r *Repository) ApplyRepairResolveCommand(ctx context.Context, expectedVers
 	if err := updateRepairIncidentTx(ctx, tx, expectedVersion, next, businessAt); err != nil {
 		return CommandResult{}, err
 	}
+	if err := refreshRepairRecoveryPendingTx(ctx, tx, next.IncidentID); err != nil {
+		return CommandResult{}, err
+	}
 	if err := updateRecoveredWorkTx(ctx, tx, currentRepairWork.Version, repairWork, businessAt); err != nil {
 		return CommandResult{}, err
 	}
@@ -254,6 +257,35 @@ type RepairRecoveryPreparation struct {
 	Incident        model.RepairIncident
 	Works           []WorkRecord
 	RemainingBefore int
+}
+
+// RefreshRepairRecoveryQueue repairs the derived queue bit without changing
+// the domain aggregate version. This covers an operator resolving the final
+// blocked Work directly after an Incident was resolved but before its next
+// automatic recovery tick.
+func (r *Repository) RefreshRepairRecoveryQueue(ctx context.Context, incidentID string, expectedVersion uint64) error {
+	if incidentID == "" || expectedVersion == 0 {
+		return fmt.Errorf("repair recovery queue refresh requires incident and expected version")
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	incident, err := getRepairIncidentForUpdate(ctx, tx, incidentID)
+	if err != nil {
+		return err
+	}
+	if incident.Version != expectedVersion {
+		return &model.VersionConflictError{Expected: expectedVersion, Actual: incident.Version}
+	}
+	if incident.Status != model.RepairResolved {
+		return &model.InvalidTransitionError{Entity: "repair incident", From: string(incident.Status), Action: "refresh recovery queue"}
+	}
+	if err := refreshRepairRecoveryPendingTx(ctx, tx, incidentID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *Repository) PrepareRepairRecovery(ctx context.Context, incidentID string, expectedVersion uint64, limit int) (RepairRecoveryPreparation, error) {
@@ -409,6 +441,9 @@ ORDER BY a.work_id LIMIT ? FOR UPDATE`, current.IncidentID, current.RepairWorkID
 			return CommandResult{}, err
 		}
 	}
+	if err := refreshRepairRecoveryPendingTx(ctx, tx, next.IncidentID); err != nil {
+		return CommandResult{}, err
+	}
 	seenDispatchCapabilities := make(map[string]struct{}, len(dispatches))
 	for _, dispatch := range dispatches {
 		if dispatch.CauseKind != "repair_recovery" || dispatch.CauseID != receipt.CommandID ||
@@ -528,6 +563,20 @@ func activeRepairKey(incident model.RepairIncident) string {
 		return incident.RepairKey
 	}
 	return ""
+}
+
+func refreshRepairRecoveryPendingTx(ctx context.Context, tx *sql.Tx, incidentID string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE recruiting_repair_incidents i
+SET i.recovery_pending = EXISTS (
+  SELECT 1
+  FROM recruiting_repair_affected_works a
+  JOIN recruiting_works w ON w.work_id = a.work_id
+  WHERE a.incident_id = i.incident_id
+    AND w.status = 'waiting_human'
+    AND w.blocked_by_repair_work_id = i.repair_work_id
+)
+WHERE i.incident_id = ? AND i.repair_status = 'resolved'`, incidentID)
+	return err
 }
 
 func updateRecoveredWorkTx(ctx context.Context, tx *sql.Tx, expected uint64, work model.Work, at time.Time) error {

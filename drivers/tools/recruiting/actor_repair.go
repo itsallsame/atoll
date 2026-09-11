@@ -1,7 +1,9 @@
 package recruiting
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -37,6 +39,13 @@ type repairCommandResponse struct {
 	RecoveredWorks   []model.Work         `json:"recovered_works,omitempty"`
 	RemainingWaiting int                  `json:"remaining_waiting_human"`
 	NextAction       string               `json:"next_action"`
+}
+
+type repairRecoveryReconcileResult struct {
+	CandidatesScanned int `json:"repair_candidates_scanned"`
+	BatchesRecovered  int `json:"repair_batches_recovered"`
+	WorksRecovered    int `json:"repair_works_recovered"`
+	Conflicts         int `json:"repair_recovery_conflicts"`
 }
 
 func handleRepairMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -209,16 +218,10 @@ func handleRepairRecover(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		_, _ = sys.Fail(msg, ErrorExecutionRejected, "no affected Work remains blocked by this repair")
 		return
 	}
-	recovered := make([]model.Work, 0, len(preparation.Works))
-	capabilities := make(map[string]struct{})
-	for _, record := range preparation.Works {
-		next, transitionErr := record.Work.RecoverFromRepair(record.Work.Version, preparation.Incident.RepairWorkID)
-		if transitionErr != nil {
-			failStoreError(sys, msg, transitionErr)
-			return
-		}
-		recovered = append(recovered, next)
-		capabilities[record.Placement.Capability] = struct{}{}
+	recovered, capabilities, err := deriveRepairRecovery(preparation)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
 	}
 	nextIncident, err := preparation.Incident.RecordRecoveryBatch(payload.ExpectedVersion, uint64(len(recovered)))
 	if err != nil {
@@ -238,24 +241,10 @@ func handleRepairRecover(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		failStoreError(sys, msg, err)
 		return
 	}
-	orderedCapabilities := make([]string, 0, len(capabilities))
-	for capability := range capabilities {
-		orderedCapabilities = append(orderedCapabilities, capability)
-	}
-	sort.Strings(orderedCapabilities)
-	dispatches := make([]store.ExecutionDispatchIntent, 0, len(orderedCapabilities))
-	for _, capability := range orderedCapabilities {
-		target, found := cfg.executionDispatchTarget(capability, payload.CommandID+"\n"+capability)
-		if !found {
-			continue
-		}
-		dispatch, dispatchErr := store.NewExecutionDispatchIntent("dispatch-repair-"+stableDigest(payload.CommandID+"|"+capability),
-			target.ActorID, capability, "", "", "repair_recovery", payload.CommandID, businessAt)
-		if dispatchErr != nil {
-			failStoreError(sys, msg, dispatchErr)
-			return
-		}
-		dispatches = append(dispatches, dispatch)
+	dispatches, err := repairRecoveryDispatches(cfg, payload.CommandID, capabilities, businessAt)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
 	}
 	result, err := repository.ApplyRepairRecoveryCommand(msg.Ctx(), payload.ExpectedVersion, nextIncident, recovered,
 		receipt, event, dispatches, businessAt)
@@ -264,6 +253,128 @@ func handleRepairRecover(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		return
 	}
 	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
+}
+
+// reconcileRepairRecoveryBatch opens at most one 100-Work batch per tick. It
+// uses the same version-fenced Repository transaction as the public command;
+// only command identity and audit actor differ.
+func reconcileRepairRecoveryBatch(ctx context.Context, cfg Config, repository *store.Repository, limit int,
+	now time.Time) (repairRecoveryReconcileResult, error) {
+	if limit < 1 || limit > 100 {
+		return repairRecoveryReconcileResult{}, fmt.Errorf("repair recovery reconcile limit must be in [1,100]")
+	}
+	candidate, found, err := repository.NextRepairRecoveryCandidate(ctx)
+	if err != nil || !found {
+		return repairRecoveryReconcileResult{}, err
+	}
+	result := repairRecoveryReconcileResult{CandidatesScanned: 1}
+	preparation, err := repository.PrepareRepairRecovery(ctx, candidate.IncidentID, candidate.Version, limit)
+	if isRepairRecoveryRace(err) {
+		result.Conflicts++
+		return result, nil
+	}
+	if err != nil {
+		return result, err
+	}
+	if len(preparation.Works) == 0 {
+		if err := repository.RefreshRepairRecoveryQueue(ctx, candidate.IncidentID, candidate.Version); isRepairRecoveryRace(err) {
+			result.Conflicts++
+			return result, nil
+		} else if err != nil {
+			return result, err
+		}
+		return result, nil
+	}
+	recovered, capabilities, err := deriveRepairRecovery(preparation)
+	if err != nil {
+		return result, err
+	}
+	nextIncident, err := preparation.Incident.RecordRecoveryBatch(candidate.Version, uint64(len(recovered)))
+	if err != nil {
+		return result, err
+	}
+	remaining := preparation.RemainingBefore - len(recovered)
+	nextAction := "repair_recovery_complete"
+	if remaining > 0 {
+		nextAction = "automatic_recovery_pending"
+	}
+	commandID := "repair-auto-" + stableDigest(candidate.IncidentID+fmt.Sprintf("|%d", candidate.Version))
+	response := repairCommandResponse{ContractVersion: ContractVersion, CorrelationID: commandID,
+		RequestedBy: "system:reconcile", Incident: publicRepairIncident(nextIncident), RecoveredWorks: recovered,
+		RemainingWaiting: remaining, NextAction: nextAction}
+	responseBytes, _ := json.Marshal(response)
+	receipt, err := model.NewCommandReceipt(commandID, TypeRepairRecover,
+		"sha256:"+stableDigest("repair-auto-recovery-v1|"+candidate.IncidentID+fmt.Sprintf("|%d|%d", candidate.Version, limit)), responseBytes)
+	if err != nil {
+		return result, err
+	}
+	audit, _ := json.Marshal(map[string]any{"requested_by": "system:reconcile", "reason": "resolved_repair_auto_recovery",
+		"validation_work_id": nextIncident.ValidationWorkID, "recovered_works": len(recovered)})
+	event, err := model.NewEventIntent("event-"+stableDigest(commandID+"|repair.recovery_batch_opened"),
+		"repair.recovery_batch_opened", "repair_incident", nextIncident.IncidentID, nextIncident.Version,
+		now.UTC().Format(time.RFC3339Nano), commandID, audit)
+	if err != nil {
+		return result, err
+	}
+	dispatches, err := repairRecoveryDispatches(cfg, commandID, capabilities, now.UTC())
+	if err != nil {
+		return result, err
+	}
+	if _, err := repository.ApplyRepairRecoveryCommand(ctx, candidate.Version, nextIncident, recovered,
+		receipt, event, dispatches, now.UTC()); isRepairRecoveryRace(err) {
+		result.Conflicts++
+		return result, nil
+	} else if err != nil {
+		return result, err
+	}
+	result.BatchesRecovered = 1
+	result.WorksRecovered = len(recovered)
+	return result, nil
+}
+
+func deriveRepairRecovery(preparation store.RepairRecoveryPreparation) ([]model.Work, map[string]struct{}, error) {
+	recovered := make([]model.Work, 0, len(preparation.Works))
+	capabilities := make(map[string]struct{})
+	for _, record := range preparation.Works {
+		next, err := record.Work.RecoverFromRepair(record.Work.Version, preparation.Incident.RepairWorkID)
+		if err != nil {
+			return nil, nil, err
+		}
+		recovered = append(recovered, next)
+		capabilities[record.Placement.Capability] = struct{}{}
+	}
+	return recovered, capabilities, nil
+}
+
+func repairRecoveryDispatches(cfg Config, commandID string, capabilities map[string]struct{},
+	businessAt time.Time) ([]store.ExecutionDispatchIntent, error) {
+	ordered := make([]string, 0, len(capabilities))
+	for capability := range capabilities {
+		ordered = append(ordered, capability)
+	}
+	sort.Strings(ordered)
+	dispatches := make([]store.ExecutionDispatchIntent, 0, len(ordered))
+	for _, capability := range ordered {
+		target, found := cfg.executionDispatchTarget(capability, commandID+"\n"+capability)
+		if !found {
+			continue
+		}
+		dispatch, err := store.NewExecutionDispatchIntent("dispatch-repair-"+stableDigest(commandID+"|"+capability),
+			target.ActorID, capability, "", "", "repair_recovery", commandID, businessAt)
+		if err != nil {
+			return nil, err
+		}
+		dispatches = append(dispatches, dispatch)
+	}
+	return dispatches, nil
+}
+
+func isRepairRecoveryRace(err error) bool {
+	if err == nil {
+		return false
+	}
+	var versionConflict *model.VersionConflictError
+	return errors.As(err, &versionConflict) || errors.Is(err, store.ErrProgressConflict)
 }
 
 func replayRepairCommand(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg, commandID string) bool {

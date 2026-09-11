@@ -1,0 +1,30 @@
+{
+  "evidence_version": "recruiting-evidence.v1",
+  "recorded_at": "2026-09-11T00:00:00Z",
+  "scope": "P3 bounded automatic Repair recovery coordination",
+  "branch": "codex/atoll-recruiting",
+  "core_boundary_base": "a94d2b8d",
+  "claims": [
+    "resolved incidents with blocked members use an explicit indexed recovery queue rather than scanning historical incidents",
+    "the existing Recruiting reconcile timer opens at most one incident batch and at most 100 Works per tick",
+    "successful batches rotate a large incident behind older pending incidents and the final batch atomically clears recovery_pending",
+    "recruiting.system.status exposes the indexed automatic recovery queue length in its consistent operational snapshot",
+    "automatic batches retain deterministic command receipts, incident version fencing, one aggregate event, and at most one wake per capability",
+    "manual and automatic recovery share the same Repository CAS transaction, making a concurrent loser a harmless conflict"
+  ],
+  "verification": [
+    {
+      "command": "RECRUITING_MYSQL_TEST_RUN='^TestRepairLifecycleValidatesEvidenceAndRecoversInHundredWorkBatches$' scripts/recruiting-mysql-test.sh",
+      "result": "pass",
+      "environment": "ephemeral MySQL 8.4; staircase_migrator migrations; staircase_runtime application access; Go race detector",
+      "observed": "101-Work oldest incident recovered 100, then a 1-Work incident, then the final large-incident Work across Repository reconstruction; 102 open, 0 waiting, 3 receipts, 3 events, 3 capability dispatches; a stale queue bit self-healed without a batch and the following tick was a no-op"
+    },
+    {
+      "command": "go test ./drivers/tools/recruiting/... -count=1",
+      "result": "pass",
+      "environment": "local deterministic unit and compile-time contract suite"
+    }
+  ],
+  "third_party_writes": false,
+  "atoll_core_modified": false
+}

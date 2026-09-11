@@ -911,7 +911,7 @@ Recruiting Actor 只做短时、确定性的校验与领域事务，不在 Actor
 | 确定性数据错误 | 进入修复，不盲目重试 |
 | 多轮不收敛 | `waiting_human` |
 
-失败按 `origin | recipe_version | profile | single_target` 归入故障域。相同 `failure_signature` 只允许一个活动 Repair Work，受影响 Work 通过 `blocked_by_repair_work_id` 关联；修复成功后分批、有界唤醒，避免重试和人工告警风暴。`auth_expired`/`captcha` 进入 Profile 故障域时还必须原子熔断其接受版本，派发查询和领取时都只允许 `ready` Profile；`budget_revoked` 即使按 Profile 聚合也只是预算/策略故障，不能把认证状态误改为失效。重试策略版本、Attempt 计数和预算耗尽原因随 Work 保存；人工重试不能绕过站点或 Profile 安全预算。
+失败按 `origin | recipe_version | profile | single_target` 归入故障域。相同 `failure_signature` 只允许一个活动 Repair Work，受影响 Work 通过 `blocked_by_repair_work_id` 关联；修复成功后由现有 Recruiting reconcile 每次自动开放一个、至多 100 个 Work 的批次，按最久未处理的 Incident 轮转。是否仍需恢复不是运行时遍历历史 Incident 推测，而是 resolve/恢复事务维护的显式 `recovery_pending` 队列事实和专用索引；每批提交后，大 Incident 排到队尾，最终批次原子清除队列标志。每个批次仍有确定 command receipt、版本围栏、一个聚合事件和每种 capability 至多一个初始 wake，真正领取继续受全局、站点、公司和 Profile 预算约束；人工 `repair.recover` 保留为可审计的运维兜底，并与自动协调竞争同一版本，不能形成双重恢复。`auth_expired`/`captcha` 进入 Profile 故障域时还必须原子熔断其接受版本，派发查询和领取时都只允许 `ready` Profile；`budget_revoked` 即使按 Profile 聚合也只是预算/策略故障，不能把认证状态误改为失效。重试策略版本、Attempt 计数和预算耗尽原因随 Work 保存；人工重试不能绕过站点或 Profile 安全预算。
 
 ## 11. 一致性与恢复
 
@@ -1001,7 +1001,7 @@ Review Queue 是 `status=waiting_human` 的 Work Center 视图，可再按结构
 
 业务指标包括 Target 健康、职位变化、Recipe 覆盖与修复率；调度指标包括可运行量、等待原因、最老年龄、deadline、Attempt 结果、站点预算和能力利用率；可靠性指标包括跨 ledger/Resource 未完成意图、状态差异、陈旧结果拒绝和恢复时间。
 
-`recruiting.system.status` 从一个只读一致性快照返回 Work/Attempt/DailyRun/Repair 状态计数、当前 runnable 与最老等待、deadline miss、领域事件和 execution dispatch 的 pending/due/exhausted；`recruiting.capacity.status` 返回全局、capability、origin、company、Profile 的活动 BudgetPermit 用量，以及按 capability/origin/Profile 有界聚合的 runnable 数和最老等待，同时展示配置的预算上限与 Executor fleet 数。容量分组不能用“限制返回行数”的无界 `GROUP BY` 扫描全部积压；首版分别从 `open`/`waiting_retry` 的 runnable 索引最老端最多读取 5,000 条，并显式返回 scan limit、实际扫描数和 `runnable_counts_exact`，截断结果只是容量压力下界。二者是现有事实的投影，不领取 Work、不创建容量 Actor，也不能把配置实例数冒充在线心跳。
+`recruiting.system.status` 从一个只读一致性快照返回 Work/Attempt/DailyRun/Repair 状态计数、Repair 自动恢复队列长度、当前 runnable 与最老等待、deadline miss、领域事件和 execution dispatch 的 pending/due/exhausted；`recruiting.capacity.status` 返回全局、capability、origin、company、Profile 的活动 BudgetPermit 用量，以及按 capability/origin/Profile 有界聚合的 runnable 数和最老等待，同时展示配置的预算上限与 Executor fleet 数。容量分组不能用“限制返回行数”的无界 `GROUP BY` 扫描全部积压；首版分别从 `open`/`waiting_retry` 的 runnable 索引最老端最多读取 5,000 条，并显式返回 scan limit、实际扫描数和 `runnable_counts_exact`，截断结果只是容量压力下界。二者是现有事实的投影，不领取 Work、不创建容量 Actor，也不能把配置实例数冒充在线心跳。
 
 必须贯穿 `command_id`、`correlation_id`、`target_id`、`work_id`、`attempt_id`、Recipe 版本和 `artifact_id`。只有真正引入 Batch 等实体后才增加对应 ID。
 

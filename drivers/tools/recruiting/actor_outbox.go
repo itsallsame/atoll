@@ -54,6 +54,10 @@ type outboxReconcileResponse struct {
 	BaselineDispatches      int    `json:"baseline_dispatches"`
 	BaselinePageCompleted   bool   `json:"baseline_page_completed"`
 	CompanyReadyID          string `json:"company_ready_id,omitempty"`
+	RepairCandidatesScanned int    `json:"repair_candidates_scanned"`
+	RepairBatchesRecovered  int    `json:"repair_batches_recovered"`
+	RepairWorksRecovered    int    `json:"repair_works_recovered"`
+	RepairRecoveryConflicts int    `json:"repair_recovery_conflicts"`
 }
 
 type outboxReconcileDuePayload struct {
@@ -118,6 +122,15 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 	if readyCompany != nil {
 		response.CompanyReadyID = readyCompany.CompanyID
 	}
+	repairRecovery, err := reconcileRepairRecoveryBatch(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response.RepairCandidatesScanned = repairRecovery.CandidatesScanned
+	response.RepairBatchesRecovered = repairRecovery.BatchesRecovered
+	response.RepairWorksRecovered = repairRecovery.WorksRecovered
+	response.RepairRecoveryConflicts = repairRecovery.Conflicts
 	dispatch, err := reconcileExecutionDispatches(msg.Ctx(), sys, repository, payload.Limit, now,
 		time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond)
 	if err != nil {
@@ -259,6 +272,7 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 		_, _ = repository.MaterializeNextBaselinePage(msg.Ctx(), cfg.BaselineMaterializeLimit, now,
 			cfg.executionDispatchTargets())
 		_, _ = repository.PromoteNextReadyCompany(msg.Ctx(), now)
+		_, _ = reconcileRepairRecoveryBatch(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
 		_, _ = reconcileRecipeRolloutBatches(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
 		_, _ = reconcileExecutionDispatches(msg.Ctx(), sys, repository, defaultReconcileLimit, now,
 			time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond)
