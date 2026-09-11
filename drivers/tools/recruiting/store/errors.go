@@ -18,4 +18,5 @@ var (
 	ErrRecipeValidationRejected   = errors.New("Recipe validation evidence rejected")
 	ErrRecipeValidationInProgress = errors.New("Recipe validation Work is still active")
 	ErrRepairEvidenceRejected     = errors.New("repair validation evidence rejected")
+	ErrWorkCorrectionInProgress   = errors.New("Work correction blocked by an active Attempt")
 )

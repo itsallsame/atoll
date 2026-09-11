@@ -275,6 +275,8 @@ Work 查询现已分离面向人的 operational Work Center 与面向执行面�
 
 进展补充（2026-09-11，公司导入人工修复闭环，替代上一段末句）：公开 `recruiting.company.import.item.resolve` 以精确 Batch/Item version 处理已完成批次中的单个 `waiting_human` outcome。`retry` 只重试 immutable preview 中原本 ready 的项，要求运营员先用正常 Company 命令消除外部唯一键冲突；预览即不合法的项不能篡改原输入，只能明确 `skip`，字段纠正必须形成新 Resource/批次。Repository 在同一短事务内锁定 Batch、Item、子 Work 和父 Work，按动作写 Company、Item outcome、Work resolution、receipt/event，再从全部 Item 事实重新聚合；仍有异常时父 Work 不动，最后异常解决后才成功结案。非 root MySQL 8.4 合同验证未修复冲突全事务回滚、并发相同 resolve 一次提交/一次 replay、跳过后继续等待、最终重试后自动结案和原预览详情不变。真实 server/daemon E2E 由普通运营员先通过 `company.update` 释放网站唯一键，再公开 retry 冲突项、skip 无效源行，最终从 2 个等待项收敛到 3 成功/2 跳过/0 等待，输入 File Resource 字节始终不变；没有增加 Worker/Actor 类型。
 
+进展补充（2026-09-11，Work 调度修正）：此前只在产品词表保留、但 manifest/handler 尚未接通的 `recruiting.work.correct` 现闭合为窄语义的调度修正，而不是通用业务数据编辑。普通用户只能对没有活动 Attempt 的 `open` Work 以精确 version 修改 `priority/not_before/deadline_at/profile_id`；Target、purpose、business key、capability、origin 和领域输入保持不变，Work version 与 acceptance fence 同时增加。修正事务原子写 Work/placement、command receipt、`work.corrected` event 和按新 placement 生成的 capability wake；无实际变化、非法时间窗、running/waiting/paused/终态状态或活动 Attempt 均拒绝且不留 receipt。非 root MySQL 合同验证稳定重放、不可编辑字段、活动 Attempt 阻断和 dispatch 一致性；普通运营员真实 Server E2E 已完成 create→correct→replay→pause→resume→cancel→retry，并验证修正后的 placement 可公开读取。业务内容修复继续使用 Company/Source/Recipe/Job/Import 专用命令。
+
 ### 开发顺序
 
 1. 查询：company/source/job/work/daily run/system/capacity；

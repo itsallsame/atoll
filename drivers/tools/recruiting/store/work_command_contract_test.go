@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,6 +49,70 @@ func TestWorkCommandsKeepReceiptStateOutboxAndRetryCausalityAtomic(t *testing.T)
 		record.Placement.BusinessKey != placement.BusinessKey || record.Placement.Origin != placement.Origin {
 		t.Fatalf("stored work record = %+v %v", record, err)
 	}
+	corrected, _ := work.CorrectPlacement(work.Version)
+	correctedPlacement := placement
+	correctedPlacement.Priority, correctedPlacement.ProfileID = 900, "profile-corrected"
+	correctedPlacement.NotBefore = now.Add(10 * time.Minute)
+	deadline := now.Add(time.Hour)
+	correctedPlacement.DeadlineAt = &deadline
+	correctResponse := json.RawMessage(`{"work":{"work_id":"command-work","version":2},"placement":{"priority":900}}`)
+	correctReceipt, _ := model.NewCommandReceipt("work-correct-command", "recruiting.work.correct", "sha256:correct-work", correctResponse)
+	correctEvent, _ := model.NewEventIntent("work-correct-event", "work.corrected", "work", work.WorkID, corrected.Version,
+		now.Add(time.Second).Format(time.RFC3339), correctReceipt.CommandID, json.RawMessage(`{}`))
+	correctDispatch, _ := NewExecutionDispatchIntent("dispatch-work-correct-command", "tool:executor-http-a", correctedPlacement.Capability,
+		correctedPlacement.Origin, correctedPlacement.ProfileID, "work_corrected", correctReceipt.CommandID, correctedPlacement.NotBefore)
+	correctResult, err := repository.ApplyCorrectWorkPlacementCommand(ctx, work.Version, corrected, correctedPlacement,
+		correctReceipt, correctEvent, &correctDispatch, now.Add(time.Second))
+	if err != nil || correctResult.Replayed {
+		t.Fatalf("correct work placement = %+v err=%v", correctResult, err)
+	}
+	if replay, err := repository.ApplyCorrectWorkPlacementCommand(ctx, work.Version, corrected, correctedPlacement,
+		correctReceipt, correctEvent, &correctDispatch, now.Add(time.Second)); err != nil || !replay.Replayed {
+		t.Fatalf("correct work replay = %+v err=%v", replay, err)
+	}
+	record, err = repository.GetWorkRecord(ctx, work.WorkID)
+	if err != nil || record.Work != corrected || record.Placement.BusinessKey != placement.BusinessKey ||
+		record.Placement.Capability != placement.Capability || record.Placement.Origin != placement.Origin ||
+		record.Placement.Priority != 900 || record.Placement.ProfileID != "profile-corrected" ||
+		!record.Placement.NotBefore.Equal(correctedPlacement.NotBefore) || record.Placement.DeadlineAt == nil ||
+		!record.Placement.DeadlineAt.Equal(deadline) {
+		t.Fatalf("corrected work record = %+v err=%v", record, err)
+	}
+	forbiddenCorrection, _ := corrected.CorrectPlacement(corrected.Version)
+	forbiddenPlacement := correctedPlacement
+	forbiddenPlacement.Priority++
+	forbiddenPlacement.Capability = "browser.recipe"
+	forbiddenReceipt, _ := model.NewCommandReceipt("work-correct-capability-command", "recruiting.work.correct",
+		"sha256:correct-capability-work", json.RawMessage(`{"blocked":true}`))
+	forbiddenEvent, _ := model.NewEventIntent("work-correct-capability-event", "work.corrected", "work", corrected.WorkID,
+		forbiddenCorrection.Version, now.Add(time.Second).Format(time.RFC3339), forbiddenReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyCorrectWorkPlacementCommand(ctx, corrected.Version, forbiddenCorrection, forbiddenPlacement,
+		forbiddenReceipt, forbiddenEvent, nil, now.Add(time.Second)); err == nil || !strings.Contains(err.Error(), "cannot change") {
+		t.Fatalf("capability correction was accepted: %v", err)
+	}
+	if _, found, err := repository.LookupCommand(ctx, forbiddenReceipt.CommandID, forbiddenReceipt.RequestHash); err != nil || found {
+		t.Fatalf("forbidden correction left receipt found=%v err=%v", found, err)
+	}
+	activeAttempt, _ := model.NewAttempt("work-correction-active-attempt", corrected)
+	activeAttempt, _ = activeAttempt.BindExecutor("tool:executor-http-a", "boot-active", correctedPlacement.Capability)
+	if err := repository.CreateAttempt(ctx, activeAttempt, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	blockedCorrection, _ := corrected.CorrectPlacement(corrected.Version)
+	blockedPlacement := correctedPlacement
+	blockedPlacement.Priority++
+	blockedReceipt, _ := model.NewCommandReceipt("work-correct-active-command", "recruiting.work.correct",
+		"sha256:correct-active-work", json.RawMessage(`{"blocked":true}`))
+	blockedEvent, _ := model.NewEventIntent("work-correct-active-event", "work.corrected", "work", corrected.WorkID,
+		blockedCorrection.Version, now.Add(time.Second).Format(time.RFC3339), blockedReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyCorrectWorkPlacementCommand(ctx, corrected.Version, blockedCorrection, blockedPlacement,
+		blockedReceipt, blockedEvent, nil, now.Add(time.Second)); !errors.Is(err, ErrWorkCorrectionInProgress) {
+		t.Fatalf("active Attempt did not block Work correction: %v", err)
+	}
+	if _, found, err := repository.LookupCommand(ctx, blockedReceipt.CommandID, blockedReceipt.RequestHash); err != nil || found {
+		t.Fatalf("blocked correction left receipt found=%v err=%v", found, err)
+	}
+	work, placement = corrected, correctedPlacement
 
 	paused, _ := work.Pause(work.Version)
 	pauseResponse := json.RawMessage(`{"work":{"work_id":"command-work","version":2}}`)
@@ -97,13 +162,13 @@ func TestWorkCommandsKeepReceiptStateOutboxAndRetryCausalityAtomic(t *testing.T)
 		t.Fatal("stale retry cause version was accepted")
 	}
 
-	for _, id := range []string{createEvent.EventID, pauseEvent.EventID, resumeEvent.EventID, cancelEvent.EventID, retryEvent.EventID} {
+	for _, id := range []string{createEvent.EventID, correctEvent.EventID, pauseEvent.EventID, resumeEvent.EventID, cancelEvent.EventID, retryEvent.EventID} {
 		var count int
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = ?", id).Scan(&count); err != nil || count != 1 {
 			t.Fatalf("event %s count=%d err=%v", id, count, err)
 		}
 	}
-	for _, expected := range []ExecutionDispatchIntent{createDispatch, retryDispatch} {
+	for _, expected := range []ExecutionDispatchIntent{createDispatch, correctDispatch, retryDispatch} {
 		actual, found, err := getExecutionDispatch(ctx, db, expected.DispatchID)
 		if err != nil || !found || actual.Intent != expected || actual.Attempts != 0 {
 			t.Fatalf("execution dispatch %s = %+v found=%v err=%v", expected.DispatchID, actual, found, err)

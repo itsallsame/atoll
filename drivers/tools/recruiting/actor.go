@@ -183,7 +183,7 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleJobCorrect(sys, repository, msg)
 		case TypeProfileRepairBegin:
 			handleProfileRepairBegin(sys, cfg, repository, msg)
-		case TypeWorkCreate, TypeWorkPause, TypeWorkResume, TypeWorkRetry, TypeWorkCancel, TypeWorkResolve:
+		case TypeWorkCreate, TypeWorkPause, TypeWorkResume, TypeWorkCorrect, TypeWorkRetry, TypeWorkCancel, TypeWorkResolve:
 			handleWorkMessage(sys, cfg, repository, msg)
 		case TypeRunJoinOccurrence:
 			handleRunJoinOccurrence(sys, cfg, repository, msg)

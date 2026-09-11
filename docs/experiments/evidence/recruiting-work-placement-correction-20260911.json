@@ -1,0 +1,45 @@
+{
+  "observed_at": "2026-09-11",
+  "branch": "codex/atoll-recruiting",
+  "scenario": "operator corrects open Work placement without changing domain inputs",
+  "public_word": "recruiting.work.correct",
+  "allowed_fields": [
+    "priority",
+    "not_before",
+    "deadline_at",
+    "profile_id"
+  ],
+  "forbidden_fields": [
+    "business_key",
+    "target",
+    "purpose",
+    "capability",
+    "origin",
+    "recipe",
+    "domain_input"
+  ],
+  "mysql_contract": {
+    "command": "RECRUITING_MYSQL_TEST_RUN='^TestWorkCommandsKeepReceiptStateOutboxAndRetryCausalityAtomic$' scripts/recruiting-mysql-test.sh",
+    "mysql": "8.4",
+    "migration_identity": "staircase_migrator",
+    "runtime_identity": "staircase_runtime",
+    "elapsed_seconds": 3.475,
+    "passed": true,
+    "proved": [
+      "Work version and acceptance version advance together",
+      "business identity, capability and origin remain unchanged",
+      "receipt, event and corrected-placement dispatch commit atomically",
+      "stable command replay does not add facts",
+      "an active Attempt rejects correction without leaving a receipt"
+    ]
+  },
+  "process_e2e": {
+    "command": "go test ./e2e -run 'TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart' -count=1",
+    "elapsed_seconds": 47.060,
+    "passed": true,
+    "actors": "ordinary operator and real Atoll server",
+    "flow": "work.create -> work.correct -> replay -> pause -> resume -> cancel -> retry"
+  },
+  "new_worker_or_actor_class": false,
+  "atoll_core_modified": false
+}

@@ -74,6 +74,7 @@ func manifest() introspect.Manifest {
 			TypeWorkCreate:                     {Description: "create one manually initiated operational work item"},
 			TypeWorkPause:                      {Description: "pause work and fence results from existing attempts"},
 			TypeWorkResume:                     {Description: "resume paused work as open"},
+			TypeWorkCorrect:                    {Description: "version-fence and correct scheduling metadata of an unclaimed open work"},
 			TypeWorkRetry:                      {Description: "create a new causal work lifecycle from terminal non-success work"},
 			TypeWorkCancel:                     {Description: "cancel non-terminal work and fence existing attempts"},
 			TypeWorkResolve:                    {Description: "record an explicit human non-success resolution"},

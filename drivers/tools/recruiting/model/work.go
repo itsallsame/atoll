@@ -177,6 +177,22 @@ func (w Work) Start(expected uint64) (Work, error) {
 	return w, nil
 }
 
+// CorrectPlacement fences an open Work before its scheduling metadata is
+// changed. Business inputs live on their domain aggregates and must be fixed
+// through their dedicated commands; this transition deliberately changes no
+// target, purpose, cause, or execution result.
+func (w Work) CorrectPlacement(expected uint64) (Work, error) {
+	if err := requireVersion(expected, w.Version); err != nil {
+		return Work{}, err
+	}
+	if w.Status != WorkOpen {
+		return Work{}, &InvalidTransitionError{Entity: "work", From: string(w.Status), Action: "correct placement"}
+	}
+	w.AcceptanceVersion++
+	w.Version++
+	return w, nil
+}
+
 func (w Work) WaitRetry(expected uint64, reason string) (Work, error) {
 	return w.wait(expected, WorkWaitingRetry, reason)
 }

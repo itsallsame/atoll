@@ -213,6 +213,21 @@ func TestCompanyImportReaggregatesResolvedItemsWithoutReopeningBatch(t *testing.
 	}
 }
 
+func TestWorkPlacementCorrectionFencesOpenWorkWithoutChangingBusinessIdentity(t *testing.T) {
+	work, _ := NewWork("correct-work", "source", "source-1", "listing_sync", "manual")
+	work, _ = work.WithCausality("human:operator", "message-1", "")
+	next, err := work.CorrectPlacement(work.Version)
+	if err != nil || next.Version != work.Version+1 || next.AcceptanceVersion != work.AcceptanceVersion+1 ||
+		next.WorkID != work.WorkID || next.TargetType != work.TargetType || next.TargetID != work.TargetID ||
+		next.Purpose != work.Purpose || next.CauseMessageID != work.CauseMessageID || next.Status != WorkOpen {
+		t.Fatalf("corrected Work = %+v err=%v", next, err)
+	}
+	running, _ := work.Start(work.Version)
+	if _, err := running.CorrectPlacement(running.Version); err == nil {
+		t.Fatal("running Work placement was corrected")
+	}
+}
+
 func TestArtifactAndListingObservationRequireStableReferences(t *testing.T) {
 	artifact, err := NewArtifactMetadata("artifact-1", ArtifactPage, "sha256:page", "object://bucket/page", "work-1", "attempt-1", "operators", "30d", true)
 	if err != nil || artifact.Kind != ArtifactPage {

@@ -248,27 +248,49 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	if got := stringField(t, placement, "capability"); got != "http.fetch" {
 		t.Fatalf("work placement capability=%q: %v", got, workView)
 	}
+	correctNotBefore := time.Now().UTC().Add(2 * time.Minute).Truncate(time.Second)
+	correctDeadline := correctNotBefore.Add(30 * time.Minute)
+	workCorrect := map[string]any{
+		"command_id": "e2e-work-correct", "target": map[string]any{"target_type": "work", "target_id": "e2e-work-repair"},
+		"expected_version": 1, "priority": 700, "profile_id": "e2e-profile-corrected",
+		"not_before": correctNotBefore.Format(time.RFC3339), "deadline_at": correctDeadline.Format(time.RFC3339),
+		"reason": "operator corrects scheduling metadata before execution",
+	}
+	correctedWork := recovered.request(homeID, "recruiting.work.correct", controlID, workCorrect)
+	if got := nestedNumberField(t, correctedWork, "work", "version"); got != 2 {
+		t.Fatalf("work correction did not advance version: %v", correctedWork)
+	}
+	correctedPlacement, _ := correctedWork["placement"].(map[string]any)
+	if numberField(t, correctedPlacement, "priority") != 700 || stringField(t, correctedPlacement, "profile_id") != "e2e-profile-corrected" ||
+		stringField(t, correctedPlacement, "not_before") != correctNotBefore.Format(time.RFC3339) ||
+		stringField(t, correctedPlacement, "deadline_at") != correctDeadline.Format(time.RFC3339) {
+		t.Fatalf("corrected Work placement=%v", correctedWork)
+	}
+	correctedReplay := recovered.request(homeID, "recruiting.work.correct", controlID, workCorrect)
+	if nestedNumberField(t, correctedReplay, "work", "version") != 2 {
+		t.Fatalf("work correction replay changed version: %v", correctedReplay)
+	}
 	pausedWork := recovered.request(homeID, "recruiting.work.pause", controlID, map[string]any{
 		"command_id": "e2e-work-pause", "target": map[string]any{"target_type": "work", "target_id": "e2e-work-repair"},
-		"expected_version": 1, "reason": "operator pauses repair",
+		"expected_version": 2, "reason": "operator pauses repair",
 	})
-	if got := nestedNumberField(t, pausedWork, "work", "acceptance_version"); got != 2 {
+	if got := nestedNumberField(t, pausedWork, "work", "acceptance_version"); got != 3 {
 		t.Fatalf("pause did not fence attempts: %v", pausedWork)
 	}
 	recovered.request(homeID, "recruiting.work.resume", controlID, map[string]any{
 		"command_id": "e2e-work-resume", "target": map[string]any{"target_type": "work", "target_id": "e2e-work-repair"},
-		"expected_version": 2, "reason": "operator resumes repair",
+		"expected_version": 3, "reason": "operator resumes repair",
 	})
 	canceledWork := recovered.request(homeID, "recruiting.work.cancel", controlID, map[string]any{
 		"command_id": "e2e-work-cancel", "target": map[string]any{"target_type": "work", "target_id": "e2e-work-repair"},
-		"expected_version": 3, "reason": "replace with clean retry",
+		"expected_version": 4, "reason": "replace with clean retry",
 	})
 	if got := nestedStringField(t, canceledWork, "work", "work_status"); got != "canceled" {
 		t.Fatalf("canceled work status=%q: %v", got, canceledWork)
 	}
 	retryWork := recovered.request(homeID, "recruiting.work.retry", controlID, map[string]any{
 		"command_id": "e2e-work-retry", "target": map[string]any{"target_type": "work", "target_id": "e2e-work-repair"},
-		"expected_version": 4, "reason": "retry after operator correction", "new_work_id": "e2e-work-repair-retry",
+		"expected_version": 5, "reason": "retry after operator correction", "new_work_id": "e2e-work-repair-retry",
 	})
 	if got := nestedStringField(t, retryWork, "work", "cause_work_id"); got != "e2e-work-repair" {
 		t.Fatalf("retry lost causal work: %v", retryWork)

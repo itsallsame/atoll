@@ -278,6 +278,8 @@ func failStoreError(sys actorbase.Sys, msg actorbase.Msg, err error) {
 		code = ErrorWaitingHuman
 	case errors.Is(err, store.ErrRepairEvidenceRejected):
 		code = ErrorQualityRejected
+	case errors.Is(err, store.ErrWorkCorrectionInProgress):
+		code = ErrorWaitingHuman
 	default:
 		var conflict *model.VersionConflictError
 		var transition *model.InvalidTransitionError

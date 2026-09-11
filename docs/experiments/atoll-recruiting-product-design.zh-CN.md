@@ -665,6 +665,8 @@ summary, created_at, updated_at
 
 多步骤可以使用子 Work 或步骤进度；是否需要独立 Task 由纵向切片决定。
 
+`recruiting.work.correct` 只修正尚未被领取的 `open` Work 的调度 placement：`priority`、`not_before`、可清除的 `deadline_at` 和可清除/替换的 `profile_id`。它必须以 Work version 做 CAS，并同时提升 `acceptance_version`、保存 receipt/event、按新 placement 追加一次持久 wake；已有活动 Attempt、running/paused/waiting/终态 Work 均拒绝原地修正。`business_key`、Target、purpose、capability、origin、Recipe 和业务输入绝不能从这个通用词修改：公司、Source URL、Recipe、导入项或岗位字段错误必须走各自领域命令，再按对应状态机恢复或创建新 Work。这样 Work Center 的“修正调度”不会成为绕过领域 fence 的任意改任务后门。
+
 父 Work 是用户可见聚合，不替代子 Work 的状态和幂等边界。批量场景逐项保存 `succeeded|failed|skipped|waiting_human`，父级以结构化 outcome 表达部分成功，取消只阻止未开始项并 fence 仍在运行的结果。`completed` 还必须带 `resolution=succeeded|accepted_gap|skipped|terminated`、决定人、理由和证据；接受缺口不能计为 coverage 成功。
 
 取消不能只改变 Work 展示状态。对于可执行 baseline，`recruiting.work.cancel` 必须在一个事务内取消 Work 和 BaselineGeneration、提升 acceptance fence、拒绝活动 Attempt、释放 BudgetPermit、写协作事件和容量释放 wake；在途 Executor 的迟到页只能保存为 rejected Artifact，不能建立 Checkpoint。取消后的 generation 是终态历史，不重新打开；Company 可在相同 `initializing` 阶段以新的 Work 和更高 generation 重新开始。

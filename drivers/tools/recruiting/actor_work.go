@@ -38,16 +38,25 @@ type workRetryPayload struct {
 	DeadlineAt string `json:"deadline_at,omitempty"`
 }
 
+type workCorrectPayload struct {
+	MutationCommand
+	Priority   *int    `json:"priority,omitempty"`
+	ProfileID  *string `json:"profile_id,omitempty"`
+	NotBefore  *string `json:"not_before,omitempty"`
+	DeadlineAt *string `json:"deadline_at,omitempty"`
+}
+
 type workCommandResponse struct {
-	ContractVersion string            `json:"contract_version"`
-	CorrelationID   string            `json:"correlation_id"`
-	RequestedBy     string            `json:"requested_by"`
-	Work            model.Work        `json:"work"`
-	Target          Target            `json:"target"`
-	NextAction      string            `json:"next_action"`
-	RunMode         RunMode           `json:"run_mode,omitempty"`
-	OccurrenceID    string            `json:"occurrence_id,omitempty"`
-	ListingRun      *model.ListingRun `json:"listing_run,omitempty"`
+	ContractVersion string               `json:"contract_version"`
+	CorrelationID   string               `json:"correlation_id"`
+	RequestedBy     string               `json:"requested_by"`
+	Work            model.Work           `json:"work"`
+	Target          Target               `json:"target"`
+	NextAction      string               `json:"next_action"`
+	RunMode         RunMode              `json:"run_mode,omitempty"`
+	OccurrenceID    string               `json:"occurrence_id,omitempty"`
+	ListingRun      *model.ListingRun    `json:"listing_run,omitempty"`
+	Placement       *store.WorkPlacement `json:"placement,omitempty"`
 }
 
 type listingRunPayload struct {
@@ -68,11 +77,122 @@ func handleWorkMessage(sys actorbase.Sys, cfg Config, repository *store.Reposito
 	switch msg.Type {
 	case TypeWorkCreate:
 		handleWorkCreate(sys, cfg, repository, msg)
+	case TypeWorkCorrect:
+		handleWorkCorrect(sys, cfg, repository, msg)
 	case TypeWorkRetry:
 		handleWorkRetry(sys, cfg, repository, msg)
 	default:
 		handleWorkMutation(sys, repository, msg)
 	}
+}
+
+func handleWorkCorrect(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
+	var payload workCorrectPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	context, err := NewCommandContext(payload.MutationCommand, string(msg.Sender.ID))
+	if err != nil || payload.Target.Type != "work" {
+		if err == nil {
+			err = fmt.Errorf("target_type must be work")
+		}
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	if payload.Priority == nil && payload.ProfileID == nil && payload.NotBefore == nil && payload.DeadlineAt == nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "at least one scheduling correction is required")
+		return
+	}
+	if replay, found, lookupErr := repository.LookupCommand(msg.Ctx(), payload.CommandID, commandRequestHash(msg)); lookupErr != nil {
+		failStoreError(sys, msg, lookupErr)
+		return
+	} else if found {
+		_, _ = sys.Reply(msg, json.RawMessage(replay.Response))
+		return
+	}
+	record, err := repository.GetWorkRecord(msg.Ctx(), payload.Target.ID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	nextPlacement := record.Placement
+	if payload.Priority != nil {
+		nextPlacement.Priority = *payload.Priority
+	}
+	if payload.ProfileID != nil {
+		nextPlacement.ProfileID = strings.TrimSpace(*payload.ProfileID)
+		if nextPlacement.ProfileID != *payload.ProfileID || len(nextPlacement.ProfileID) > 191 || strings.ContainsAny(nextPlacement.ProfileID, "\r\n\t ") {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "profile_id must be empty or a normalized identifier")
+			return
+		}
+	}
+	if payload.NotBefore != nil {
+		if strings.TrimSpace(*payload.NotBefore) == "" {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "not_before cannot be cleared")
+			return
+		}
+		nextPlacement.NotBefore, err = time.Parse(time.RFC3339, *payload.NotBefore)
+		if err != nil {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "not_before must be RFC3339")
+			return
+		}
+		nextPlacement.NotBefore = nextPlacement.NotBefore.UTC()
+	}
+	if payload.DeadlineAt != nil {
+		if strings.TrimSpace(*payload.DeadlineAt) == "" {
+			nextPlacement.DeadlineAt = nil
+		} else {
+			value, parseErr := time.Parse(time.RFC3339, *payload.DeadlineAt)
+			if parseErr != nil {
+				_, _ = sys.Fail(msg, ErrorPayloadInvalid, "deadline_at must be empty or RFC3339")
+				return
+			}
+			value = value.UTC()
+			nextPlacement.DeadlineAt = &value
+		}
+	}
+	if nextPlacement.Priority < -1000 || nextPlacement.Priority > 1000 ||
+		(nextPlacement.DeadlineAt != nil && !nextPlacement.DeadlineAt.After(nextPlacement.NotBefore)) {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "priority must be in [-1000,1000] and deadline_at must follow not_before")
+		return
+	}
+	if sameActorWorkPlacement(record.Placement, nextPlacement) {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "work scheduling correction contains no change")
+		return
+	}
+	nextWork, err := record.Work.CorrectPlacement(payload.ExpectedVersion)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := makeWorkResponse(msg, nextWork)
+	response.Placement = &nextPlacement
+	dispatch, err := workCommandDispatch(cfg, nextWork, nextPlacement, payload.CommandID, "work_corrected")
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	receipt, event, businessAt, err := workCommandFacts(msg, payload.CommandID, context.Command.Reason, response, "work.corrected")
+	var result store.CommandResult
+	if err == nil {
+		result, err = repository.ApplyCorrectWorkPlacementCommand(msg.Ctx(), payload.ExpectedVersion, nextWork, nextPlacement,
+			receipt, event, dispatch, businessAt)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
+}
+
+func sameActorWorkPlacement(left, right store.WorkPlacement) bool {
+	if left.Priority != right.Priority || left.ProfileID != right.ProfileID || !left.NotBefore.Equal(right.NotBefore) {
+		return false
+	}
+	if left.DeadlineAt == nil || right.DeadlineAt == nil {
+		return left.DeadlineAt == nil && right.DeadlineAt == nil
+	}
+	return left.DeadlineAt.Equal(*right.DeadlineAt)
 }
 
 func handleRunJoinOccurrence(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -634,6 +754,8 @@ func workEventKind(word string) string {
 		return "work.paused"
 	case TypeWorkResume:
 		return "work.resumed"
+	case TypeWorkCorrect:
+		return "work.corrected"
 	case TypeWorkCancel:
 		return "work.canceled"
 	case TypeWorkResolve:
