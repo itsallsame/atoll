@@ -1,0 +1,42 @@
+{
+  "schema": "recruiting.live-sites.v1",
+  "policy": {
+    "read_only": true,
+    "max_requests_per_target": 2,
+    "max_listing_pages": 1,
+    "max_response_bytes": 2097152,
+    "between_target_delay_seconds": 2,
+    "production_incremental_qualification": false
+  },
+  "tiers": {
+    "nightly": [
+      {"id":"greenhouse-mongodb","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/mongodb/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-discord","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/discord/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-acuitymd","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/acuitymd/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-figma","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/figma/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"lever-palantir","provider":"lever","source_url":"https://api.lever.co/v0/postings/palantir?mode=json&limit=100","documentation_url":"https://github.com/lever/postings-api","terms_reviewed_at":"2026-09-11T00:00:00Z"}
+    ],
+    "weekly": [
+      {"id":"greenhouse-mongodb","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/mongodb/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-discord","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/discord/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-acuitymd","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/acuitymd/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-figma","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/figma/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-cloudflare","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/cloudflare/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-datadog","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/datadog/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-doordashusa","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/doordashusa/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-highspot","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/highspot/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-twilio","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/twilio/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-samsara","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/samsara/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-scaleai","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/scaleai/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-ripple","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/ripple/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-lyft","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/lyft/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-robinhood","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/robinhood/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-affirm","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/affirm/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-okta","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/okta/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-plaid","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/plaid/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-webflow","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/webflow/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"greenhouse-airbnb","provider":"greenhouse","source_url":"https://boards-api.greenhouse.io/v1/boards/airbnb/jobs","documentation_url":"https://developers.greenhouse.io/job-board.html","terms_reviewed_at":"2026-09-11T00:00:00Z"},
+      {"id":"lever-palantir","provider":"lever","source_url":"https://api.lever.co/v0/postings/palantir?mode=json&limit=100","documentation_url":"https://github.com/lever/postings-api","terms_reviewed_at":"2026-09-11T00:00:00Z"}
+    ]
+  }
+}

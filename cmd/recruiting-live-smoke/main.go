@@ -23,9 +23,19 @@ import (
 )
 
 const (
-	sourceURL = "https://boards-api.greenhouse.io/v1/boards/mongodb/jobs"
-	docsURL   = "https://docs.greenhouse.io/job-board.html"
+	defaultTargetID  = "greenhouse-mongodb"
+	defaultProvider  = "greenhouse"
+	defaultSourceURL = "https://boards-api.greenhouse.io/v1/boards/mongodb/jobs"
+	defaultDocsURL   = "https://developers.greenhouse.io/job-board.html"
 )
+
+type targetConfig struct {
+	TargetID               string
+	Provider               string
+	SourceURL              string
+	PublicAPIDocumentation string
+	TermsReviewedAt        string
+}
 
 type artifactRecord struct {
 	Ref         recipeabi.ArtifactRef          `json:"ref"`
@@ -95,6 +105,8 @@ type report struct {
 	Status                        string                 `json:"status"`
 	StartedAt                     string                 `json:"started_at"`
 	FinishedAt                    string                 `json:"finished_at"`
+	TargetID                      string                 `json:"target_id"`
+	Provider                      string                 `json:"provider"`
 	SourceURL                     string                 `json:"source_url"`
 	PublicAPIDocumentation        string                 `json:"public_api_documentation"`
 	RecipeVersion                 uint64                 `json:"recipe_version"`
@@ -109,23 +121,62 @@ type report struct {
 	Artifacts                     []artifactRecord       `json:"artifacts"`
 }
 
-func candidateSpec() recipeabi.Spec {
-	return recipeabi.Spec{
+func candidateSpec(provider string) (recipeabi.Spec, error) {
+	base := recipeabi.Spec{
 		ABIVersion: recipeabi.Version, Kind: recipeabi.KindListing, RequiredCapability: "http.fetch", Transport: recipeabi.TransportHTTPJSON,
 		Request: recipeabi.ReadRequest{Method: "GET", Headers: map[string]string{"Accept": "application/json"}, TimeoutMS: 20_000,
 			MaxResponseBytes: 2 << 20, MaxRedirects: 0, UserAgent: "Atoll-Recruiting-Live-Smoke/1 (+read-only acceptance test)"},
-		Extraction: recipeabi.Extraction{Collection: "/jobs", Fields: map[string]string{
-			"job_key": "/id", "title": "/title", "activity_at": "/updated_at", "detail_url": "/absolute_url",
-		}},
-		Listing: &recipeabi.ListingContract{IdentityField: "job_key", DetailURLField: "detail_url", ActivityField: "activity_at", BoundaryMode: "activity_time",
-			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 1, MaxPages: 1, MaxItemsPerPage: 500,
-			MaxTotalBytes: 2 << 20, FrontierWidth: 20},
 	}
+	switch provider {
+	case "greenhouse":
+		base.Extraction = recipeabi.Extraction{Collection: "/jobs", Fields: map[string]string{
+			"job_key": "/id", "title": "/title", "activity_at": "/updated_at", "detail_url": "/absolute_url",
+		}}
+		base.Listing = &recipeabi.ListingContract{IdentityField: "job_key", DetailURLField: "detail_url", ActivityField: "activity_at",
+			BoundaryMode: "activity_time", Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 1,
+			MaxPages: 1, MaxItemsPerPage: 500, MaxTotalBytes: 2 << 20, FrontierWidth: 20}
+	case "lever":
+		base.Extraction = recipeabi.Extraction{CollectionRoot: true, Fields: map[string]string{
+			"job_key": "/id", "title": "/text", "detail_url": "/hostedUrl",
+		}}
+		base.Listing = &recipeabi.ListingContract{IdentityField: "job_key", DetailURLField: "detail_url",
+			BoundaryMode: "frontier_keys", Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 1,
+			MaxPages: 1, MaxItemsPerPage: 500, MaxTotalBytes: 2 << 20, FrontierWidth: 20}
+	default:
+		return recipeabi.Spec{}, fmt.Errorf("unsupported live provider %q", provider)
+	}
+	if err := base.Validate(); err != nil {
+		return recipeabi.Spec{}, err
+	}
+	return base, nil
 }
 
-func run(ctx context.Context, artifactDir string, now time.Time) (report, error) {
+func validateTarget(target targetConfig) error {
+	if safeToken(target.TargetID) != target.TargetID || target.TargetID == "" ||
+		(target.Provider != "greenhouse" && target.Provider != "lever") {
+		return fmt.Errorf("live target requires a safe ID and supported provider")
+	}
+	for label, raw := range map[string]string{"source": target.SourceURL, "documentation": target.PublicAPIDocumentation} {
+		parsed, err := url.Parse(raw)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+			return fmt.Errorf("live target %s URL must be an exact HTTPS URL", label)
+		}
+	}
+	if _, err := time.Parse(time.RFC3339, target.TermsReviewedAt); err != nil {
+		return fmt.Errorf("live target terms review time must be RFC3339")
+	}
+	return nil
+}
+
+func run(ctx context.Context, target targetConfig, artifactDir string, now time.Time) (report, error) {
 	started := now.UTC()
-	spec := candidateSpec()
+	if err := validateTarget(target); err != nil {
+		return report{}, err
+	}
+	spec, err := candidateSpec(target.Provider)
+	if err != nil {
+		return report{}, err
+	}
 	recipeHash, err := spec.ContentHash()
 	if err != nil {
 		return report{}, err
@@ -133,10 +184,10 @@ func run(ctx context.Context, artifactDir string, now time.Time) (report, error)
 	contractRaw, _ := json.Marshal(spec.Listing)
 	contractSum := sha256.Sum256(contractRaw)
 	contractHash := "sha256:" + hex.EncodeToString(contractSum[:])
-	attemptID := "greenhouse-mongodb-" + started.Format("20060102T150405Z")
-	input := recipeabi.RunInput{ABIVersion: recipeabi.Version, Target: recipeabi.TargetRef{Kind: "source", ID: "live-greenhouse-mongodb"},
-		Endpoint:   recipeabi.EndpointRef{URL: sourceURL, Version: 1},
-		Assignment: recipeabi.AssignmentRef{RecipeID: "greenhouse-public-list-v1", RecipeVersion: 1, AssignmentVersion: 1, ContractHash: contractHash},
+	attemptID := target.TargetID + "-" + started.Format("20060102T150405Z")
+	input := recipeabi.RunInput{ABIVersion: recipeabi.Version, Target: recipeabi.TargetRef{Kind: "source", ID: "live-" + target.TargetID},
+		Endpoint:   recipeabi.EndpointRef{URL: target.SourceURL, Version: 1},
+		Assignment: recipeabi.AssignmentRef{RecipeID: target.TargetID + "-public-list-v1", RecipeVersion: 1, AssignmentVersion: 1, ContractHash: contractHash},
 		Budget:     recipeabi.BudgetRef{PermitID: "live-smoke-one-request", PolicyVersion: 1},
 		Attempt:    recipeabi.AttemptFence{WorkID: attemptID, AttemptID: attemptID, AcceptanceVersion: 1, CompanyVersion: 1, SourceVersion: 1}}
 	robots, err := httpdriver.NewRobotsTxtChecker(httpdriver.RobotsPolicy{Timeout: 10 * time.Second, MaxBytes: 64 << 10, CacheTTL: time.Hour})
@@ -148,11 +199,12 @@ func run(ctx context.Context, artifactDir string, now time.Time) (report, error)
 		return report{}, err
 	}
 	sink := &fileSink{dir: artifactDir}
-	compliance := httpdriver.ComplianceEvidence{TermsPolicyVersion: 1, TermsReviewedAt: "2026-09-08T00:00:00Z"}
+	compliance := httpdriver.ComplianceEvidence{TermsPolicyVersion: 1, TermsReviewedAt: target.TermsReviewedAt}
 	result, runErr := driver.RunListing(ctx, spec, input, compliance, sink)
 	finished := time.Now().UTC()
 	rep := report{SchemaVersion: "recruiting.live-smoke.v1", StartedAt: started.Format(time.RFC3339), FinishedAt: finished.Format(time.RFC3339),
-		SourceURL: sourceURL, PublicAPIDocumentation: docsURL, RecipeVersion: 1, RecipeHash: recipeHash,
+		TargetID: target.TargetID, Provider: target.Provider, SourceURL: target.SourceURL,
+		PublicAPIDocumentation: target.PublicAPIDocumentation, RecipeVersion: 1, RecipeHash: recipeHash,
 		ObservedItems: result.Output.Quality.ItemCount, Quality: result.Output.Quality, Failure: result.Output.Failure,
 		CheckpointCandidateGenerated: result.CheckpointCandidate != nil, CheckpointCommitted: false,
 		ProductionIncrementalEligible: false, Artifacts: sink.records,
@@ -190,12 +242,20 @@ func safeToken(value string) string {
 func main() {
 	artifactDir := flag.String("artifact-dir", "", "required directory for raw artifacts")
 	reportPath := flag.String("report", "", "optional path for the compact JSON report")
+	targetID := flag.String("target-id", defaultTargetID, "stable target ID")
+	provider := flag.String("provider", defaultProvider, "bounded provider recipe: greenhouse or lever")
+	sourceURL := flag.String("source-url", defaultSourceURL, "exact public HTTPS listing URL")
+	documentationURL := flag.String("documentation-url", defaultDocsURL, "exact public HTTPS API documentation URL")
+	termsReviewedAt := flag.String("terms-reviewed-at", "2026-09-08T00:00:00Z", "RFC3339 review time")
 	flag.Parse()
 	if strings.TrimSpace(*artifactDir) == "" {
 		fmt.Fprintln(os.Stderr, "-artifact-dir is required")
 		os.Exit(2)
 	}
-	rep, err := run(context.Background(), *artifactDir, time.Now())
+	target := targetConfig{TargetID: strings.TrimSpace(*targetID), Provider: strings.TrimSpace(*provider),
+		SourceURL: strings.TrimSpace(*sourceURL), PublicAPIDocumentation: strings.TrimSpace(*documentationURL),
+		TermsReviewedAt: strings.TrimSpace(*termsReviewedAt)}
+	rep, err := run(context.Background(), target, *artifactDir, time.Now())
 	raw, marshalErr := json.MarshalIndent(rep, "", "  ")
 	if marshalErr == nil {
 		raw = append(raw, '\n')
