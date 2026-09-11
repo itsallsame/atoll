@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -46,6 +47,26 @@ func TestExecutionDispatchOutboxIsDueIndexedIdempotentAndBounded(t *testing.T) {
 	found, ok := findDispatch(pending, intent.DispatchID)
 	if err != nil || !ok || found.Intent != intent || found.Attempts != 0 || found.MaxAttempts != defaultDispatchMaxDeliveryAttempts {
 		t.Fatalf("due dispatches = %+v err=%v", pending, err)
+	}
+	var explain string
+	if err := db.QueryRowContext(ctx, `EXPLAIN FORMAT=JSON
+SELECT dispatch_id, target_actor_id, capability, origin, profile_id, cause_kind, cause_id,
+       next_attempt_at, delivery_attempts, max_delivery_attempts
+FROM recruiting_execution_dispatch_outbox
+WHERE delivery_status = 'pending' AND next_attempt_at <= ?
+ORDER BY next_attempt_at, dispatch_id LIMIT 500`, now.Add(time.Minute)).Scan(&explain); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(explain, "ix_recruiting_dispatch_pending") {
+		t.Fatalf("pending dispatch query did not use its due index: %s", explain)
+	}
+	if err := db.QueryRowContext(ctx, `EXPLAIN FORMAT=JSON
+SELECT dispatch_id FROM recruiting_execution_dispatch_outbox
+WHERE target_actor_id = ? AND delivery_status = 'pending'`, intent.TargetActorID).Scan(&explain); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(explain, "ix_recruiting_dispatch_target") {
+		t.Fatalf("target dispatch recovery query did not use its target index: %s", explain)
 	}
 	update, err := repository.RecordExecutionDispatchFailureCAS(ctx, intent.DispatchID, 0, now.Add(2*time.Minute), "ledger_unavailable")
 	if err != nil || update.Attempts != 1 || update.Status != "pending" {
