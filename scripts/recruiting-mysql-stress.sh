@@ -36,6 +36,12 @@ done
 if (( shards > total )); then
   shards=$total
 fi
+
+start_commit=$(git -C "$repo_dir" rev-parse HEAD)
+if [[ -n "$(git -C "$repo_dir" status --porcelain --untracked-files=all)" ]]; then
+  echo "recruiting mysql stress: worktree must be clean so evidence is attributable to one revision" >&2
+  exit 1
+fi
 mkdir -p "$run_dir"
 
 declare -a pids iterations logs
@@ -134,5 +140,9 @@ if (( failed != 0 || completed != total )); then
   exit 1
 fi
 
-commit=$(git -C "$repo_dir" rev-parse HEAD)
-echo "recruiting mysql stress: ok (commit=$commit, iterations=$completed, shards=$shards, logs=$run_dir)"
+end_commit=$(git -C "$repo_dir" rev-parse HEAD)
+if [[ "$end_commit" != "$start_commit" || -n "$(git -C "$repo_dir" status --porcelain --untracked-files=all)" ]]; then
+  echo "recruiting mysql stress: revision or worktree changed during run; result is not valid acceptance evidence (start=$start_commit end=$end_commit)" >&2
+  exit 1
+fi
+echo "recruiting mysql stress: ok (commit=$start_commit, iterations=$completed, shards=$shards, logs=$run_dir)"
