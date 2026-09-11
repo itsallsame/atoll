@@ -61,6 +61,35 @@ type policyState struct {
 	firstViolation       error
 }
 
+type requestTracker struct {
+	mu   sync.Mutex
+	wg   sync.WaitGroup
+	open bool
+}
+
+func newRequestTracker() *requestTracker { return &requestTracker{open: true} }
+
+func (t *requestTracker) start(run func()) {
+	t.mu.Lock()
+	if !t.open {
+		t.mu.Unlock()
+		return
+	}
+	t.wg.Add(1)
+	t.mu.Unlock()
+	go func() {
+		defer t.wg.Done()
+		run()
+	}()
+}
+
+func (t *requestTracker) closeAndWait() {
+	t.mu.Lock()
+	t.open = false
+	t.mu.Unlock()
+	t.wg.Wait()
+}
+
 func New(chromePath string) (*Runner, error) {
 	chromePath = strings.TrimSpace(chromePath)
 	if chromePath == "" {
@@ -122,13 +151,11 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	defer cancelTab()
 
 	state := &policyState{initialOrigin: origin(endpoint), methods: map[string]struct{}{}}
-	requestWG := &sync.WaitGroup{}
+	requestTasks := newRequestTracker()
 	chromedp.ListenTarget(tabCtx, func(event any) {
 		switch value := event.(type) {
 		case *fetch.EventRequestPaused:
-			requestWG.Add(1)
-			go func() {
-				defer requestWG.Done()
+			requestTasks.start(func() {
 				allowed := state.inspectRequest(runCtx, r, value)
 				_ = chromedp.Run(tabCtx, chromedp.ActionFunc(func(commandCtx context.Context) error {
 					if allowed {
@@ -136,7 +163,7 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 					}
 					return fetch.FailRequest(value.RequestID, network.ErrorReasonBlockedByClient).Do(commandCtx)
 				}))
-			}()
+			})
 		case *page.EventWindowOpen:
 			state.mu.Lock()
 			state.popups++
@@ -153,9 +180,12 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 		}
 	})
 
-	preventEffects := `(()=>{const stop=e=>{e.preventDefault();e.stopImmediatePropagation()};document.addEventListener('submit',stop,true);window.open=()=>null})()`
+	preventEffects := `(()=>{globalThis.__atollBlockedDownloads=0;globalThis.__atollBlockedPopups=0;const stop=e=>{e.preventDefault();e.stopImmediatePropagation()};document.addEventListener('submit',stop,true);document.addEventListener('click',e=>{const a=e.target&&e.target.closest&&e.target.closest('a[download]');if(a){globalThis.__atollBlockedDownloads++;stop(e)}},true);window.open=()=>{globalThis.__atollBlockedPopups++;return null}})()`
 	setupErr := chromedp.Run(tabCtx,
-		fetch.Enable(),
+		fetch.Enable().WithPatterns([]*fetch.RequestPattern{
+			{URLPattern: "*", RequestStage: fetch.RequestStageRequest},
+			{URLPattern: "*", RequestStage: fetch.RequestStageResponse},
+		}),
 		network.SetExtraHTTPHeaders(network.Headers{"Accept-Language": request.AcceptLanguage}),
 		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorDeny).WithEventsEnabled(true),
 		chromedp.ActionFunc(func(commandCtx context.Context) error {
@@ -170,6 +200,10 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	if navigationErr == nil {
 		for _, action := range request.Plan.Actions {
 			if err := runAction(tabCtx, state, r, endpoint, action); err != nil {
+				var classified browserdriver.ClassifiedBrokerError
+				if action.Kind == browserdriver.ActionWaitSelector && !errors.As(err, &classified) {
+					err = &brokerFailure{class: "parse_error", cause: err}
+				}
 				navigationErr = err
 				break
 			}
@@ -177,11 +211,15 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	}
 
 	var finalURL, contentType, dom string
+	var blockedDownloads, blockedPopups int
 	captureErr := chromedp.Run(tabCtx, chromedp.Location(&finalURL),
 		chromedp.Evaluate(`document.contentType || "text/html"`, &contentType),
+		chromedp.Evaluate(`Number(globalThis.__atollBlockedDownloads||0)`, &blockedDownloads),
+		chromedp.Evaluate(`Number(globalThis.__atollBlockedPopups||0)`, &blockedPopups),
 		chromedp.OuterHTML("html", &dom, chromedp.ByQuery))
 	cancelTab()
-	requestWG.Wait()
+	requestTasks.closeAndWait()
+	state.recordBlockedEffects(blockedDownloads, blockedPopups)
 	attestation, violation := state.attestation(request.Policy.TermsPolicyVersion, robotsAllowed)
 	if int64(len(dom)) > request.Plan.MaxDOMBytes {
 		dom = dom[:request.Plan.MaxDOMBytes+1]
@@ -235,6 +273,19 @@ func runAction(ctx context.Context, state *policyState, runner *Runner, initial 
 }
 
 func (s *policyState) inspectRequest(ctx context.Context, runner *Runner, event *fetch.EventRequestPaused) bool {
+	if event.ResponseStatusCode != 0 || event.ResponseErrorReason != "" {
+		for _, header := range event.ResponseHeaders {
+			if strings.EqualFold(strings.TrimSpace(header.Name), "Content-Disposition") &&
+				strings.Contains(strings.ToLower(header.Value), "attachment") {
+				s.mu.Lock()
+				s.downloads++
+				s.setViolation(errors.New("page attempted a download"))
+				s.mu.Unlock()
+				return false
+			}
+		}
+		return true
+	}
 	method := strings.ToUpper(strings.TrimSpace(event.Request.Method))
 	s.mu.Lock()
 	s.methods[method] = struct{}{}
@@ -273,6 +324,19 @@ func (s *policyState) inspectRequest(ctx context.Context, runner *Runner, event 
 func (s *policyState) setViolation(err error) {
 	if s.firstViolation == nil {
 		s.firstViolation = err
+	}
+}
+
+func (s *policyState) recordBlockedEffects(downloads, popups int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if downloads > 0 {
+		s.downloads += downloads
+		s.setViolation(errors.New("page attempted a download"))
+	}
+	if popups > 0 {
+		s.popups += popups
+		s.setViolation(errors.New("page attempted to open a popup"))
 	}
 }
 

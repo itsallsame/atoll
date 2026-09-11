@@ -93,7 +93,7 @@ make recruiting-live-smoke
 ./scripts/recruiting-live-e2e.sh
 ```
 
-2026-09-11 新增的 Chrome 活体门直接运行本机 Google Chrome，而非伪 Broker：确定性站点证明正常 DOM 可采集；页面脚本尝试 POST 时，CDP 在请求到达 origin 前阻断且 origin 写入计数保持 0；显式公网用例访问 `https://example.com`，完成公网地址、robots、同源导航、DOM 和 attestation 检查。紧凑证据见 `docs/experiments/evidence/recruiting-live-browser-broker-20260911.json`。
+2026-09-11 新增的 Chrome 活体门直接运行本机 Google Chrome，而非伪 Broker：确定性站点证明正常 DOM 可采集；页面脚本尝试 POST、popup 和带 download 属性的导航均在到达目标前阻断并留下策略违规 attestation；跨源文档 redirect 在目标 origin 前阻断；robots disallow 在打开页面前终止；等待 selector 超时被分类为可修复的 `parse_error`，而不是错误重试为网络故障。上述高风险用例连续 5 轮稳定通过。显式公网用例访问 `https://example.com`，完成公网地址、robots、同源导航、DOM 和 attestation 检查。紧凑证据见 `docs/experiments/evidence/recruiting-live-browser-broker-20260911.json`。
 
 ## 尚未完成
 

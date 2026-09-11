@@ -9,6 +9,9 @@
     "browser.public uses the existing Recruiting Executor class and immutable Recipe Browser Plan",
     "each session uses a fresh Chrome process and temporary user-data directory",
     "a POST attempted by page JavaScript is blocked by CDP before reaching the origin",
+    "popup and download attempts are prevented before their target navigation and produce a non-retryable effect-policy failure",
+    "cross-origin document redirects are stopped before reaching the target origin and robots disallow stops before page navigation",
+    "a missing wait selector is classified as a repairable parse failure rather than a transient browser transport failure",
     "the public-site run verifies public addressing, robots policy, same-origin document navigation, bounded DOM capture, and effect attestation",
     "DOM and attestation enter the existing Artifact, Listing, Detail, Discovery, and Failure contracts"
   ],
@@ -22,6 +25,11 @@
       "command": "ATOLL_RECRUITING_LIVE_BROWSER_URL=https://example.com go test -mod=mod ./drivers/tools/recruitingexecutor/browserbroker -run TestRunnerReadsOptInPublicWebsiteInRealChrome -count=1 -v -timeout 90s",
       "result": "pass",
       "environment": "Google Chrome, public network, read-only public website"
+    },
+    {
+      "command": "go test -mod=readonly ./drivers/tools/recruitingexecutor/browserbroker -run 'TestRunner(DeniesDownload|PreventsPopup|BlocksCrossOrigin|BlocksBrowserWrite)' -count=5 -v -timeout 120s",
+      "result": "pass",
+      "environment": "Google Chrome with deterministic origins and repeated effect-policy fault injection"
     }
   ],
   "third_party_writes": false,

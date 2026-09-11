@@ -105,6 +105,7 @@ func TestExecutePagePreservesEvidenceWhenBrokerViolatesPolicyOrDOMIsMalformed(t 
 		"robots denied":        {func(r *SessionResult) { r.Attestation.RobotsAllowed = false }, "effect_policy_violated"},
 		"profile unauthorized": {func(r *SessionResult) { r.Attestation.ProfileLeaseAuthorized = false }, "effect_policy_violated"},
 		"cross origin":         {func(r *SessionResult) { r.FinalURL = "https://other.example/jobs" }, "redirect_rejected"},
+		"oversized DOM":        {func(r *SessionResult) { r.DOM = []byte(strings.Repeat("x", 5000)) }, "response_too_large"},
 		"malformed DOM":        {func(r *SessionResult) { r.DOM = []byte("<div class=job>") }, "parse_error"},
 	} {
 		t.Run(name, func(t *testing.T) {

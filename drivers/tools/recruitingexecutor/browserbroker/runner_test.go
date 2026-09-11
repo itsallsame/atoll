@@ -2,6 +2,7 @@ package browserbroker
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -56,6 +57,108 @@ fetch('/write',{method:'POST',body:'forbidden'}).finally(()=>document.body.inner
 	result, err := runner.Run(context.Background(), request)
 	if err == nil || result.Attestation.AllowedWriteRequests != 1 || result.Attestation.PublicEndpoint || writes.Load() != 0 {
 		t.Fatalf("Chrome write was not blocked: err=%v attestation=%+v origin_writes=%d", err, result.Attestation, writes.Load())
+	}
+}
+
+func TestRunnerBlocksCrossOriginDocumentBeforeItReachesOrigin(t *testing.T) {
+	chrome := chromeForTest(t)
+	var crossOriginReads atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		crossOriginReads.Add(1)
+		_, _ = response.Write([]byte(`<html><body>forbidden</body></html>`))
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Location", target.URL)
+		response.WriteHeader(http.StatusFound)
+	}))
+	defer source.Close()
+	runner := &Runner{chromePath: chrome, allowPrivate: true}
+	request := browserRequest(source.URL)
+	request.Plan.Actions = nil
+	request.PlanHash, _ = request.Plan.ContentHash()
+	result, err := runner.Run(context.Background(), request)
+	if err == nil || result.Attestation.CrossOriginDocumentNavigations != 1 ||
+		result.Attestation.PublicEndpoint || crossOriginReads.Load() != 0 {
+		t.Fatalf("cross-origin document was not blocked: err=%v attestation=%+v target_reads=%d",
+			err, result.Attestation, crossOriginReads.Load())
+	}
+}
+
+func TestRunnerEnforcesRobotsBeforeOpeningPage(t *testing.T) {
+	var pageReads atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/robots.txt" {
+			_, _ = response.Write([]byte("User-agent: *\nDisallow: /jobs\n"))
+			return
+		}
+		pageReads.Add(1)
+		_, _ = response.Write([]byte(`<html><body><div class="job">forbidden</div></body></html>`))
+	}))
+	defer server.Close()
+	runner := &Runner{chromePath: "/does/not/matter", allowPrivate: true, robotsClient: server.Client()}
+	request := browserRequest(server.URL + "/jobs")
+	_, err := runner.Run(context.Background(), request)
+	var classified browserdriver.ClassifiedBrokerError
+	if !errors.As(err, &classified) || classified.BrowserFailureClass() != "robots_disallowed" || pageReads.Load() != 0 {
+		t.Fatalf("robots policy did not stop page navigation: err=%v page_reads=%d", err, pageReads.Load())
+	}
+}
+
+func TestRunnerPreventsPopupNavigationAndReportsPolicyViolation(t *testing.T) {
+	chrome := chromeForTest(t)
+	var popupReads atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/popup" {
+			popupReads.Add(1)
+		}
+		response.Header().Set("Content-Type", "text/html")
+		_, _ = response.Write([]byte(`<!doctype html><html><body><script>window.open('/popup')</script><div class="job">Engineer</div></body></html>`))
+	}))
+	defer server.Close()
+	runner := &Runner{chromePath: chrome, allowPrivate: true}
+	result, err := runner.Run(context.Background(), browserRequest(server.URL))
+	if err == nil || result.Attestation.Popups != 1 || result.Attestation.PublicEndpoint || popupReads.Load() != 0 {
+		t.Fatalf("popup was not prevented: err=%v attestation=%+v popup_reads=%d", err, result.Attestation, popupReads.Load())
+	}
+}
+
+func TestRunnerDeniesDownloadAndReportsPolicyViolation(t *testing.T) {
+	chrome := chromeForTest(t)
+	var downloadReads atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/file" {
+			downloadReads.Add(1)
+			response.Header().Set("Content-Disposition", `attachment; filename="forbidden.txt"`)
+			_, _ = response.Write([]byte("read-only payload"))
+			return
+		}
+		response.Header().Set("Content-Type", "text/html")
+		_, _ = response.Write([]byte(`<!doctype html><html><body><a id="download" href="/file" download>download</a><div class="job">Engineer</div><script>document.querySelector('#download').click()</script></body></html>`))
+	}))
+	defer server.Close()
+	runner := &Runner{chromePath: chrome, allowPrivate: true}
+	result, err := runner.Run(context.Background(), browserRequest(server.URL))
+	if err == nil || result.Attestation.Downloads != 1 || result.Attestation.PublicEndpoint || downloadReads.Load() != 0 {
+		t.Fatalf("download was not denied and attested: err=%v attestation=%+v target_reads=%d",
+			err, result.Attestation, downloadReads.Load())
+	}
+}
+
+func TestRunnerClassifiesMissingWaitSelectorAsRepairableParseFailure(t *testing.T) {
+	chrome := chromeForTest(t)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = response.Write([]byte(`<html><body><div>changed structure</div></body></html>`))
+	}))
+	defer server.Close()
+	runner := &Runner{chromePath: chrome, allowPrivate: true}
+	request := browserRequest(server.URL)
+	request.Plan.Actions = []browserdriver.Action{{Kind: browserdriver.ActionWaitSelector, Selector: ".missing", TimeoutMS: 100}}
+	request.PlanHash, _ = request.Plan.ContentHash()
+	_, err := runner.Run(context.Background(), request)
+	var classified browserdriver.ClassifiedBrokerError
+	if !errors.As(err, &classified) || classified.BrowserFailureClass() != "parse_error" {
+		t.Fatalf("missing selector error=%v, want classified parse_error", err)
 	}
 }
 
