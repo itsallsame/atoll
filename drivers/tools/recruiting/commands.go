@@ -120,6 +120,7 @@ const (
 	TypeJobsSearch                = "recruiting.jobs.search"
 	TypeSystemStatus              = "recruiting.system.status"
 	TypeSystemReconcile           = "recruiting.system.reconcile"
+	TypeScopeControlGet           = "recruiting.scope_control.get"
 	TypeCapacityStatus            = "recruiting.capacity.status"
 )
 

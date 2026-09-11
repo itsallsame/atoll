@@ -18,7 +18,7 @@ func TestCommonContractIsVersionedAndCursorIsOpaque(t *testing.T) {
 
 func TestOperationalStatusWordsAreExposed(t *testing.T) {
 	words := manifest().Words
-	for _, word := range []string{TypeSystemStatus, TypeCapacityStatus} {
+	for _, word := range []string{TypeSystemStatus, TypeScopeControlGet, TypeCapacityStatus} {
 		if _, found := words[word]; !found {
 			t.Fatalf("operational query %s is absent from the recruiting manifest", word)
 		}

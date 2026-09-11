@@ -81,7 +81,7 @@ func TestScopeControlOperationRejectsUnboundedOrContradictoryProgress(t *testing
 
 func TestScopeResumeOperationOnlyReportsBoundedMatchingResumes(t *testing.T) {
 	now := time.Date(2026, 9, 12, 6, 0, 0, 0, time.UTC)
-	resume, err := NewScopeResumeOperation("resume-1", "source", "source-1", "pause-1", 3, 1, 3, 1, now)
+	resume, err := NewScopeResumeOperation("resume-1", "source", "source-1", "pause-1", "source-1", 3, 1, 3, 1, now)
 	if err != nil || resume.Action != ScopeControlResume || resume.ReversesOperationID != "pause-1" || !resume.NeedsProjection() {
 		t.Fatalf("resume operation=%+v err=%v", resume, err)
 	}
@@ -91,7 +91,15 @@ func TestScopeResumeOperationOnlyReportsBoundedMatchingResumes(t *testing.T) {
 		t.Fatalf("resume batch=%+v err=%v", next, err)
 	}
 	completed, err := next.RecordBatch(next.Version, ScopeControlBatch{AppliedAt: now.Add(2 * time.Second)})
-	if err != nil || completed.Status != ScopeControlCompleted || !completed.ProjectionCompleted {
+	if err != nil || completed.Status != ScopeControlApplying || !completed.ProjectionCompleted || completed.CatchUpCompleted {
+		t.Fatalf("resume projection=%+v err=%v", completed, err)
+	}
+	completed, err = completed.RecordCatchUpSource(completed.Version, "source-1", ScopeCatchUpQueued, now.Add(3*time.Second))
+	if err != nil || completed.SourcesScanned != 1 || completed.CatchUpsQueued != 1 {
+		t.Fatalf("resume catch-up Source=%+v err=%v", completed, err)
+	}
+	completed, err = completed.CompleteCatchUp(completed.Version, now.Add(4*time.Second))
+	if err != nil || completed.Status != ScopeControlCompleted || !completed.CatchUpCompleted || completed.CompletedAt == "" {
 		t.Fatalf("resume completion=%+v err=%v", completed, err)
 	}
 	if _, err := resume.RecordBatch(resume.Version, ScopeControlBatch{Cursor: "work-1", Scanned: 1,

@@ -184,6 +184,19 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	if got := nestedStringField(t, pausedSource, "source", "control_status"); got != "paused" {
 		t.Fatalf("paused source status=%q: %v", got, pausedSource)
 	}
+	sourcePauseOperationID := stringField(t, pausedSource, "scope_control_operation_id")
+	sourcePauseCompleted := false
+	for range 5 {
+		scope := recovered.request(homeID, "recruiting.scope_control.get", controlID, map[string]any{"operation_id": sourcePauseOperationID})
+		if nestedStringField(t, scope, "operation", "status") == "completed" {
+			sourcePauseCompleted = true
+			break
+		}
+		recovered.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
+	}
+	if !sourcePauseCompleted {
+		t.Fatalf("source pause operation %s did not settle before later controls", sourcePauseOperationID)
+	}
 	archivedSource := recovered.request(homeID, "recruiting.source.archive", controlID, map[string]any{
 		"command_id": "e2e-source-archive", "target": map[string]any{"target_type": "source", "target_id": "e2e-source-a"},
 		"expected_version": 4, "reason": "verify source archive",

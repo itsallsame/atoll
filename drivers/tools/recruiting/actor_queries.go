@@ -67,6 +67,11 @@ type operationalStatusPayload struct {
 	Limit int `json:"limit,omitempty"`
 }
 
+type scopeControlGetPayload struct {
+	OperationID string `json:"operation_id"`
+	PageRequest
+}
+
 type recipeInspectPayload struct {
 	RecipeID      string `json:"recipe_id"`
 	RecipeVersion uint64 `json:"recipe_version"`
@@ -121,6 +126,10 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		handleOperationalStatusQuery(sys, cfg, repository, msg)
 		return
 	}
+	if msg.Type == TypeScopeControlGet {
+		handleScopeControlGetQuery(sys, repository, msg)
+		return
+	}
 	if msg.Type == TypeRecipeInspect {
 		handleRecipeInspectQuery(sys, repository, msg)
 		return
@@ -163,6 +172,33 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		return
 	}
 	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "entity": value})
+}
+
+func handleScopeControlGetQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload scopeControlGetPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.OperationID = strings.TrimSpace(payload.OperationID)
+	if payload.Limit == 0 {
+		payload.Limit = 50
+	}
+	if payload.OperationID == "" || payload.PageRequest.Validate(500) != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "operation_id and catch-up page limit in [1,500] are required")
+		return
+	}
+	operation, err := repository.GetScopeControlOperation(msg.Ctx(), payload.OperationID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	page, err := repository.ListScopeCatchUpOccurrences(msg.Ctx(), payload.OperationID, payload.Cursor, payload.Limit)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "operation": operation,
+		"catch_up_occurrences": page.Items, "page": PageInfo{NextCursor: page.NextCursor, HasMore: page.HasMore}})
 }
 
 func handleRecipeInspectQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

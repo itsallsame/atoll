@@ -24,7 +24,9 @@ func (r *Repository) CreateScopeControlOperation(ctx context.Context, operation 
 	if err != nil || operation.OperationID == "" || operation.Action == "" || operation.ScopeID == "" || operation.Status != model.ScopeControlApplying ||
 		operation.Version != 1 || operation.ProjectionCompleted || operation.WorkCursor != "" || operation.CompletedAt != "" ||
 		operation.WorksScanned != 0 || operation.WorksPaused != 0 || operation.WorksCanceled != 0 || operation.WorksResumed != 0 ||
-		operation.AttemptsExpired != 0 || businessAt.IsZero() || uint64(len(rootWorkIDs)) != operation.ActiveRoots || len(rootWorkIDs) > scopeControlBatchLimit {
+		operation.AttemptsExpired != 0 || operation.CatchUpCursor != "" || operation.SourcesScanned != 0 ||
+		operation.CatchUpsQueued != 0 || operation.CatchUpsSkipped != 0 || businessAt.IsZero() ||
+		uint64(len(rootWorkIDs)) != operation.ActiveRoots || len(rootWorkIDs) > scopeControlBatchLimit {
 		return fmt.Errorf("new applying scope control operation and its bounded roots are required")
 	}
 	if operation.ScopeType != "company" && operation.ScopeType != "source" {
@@ -32,13 +34,16 @@ func (r *Repository) CreateScopeControlOperation(ctx context.Context, operation 
 	}
 	switch operation.Action {
 	case model.ScopeControlPause:
-		if operation.ReversesOperationID != "" || operation.Mode.Validate() != nil ||
+		if !operation.CatchUpCompleted || operation.CatchUpUpperSourceID != "" || operation.ReversesOperationID != "" || operation.Mode.Validate() != nil ||
 			(operation.Mode != model.PauseFinishCausalChain && operation.ActiveRoots != 0) {
 			return fmt.Errorf("new pause scope control operation is inconsistent")
 		}
 	case model.ScopeControlResume:
-		if operation.Mode != "" || strings.TrimSpace(operation.ReversesOperationID) == "" || operation.ActiveRoots != 0 {
+		if operation.CatchUpCompleted || operation.Mode != "" || strings.TrimSpace(operation.ReversesOperationID) == "" || operation.ActiveRoots != 0 {
 			return fmt.Errorf("new resume scope control operation is inconsistent")
+		}
+		if operation.ScopeType == "source" && operation.CatchUpUpperSourceID != operation.ScopeID {
+			return fmt.Errorf("Source resume catch-up bound must equal its Source")
 		}
 	default:
 		return fmt.Errorf("scope control action must be pause or resume")
@@ -73,13 +78,18 @@ INSERT INTO recruiting_scope_control_operations(
   operation_id, operation_kind, scope_type, scope_id, pause_mode, reverses_operation_id, paused_entity_version,
   configuration_version, control_epoch, execution_fence, operation_status,
   projection_completed, active_scope_key, work_cursor, works_scanned, works_paused, works_canceled,
-  works_resumed, attempts_expired, active_roots, version, state_json, started_at, completed_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  works_resumed, attempts_expired, active_roots, catch_up_completed, catch_up_cursor,
+  catch_up_upper_source_id, sources_scanned, catch_ups_queued, catch_ups_skipped,
+  version, state_json, started_at, completed_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		operation.OperationID, operation.Action, operation.ScopeType, operation.ScopeID, operation.Mode,
 		nullableString(operation.ReversesOperationID), operation.PausedEntityVersion,
 		operation.ConfigurationVersion, operation.ControlEpoch, operation.ExecutionFence, operation.Status, operation.ProjectionCompleted,
 		activeKey, nullableString(operation.WorkCursor), operation.WorksScanned, operation.WorksPaused, operation.WorksCanceled,
-		operation.WorksResumed, operation.AttemptsExpired, operation.ActiveRoots, operation.Version, state, startedAt.UTC(), nil, businessAt.UTC())
+		operation.WorksResumed, operation.AttemptsExpired, operation.ActiveRoots, operation.CatchUpCompleted,
+		nullableString(operation.CatchUpCursor), nullableString(operation.CatchUpUpperSourceID),
+		operation.SourcesScanned, operation.CatchUpsQueued, operation.CatchUpsSkipped,
+		operation.Version, state, startedAt.UTC(), nil, businessAt.UTC())
 	if err != nil {
 		var mysqlError *mysql.MySQLError
 		if errors.As(err, &mysqlError) && mysqlError.Number == 1062 {
@@ -171,7 +181,14 @@ ORDER BY paused.started_at DESC, paused.operation_id DESC LIMIT 1 FOR UPDATE`, s
 	if err != nil {
 		return fmt.Errorf("load scope pause for resume: %w", err)
 	}
-	operation, err := model.NewScopeResumeOperation(operationID, scopeType, scopeID, pausedOperationID,
+	catchUpUpperSourceID := scopeID
+	if scopeType == "company" {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(source_id), '') FROM recruiting_sources
+WHERE company_id = ?`, scopeID).Scan(&catchUpUpperSourceID); err != nil {
+			return fmt.Errorf("freeze Company resume catch-up Source bound: %w", err)
+		}
+	}
+	operation, err := model.NewScopeResumeOperation(operationID, scopeType, scopeID, pausedOperationID, catchUpUpperSourceID,
 		entityVersion, configurationVersion, controlEpoch, executionFence, businessAt)
 	if err != nil {
 		return err
@@ -374,6 +391,9 @@ WHERE work_id = ? AND version = ?`, value.work.Status, nullableString(string(val
 	nextState, _ := json.Marshal(next)
 	var activeScopeKey any = operation.ScopeType + ":" + operation.ScopeID
 	var completedAt any
+	if next.Action == model.ScopeControlResume && next.ProjectionCompleted {
+		activeScopeKey = nil
+	}
 	if next.Status == model.ScopeControlCompleted {
 		activeScopeKey = nil
 		completed, _ := time.Parse(time.RFC3339Nano, next.CompletedAt)

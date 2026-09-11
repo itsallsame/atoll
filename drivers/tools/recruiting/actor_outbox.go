@@ -68,8 +68,13 @@ type outboxReconcileResponse struct {
 	ScopeControlWorksScanned    int    `json:"scope_control_works_scanned"`
 	ScopeControlWorksPaused     int    `json:"scope_control_works_paused"`
 	ScopeControlWorksCanceled   int    `json:"scope_control_works_canceled"`
+	ScopeControlWorksResumed    int    `json:"scope_control_works_resumed"`
 	ScopeControlAttemptsExpired int    `json:"scope_control_attempts_expired"`
 	ScopeControlRootsSettled    int    `json:"scope_control_roots_settled"`
+	ScopeControlSourcesScanned  int    `json:"scope_control_sources_scanned"`
+	ScopeControlCatchUpsQueued  int    `json:"scope_control_catch_ups_queued"`
+	ScopeControlCatchUpsSkipped int    `json:"scope_control_catch_ups_skipped"`
+	ScopeControlDispatches      int    `json:"scope_control_dispatches"`
 	ScopeControlCompleted       bool   `json:"scope_control_completed"`
 	ScopeControlConflict        bool   `json:"scope_control_conflict"`
 }
@@ -112,7 +117,7 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 	}
 	response.AttemptsScanned, response.AttemptsExpired = recovery.Scanned, recovery.Expired
 	response.WorksRetryQueued, response.AttemptConflicts = recovery.RetryQueued, recovery.Conflicts
-	scopeControl, err := reconcileScopeControl(msg.Ctx(), repository, payload.Limit, now)
+	scopeControl, err := reconcileScopeControl(msg.Ctx(), repository, payload.Limit, now, cfg.executionDispatchTargets())
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
@@ -120,7 +125,11 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 	response.ScopeControlOperationID = scopeControl.OperationID
 	response.ScopeControlWorksScanned, response.ScopeControlWorksPaused = scopeControl.WorksScanned, scopeControl.WorksPaused
 	response.ScopeControlWorksCanceled, response.ScopeControlAttemptsExpired = scopeControl.WorksCanceled, scopeControl.AttemptsExpired
+	response.ScopeControlWorksResumed = scopeControl.WorksResumed
 	response.ScopeControlRootsSettled = scopeControl.RootsSettled
+	response.ScopeControlSourcesScanned = scopeControl.SourcesScanned
+	response.ScopeControlCatchUpsQueued, response.ScopeControlCatchUpsSkipped = scopeControl.CatchUpsQueued, scopeControl.CatchUpsSkipped
+	response.ScopeControlDispatches = scopeControl.Dispatches
 	response.ScopeControlCompleted, response.ScopeControlConflict = scopeControl.Completed, scopeControl.Conflict
 	profileExpiry, err := repository.ExpireProfileRepairSessions(msg.Ctx(), now, payload.Limit)
 	if err != nil {
@@ -321,7 +330,7 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 			cfg.executionDispatchTargets())
 		_, _ = repository.PromoteNextReadyCompany(msg.Ctx(), now)
 		_, _ = reconcileRepairRecoveryBatch(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
-		_, _ = reconcileScopeControl(msg.Ctx(), repository, maxReconcileLimit, now)
+		_, _ = reconcileScopeControl(msg.Ctx(), repository, maxReconcileLimit, now, cfg.executionDispatchTargets())
 		_, _ = reconcileRecipeRolloutBatches(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
 		_, _ = reconcileBackfillPreviews(msg.Ctx(), repository, defaultReconcileLimit, now)
 		_, _ = repository.CancelNextBackfillPage(msg.Ctx(), cfg.BackfillMaterializeLimit, now)

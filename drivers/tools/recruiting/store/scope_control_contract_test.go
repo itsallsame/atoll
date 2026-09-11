@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -265,8 +266,20 @@ func TestSourceResumeIsAtomicBoundedAndRestoresOnlyItsPauseProjection(t *testing
 		t.Fatalf("first bounded resume=%+v err=%v", firstResume, err)
 	}
 	completedResume, err := repository.ReconcileScopeControlOperation(ctx, resumeOperation.OperationID, firstResume.Version, 1, now.Add(11*time.Second))
-	if err != nil || completedResume.Status != model.ScopeControlCompleted || completedResume.WorksResumed != 2 {
+	if err != nil || completedResume.Status != model.ScopeControlApplying || !completedResume.ProjectionCompleted || completedResume.WorksResumed != 2 {
 		t.Fatalf("completed bounded resume=%+v err=%v", completedResume, err)
+	}
+	catchUp, err := repository.ReconcileScopeControlCatchUpSource(ctx, completedResume.OperationID, completedResume.Version,
+		now.Add(12*time.Second), nil)
+	if err != nil || catchUp.Occurrence == nil || catchUp.Occurrence.Disposition != model.ScopeCatchUpSkipped ||
+		catchUp.Occurrence.Reason != "source_not_currently_eligible" {
+		t.Fatalf("Source catch-up decision=%+v err=%v", catchUp, err)
+	}
+	catchUp, err = repository.ReconcileScopeControlCatchUpSource(ctx, completedResume.OperationID, catchUp.Operation.Version,
+		now.Add(13*time.Second), nil)
+	if err != nil || catchUp.Occurrence != nil || catchUp.Operation.Status != model.ScopeControlCompleted ||
+		!catchUp.Operation.CatchUpCompleted {
+		t.Fatalf("Source catch-up completion=%+v err=%v", catchUp, err)
 	}
 	storedOpen, _ := repository.GetWork(ctx, open.WorkID)
 	storedWaiting, _ := repository.GetWork(ctx, waiting.WorkID)
@@ -352,14 +365,45 @@ func TestCompanyResumeProjectsAllAndOnlyItsSourceWorks(t *testing.T) {
 		t.Fatal(err)
 	}
 	resumeOperation, _ := repository.GetScopeControlOperation(ctx, "company-resume-operation")
+	if resumeOperation.CatchUpUpperSourceID != sources[1].SourceID {
+		t.Fatalf("Company resume did not freeze its Source upper bound: %+v", resumeOperation)
+	}
+	lateSource, _ := model.NewRecruitmentSource("company-resume-source-aa", company.CompanyID,
+		"https://company-scope.example/aa", "", 1)
+	if err := repository.CreateSource(ctx, lateSource, now.Add(3500*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
 	first, err := repository.ReconcileScopeControlOperation(ctx, resumeOperation.OperationID, resumeOperation.Version, 1, now.Add(4*time.Second))
 	if err != nil || first.Status != model.ScopeControlApplying || first.WorksResumed != 1 {
 		t.Fatalf("first Company resume page=%+v err=%v", first, err)
 	}
 	completed, err := repository.ReconcileScopeControlOperation(ctx, resumeOperation.OperationID, first.Version, 1, now.Add(5*time.Second))
-	if err != nil || completed.Status != model.ScopeControlCompleted || completed.WorksResumed != 2 ||
+	if err != nil || completed.Status != model.ScopeControlApplying || !completed.ProjectionCompleted || completed.WorksResumed != 2 ||
 		completed.ReversesOperationID != pauseOperation.OperationID {
 		t.Fatalf("completed Company resume=%+v err=%v", completed, err)
+	}
+	catchUpA, err := repository.ReconcileScopeControlCatchUpSource(ctx, completed.OperationID, completed.Version, now.Add(6*time.Second), nil)
+	if err != nil || catchUpA.Occurrence == nil || catchUpA.Occurrence.SourceID != sources[0].SourceID ||
+		catchUpA.Occurrence.Disposition != model.ScopeCatchUpSkipped {
+		t.Fatalf("first Company catch-up=%+v err=%v", catchUpA, err)
+	}
+	catchUpB, err := repository.ReconcileScopeControlCatchUpSource(ctx, completed.OperationID, catchUpA.Operation.Version, now.Add(7*time.Second), nil)
+	if err != nil || catchUpB.Occurrence == nil || catchUpB.Occurrence.SourceID != sources[1].SourceID ||
+		catchUpB.Occurrence.Disposition != model.ScopeCatchUpSkipped {
+		t.Fatalf("second Company catch-up=%+v err=%v", catchUpB, err)
+	}
+	catchUpDone, err := repository.ReconcileScopeControlCatchUpSource(ctx, completed.OperationID, catchUpB.Operation.Version, now.Add(8*time.Second), nil)
+	if err != nil || catchUpDone.Occurrence != nil || catchUpDone.Operation.Status != model.ScopeControlCompleted ||
+		catchUpDone.Operation.SourcesScanned != 2 || catchUpDone.Operation.CatchUpsSkipped != 2 {
+		t.Fatalf("Company catch-up completion=%+v err=%v", catchUpDone, err)
+	}
+	var lateCatchUps int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_scope_catchup_occurrences
+WHERE resume_operation_id = ? AND source_id = ?`, resumeOperation.OperationID, lateSource.SourceID).Scan(&lateCatchUps); err != nil {
+		t.Fatal(err)
+	}
+	if lateCatchUps != 0 {
+		t.Fatalf("Company resume included Source created after its immutable cut")
 	}
 	for index, expectedStatus := range []model.WorkStatus{model.WorkOpen, model.WorkOpen, model.WorkOpen} {
 		stored, err := repository.GetWork(ctx, works[index].WorkID)
@@ -375,6 +419,106 @@ func TestCompanyResumeProjectsAllAndOnlyItsSourceWorks(t *testing.T) {
 		if index == 2 && (stored.Version != 1 || stored.AcceptanceVersion != 1) {
 			t.Fatalf("other Company Work was mutated: %+v", stored)
 		}
+	}
+}
+
+func TestResumeCreatesOneCurrentProductionCatchUpWithoutMovingCheckpoint(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	now := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	company := persistExecutionReadyCompany(t, ctx, repository, "scope-catchup", now)
+	source := persistExecutionReadySource(t, ctx, repository, company, "scope-catchup", "scope-catchup-source", now)
+	checkpointBefore, err := repository.GetCheckpoint(ctx, source.SourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	paused, _ := source.Pause(source.Version, model.PauseDrain)
+	pauseReceipt, _ := model.NewCommandReceipt("scope-catchup-pause-command", "recruiting.source.pause", "sha256:scope-catchup-pause", json.RawMessage(`{}`))
+	pauseEvent, _ := model.NewEventIntent("scope-catchup-pause-event", "source.paused", "source", source.SourceID,
+		paused.Version, now.Add(time.Second).Format(time.RFC3339Nano), pauseReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplySourcePauseCommand(ctx, source.Version, paused, pauseReceipt, pauseEvent,
+		"scope-catchup-pause-operation", now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	pauseOperation, _ := repository.GetScopeControlOperation(ctx, "scope-catchup-pause-operation")
+	pauseOperation, err = repository.ReconcileScopeControlOperation(ctx, pauseOperation.OperationID, pauseOperation.Version, 500, now.Add(2*time.Second))
+	if err != nil || pauseOperation.Status != model.ScopeControlCompleted {
+		t.Fatalf("catch-up pause projection=%+v err=%v", pauseOperation, err)
+	}
+
+	resumed, _ := paused.Resume(paused.Version)
+	resumeReceipt, _ := model.NewCommandReceipt("scope-catchup-resume-command", "recruiting.source.resume", "sha256:scope-catchup-resume", json.RawMessage(`{}`))
+	resumeEvent, _ := model.NewEventIntent("scope-catchup-resume-event", "source.resumed", "source", source.SourceID,
+		resumed.Version, now.Add(3*time.Second).Format(time.RFC3339Nano), resumeReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplySourceResumeCommand(ctx, paused.Version, resumed, resumeReceipt, resumeEvent,
+		"scope-catchup-resume-operation", now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	resumeOperation, _ := repository.GetScopeControlOperation(ctx, "scope-catchup-resume-operation")
+	resumeOperation, err = repository.ReconcileScopeControlOperation(ctx, resumeOperation.OperationID, resumeOperation.Version, 500, now.Add(4*time.Second))
+	if err != nil || !resumeOperation.ProjectionCompleted || resumeOperation.Status != model.ScopeControlApplying {
+		t.Fatalf("catch-up resume projection=%+v err=%v", resumeOperation, err)
+	}
+	targets := []ExecutionDispatchTarget{{ActorID: "tool:scope-catchup-executor", Capability: "http.fetch"}}
+	step, err := repository.ReconcileScopeControlCatchUpSource(ctx, resumeOperation.OperationID, resumeOperation.Version,
+		now.Add(5*time.Second), targets)
+	if err != nil || step.Occurrence == nil || step.Occurrence.Disposition != model.ScopeCatchUpQueued || step.Dispatches != 1 {
+		t.Fatalf("queued current catch-up=%+v err=%v", step, err)
+	}
+	work, err := repository.GetWorkRecord(ctx, step.Occurrence.WorkID)
+	if err != nil || work.Work.Status != model.WorkOpen || work.Work.Trigger != "event" ||
+		work.Placement.BusinessKey != "scope-catchup|"+resumeOperation.OperationID+"|"+source.SourceID {
+		t.Fatalf("catch-up Work=%+v err=%v", work, err)
+	}
+	run, err := repository.GetListingRunByWork(ctx, work.Work.WorkID)
+	if err != nil || run.Mode != model.ListingRunProduction || run.CheckpointVersion != checkpointBefore.Version {
+		t.Fatalf("catch-up run=%+v err=%v", run, err)
+	}
+	offer, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
+		AttemptID: "scope-catchup-attempt", ExecutorActorID: "tool:scope-catchup-executor",
+		ExecutorIncarnation: "scope-catchup-boot", Capability: work.Placement.Capability,
+		Origin: work.Placement.Origin, OfferedAt: now.Add(5*time.Second + time.Microsecond), BudgetPolicy: testExecutionBudgetPolicy(),
+	})
+	if err != nil || offer.Work.WorkID != work.Work.WorkID || offer.Kind != "listing" {
+		t.Fatalf("catch-up was not executable through the shared queue: offer=%+v err=%v", offer, err)
+	}
+	done, err := repository.ReconcileScopeControlCatchUpSource(ctx, resumeOperation.OperationID, step.Operation.Version,
+		now.Add(6*time.Second), targets)
+	if err != nil || done.Occurrence != nil || done.Operation.Status != model.ScopeControlCompleted || done.Operation.CatchUpsQueued != 1 {
+		t.Fatalf("catch-up completion=%+v err=%v", done, err)
+	}
+	checkpointAfter, err := repository.GetCheckpoint(ctx, source.SourceID)
+	if err != nil || !reflect.DeepEqual(checkpointAfter, checkpointBefore) {
+		t.Fatalf("catch-up planning moved Checkpoint before=%+v after=%+v err=%v", checkpointBefore, checkpointAfter, err)
+	}
+	var occurrences, works, runs, dispatches int
+	if err := db.QueryRowContext(ctx, `SELECT
+  (SELECT COUNT(*) FROM recruiting_scope_catchup_occurrences WHERE resume_operation_id = ?),
+  (SELECT COUNT(*) FROM recruiting_works WHERE business_key = ?),
+  (SELECT COUNT(*) FROM recruiting_listing_runs WHERE listing_run_id = ?),
+  (SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE cause_id = ?)`, resumeOperation.OperationID,
+		work.Placement.BusinessKey, run.ListingRunID, step.Occurrence.OccurrenceID).
+		Scan(&occurrences, &works, &runs, &dispatches); err != nil {
+		t.Fatal(err)
+	}
+	if occurrences != 1 || works != 1 || runs != 1 || dispatches != 1 {
+		t.Fatalf("catch-up facts occurrences=%d works=%d runs=%d dispatches=%d", occurrences, works, runs, dispatches)
+	}
+	page, err := repository.ListScopeCatchUpOccurrences(ctx, resumeOperation.OperationID, "", 1)
+	if err != nil || len(page.Items) != 1 || page.Items[0].OccurrenceID != step.Occurrence.OccurrenceID || page.HasMore {
+		t.Fatalf("catch-up occurrence page=%+v err=%v", page, err)
 	}
 }
 

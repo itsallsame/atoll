@@ -8,13 +8,16 @@ import (
 
 type ScopeControlStatus string
 type ScopeControlAction string
+type ScopeCatchUpDisposition string
 
 const (
-	ScopeControlApplying  ScopeControlStatus = "applying"
-	ScopeControlCompleted ScopeControlStatus = "completed"
-	ScopeControlPause     ScopeControlAction = "pause"
-	ScopeControlResume    ScopeControlAction = "resume"
-	scopeControlBatchMax                     = 500
+	ScopeControlApplying  ScopeControlStatus      = "applying"
+	ScopeControlCompleted ScopeControlStatus      = "completed"
+	ScopeControlPause     ScopeControlAction      = "pause"
+	ScopeControlResume    ScopeControlAction      = "resume"
+	ScopeCatchUpQueued    ScopeCatchUpDisposition = "queued"
+	ScopeCatchUpSkipped   ScopeCatchUpDisposition = "skipped"
+	scopeControlBatchMax                          = 500
 )
 
 // ScopeControlOperation is the durable, bounded projection of one Company or
@@ -40,6 +43,12 @@ type ScopeControlOperation struct {
 	WorksResumed         uint64             `json:"works_resumed"`
 	AttemptsExpired      uint64             `json:"attempts_expired"`
 	ActiveRoots          uint64             `json:"active_roots"`
+	CatchUpCompleted     bool               `json:"catch_up_completed"`
+	CatchUpCursor        string             `json:"catch_up_cursor,omitempty"`
+	CatchUpUpperSourceID string             `json:"catch_up_upper_source_id,omitempty"`
+	SourcesScanned       uint64             `json:"sources_scanned"`
+	CatchUpsQueued       uint64             `json:"catch_ups_queued"`
+	CatchUpsSkipped      uint64             `json:"catch_ups_skipped"`
 	StartedAt            string             `json:"started_at"`
 	CompletedAt          string             `json:"completed_at,omitempty"`
 	Version              uint64             `json:"version"`
@@ -75,13 +84,14 @@ func NewScopeControlOperation(id, scopeType, scopeID string, mode PauseMode, ent
 	return ScopeControlOperation{OperationID: id, Action: ScopeControlPause, ScopeType: scopeType, ScopeID: scopeID, Mode: mode,
 		PausedEntityVersion: entityVersion, ConfigurationVersion: configurationVersion,
 		ControlEpoch: controlEpoch, ExecutionFence: executionFence, Status: ScopeControlApplying,
-		ActiveRoots: activeRoots, StartedAt: at.UTC().Format(time.RFC3339Nano), Version: 1}, nil
+		ActiveRoots: activeRoots, CatchUpCompleted: true, StartedAt: at.UTC().Format(time.RFC3339Nano), Version: 1}, nil
 }
 
-func NewScopeResumeOperation(id, scopeType, scopeID, reversesOperationID string, entityVersion,
+func NewScopeResumeOperation(id, scopeType, scopeID, reversesOperationID, catchUpUpperSourceID string, entityVersion,
 	configurationVersion, controlEpoch, executionFence uint64, at time.Time) (ScopeControlOperation, error) {
 	id, scopeType, scopeID = strings.TrimSpace(id), strings.TrimSpace(scopeType), strings.TrimSpace(scopeID)
 	reversesOperationID = strings.TrimSpace(reversesOperationID)
+	catchUpUpperSourceID = strings.TrimSpace(catchUpUpperSourceID)
 	if id == "" || scopeID == "" || reversesOperationID == "" || at.IsZero() || entityVersion < 2 ||
 		configurationVersion == 0 || controlEpoch == 0 || executionFence == 0 {
 		return ScopeControlOperation{}, fmt.Errorf("scope resume identity, versions, fences, reverse operation, and time are required")
@@ -89,10 +99,14 @@ func NewScopeResumeOperation(id, scopeType, scopeID, reversesOperationID string,
 	if scopeType != "company" && scopeType != "source" {
 		return ScopeControlOperation{}, fmt.Errorf("scope control type must be company or source")
 	}
+	if scopeType == "source" && catchUpUpperSourceID != scopeID {
+		return ScopeControlOperation{}, fmt.Errorf("Source resume catch-up bound must equal its Source")
+	}
 	return ScopeControlOperation{OperationID: id, Action: ScopeControlResume, ScopeType: scopeType, ScopeID: scopeID,
 		ReversesOperationID: reversesOperationID, PausedEntityVersion: entityVersion,
 		ConfigurationVersion: configurationVersion, ControlEpoch: controlEpoch, ExecutionFence: executionFence,
-		Status: ScopeControlApplying, StartedAt: at.UTC().Format(time.RFC3339Nano), Version: 1}, nil
+		Status: ScopeControlApplying, CatchUpUpperSourceID: catchUpUpperSourceID,
+		StartedAt: at.UTC().Format(time.RFC3339Nano), Version: 1}, nil
 }
 
 func (o ScopeControlOperation) RecordBatch(expected uint64, batch ScopeControlBatch) (ScopeControlOperation, error) {
@@ -139,11 +153,50 @@ func (o ScopeControlOperation) RecordBatch(expected uint64, batch ScopeControlBa
 	}
 	if !batch.HasMore {
 		o.ProjectionCompleted = true
-		if o.Action == ScopeControlResume || o.Mode != PauseFinishCausalChain || o.ActiveRoots == 0 {
+		if o.Action == ScopeControlPause && (o.Mode != PauseFinishCausalChain || o.ActiveRoots == 0) {
 			o.Status = ScopeControlCompleted
 			o.CompletedAt = batch.AppliedAt.UTC().Format(time.RFC3339Nano)
 		}
 	}
+	o.Version++
+	return o, nil
+}
+
+func (o ScopeControlOperation) RecordCatchUpSource(expected uint64, sourceID string,
+	disposition ScopeCatchUpDisposition, at time.Time) (ScopeControlOperation, error) {
+	if err := requireVersion(expected, o.Version); err != nil {
+		return ScopeControlOperation{}, err
+	}
+	sourceID = strings.TrimSpace(sourceID)
+	if o.Action != ScopeControlResume || o.Status != ScopeControlApplying || !o.ProjectionCompleted ||
+		o.CatchUpCompleted || sourceID == "" || sourceID <= o.CatchUpCursor || at.IsZero() {
+		return ScopeControlOperation{}, fmt.Errorf("next resumptive catch-up Source is required")
+	}
+	switch disposition {
+	case ScopeCatchUpQueued:
+		o.CatchUpsQueued++
+	case ScopeCatchUpSkipped:
+		o.CatchUpsSkipped++
+	default:
+		return ScopeControlOperation{}, fmt.Errorf("catch-up disposition must be queued or skipped")
+	}
+	o.CatchUpCursor = sourceID
+	o.SourcesScanned++
+	o.Version++
+	return o, nil
+}
+
+func (o ScopeControlOperation) CompleteCatchUp(expected uint64, at time.Time) (ScopeControlOperation, error) {
+	if err := requireVersion(expected, o.Version); err != nil {
+		return ScopeControlOperation{}, err
+	}
+	if o.Action != ScopeControlResume || o.Status != ScopeControlApplying || !o.ProjectionCompleted ||
+		o.CatchUpCompleted || at.IsZero() {
+		return ScopeControlOperation{}, fmt.Errorf("projected resume operation is required to complete catch-up")
+	}
+	o.CatchUpCompleted = true
+	o.Status = ScopeControlCompleted
+	o.CompletedAt = at.UTC().Format(time.RFC3339Nano)
 	o.Version++
 	return o, nil
 }
