@@ -1,0 +1,24 @@
+{
+  "version": "recruiting.artifact-capacity-workload.v1",
+  "description": "Local-only historical response Artifact recompute through real Server, daemon, same-class Executors, Resource, ledger, and non-root MySQL.",
+  "levels": {
+    "A0": {"items": 20, "payload_bytes": 1024, "executors": 2, "timeout_seconds": 120},
+    "A1": {"items": 200, "payload_bytes": 4096, "executors": 4, "timeout_seconds": 300},
+    "A2": {"items": 1000, "payload_bytes": 16384, "executors": 8, "timeout_seconds": 900}
+  },
+  "correctness_gates": [
+    "a normal user previews and confirms the exact immutable historical Backfill",
+    "every response Artifact is read through an Atoll File Resource by a real daemon-hosted recruiting-executor",
+    "every frozen Detail Recipe execution writes one derived Artifact and one BackfillOutput",
+    "input and derived Resource bytes match their MySQL SHA-256 metadata",
+    "Backfill item, Attempt, output, and Artifact counts exactly match the workload; initial dispatches are compacted to one per selected Executor and each completed Attempt emits one capacity-release wake",
+    "all domain event intents reach the Atoll Channel ledger before measurement",
+    "Server restart preserves completed Backfill state, byte-stable command replay, Executor presence, and Resource reads",
+    "no third-party website is contacted"
+  ],
+  "non_claims": [
+    "this measures local immutable response reads and real derived Artifact writes, not HTTP or Browser response capture",
+    "this does not measure a remote object store or wide-area network",
+    "A0/A1/A2 do not substitute for 20K Listing plus 400K Detail daily execution completion or long-window SLO"
+  ]
+}

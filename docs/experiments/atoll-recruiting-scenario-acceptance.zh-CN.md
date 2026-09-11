@@ -34,7 +34,7 @@
 | S22 Recipe 批量升级 | 完成 | 20,000 Source 多 wave 合同、`TestRecruitingLiveDetailRecipeRolloutBatchThroughAtoll` | — |
 | S23 临时手工运行 | 完成 | join occurrence、diagnostic、production/recovery 与取消合同 | — |
 | S24 重试/人工结案 | 完成 | Work retry/resolve、baseline accepted gap、D0—D6、人工修复 E2E | — |
-| S25 10K/20K 日常运行 | 部分完成 | L0—L4 数据库计划/物化容量、5 倍到期形状、400K Detail Work；P1 四 Executor/1,000 Company 真实进程 Resource/ledger 基线，`recruiting-process-capacity-p1-20260912.json` | HTTP/Browser 外部执行与响应 Artifact 吞吐、20K Listing + 400K Detail 完成、长期指标与生产 SLO |
+| S25 10K/20K 日常运行 | 部分完成 | L0—L4 数据库计划/物化容量、5 倍到期形状、400K Detail Work；P1 四 Executor/1,000 Company 真实进程 Resource/ledger 基线；A1 四 Executor/200 历史 response 读取与 derived Artifact 写入基线，`recruiting-process-capacity-p1-20260912.json`、`recruiting-artifact-capacity-a1-20260912.json` | HTTP/Browser response capture 与外部执行吞吐、20K Listing + 400K Detail 完成、长期指标与生产 SLO |
 
 ## 当前实施顺序
 

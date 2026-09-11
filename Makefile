@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope recruiting-boundary-check recruiting-live-smoke recruiting-live-nightly recruiting-live-weekly recruiting-mysql-stress recruiting-capacity recruiting-process-capacity recruiting-backup-restore recruiting-joint-restore recruiting-security-audit recruiting-extension-test recruiting-extension-live-test recruiting-extension-bundle-test dev clean e2e-loop
+.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope recruiting-boundary-check recruiting-live-smoke recruiting-live-nightly recruiting-live-weekly recruiting-mysql-stress recruiting-capacity recruiting-process-capacity recruiting-artifact-capacity recruiting-backup-restore recruiting-joint-restore recruiting-security-audit recruiting-extension-test recruiting-extension-live-test recruiting-extension-bundle-test dev clean e2e-loop
 
 # server/daemon ship namespaced (atoll-server / atoll-daemon); the entry
 # command itself is plain `atoll` — its own name IS the namespace.
@@ -182,6 +182,9 @@ recruiting-capacity:
 
 recruiting-process-capacity:
 	./scripts/recruiting-process-capacity.sh
+
+recruiting-artifact-capacity:
+	./scripts/recruiting-artifact-capacity.sh
 
 recruiting-backup-restore:
 	./scripts/recruiting-backup-restore.sh

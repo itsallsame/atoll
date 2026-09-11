@@ -1,0 +1,70 @@
+{
+  "schema": "recruiting.artifact-capacity-evidence.v1",
+  "captured_at": "2026-09-12",
+  "command": "RECRUITING_ARTIFACT_CAPACITY_LEVEL=A1 make recruiting-artifact-capacity",
+  "revision_before_commit": "f886ada7",
+  "workload_manifest": "docs/experiments/workloads/recruiting-artifact-capacity-v1.json",
+  "environment": {
+    "cpu_logical": 4,
+    "memory_bytes": 16237535232,
+    "mysql": "8.4 isolated container, separate non-root migration/runtime users",
+    "artifact_provider": "one local Atoll daemon File Resource provider",
+    "third_party_network": false
+  },
+  "workload": {
+    "items": 200,
+    "input_payload_bytes_each": 4096,
+    "executors": 4,
+    "recipe_mode": "artifact_recompute",
+    "recipe_transport": "http_json executed offline",
+    "selected_fields": ["id", "title", "url"]
+  },
+  "results": {
+    "used_executors": 4,
+    "input_artifacts": 200,
+    "input_bytes": 819200,
+    "derived_artifacts": 200,
+    "output_bytes": 23600,
+    "backfill_items_succeeded": 200,
+    "backfill_outputs": 200,
+    "attempts_succeeded": 200,
+    "active_budget_after_completion": 0,
+    "work_materialized_dispatches_delivered": 4,
+    "capacity_released_dispatches_delivered": 200,
+    "dispatches_delivered": 204,
+    "resource_write_ms": 1655,
+    "preview_ms": 241,
+    "completion_ms": 37995,
+    "outbox_drain_ms": 38462,
+    "derived_artifacts_per_second_during_completion": 5.26,
+    "restart_recovery_ms": 3508,
+    "ledger_messages": 3438,
+    "ledger_payload_bytes": 2637666,
+    "ledger_events": 324,
+    "recruiting_ledger_events": 319,
+    "test_total_ms": 60260,
+    "go_test_seconds": 64.769
+  },
+  "correctness": {
+    "normal_user_preview_and_confirm": true,
+    "all_input_resource_hashes_verified": true,
+    "all_derived_resource_hashes_verified": true,
+    "exact_business_counts": true,
+    "compact_initial_dispatch_count_exact": true,
+    "all_dispatches_delivered": true,
+    "every_delivered_domain_event_present_once_in_ledger": true,
+    "restart_state_and_command_replay_verified": true,
+    "core_architecture_modified": false
+  },
+  "non_claims": [
+    "HTTP or Browser response capture throughput",
+    "remote Artifact provider throughput",
+    "20K Listing plus 400K Detail execution completion",
+    "long-window saturation or production SLO"
+  ],
+  "acceptance": {
+    "scenario": "S25",
+    "status": "partial",
+    "reason": "local historical response reads and real derived Artifact writes are reproducible, while external capture, full daily completion, and long-window gates remain"
+  }
+}

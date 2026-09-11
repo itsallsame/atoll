@@ -157,7 +157,7 @@ func TestRecruitingProcessCapacityThroughRealDataPlanes(t *testing.T) {
 	waitProcessCapacityImportStatus(t, ws, db, homeID, controlID, daemon, h.server,
 		"completed", input.imports, input.timeout, daemonLog, h.server.logPath)
 	completedDuration := time.Since(executionStarted)
-	drainProcessCapacityOutboxes(t, ws, db, homeID, controlID, input.timeout)
+	drainRecruitingProcessOutboxes(t, ws, db, homeID, controlID, input.timeout)
 	drainedDuration := time.Since(executionStarted)
 
 	totalRows := input.imports * input.rowsPerImport
@@ -339,7 +339,7 @@ func waitProcessCapacityImportStatus(t *testing.T, ws *wsClient, db *sql.DB, hom
 		tailLog(logs[0], 160), tailLog(logs[1], 160))
 }
 
-func drainProcessCapacityOutboxes(t *testing.T, ws *wsClient, db *sql.DB,
+func drainRecruitingProcessOutboxes(t *testing.T, ws *wsClient, db *sql.DB,
 	homeID, controlID string, timeout time.Duration) {
 	t.Helper()
 	ctx := context.Background()
