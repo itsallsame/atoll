@@ -1,6 +1,6 @@
 {
-  "version": "recruiting.scope-execution-fences-evidence.v3",
-  "observed_at": "2026-09-12T04:16:03+08:00",
+  "version": "recruiting.scope-execution-fences-evidence.v4",
+  "observed_at": "2026-09-12T04:26:31+08:00",
   "scope": "Company/Source operational, configuration, and cancellation fences across Recruiting execution types",
   "implementation": {
     "execution_fence_commit": "e1e235ca",
@@ -11,6 +11,7 @@
     "cross_source_backfill_commit": "ee8bafce",
     "backfill_cancel_cutpoints_commit": "e454ab35",
     "cross_execution_cancel_cutpoints_commit": "516d79dc",
+    "concurrent_cancel_stress_commit": "4200ed14",
     "core_modified": false,
     "new_worker_types": 0,
     "new_attempt_authority": "current eligibility gates new claims; configuration_version and execution_fence authorize issued Attempts",
@@ -20,7 +21,8 @@
     "validation_recovery": "canceled Source validation returns to candidate or repairing; canceled candidate Recipe validation returns to draft; rollout Recipe remains active",
     "cross_source_backfill": "Source-only cancel terminates only matching Company Backfill members; other Source Work remains runnable; a partially canceled terminal parent resolves as terminated",
     "backfill_cancel_cutpoints": "result-first preserves success; pause-fence-first rejects late result before Work projection; scope and general coordinators hand off bounded pages and emit one terminal event",
-    "cross_execution_cancel_cutpoints": "operation-driven result-first preserves completed Source Discovery, Source Validation, Detail, Diagnostic, and Listing/Detail/Discovery Recipe validation; cancel-first rejects late results and retains rejected evidence; Baseline late page is also fenced"
+    "cross_execution_cancel_cutpoints": "operation-driven result-first preserves completed Source Discovery, Source Validation, Detail, Diagnostic, and Listing/Detail/Discovery Recipe validation; cancel-first rejects late results and retains rejected evidence; Baseline late page is also fenced",
+    "concurrent_cancel_stress": "35 barrier-synchronized result/pause races plus 10 scope/general Backfill coordinator races converge without a third terminal state, permit leak, duplicate terminal event, or lost rejected evidence"
   },
   "contract_observation": {
     "listing": "drain accepted; cancel and configuration change fenced",
@@ -37,14 +39,15 @@
     "aggregate_version": "ordinary control/health version churn is no longer treated as configuration drift",
     "scope_cancel_owners": "Occurrence, SourceDiscovery, ListingRun, RecipeSampleValidation, BaselineGeneration, Backfill, Work, Attempt, and Permit close coherently",
     "unmaterialized_backfill": "a two-item preview with no child Work remains applying after limit=1 and completes only after the second bounded reconciliation",
-    "scope_cancel_commit_orders": "seven terminal execution kinds pass both operation-driven result-first and cancel-first assertions; Baseline cancel-first additionally proves late page rejection without checkpoint publication"
+    "scope_cancel_commit_orders": "seven terminal execution kinds pass both operation-driven result-first and cancel-first assertions; Baseline cancel-first additionally proves late page rejection without checkpoint publication",
+    "concurrent_observation": "35 result/pause races produced 3 result-first and 32 cancel-first outcomes; all 10 scope/general Backfill coordinator races emitted exactly one backfill.canceled event"
   },
   "verification": {
     "database": "ephemeral MySQL 8.4",
     "migration_identity": "staircase_migrator (non-root)",
     "runtime_identity": "staircase_runtime (non-root, DML only)",
-    "full_store_suite": "pass with race in 226.276s",
-    "actor_suite": "pass with race in 3.094s",
+    "full_store_suite": "pass with race in 228.611s",
+    "actor_suite": "pass with race in 3.063s",
     "targeted_tests": [
       "TestInFlightResultDistinguishesDrainFromCancelFence",
       "TestDetailResultUsesSeparatedScopeFences",
@@ -66,14 +69,16 @@
       "TestSourceCancelIsolatesCompanyBackfillMembers",
       "TestBackfillResultAndScopeCancelConvergeAtBothCommitCutpoints",
       "TestCompletedExecutionOwnersSurviveLaterScopeCancel",
-      "TestScopeCancelRejectsLateExecutionOwnerResults"
+      "TestScopeCancelRejectsLateExecutionOwnerResults",
+      "TestScopeCancelAndResultsConvergeUnderConcurrentStress",
+      "TestScopeAndGeneralBackfillCancelCoordinatorsConvergeUnderConcurrentStress"
     ],
     "race_and_vet": "pass for ./drivers/tools/recruiting/...",
     "core_boundary": "pass from a94d2b8d; no protocol/runtime/lib/platform/registry changes"
   },
   "limits": [
-    "Result-level matrices, principal execution-owner cancellation, Source/Recipe validation recovery states, and operation-driven result-first/cancel-first cutpoints across principal execution types are complete.",
-    "Repeated concurrent stress across scope, result, and general business coordinators remains open.",
-    "S15 and S16 remain partially complete."
+    "Result-level matrices, principal execution-owner cancellation, Source/Recipe validation recovery states, operation-driven result-first/cancel-first cutpoints, and repeated concurrent stress across principal execution types are complete.",
+    "Scope and general Backfill cancellation coordinators repeatedly converge on the same unmaterialized member with one terminal event.",
+    "S15 Company pause/resume and S16 Source pause/resume are complete under the current acceptance ledger."
   ]
 }
