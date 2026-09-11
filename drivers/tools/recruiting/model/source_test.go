@@ -111,6 +111,30 @@ func TestChangingEndpointDuringValidationMovesSourceToRepairingAndFencesOldRun(t
 	}
 }
 
+func TestCanceledSourceValidationReturnsToRetryableReadiness(t *testing.T) {
+	candidate, _ := NewRecruitmentSource("source-cancel-candidate", "company-1", "https://jobs.example.com/new", "all", 1)
+	validating, _ := candidate.BeginValidation(candidate.Version)
+	retryable, err := validating.CancelValidation(validating.Version)
+	if err != nil || retryable.ReadinessStatus != SourceCandidate || retryable.ConfigurationVersion != validating.ConfigurationVersion {
+		t.Fatalf("canceled initial validation=%+v err=%v", retryable, err)
+	}
+	if _, err := retryable.BeginValidation(retryable.Version); err != nil {
+		t.Fatalf("initial validation cannot retry: %v", err)
+	}
+
+	_, ready := validatedSource(t)
+	staged, _ := ready.StageEndpoint(ready.Version, "https://jobs.example.com/repaired", "Engineering")
+	validating, _ = staged.BeginValidation(staged.Version)
+	retryable, err = validating.CancelValidation(validating.Version)
+	if err != nil || retryable.ReadinessStatus != SourceRepairing || retryable.ActiveEndpoint == nil ||
+		retryable.CandidateEndpoint == nil || retryable.ConfigurationVersion != validating.ConfigurationVersion {
+		t.Fatalf("canceled repair validation=%+v err=%v", retryable, err)
+	}
+	if _, err := retryable.BeginValidation(retryable.Version); err != nil {
+		t.Fatalf("repair validation cannot retry: %v", err)
+	}
+}
+
 func TestSourceCannotPublishAnUnverifiedIncrementalContract(t *testing.T) {
 	source, _ := NewRecruitmentSource("source-1", "company-1", "https://jobs.example.com", "all", 1)
 	source, _ = source.BeginValidation(source.Version)

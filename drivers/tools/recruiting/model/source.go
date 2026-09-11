@@ -229,6 +229,25 @@ func (s RecruitmentSource) BeginValidation(expected uint64) (RecruitmentSource, 
 	}
 }
 
+// CancelValidation removes the in-progress claim without treating an
+// operator scope cancellation as negative contract evidence. A new Source
+// returns to candidate; an endpoint repair remains staged for a later retry.
+func (s RecruitmentSource) CancelValidation(expected uint64) (RecruitmentSource, error) {
+	if err := requireVersion(expected, s.Version); err != nil {
+		return RecruitmentSource{}, err
+	}
+	if s.ReadinessStatus != SourceValidating || s.CandidateEndpoint == nil {
+		return RecruitmentSource{}, &InvalidTransitionError{Entity: "source", From: string(s.ReadinessStatus), Action: "cancel validation"}
+	}
+	if s.ActiveEndpoint == nil {
+		s.ReadinessStatus = SourceCandidate
+	} else {
+		s.ReadinessStatus = SourceRepairing
+	}
+	s.Version++
+	return s, nil
+}
+
 func (s RecruitmentSource) PublishValidated(expected uint64, assignment SourceRecipeAssignment, assessment SourceContractAssessment) (RecruitmentSource, error) {
 	if err := requireVersion(expected, s.Version); err != nil {
 		return RecruitmentSource{}, err

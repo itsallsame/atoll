@@ -477,35 +477,9 @@ func cancelScopeBusinessExecutionTx(ctx context.Context, tx *sql.Tx, work model.
 		}
 		return cancelScopeListingRunTx(ctx, tx, work.WorkID, at)
 	case "source_validation":
-		return cancelScopeListingRunTx(ctx, tx, work.WorkID, at)
+		return cancelScopeSourceValidationTx(ctx, tx, work.WorkID, operationID, at)
 	case "recipe_validation":
-		if err := cancelScopeListingRunTx(ctx, tx, work.WorkID, at); err == nil {
-			var exists bool
-			if queryErr := tx.QueryRowContext(ctx, `SELECT EXISTS(
-  SELECT 1 FROM recruiting_listing_runs WHERE work_id = ?)`, work.WorkID).Scan(&exists); queryErr != nil {
-				return queryErr
-			}
-			if exists {
-				return nil
-			}
-		} else {
-			return err
-		}
-		run, err := getRecipeSampleValidationByWorkWith(ctx, tx, work.WorkID, true)
-		if errors.Is(err, ErrNotFound) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if run.Status != model.RecipeSampleValidationQueued && run.Status != model.RecipeSampleValidationRunning {
-			return nil
-		}
-		canceled, err := run.Cancel(run.Version)
-		if err != nil {
-			return err
-		}
-		return updateRecipeSampleValidationTx(ctx, tx, run.Version, canceled, at)
+		return cancelScopeRecipeValidationTx(ctx, tx, work.WorkID, operationID, at)
 	case "source_discovery":
 		var state []byte
 		err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_source_discoveries
@@ -605,6 +579,139 @@ func cancelScopeListingRunTx(ctx context.Context, tx *sql.Tx, workID string, at 
 		return err
 	}
 	return updateListingRunInTx(ctx, tx, run.Version, canceled, at)
+}
+
+func cancelScopeSourceValidationTx(ctx context.Context, tx *sql.Tx, workID, operationID string, at time.Time) error {
+	run, err := getListingRunByWorkWith(ctx, tx, workID, true)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if run.Status == model.ListingRunQueued || run.Status == model.ListingRunRunning {
+		canceled, err := run.Cancel(run.Version)
+		if err != nil {
+			return err
+		}
+		if err := updateListingRunInTx(ctx, tx, run.Version, canceled, at); err != nil {
+			return err
+		}
+	}
+	var state []byte
+	if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_sources WHERE source_id = ? FOR UPDATE`,
+		run.SourceID).Scan(&state); err != nil {
+		return err
+	}
+	var source model.RecruitmentSource
+	if err := json.Unmarshal(state, &source); err != nil {
+		return err
+	}
+	if source.ReadinessStatus != model.SourceValidating || source.CandidateEndpoint == nil ||
+		source.CandidateEndpoint.CanonicalKey != run.ListingExecution.Endpoint.CanonicalKey ||
+		source.CandidateEndpoint.Revision != run.ListingExecution.Endpoint.Revision {
+		return nil
+	}
+	retryable, err := source.CancelValidation(source.Version)
+	if err != nil {
+		return err
+	}
+	if err := updateSourceInTx(ctx, tx, source.Version, retryable, at); err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(map[string]any{"work_id": workID, "operation_id": operationID,
+		"readiness_status": retryable.ReadinessStatus})
+	event, err := model.NewEventIntent("source-validation-canceled-"+backfillStoreDigest(operationID+"\x00"+workID),
+		"source.validation_canceled", "source", retryable.SourceID, retryable.Version, at.UTC().Format(time.RFC3339Nano),
+		"scope-control:"+operationID, payload)
+	if err != nil {
+		return err
+	}
+	return appendEventIntent(ctx, tx, event, at, at)
+}
+
+func cancelScopeRecipeValidationTx(ctx context.Context, tx *sql.Tx, workID, operationID string, at time.Time) error {
+	run, err := getListingRunByWorkWith(ctx, tx, workID, true)
+	if err == nil {
+		if run.Status == model.ListingRunQueued || run.Status == model.ListingRunRunning {
+			canceled, cancelErr := run.Cancel(run.Version)
+			if cancelErr != nil {
+				return cancelErr
+			}
+			if err := updateListingRunInTx(ctx, tx, run.Version, canceled, at); err != nil {
+				return err
+			}
+		}
+		return cancelScopeCandidateRecipeTx(ctx, tx, run.ListingExecution.RecipeID,
+			run.ListingExecution.RecipeVersion, run.ListingExecution.ContentHash,
+			run.ListingExecution.ContractHash, workID, operationID, at)
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	sample, err := getRecipeSampleValidationByWorkWith(ctx, tx, workID, true)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if sample.Status == model.RecipeSampleValidationQueued || sample.Status == model.RecipeSampleValidationRunning {
+		canceled, err := sample.Cancel(sample.Version)
+		if err != nil {
+			return err
+		}
+		if err := updateRecipeSampleValidationTx(ctx, tx, sample.Version, canceled, at); err != nil {
+			return err
+		}
+	}
+	if sample.Mode == model.RecipeSampleValidationRollout {
+		return nil
+	}
+	return cancelScopeCandidateRecipeTx(ctx, tx, sample.Candidate.RecipeID, sample.Candidate.Version,
+		sample.Candidate.ContentHash, sample.Candidate.ContractHash, workID, operationID, at)
+}
+
+func cancelScopeCandidateRecipeTx(ctx context.Context, tx *sql.Tx, recipeID string, recipeVersion uint64,
+	contentHash, contractHash, workID, operationID string, at time.Time) error {
+	var state []byte
+	if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_recipes
+WHERE recipe_id = ? AND recipe_version = ? FOR UPDATE`, recipeID, recipeVersion).Scan(&state); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	var recipe model.Recipe
+	if err := json.Unmarshal(state, &recipe); err != nil {
+		return err
+	}
+	if recipe.Status != model.RecipeValidating || recipe.ContentHash != contentHash || recipe.ContractHash != contractHash {
+		return nil
+	}
+	retryable, err := recipe.ValidationFailed(recipe.StateVersion)
+	if err != nil {
+		return err
+	}
+	nextState, _ := json.Marshal(retryable)
+	result, err := tx.ExecContext(ctx, `UPDATE recruiting_recipes
+SET status = ?, state_version = ?, state_json = ?, updated_at = ?
+WHERE recipe_id = ? AND recipe_version = ? AND state_version = ?`, retryable.Status, retryable.StateVersion,
+		nextState, at.UTC(), retryable.RecipeID, retryable.Version, recipe.StateVersion)
+	if err != nil {
+		return err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return ErrProgressConflict
+	}
+	payload, _ := json.Marshal(map[string]any{"work_id": workID, "operation_id": operationID})
+	event, err := model.NewEventIntent("recipe-validation-canceled-"+backfillStoreDigest(operationID+"\x00"+workID),
+		"recipe.validation_canceled", "recipe", fmt.Sprintf("%s@%d", retryable.RecipeID, retryable.Version),
+		retryable.StateVersion, at.UTC().Format(time.RFC3339Nano), "scope-control:"+operationID, payload)
+	if err != nil {
+		return err
+	}
+	return appendEventIntent(ctx, tx, event, at, at)
 }
 
 func cancelScopeBackfillItemTx(ctx context.Context, tx *sql.Tx, workID, operationID string, at time.Time) error {

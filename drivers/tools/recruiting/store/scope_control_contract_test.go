@@ -209,21 +209,62 @@ func TestCancelScopeControlClosesExecutionOwnerAggregates(t *testing.T) {
 		run, err := repository.GetListingRunByWork(ctx, fixture.work.WorkID)
 		assertScopeCanceledExecution(t, ctx, db, repository, operation, fixture.work.WorkID,
 			fixture.offer.Attempt.AttemptID)
-		if err != nil || run.Status != model.ListingRunCanceled {
-			t.Fatalf("canceled ListingRun=%+v err=%v", run, err)
+		source, sourceErr := repository.GetSource(ctx, fixture.source.SourceID)
+		if err != nil || sourceErr != nil || run.Status != model.ListingRunCanceled ||
+			source.ReadinessStatus != model.SourceCandidate {
+			t.Fatalf("canceled ListingRun=%+v Source=%+v err=%v/%v", run, source, err, sourceErr)
+		}
+		resumed, _ := source.Resume(source.Version)
+		if _, err := resumed.BeginValidation(resumed.Version); err != nil {
+			t.Fatalf("canceled Source validation cannot retry after resume: %v", err)
 		}
 	})
 
 	t.Run("recipe_sample_validation", func(t *testing.T) {
-		fixture := createRunningDetailRecipeSampleFixture(t, ctx, repository, "scope-owner-recipe-sample",
+		prefix := "scope-owner-recipe-sample"
+		fixture := createRunningDetailRecipeSampleFixture(t, ctx, repository, prefix,
 			now.Add(3*time.Hour))
 		operation := cancelSourceScopeAndReconcile(t, ctx, repository, fixture.source.SourceID,
 			"scope-owner-recipe-sample", fixture.now.Add(10*time.Second))
 		run, err := repository.GetRecipeSampleValidationByWork(ctx, fixture.offer.Work.WorkID)
 		assertScopeCanceledExecution(t, ctx, db, repository, operation, fixture.offer.Work.WorkID,
 			fixture.offer.Attempt.AttemptID)
-		if err != nil || run.Status != model.RecipeSampleValidationCanceled {
-			t.Fatalf("canceled Recipe sample validation=%+v err=%v", run, err)
+		recipe, recipeErr := repository.GetRecipe(ctx, prefix+"-candidate", 2)
+		if err != nil || recipeErr != nil || run.Status != model.RecipeSampleValidationCanceled ||
+			recipe.Status != model.RecipeDraft {
+			t.Fatalf("canceled Recipe sample validation=%+v Recipe=%+v err=%v/%v", run, recipe, err, recipeErr)
+		}
+		if _, err := recipe.BeginValidation(recipe.StateVersion); err != nil {
+			t.Fatalf("canceled Detail Recipe validation cannot retry: %v", err)
+		}
+	})
+
+	t.Run("listing_recipe_validation", func(t *testing.T) {
+		prefix := "scope-owner-listing-recipe"
+		fixture := createRunningListingRecipeValidationFixture(t, ctx, repository, prefix, now.Add(3500*time.Millisecond))
+		operation := cancelSourceScopeAndReconcile(t, ctx, repository, fixture.source.SourceID, prefix,
+			fixture.now.Add(10*time.Second))
+		run, runErr := repository.GetListingRunByWork(ctx, fixture.offer.Work.WorkID)
+		recipe, recipeErr := repository.GetRecipe(ctx, prefix+"-candidate", 2)
+		assertScopeCanceledExecution(t, ctx, db, repository, operation, fixture.offer.Work.WorkID,
+			fixture.offer.Attempt.AttemptID)
+		if runErr != nil || recipeErr != nil || run.Status != model.ListingRunCanceled || recipe.Status != model.RecipeDraft {
+			t.Fatalf("canceled Listing Recipe run=%+v Recipe=%+v err=%v/%v", run, recipe, runErr, recipeErr)
+		}
+	})
+
+	t.Run("discovery_recipe_validation", func(t *testing.T) {
+		prefix := "scope-owner-discovery-recipe"
+		fixture := createRunningDiscoveryRecipeValidationFixture(t, ctx, repository, prefix, now.Add(3750*time.Millisecond))
+		operation := cancelCompanyScopeAndReconcile(t, ctx, repository, prefix+"-company", prefix,
+			fixture.now.Add(10*time.Second))
+		run, runErr := repository.GetRecipeSampleValidationByWork(ctx, fixture.offer.Work.WorkID)
+		recipe, recipeErr := repository.GetRecipe(ctx, prefix+"-candidate", 1)
+		assertScopeCanceledExecution(t, ctx, db, repository, operation, fixture.offer.Work.WorkID,
+			fixture.offer.Attempt.AttemptID)
+		if runErr != nil || recipeErr != nil || run.Status != model.RecipeSampleValidationCanceled ||
+			recipe.Status != model.RecipeDraft {
+			t.Fatalf("canceled Discovery Recipe run=%+v Recipe=%+v err=%v/%v", run, recipe, runErr, recipeErr)
 		}
 	})
 
