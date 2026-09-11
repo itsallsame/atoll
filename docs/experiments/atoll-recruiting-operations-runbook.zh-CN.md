@@ -141,6 +141,8 @@ repair.get
 
 每次发布保存：Git revision、migration 版本、Actor/Executor 配置 hash、Recipe/Assignment 版本、真实站点清单版本、容量档位、边界检查、测试报告和已接受 gap。
 
+发布候选必须运行 `make recruiting-security-audit`，阻断提交的高置信私钥/云服务凭证，以及证据和 workload JSON 中的 credential-shaped 字段或 `secret://` 引用。该仓库门不扫描已经从当前工作树删除的 Git 历史，也无法验证部署 Secret Provider、环境变量和挂载文件；生产发布必须另外保存这些部署侧扫描结果。
+
 应用回滚不能删除已接受事实。旧二进制只有在 schema、Message 和 Recipe ABI 兼容检查通过后才可启动；否则停止新调度并前向修复。
 
 ## 11. 当前尚未关闭的生产门

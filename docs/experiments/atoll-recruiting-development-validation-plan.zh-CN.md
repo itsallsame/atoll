@@ -553,6 +553,8 @@ Artifact provider 故障进展（2026-09-11）：若 Executor 已 accept/start�
 
 近期执行健康投影进展（2026-09-12）：`recruiting.system.status` 的同一只读一致性快照新增最近一小时有界执行健康视图。migration `000044` 为 Attempt 的全局近期顺序和 rejected Artifact 的近期顺序增加专用索引；查询各最多读取 1,001 行、只公布前 1,000 条并显式返回 truncated。投影给出 Attempt 结果、从 offer 创建到终态的 P50/P95/P99/max、过期 Attempt 数、同 Work 后续成功恢复数及恢复时延，以及被栅栏拒绝后留下的 Artifact 证据数。非 root MySQL 8.4 合同验证了 10 分钟终态时延、20 分钟恢复时延、rejected Artifact 和两条生产查询的索引命中。它解决 Work Center 即时诊断的有界读模型，不替代长期时序 metrics、Executor 利用率、Artifact 字节/上传失败或生产 SLO 采集；这些仍是 P9 退出项。机读证据见 `evidence/recruiting-execution-health-20260912.json`。
 
+仓库秘密扫描进展（2026-09-12）：新增 `make recruiting-security-audit`，对当前已跟踪和未跟踪文件执行高置信私钥/云服务凭证格式检查，并对准备提交的 evidence/workload JSON 额外禁止 credential-shaped 字段和 `secret://` 引用。正向扫描通过；临时注入的 AWS access-key 形状文件使命令非零退出并准确报告文件，删除 fixture 后再次通过。该门刻意不把测试中的普通 `password/token` 单词判为真实秘密，也不声称覆盖已删除 Git 历史、部署环境变量、挂载文件或 Secret Provider；release 仍必须保存部署侧专业扫描与权限验收结果。
+
 ### 14.1 负载模型
 
 至少运行以下可复现档位：
@@ -648,6 +650,7 @@ make recruiting-live-nightly
 make recruiting-live-weekly
 make recruiting-capacity
 make recruiting-backup-restore
+make recruiting-security-audit
 ```
 
 CI 层级：
@@ -656,7 +659,7 @@ CI 层级：
 2. PR merge gate：`make test-full`、招聘 e2e、migration from empty、race；
 3. nightly：真实 MySQL、进程 kill、Nightly Canary、中型 L1；
 4. weekly：Weekly Coverage、L2/L3、备份恢复；
-5. release：全部 25 场景、L4、权限/秘密扫描、升级与回滚演练。
+5. release：全部 25 场景、L4、`make recruiting-security-audit`、部署侧 Git 历史/Secret Provider 扫描、权限验收、升级与回滚演练。
 
 第三方网站暂时不可用不等同于代码失败：先由保存的 Artifact 和 fixture replay 判定代码回归或站点变化。真实站点失败可以令 Live job 进入 quarantine，但不能被静默忽略。
 
