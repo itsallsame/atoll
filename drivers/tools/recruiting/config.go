@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -47,7 +48,18 @@ type Config struct {
 	RetryBaseDelayMS             int                    `json:"retry_base_delay_ms"`
 	RetryMaxDelayMS              int                    `json:"retry_max_delay_ms"`
 	RetryThrottledDelayMS        int                    `json:"retry_throttled_delay_ms"`
+	RetryPolicyOverrides         []RetryPolicyOverride  `json:"retry_policy_overrides,omitempty"`
 	ProfileRepairSessionTTLMS    int                    `json:"profile_repair_session_ttl_ms"`
+}
+
+type RetryPolicyOverride struct {
+	Origin               string `json:"origin"`
+	FailureClass         string `json:"failure_class"`
+	PolicyVersion        uint64 `json:"policy_version"`
+	MaxAutomaticAttempts int    `json:"max_automatic_attempts"`
+	BaseDelayMS          int    `json:"base_delay_ms"`
+	MaxDelayMS           int    `json:"max_delay_ms"`
+	ThrottledDelayMS     int    `json:"throttled_delay_ms"`
 }
 
 type ExecutorTargetConfig struct {
@@ -116,6 +128,26 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 	if err := cfg.executionFailurePolicy().Validate(); err != nil {
 		return Config{}, fmt.Errorf("recruiting config: %w", err)
 	}
+	if len(cfg.RetryPolicyOverrides) > 10_000 {
+		return Config{}, fmt.Errorf("recruiting config: at most 10000 retry policy overrides are supported")
+	}
+	seenRetryOverrides := make(map[string]struct{}, len(cfg.RetryPolicyOverrides))
+	for index := range cfg.RetryPolicyOverrides {
+		override := &cfg.RetryPolicyOverrides[index]
+		origin, err := normalizeRetryPolicyOrigin(override.Origin)
+		if err != nil || !executioncontract.ValidFailureClass(override.FailureClass) {
+			return Config{}, fmt.Errorf("recruiting config: retry policy override requires a canonical HTTP(S) origin and supported failure_class")
+		}
+		override.Origin = origin
+		if err := override.executionFailurePolicy().Validate(); err != nil {
+			return Config{}, fmt.Errorf("recruiting config: retry policy override %s/%s: %w", origin, override.FailureClass, err)
+		}
+		key := origin + "\n" + override.FailureClass
+		if _, duplicate := seenRetryOverrides[key]; duplicate {
+			return Config{}, fmt.Errorf("recruiting config: duplicate retry policy override for %s/%s", origin, override.FailureClass)
+		}
+		seenRetryOverrides[key] = struct{}{}
+	}
 	if cfg.ProfileRepairSessionTTLMS < 60_000 || cfg.ProfileRepairSessionTTLMS > 3_600_000 {
 		return Config{}, fmt.Errorf("recruiting config: profile_repair_session_ttl_ms must be in [60000,3600000]")
 	}
@@ -162,6 +194,36 @@ func (c Config) executionFailurePolicy() store.ExecutionFailurePolicy {
 	return store.ExecutionFailurePolicy{Version: c.RetryPolicyVersion, MaxAutomaticAttempts: uint64(c.RetryMaxAutomaticAttempts),
 		BaseDelay: time.Duration(c.RetryBaseDelayMS) * time.Millisecond, MaxDelay: time.Duration(c.RetryMaxDelayMS) * time.Millisecond,
 		ThrottledDelay: time.Duration(c.RetryThrottledDelayMS) * time.Millisecond}
+}
+
+func (c Config) executionFailurePolicyFor(origin, failureClass string) store.ExecutionFailurePolicy {
+	if normalized, err := normalizeRetryPolicyOrigin(origin); err == nil {
+		origin = normalized
+	}
+	for _, override := range c.RetryPolicyOverrides {
+		if override.Origin == origin && override.FailureClass == failureClass {
+			return override.executionFailurePolicy()
+		}
+	}
+	return c.executionFailurePolicy()
+}
+
+func (o RetryPolicyOverride) executionFailurePolicy() store.ExecutionFailurePolicy {
+	return store.ExecutionFailurePolicy{Version: o.PolicyVersion, MaxAutomaticAttempts: uint64(o.MaxAutomaticAttempts),
+		BaseDelay: time.Duration(o.BaseDelayMS) * time.Millisecond, MaxDelay: time.Duration(o.MaxDelayMS) * time.Millisecond,
+		ThrottledDelay: time.Duration(o.ThrottledDelayMS) * time.Millisecond}
+}
+
+func normalizeRetryPolicyOrigin(raw string) (string, error) {
+	if len(raw) == 0 || len(raw) > 512 {
+		return "", fmt.Errorf("invalid retry policy origin")
+	}
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.User != nil || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		(parsed.Path != "" && parsed.Path != "/") || (strings.ToLower(parsed.Scheme) != "http" && strings.ToLower(parsed.Scheme) != "https") {
+		return "", fmt.Errorf("invalid retry policy origin")
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host), nil
 }
 
 func (c Config) executionDispatchTargets() []store.ExecutionDispatchTarget {
@@ -218,6 +280,7 @@ const ConfigSchema = `{
 	,"retry_base_delay_ms":{"type":"integer","minimum":1000,"maximum":86400000}
 	,"retry_max_delay_ms":{"type":"integer","minimum":1000,"maximum":604800000}
 	,"retry_throttled_delay_ms":{"type":"integer","minimum":1000,"maximum":604800000}
+	,"retry_policy_overrides":{"type":"array","maxItems":10000,"items":{"type":"object","additionalProperties":false,"required":["origin","failure_class","policy_version","max_automatic_attempts","base_delay_ms","max_delay_ms","throttled_delay_ms"],"properties":{"origin":{"type":"string","minLength":1,"maxLength":512},"failure_class":{"type":"string","minLength":1,"maxLength":64},"policy_version":{"type":"integer","minimum":1},"max_automatic_attempts":{"type":"integer","minimum":1,"maximum":100},"base_delay_ms":{"type":"integer","minimum":1000,"maximum":86400000},"max_delay_ms":{"type":"integer","minimum":1000,"maximum":604800000},"throttled_delay_ms":{"type":"integer","minimum":1000,"maximum":604800000}}}}
 	,"profile_repair_session_ttl_ms":{"type":"integer","minimum":60000,"maximum":3600000}
   }
 }`

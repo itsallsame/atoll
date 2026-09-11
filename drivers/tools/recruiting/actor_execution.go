@@ -494,6 +494,7 @@ func handleExecutionTransition(sys actorbase.Sys, cfg Config, repository *store.
 	}
 	businessAt := time.UnixMilli(msg.TS).UTC()
 	action := ""
+	failurePolicy := cfg.executionFailurePolicy()
 	switch msg.Type {
 	case TypeExecutionAccept:
 		action = "accept"
@@ -512,6 +513,17 @@ func handleExecutionTransition(sys actorbase.Sys, cfg Config, repository *store.
 			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "execution.failed report is invalid or does not match reason")
 			return
 		}
+		attempt, err := repository.GetAttempt(msg.Ctx(), payload.AttemptID)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+		record, err := repository.GetWorkRecord(msg.Ctx(), attempt.WorkID)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+		failurePolicy = cfg.executionFailurePolicyFor(record.Placement.Origin, payload.Failure.Class)
 		action = "fail"
 	default:
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "unsupported execution transition")
@@ -520,7 +532,7 @@ func handleExecutionTransition(sys actorbase.Sys, cfg Config, repository *store.
 	result, err := repository.ApplyExecutionTransitionCommand(msg.Ctx(), store.ExecutionTransitionCommand{
 		CommandID: payload.CommandID, Word: msg.Type, RequestHash: executionCommandRequestHash(msg), CorrelationID: string(msg.CorrelationID),
 		RequestedBy: string(msg.Sender.ID), AttemptID: payload.AttemptID, ExecutorIncarnation: payload.ExecutorIncarnation,
-		Action: action, Reason: payload.Reason, Failure: payload.Failure, FailurePolicy: cfg.executionFailurePolicy(),
+		Action: action, Reason: payload.Reason, Failure: payload.Failure, FailurePolicy: failurePolicy,
 	}, businessAt)
 	if err != nil {
 		failStoreError(sys, msg, err)

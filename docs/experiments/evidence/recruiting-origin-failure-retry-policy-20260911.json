@@ -1,0 +1,23 @@
+{
+  "evidence_version": "recruiting-evidence.v1",
+  "recorded_at": "2026-09-11T00:00:00Z",
+  "scope": "P3 origin and failure-class retry policy selection",
+  "branch": "codex/atoll-recruiting",
+  "core_boundary_base": "a94d2b8d",
+  "claims": [
+    "retry overrides use an exact canonical HTTP(S) origin plus a shared closed failure class",
+    "each override is complete, independently versioned, bounded, and unique after normalization",
+    "an exact throttled override produces its configured retry decision while an unmatched failure uses the global policy",
+    "paths, queries, credentials, wildcards, unknown classes, invalid bounds, and normalized duplicates are rejected",
+    "execution.failed selects against the immutable Work placement origin and persists the selected policy version through the existing atomic failure transaction"
+  ],
+  "verification": [
+    {
+      "command": "go test ./drivers/tools/recruiting/... -count=1",
+      "result": "pass",
+      "environment": "local deterministic config, contract, domain, actor, and store tests"
+    }
+  ],
+  "third_party_writes": false,
+  "atoll_core_modified": false
+}

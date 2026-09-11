@@ -110,13 +110,8 @@ func (f FailureReport) Validate(attemptID string) error {
 	if strings.TrimSpace(f.Class) != f.Class {
 		return fmt.Errorf("execution failure class is not normalized")
 	}
-	repairExpected := false
-	switch strings.TrimSpace(f.Class) {
-	case "transport_timeout", "endpoint_rejected", "response_too_large", "redirect_rejected", "robots_disallowed", "throttled", "forbidden",
-		"upstream_5xx", "unexpected_status", "auth_expired", "captcha", "budget_revoked":
-	case "parse_error", "quality_rejected", "contract_violated":
-		repairExpected = true
-	default:
+	repairExpected, validClass := failureClassShape(f.Class)
+	if !validClass {
 		return fmt.Errorf("unsupported execution failure class %q", f.Class)
 	}
 	if f.NeedsRepair != repairExpected {
@@ -149,6 +144,28 @@ func (f FailureReport) Validate(attemptID string) error {
 		return fmt.Errorf("execution failure supporting Artifacts must contain the primary failure Artifact")
 	}
 	return nil
+}
+
+// ValidFailureClass exposes the shared closed vocabulary to control-plane
+// policy configuration without requiring a fabricated FailureReport.
+func ValidFailureClass(class string) bool {
+	if strings.TrimSpace(class) != class {
+		return false
+	}
+	_, valid := failureClassShape(class)
+	return valid
+}
+
+func failureClassShape(class string) (needsRepair bool, valid bool) {
+	switch class {
+	case "transport_timeout", "endpoint_rejected", "response_too_large", "redirect_rejected", "robots_disallowed", "throttled", "forbidden",
+		"upstream_5xx", "unexpected_status", "auth_expired", "captcha", "budget_revoked":
+		return false, true
+	case "parse_error", "quality_rejected", "contract_violated":
+		return true, true
+	default:
+		return false, false
+	}
 }
 
 // StableSignature preserves wire compatibility with older executors while

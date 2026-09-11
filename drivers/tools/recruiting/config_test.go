@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 )
@@ -84,6 +85,41 @@ func TestExecutionDispatchTargetIsCapabilityBoundAndDeterministic(t *testing.T) 
 	}
 	if _, found := cfg.executionDispatchTarget("document.parse", "command-1\nwork-1"); found {
 		t.Fatal("selected an executor for an unsupported capability")
+	}
+}
+
+func TestRetryPolicyOverridesAreCanonicalBoundedAndExact(t *testing.T) {
+	raw := json.RawMessage(`{"retry_policy_overrides":[{"origin":"HTTPS://Jobs.Example.COM/","failure_class":"throttled","policy_version":9,"max_automatic_attempts":7,"base_delay_ms":2000,"max_delay_ms":120000,"throttled_delay_ms":60000}]}`)
+	cfg, err := parseConfig(raw)
+	if err != nil || len(cfg.RetryPolicyOverrides) != 1 || cfg.RetryPolicyOverrides[0].Origin != "https://jobs.example.com" {
+		t.Fatalf("retry override config=%+v err=%v", cfg.RetryPolicyOverrides, err)
+	}
+	override := cfg.executionFailurePolicyFor("https://jobs.example.com", "throttled")
+	if override.Version != 9 || override.MaxAutomaticAttempts != 7 || override.BaseDelay != 2*time.Second ||
+		override.MaxDelay != 2*time.Minute || override.ThrottledDelay != time.Minute {
+		t.Fatalf("selected retry override=%+v", override)
+	}
+	work, _ := model.NewWork("origin-policy-work", "source", "source-1", "listing_sync", "timer")
+	artifact, _ := model.NewArtifactMetadata("origin-policy-artifact", model.ArtifactFailure, "sha256:failure",
+		"artifact://failure", work.WorkID, "attempt-1", "operators", "30d", true)
+	decision, err := override.Decide(work, executioncontract.FailureReport{
+		Class: "throttled", Retryable: true, Artifact: artifact}, time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC))
+	if err != nil || decision.PolicyVersion != 9 || decision.RetryNotBefore != "2026-09-11T00:01:00Z" {
+		t.Fatalf("origin/error retry decision=%+v err=%v", decision, err)
+	}
+	global := cfg.executionFailurePolicyFor("https://jobs.example.com", "upstream_5xx")
+	if global.Version != cfg.RetryPolicyVersion || global.Version == override.Version {
+		t.Fatalf("unmatched failure did not use global policy: %+v", global)
+	}
+	for _, invalid := range []json.RawMessage{
+		json.RawMessage(`{"retry_policy_overrides":[{"origin":"https://jobs.example.com/path","failure_class":"throttled","policy_version":9,"max_automatic_attempts":7,"base_delay_ms":2000,"max_delay_ms":120000,"throttled_delay_ms":60000}]}`),
+		json.RawMessage(`{"retry_policy_overrides":[{"origin":"https://jobs.example.com","failure_class":"invented","policy_version":9,"max_automatic_attempts":7,"base_delay_ms":2000,"max_delay_ms":120000,"throttled_delay_ms":60000}]}`),
+		json.RawMessage(`{"retry_policy_overrides":[{"origin":"https://jobs.example.com","failure_class":"throttled","policy_version":9,"max_automatic_attempts":7,"base_delay_ms":2000,"max_delay_ms":1000,"throttled_delay_ms":60000}]}`),
+		json.RawMessage(`{"retry_policy_overrides":[{"origin":"https://jobs.example.com","failure_class":"throttled","policy_version":9,"max_automatic_attempts":7,"base_delay_ms":2000,"max_delay_ms":120000,"throttled_delay_ms":60000},{"origin":"https://JOBS.example.com/","failure_class":"throttled","policy_version":10,"max_automatic_attempts":3,"base_delay_ms":1000,"max_delay_ms":60000,"throttled_delay_ms":30000}]}`),
+	} {
+		if _, err := parseConfig(invalid); err == nil {
+			t.Fatalf("invalid retry override was accepted: %s", invalid)
+		}
 	}
 }
 
