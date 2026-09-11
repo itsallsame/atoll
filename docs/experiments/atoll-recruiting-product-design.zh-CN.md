@@ -151,6 +151,8 @@ Timer 粒度不冻结：可以每个 Recruitment Source 一个 durable timer，�
 
 详情 Recipe 修复的安全切点不是“直接重跑旧 Work”，而是先把已验证的新版本以 Source Assignment 原子切换，再从已终结的失败 Work 创建因果 Retry Work。普通发布只接受结果契约、scope 和 Executor capability 均兼容的 Recipe；Source version、Assignment version、命令回执和审计事件在同一事务受围栏。改变契约、scope 或 capability 的版本必须进入独立迁移流程，不能借普通修复命令悄悄改变既有 Work 的执行含义。Listing Recipe 采用逐 Source 灰度原语：兼容切换在同一事务重绑定 Checkpoint Recipe 身份但不移动 frontier，随后 Source 强制进入 `repairing`，必须重新校准才能恢复每日调度；批量升级只能逐项调用该原语并依据每项验证结果继续或回滚。解析失败不能只保存二次生成的 failure 摘要：导致失败的原始 response/page 与主 failure Artifact 必须全部绑定同一 Work/Attempt，并随失败状态原子登记；否则人和 Agent 无法离线复盘修复依据。
 
+新 Source 的首次 Detail Recipe 绑定不是 rollout：rollout 只替换已有 Assignment，不能用测试种子或数据库直写补齐首次绑定。公开 `recruiting.recipe.assign` 只允许在 Source 已完成 Listing 校验、当前 Listing Assignment 精确匹配且尚无 Detail Assignment 时，绑定一个同 scope、active、v1 的 Detail Recipe；Source version、首条 Assignment/历史、命令回执与 `source.detail_recipe_assigned` 事件在一个事务内提交。声明式 HTTP Recipe 下一步进入 baseline；Browser Recipe 若还没有 Profile，则明确先绑定 Profile。第二次“首次绑定”必须拒绝，后续变更统一走验证后的 rollout/rollback。
+
 ### 5.5 正交表达工作来源
 
 ```text
