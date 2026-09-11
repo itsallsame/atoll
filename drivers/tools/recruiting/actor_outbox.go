@@ -60,6 +60,10 @@ type outboxReconcileResponse struct {
 	CompanyErasureResources     int    `json:"company_erasure_resources"`
 	CompanyErasureManifestDone  bool   `json:"company_erasure_manifest_done"`
 	CompanyErasurePurgePhase    string `json:"company_erasure_purge_phase,omitempty"`
+	CompanyErasurePurged        int64  `json:"company_erasure_purged"`
+	CompanyErasurePhaseAdvanced bool   `json:"company_erasure_phase_advanced"`
+	CompanyErasureCompleted     bool   `json:"company_erasure_completed"`
+	CompanyErasureProofHash     string `json:"company_erasure_proof_hash,omitempty"`
 	RepairCandidatesScanned     int    `json:"repair_candidates_scanned"`
 	RepairBatchesRecovered      int    `json:"repair_batches_recovered"`
 	RepairWorksRecovered        int    `json:"repair_works_recovered"`
@@ -180,6 +184,27 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 	}
 	response.CompanyErasureResources = erasureExecution.Processed
 	response.CompanyErasureManifestDone = erasureExecution.Completed
+	erasurePurge, err := reconcileCompanyErasurePurge(msg.Ctx(), repository, payload.Limit, now)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	if erasurePurge.Erasure.ErasureID != "" {
+		response.CompanyErasureID = erasurePurge.Erasure.ErasureID
+		response.CompanyErasurePurgePhase = erasurePurge.Erasure.PurgePhase
+	}
+	response.CompanyErasurePurged = erasurePurge.Affected
+	response.CompanyErasurePhaseAdvanced = erasurePurge.Advanced
+	erasureProof, err := reconcileCompanyErasureCompletion(msg.Ctx(), repository, now)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	if erasureProof.ProofHash != "" {
+		response.CompanyErasureID = erasureProof.ErasureID
+		response.CompanyErasureCompleted = true
+		response.CompanyErasureProofHash = erasureProof.ProofHash
+	}
 	repairRecovery, err := reconcileRepairRecoveryBatch(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
 	if err != nil {
 		failStoreError(sys, msg, err)
@@ -356,6 +381,8 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 		_, _ = repository.PromoteNextReadyCompany(msg.Ctx(), now)
 		_, _ = reconcileCompanyErasurePreview(msg.Ctx(), repository, maxReconcileLimit, now)
 		_, _ = reconcileCompanyErasureExecution(msg.Ctx(), repository, maxReconcileLimit, now)
+		_, _ = reconcileCompanyErasurePurge(msg.Ctx(), repository, maxReconcileLimit, now)
+		_, _ = reconcileCompanyErasureCompletion(msg.Ctx(), repository, now)
 		_, _ = reconcileRepairRecoveryBatch(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
 		_, _ = reconcileScopeControl(msg.Ctx(), repository, maxReconcileLimit, now, cfg.executionDispatchTargets())
 		_, _ = reconcileRecipeRolloutBatches(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)

@@ -42,6 +42,9 @@ func (r *Repository) ApplyCreateCompanyCommand(ctx context.Context, company mode
 	} else if found {
 		return CommandResult{Response: replay, Replayed: true}, nil
 	}
+	if err := rejectErasedCompanyID(ctx, tx, company.CompanyID); err != nil {
+		return CommandResult{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO recruiting_command_receipts(command_id, word_name, request_hash, response_bytes, committed_at)
 VALUES (?, ?, ?, ?, ?)`, receipt.CommandID, receipt.Word, receipt.RequestHash, []byte(receipt.Response), businessAt.UTC()); err != nil {

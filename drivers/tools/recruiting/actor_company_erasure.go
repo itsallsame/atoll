@@ -43,6 +43,24 @@ func reconcileCompanyErasureExecution(ctx context.Context, repository *store.Rep
 	return progress, err
 }
 
+func reconcileCompanyErasurePurge(ctx context.Context, repository *store.Repository, limit int,
+	now time.Time) (store.CompanyErasurePurgeProgress, error) {
+	progress, err := repository.PurgeNextCompanyErasurePage(ctx, limit, now)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.CompanyErasurePurgeProgress{}, nil
+	}
+	return progress, err
+}
+
+func reconcileCompanyErasureCompletion(ctx context.Context, repository *store.Repository,
+	now time.Time) (model.CompanyErasureProof, error) {
+	proof, err := repository.FinalizeNextCompanyErasure(ctx, now)
+	if errors.Is(err, store.ErrNotFound) {
+		return model.CompanyErasureProof{}, nil
+	}
+	return proof, err
+}
+
 type companyErasurePreviewPayload struct {
 	CommandID       string `json:"command_id"`
 	ErasureID       string `json:"erasure_id"`
@@ -80,12 +98,13 @@ type companyErasureVerifyAbsentPayload struct {
 }
 
 type companyErasureResponse struct {
-	ContractVersion string               `json:"contract_version"`
-	CorrelationID   string               `json:"correlation_id"`
-	RequestedBy     string               `json:"requested_by"`
-	Erasure         model.CompanyErasure `json:"erasure"`
-	Work            model.Work           `json:"work"`
-	NextAction      string               `json:"next_action"`
+	ContractVersion string                     `json:"contract_version"`
+	CorrelationID   string                     `json:"correlation_id"`
+	RequestedBy     string                     `json:"requested_by"`
+	Erasure         model.CompanyErasure       `json:"erasure"`
+	Work            model.Work                 `json:"work"`
+	Proof           *model.CompanyErasureProof `json:"proof,omitempty"`
+	NextAction      string                     `json:"next_action"`
 }
 
 func handleCompanyErasure(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
@@ -285,9 +304,17 @@ func handleCompanyErasureGet(sys actorbase.Sys, repository *store.Repository, ms
 		failStoreError(sys, msg, err)
 		return
 	}
+	var proof *model.CompanyErasureProof
+	storedProof, proofErr := repository.GetCompanyErasureProof(msg.Ctx(), erasure.ErasureID)
+	if proofErr == nil {
+		proof = &storedProof
+	} else if !errors.Is(proofErr, store.ErrNotFound) {
+		failStoreError(sys, msg, proofErr)
+		return
+	}
 	_, _ = sys.Reply(msg, companyErasureResponse{ContractVersion: ContractVersion,
 		CorrelationID: string(msg.CorrelationID), RequestedBy: string(msg.Sender.ID), Erasure: erasure,
-		Work: work, NextAction: companyErasureNextAction(erasure)})
+		Work: work, Proof: proof, NextAction: companyErasureNextAction(erasure)})
 }
 
 func handleCompanyErasureApprove(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

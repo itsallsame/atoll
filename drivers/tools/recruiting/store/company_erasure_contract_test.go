@@ -249,4 +249,62 @@ WHERE erasure_id = ? AND cleanup_status = 'pending'`, erasure.ErasureID).Scan(&m
 	if err != nil || !replayedVerification.Replayed || string(replayedVerification.Response) != string(verified.Response) {
 		t.Fatalf("verify Resource replay=%+v err=%v", replayedVerification, err)
 	}
+	purgeAt := verifiedAt.Add(time.Minute)
+	storedErasure = manifest.Erasure
+	for step := 0; storedErasure.Status == model.CompanyErasureErasing && step < 200; step++ {
+		progress, purgeErr := repository.PurgeNextCompanyErasurePage(ctx, 1, purgeAt.Add(time.Duration(step)*time.Second))
+		if purgeErr != nil {
+			t.Fatalf("purge step=%d phase=%s err=%v", step, storedErasure.PurgePhase, purgeErr)
+		}
+		storedErasure = progress.Erasure
+	}
+	if storedErasure.Status != model.CompanyErasureResourceCleanup || storedErasure.PurgePhase != "resource_cleanup" ||
+		storedErasure.PurgeCounts["artifacts"] != 1 || storedErasure.PurgeCounts["source_jobs"] != 2 ||
+		storedErasure.PurgeCounts["sources"] != 2 || storedErasure.PurgeCounts["company"] != 1 {
+		t.Fatalf("completed database purge=%+v", storedErasure)
+	}
+	var companies, sources, jobs, historicalWorks, artifacts, controlWorks, retainedMembers, retainedResources int
+	if err := db.QueryRowContext(ctx, `SELECT
+  (SELECT COUNT(*) FROM recruiting_companies WHERE company_id = ?),
+  (SELECT COUNT(*) FROM recruiting_sources WHERE company_id = ?),
+  (SELECT COUNT(*) FROM recruiting_source_jobs WHERE job_id LIKE 'job-erasure-source-%'),
+  (SELECT COUNT(*) FROM recruiting_works WHERE work_id = ?),
+  (SELECT COUNT(*) FROM recruiting_artifacts WHERE artifact_id = ?),
+  (SELECT COUNT(*) FROM recruiting_works WHERE work_id = ?),
+  (SELECT COUNT(*) FROM recruiting_company_erasure_sources WHERE erasure_id = ?),
+  (SELECT COUNT(*) FROM recruiting_company_erasure_resources WHERE erasure_id = ?)`, company.CompanyID,
+		company.CompanyID, historicalWork.WorkID, artifact.ArtifactID, work.WorkID, erasure.ErasureID,
+		erasure.ErasureID).Scan(&companies, &sources, &jobs, &historicalWorks, &artifacts, &controlWorks,
+		&retainedMembers, &retainedResources); err != nil {
+		t.Fatal(err)
+	}
+	if companies != 0 || sources != 0 || jobs != 0 || historicalWorks != 0 || artifacts != 0 ||
+		controlWorks != 1 || retainedMembers != 2 || retainedResources != 1 {
+		t.Fatalf("purge residue company=%d sources=%d jobs=%d work=%d artifacts=%d control=%d members=%d resources=%d",
+			companies, sources, jobs, historicalWorks, artifacts, controlWorks, retainedMembers, retainedResources)
+	}
+	proof, err := repository.FinalizeNextCompanyErasure(ctx, purgeAt.Add(5*time.Minute))
+	if err != nil || proof.ProofHash == "" || proof.SourceCount != 2 || proof.ResourceCount != 1 ||
+		proof.VerifiedAbsent != 1 || proof.PurgeCounts["company"] != 1 {
+		t.Fatalf("Company erasure proof=%+v err=%v", proof, err)
+	}
+	storedProof, err := repository.GetCompanyErasureProof(ctx, erasure.ErasureID)
+	if err != nil || storedProof.ProofHash != proof.ProofHash {
+		t.Fatalf("stored Company erasure proof=%+v err=%v", storedProof, err)
+	}
+	storedErasure, err = repository.GetCompanyErasure(ctx, erasure.ErasureID)
+	if err != nil || storedErasure.Status != model.CompanyErasureCompleted || storedErasure.CompletedAt == "" {
+		t.Fatalf("completed Company erasure=%+v err=%v", storedErasure, err)
+	}
+	storedWork, err = repository.GetWork(ctx, work.WorkID)
+	if err != nil || storedWork.Status != model.WorkCompleted || storedWork.Resolution != model.ResolutionSucceeded {
+		t.Fatalf("completed Company erasure Work=%+v err=%v", storedWork, err)
+	}
+	if _, err := repository.FinalizeNextCompanyErasure(ctx, purgeAt.Add(6*time.Minute)); err != ErrNotFound {
+		t.Fatalf("completed erasure finalized twice err=%v", err)
+	}
+	reusedCompany, _ := model.NewCompany(company.CompanyID, "Reused Erased Identity", "https://reused.example")
+	if err := repository.CreateCompany(ctx, reusedCompany, purgeAt.Add(7*time.Minute)); err == nil {
+		t.Fatal("completed Company erasure identity was reused")
+	}
 }

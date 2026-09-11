@@ -153,7 +153,7 @@ VALUES (?, 'response', 'sha256:e2e-erasure-artifact', ?, ?, NULL, 'company', 'co
 	execution := approverWS.request(sharedID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 1})
 	if numberField(t, execution, "company_erasure_resources") != 1 ||
 		execution["company_erasure_manifest_done"] != true ||
-		stringField(t, execution, "company_erasure_purge_phase") != "purge_database" {
+		stringField(t, execution, "company_erasure_purge_phase") == "" {
 		t.Fatalf("erasure Resource manifest=%v", execution)
 	}
 	resources := approverWS.request(sharedID, "recruiting.company.erasure.resources", controlID,
@@ -175,6 +175,46 @@ VALUES (?, 'response', 'sha256:e2e-erasure-artifact', ?, ?, NULL, 'company', 'co
 	if nestedStringField(t, verified, "resource", "status") != "deleted" ||
 		!strings.HasPrefix(nestedStringField(t, verified, "resource", "resolution_by"), "human:erasure-approver:") {
 		t.Fatalf("Resource absence verification=%v", verified)
+	}
+	var completedView map[string]any
+	for step := 0; step < 150; step++ {
+		approverWS.request(sharedID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 1})
+		view := approverWS.request(sharedID, "recruiting.company.erasure.get", controlID,
+			map[string]any{"erasure_id": "e2e-erasure-request"})
+		if nestedStringField(t, view, "erasure", "status") == "completed" {
+			completedView = view
+			break
+		}
+	}
+	if completedView == nil || nestedStringField(t, completedView, "work", "resolution") != "succeeded" ||
+		nestedStringField(t, completedView, "proof", "proof_hash") == "" ||
+		nestedNumberField(t, completedView, "proof", "source_count") != 2 ||
+		nestedNumberField(t, completedView, "proof", "resource_count") != 1 {
+		t.Fatalf("completed Company erasure view=%v", completedView)
+	}
+	if _, terminal, err := approverWS.tryRequest(sharedID, "recruiting.company.get", controlID,
+		map[string]any{"company_id": "e2e-erasure-company"}); err == nil || terminal["error_code"] != "not_found" {
+		t.Fatalf("erased Company remained readable terminal=%v err=%v", terminal, err)
+	}
+	if _, terminal, err := approverWS.tryRequest(sharedID, "recruiting.company.add", controlID, map[string]any{
+		"command_id": "e2e-erasure-company-id-reuse", "company_id": "e2e-erasure-company",
+		"name": "Forbidden Reuse", "website": "https://reused.erasure.example",
+		"reason": "prove erased identity is a permanent tombstone",
+	}); err == nil || terminal["error_code"] != "business_key_conflict" {
+		t.Fatalf("erased Company ID was reusable terminal=%v err=%v", terminal, err)
+	}
+	h.restartServer()
+	approverAPI = newAPIClient(t, h.base)
+	if login := approverAPI.login("erasure-approver@example.test", "approver-password"); login["id"] != "erasure-approver" {
+		t.Fatalf("approver login after completed erasure=%v", login)
+	}
+	approverWS = dialWS(t, h.base, approverAPI.cookieHeader(), map[string]int64{approverHome: 0, sharedID: 0})
+	waitRecruitingReady(t, approverWS, sharedID, controlID, h.server)
+	recoveredProof := approverWS.request(sharedID, "recruiting.company.erasure.get", controlID,
+		map[string]any{"erasure_id": "e2e-erasure-request"})
+	if nestedStringField(t, recoveredProof, "proof", "proof_hash") !=
+		nestedStringField(t, completedView, "proof", "proof_hash") {
+		t.Fatalf("restart changed Company erasure proof=%v", recoveredProof)
 	}
 }
 

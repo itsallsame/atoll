@@ -3,10 +3,58 @@ package model
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
+
+type CompanyErasureProof struct {
+	ErasureID      string            `json:"erasure_id"`
+	CompanyID      string            `json:"company_id"`
+	PolicyVersion  string            `json:"policy_version"`
+	PreviewHash    string            `json:"preview_hash"`
+	SourceCount    uint64            `json:"source_count"`
+	ResourceCount  uint64            `json:"resource_count"`
+	VerifiedAbsent uint64            `json:"verified_absent"`
+	RequestedBy    string            `json:"requested_by"`
+	ApprovedBy     string            `json:"approved_by"`
+	PurgeCounts    map[string]uint64 `json:"purge_counts"`
+	CompletedAt    string            `json:"completed_at"`
+	ProofHash      string            `json:"proof_hash"`
+}
+
+func NewCompanyErasureProof(erasure CompanyErasure, verifiedAbsent uint64,
+	at time.Time) (CompanyErasureProof, error) {
+	if erasure.Status != CompanyErasureResourceCleanup || erasure.PurgePhase != "resource_cleanup" ||
+		erasure.PreviewHash == "" || erasure.PolicyVersion == "" || erasure.ApprovedBy == "" || at.IsZero() ||
+		erasure.PurgeCounts["company"] != 1 || erasure.PurgeCounts["sources"] != erasure.SourceCount ||
+		verifiedAbsent != erasure.ResourceCount {
+		return CompanyErasureProof{}, fmt.Errorf("Company erasure proof requires complete database and Resource cleanup")
+	}
+	counts := make(map[string]uint64, len(erasure.PurgeCounts))
+	keys := make([]string, 0, len(erasure.PurgeCounts))
+	for key, value := range erasure.PurgeCounts {
+		counts[key] = value
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	completedAt := at.UTC().Format(time.RFC3339Nano)
+	h := sha256.New()
+	fmt.Fprintf(h, "company-erasure-proof.v1\n%s\n%s\n%s\n%s\n%d\n%d\n%d\n%s\n%s\n%s\n",
+		erasure.ErasureID, erasure.CompanyID, erasure.PolicyVersion, erasure.PreviewHash, erasure.SourceCount,
+		erasure.ResourceCount, verifiedAbsent, erasure.RequestedBy, erasure.ApprovedBy, completedAt)
+	for _, key := range keys {
+		encodedKey, _ := json.Marshal(key)
+		fmt.Fprintf(h, "%s=%d\n", encodedKey, counts[key])
+	}
+	return CompanyErasureProof{ErasureID: erasure.ErasureID, CompanyID: erasure.CompanyID,
+		PolicyVersion: erasure.PolicyVersion, PreviewHash: erasure.PreviewHash, SourceCount: erasure.SourceCount,
+		ResourceCount: erasure.ResourceCount, VerifiedAbsent: verifiedAbsent, RequestedBy: erasure.RequestedBy,
+		ApprovedBy: erasure.ApprovedBy, PurgeCounts: counts, CompletedAt: completedAt,
+		ProofHash: "sha256:" + hex.EncodeToString(h.Sum(nil))}, nil
+}
 
 type CompanyErasureStatus string
 
@@ -122,6 +170,7 @@ type CompanyErasure struct {
 	ArtifactCursor     string               `json:"artifact_cursor,omitempty"`
 	ResourceCount      uint64               `json:"resource_count"`
 	PurgePhase         string               `json:"purge_phase,omitempty"`
+	PurgeCounts        map[string]uint64    `json:"purge_counts,omitempty"`
 	Impact             CompanyErasureImpact `json:"impact"`
 	ApprovedBy         string               `json:"approved_by,omitempty"`
 	ApprovedAt         string               `json:"approved_at,omitempty"`
@@ -130,6 +179,46 @@ type CompanyErasure struct {
 	BlockedReason      string               `json:"blocked_reason,omitempty"`
 	CreatedAt          string               `json:"created_at"`
 	Version            uint64               `json:"version"`
+}
+
+func (e CompanyErasure) AdvancePurge(expected uint64, phase string, affected uint64,
+	nextPhase string) (CompanyErasure, error) {
+	if err := requireVersion(expected, e.Version); err != nil {
+		return CompanyErasure{}, err
+	}
+	phase, nextPhase = strings.TrimSpace(phase), strings.TrimSpace(nextPhase)
+	if e.Status != CompanyErasureErasing || e.PurgePhase != phase || phase == "" || affected > 500 ||
+		(affected != 0 && nextPhase != phase) || (affected == 0 && nextPhase == phase) {
+		return CompanyErasure{}, fmt.Errorf("Company erasure purge transition must be bounded and ordered")
+	}
+	counts := make(map[string]uint64, len(e.PurgeCounts)+1)
+	for key, value := range e.PurgeCounts {
+		counts[key] = value
+	}
+	counts[phase] += affected
+	e.PurgeCounts = counts
+	if affected == 0 {
+		if nextPhase == "resource_cleanup" {
+			e.Status = CompanyErasureResourceCleanup
+		}
+		e.PurgePhase = nextPhase
+	}
+	e.Version++
+	return e, nil
+}
+
+func (e CompanyErasure) Complete(expected uint64, proof CompanyErasureProof) (CompanyErasure, error) {
+	if err := requireVersion(expected, e.Version); err != nil {
+		return CompanyErasure{}, err
+	}
+	if e.Status != CompanyErasureResourceCleanup || e.PurgePhase != "resource_cleanup" ||
+		proof.ErasureID != e.ErasureID || proof.CompanyID != e.CompanyID || proof.PreviewHash != e.PreviewHash ||
+		proof.ProofHash == "" || proof.CompletedAt == "" {
+		return CompanyErasure{}, fmt.Errorf("Company erasure completion requires its exact cleanup proof")
+	}
+	e.Status, e.PurgePhase, e.CompletedAt = CompanyErasureCompleted, "completed", proof.CompletedAt
+	e.Version++
+	return e, nil
 }
 
 func NewCompanyErasure(id, workID string, company Company, policyVersion, requestedBy, reason string,

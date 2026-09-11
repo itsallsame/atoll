@@ -462,6 +462,23 @@ WHERE erasure_id = ? AND artifact_id = ?`, strings.TrimSpace(erasureID), strings
 	return item, nil
 }
 
+func (r *Repository) GetCompanyErasureProof(ctx context.Context, erasureID string) (model.CompanyErasureProof, error) {
+	var state []byte
+	err := r.db.QueryRowContext(ctx, `SELECT state_json FROM recruiting_company_erasure_proofs WHERE erasure_id = ?`,
+		strings.TrimSpace(erasureID)).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.CompanyErasureProof{}, ErrNotFound
+	}
+	if err != nil {
+		return model.CompanyErasureProof{}, fmt.Errorf("get Company erasure proof: %w", err)
+	}
+	var proof model.CompanyErasureProof
+	if err := json.Unmarshal(state, &proof); err != nil {
+		return model.CompanyErasureProof{}, fmt.Errorf("decode Company erasure proof: %w", err)
+	}
+	return proof, nil
+}
+
 func (r *Repository) ApplyVerifyCompanyErasureResourceAbsentCommand(ctx context.Context, erasureID,
 	artifactID string, expectedVersion uint64, actorID, reason string, receipt model.CommandReceipt,
 	eventID string, businessAt time.Time) (CommandResult, error) {
@@ -743,11 +760,13 @@ func updateCompanyErasureCAS(ctx context.Context, tx *sql.Tx, expected uint64, e
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE recruiting_company_erasures
 SET erasure_status = ?, preview_cursor = ?, source_count = ?, preview_accumulator = ?, preview_hash = ?,
-    artifact_cursor = ?, resource_count = ?, purge_phase = ?, version = ?, state_json = ?, updated_at = ?
+    artifact_cursor = ?, resource_count = ?, purge_phase = ?,
+    active_company_key = CASE WHEN ? = 'completed' THEN NULL ELSE active_company_key END,
+    version = ?, state_json = ?, updated_at = ?
 WHERE erasure_id = ? AND version = ?`, erasure.Status,
 		nullableString(erasure.PreviewCursor), erasure.SourceCount, nullableString(erasure.PreviewAccumulator),
 		nullableString(erasure.PreviewHash), nullableString(erasure.ArtifactCursor), erasure.ResourceCount,
-		nullableString(erasure.PurgePhase), erasure.Version, state, at.UTC(), erasure.ErasureID, expected)
+		nullableString(erasure.PurgePhase), erasure.Status, erasure.Version, state, at.UTC(), erasure.ErasureID, expected)
 	if err != nil {
 		return fmt.Errorf("update Company erasure: %w", err)
 	}

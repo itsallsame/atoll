@@ -33,9 +33,13 @@ func (r *Repository) CreateCompany(ctx context.Context, company model.Company, b
 
 func insertCompany(ctx context.Context, executor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, company model.Company, businessAt time.Time) error {
 	if company.Version != 1 || company.CompanyID == "" {
 		return fmt.Errorf("new company must have identity and version 1")
+	}
+	if err := rejectErasedCompanyID(ctx, executor, company.CompanyID); err != nil {
+		return err
 	}
 	state, err := json.Marshal(company)
 	if err != nil {
@@ -58,6 +62,21 @@ INSERT INTO recruiting_companies(
 		return fmt.Errorf("%w: company ID or normalized website", ErrBusinessKeyExists)
 	}
 	return fmt.Errorf("create company: %w", err)
+}
+
+func rejectErasedCompanyID(ctx context.Context, query interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, companyID string) error {
+	var erasureID string
+	err := query.QueryRowContext(ctx, `SELECT erasure_id FROM recruiting_company_erasures
+WHERE company_id = ? ORDER BY created_at LIMIT 1 FOR SHARE`, companyID).Scan(&erasureID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect erased Company tombstone: %w", err)
+	}
+	return fmt.Errorf("%w: Company ID is reserved by compliance erasure %s", ErrBusinessKeyExists, erasureID)
 }
 
 func (r *Repository) GetCompany(ctx context.Context, companyID string) (model.Company, error) {
