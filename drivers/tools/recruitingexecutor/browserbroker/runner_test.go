@@ -35,6 +35,56 @@ func TestRunnerExecutesImmutablePlanInRealChrome(t *testing.T) {
 	}
 }
 
+func TestProfileRunnerUsesLocalLeaseAndReturnsSanitizedDOM(t *testing.T) {
+	chrome := chromeForTest(t)
+	var authenticatedReads atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if cookie, err := request.Cookie("profile_auth"); err == nil && cookie.Value == "ready" {
+			authenticatedReads.Add(1)
+		}
+		http.SetCookie(response, &http.Cookie{Name: "profile_auth", Value: "ready", Path: "/", MaxAge: 3600})
+		response.Header().Set("Content-Type", "text/html")
+		_, _ = response.Write([]byte(`<!doctype html><html><body data-session="secret-session">
+<script>globalThis.privateToken='not-for-artifact'</script><form><input value="password-value"></form>
+<div class="job"><a href="/jobs/1?id=42&token=secret-token" onclick="steal()">Engineer</a></div>
+</body></html>`))
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	profileDir := root + "/chrome-profile"
+	if err := os.Mkdir(profileDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	registryPath := root + "/profiles.json"
+	writeProfileRegistryForTest(t, registryPath, ProfileRegistryEntry{ProfileID: "profile-1", ProfileVersion: 3,
+		SecurityDomain: "127.0.0.1", UserDataDir: profileDir})
+	resolver, err := NewFileProfileResolver(registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{chromePath: chrome, allowPrivate: true, profileResolver: resolver, requireProfile: true}
+	request := browserRequest(server.URL)
+	request.ProfileRef, request.ProfileVersion = "profile://recruiting/profile-1", 3
+	result, err := runner.Run(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dom := string(result.DOM)
+	if !result.Attestation.ProfileLeaseAuthorized || !strings.Contains(dom, "Engineer") ||
+		!strings.Contains(dom, "id=42") || strings.Contains(dom, "secret") || strings.Contains(dom, "<form") ||
+		strings.Contains(dom, "<script") || strings.Contains(dom, "onclick") {
+		t.Fatalf("Profile DOM was not safely sanitized: attestation=%+v dom=%s", result.Attestation, dom)
+	}
+	if info, err := os.Stat(profileDir); err != nil || !info.IsDir() {
+		t.Fatalf("persistent Profile directory was removed: info=%+v err=%v", info, err)
+	}
+	second, err := runner.Run(context.Background(), request)
+	if err != nil || !second.Attestation.ProfileLeaseAuthorized || authenticatedReads.Load() == 0 {
+		t.Fatalf("second Chrome session did not reuse local Profile authentication: result=%+v reads=%d err=%v",
+			second, authenticatedReads.Load(), err)
+	}
+}
+
 func TestRunnerBlocksBrowserWriteBeforeItReachesOrigin(t *testing.T) {
 	chrome := chromeForTest(t)
 	var writes atomic.Int64

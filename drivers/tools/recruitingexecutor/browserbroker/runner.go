@@ -29,10 +29,12 @@ import (
 )
 
 type Runner struct {
-	chromePath   string
-	resolver     *net.Resolver
-	robotsClient *http.Client
-	allowPrivate bool
+	chromePath      string
+	resolver        *net.Resolver
+	robotsClient    *http.Client
+	allowPrivate    bool
+	profileResolver ProfileResolver
+	requireProfile  bool
 }
 
 type brokerFailure struct {
@@ -91,6 +93,17 @@ func (t *requestTracker) closeAndWait() {
 }
 
 func New(chromePath string) (*Runner, error) {
+	return newRunner(chromePath, nil, false)
+}
+
+func NewProfiled(chromePath string, resolver ProfileResolver) (*Runner, error) {
+	if resolver == nil {
+		return nil, errors.New("Profile Browser runner requires a local Profile resolver")
+	}
+	return newRunner(chromePath, resolver, true)
+}
+
+func newRunner(chromePath string, profileResolver ProfileResolver, requireProfile bool) (*Runner, error) {
 	chromePath = strings.TrimSpace(chromePath)
 	if chromePath == "" {
 		return nil, errors.New("Chrome executable path is required")
@@ -99,15 +112,17 @@ func New(chromePath string) (*Runner, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return nil, fmt.Errorf("Chrome executable must be an executable regular file")
 	}
-	return &Runner{chromePath: chromePath, resolver: net.DefaultResolver}, nil
+	return &Runner{chromePath: chromePath, resolver: net.DefaultResolver,
+		profileResolver: profileResolver, requireProfile: requireProfile}, nil
 }
 
 func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) (browserdriver.SessionResult, error) {
 	if ctx == nil || r == nil || strings.TrimSpace(r.chromePath) == "" {
 		return browserdriver.SessionResult{}, errors.New("browser runner is not configured")
 	}
-	if request.ProfileRef != "" || request.ProfileVersion != 0 {
-		return browserdriver.SessionResult{}, policyFailure(errors.New("public browser runner does not resolve Profile material"))
+	profiled := request.ProfileRef != ""
+	if profiled != (request.ProfileVersion != 0) || (profiled && r.profileResolver == nil) || (!profiled && r.requireProfile) {
+		return browserdriver.SessionResult{}, policyFailure(errors.New("browser Profile reference, version, and local resolver are inconsistent"))
 	}
 	if err := request.Plan.Validate(); err != nil {
 		return browserdriver.SessionResult{}, err
@@ -126,6 +141,14 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	if err != nil {
 		return browserdriver.SessionResult{}, err
 	}
+	var profileLease *ProfileLease
+	if profiled {
+		profileLease, err = r.profileResolver.Resolve(ctx, request.ProfileRef, request.ProfileVersion, endpoint.String())
+		if err != nil {
+			return browserdriver.SessionResult{}, &brokerFailure{class: "auth_expired", cause: err}
+		}
+		defer profileLease.Release()
+	}
 	robotsAllowed, err := r.robotsAllowed(ctx, endpoint, request.UserAgent)
 	if err != nil || !robotsAllowed {
 		if err == nil {
@@ -136,15 +159,23 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 
 	runCtx, cancelRun := context.WithTimeout(ctx, time.Duration(request.TimeoutMS)*time.Millisecond)
 	defer cancelRun()
-	profileDir, err := os.MkdirTemp("", "atoll-recruiting-browser-")
-	if err != nil {
-		return browserdriver.SessionResult{}, fmt.Errorf("create isolated Chrome profile: %w", err)
+	profileDir, profileDirectory := "", ""
+	if profileLease == nil {
+		profileDir, err = os.MkdirTemp("", "atoll-recruiting-browser-")
+		if err != nil {
+			return browserdriver.SessionResult{}, fmt.Errorf("create isolated Chrome profile: %w", err)
+		}
+		defer os.RemoveAll(profileDir)
+	} else {
+		profileDir, profileDirectory = profileLease.UserDataDir, profileLease.ProfileDirectory
 	}
-	defer os.RemoveAll(profileDir)
 	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
 	opts = append(opts, chromedp.ExecPath(r.chromePath), chromedp.UserDataDir(profileDir), chromedp.UserAgent(request.UserAgent),
 		chromedp.WindowSize(1280, 900), chromedp.Flag("disable-extensions", true), chromedp.Flag("disable-sync", true),
 		chromedp.Flag("disable-component-update", true), chromedp.Flag("no-proxy-server", true))
+	if profileDirectory != "" {
+		opts = append(opts, chromedp.Flag("profile-directory", profileDirectory))
+	}
 	allocatorCtx, cancelAllocator := chromedp.NewExecAllocator(runCtx, opts...)
 	defer cancelAllocator()
 	tabCtx, cancelTab := chromedp.NewContext(allocatorCtx)
@@ -212,15 +243,24 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 
 	var finalURL, contentType, dom string
 	var blockedDownloads, blockedPopups int
-	captureErr := chromedp.Run(tabCtx, chromedp.Location(&finalURL),
+	captureActions := []chromedp.Action{chromedp.Location(&finalURL),
 		chromedp.Evaluate(`document.contentType || "text/html"`, &contentType),
 		chromedp.Evaluate(`Number(globalThis.__atollBlockedDownloads||0)`, &blockedDownloads),
-		chromedp.Evaluate(`Number(globalThis.__atollBlockedPopups||0)`, &blockedPopups),
-		chromedp.OuterHTML("html", &dom, chromedp.ByQuery))
+		chromedp.Evaluate(`Number(globalThis.__atollBlockedPopups||0)`, &blockedPopups)}
+	if profiled {
+		captureActions = append(captureActions, chromedp.Evaluate(profileSanitizedDOM, &dom))
+	} else {
+		captureActions = append(captureActions, chromedp.OuterHTML("html", &dom, chromedp.ByQuery))
+	}
+	captureErr := chromedp.Run(tabCtx, captureActions...)
+	// Wait for Chrome to release its profile files before releasing the local
+	// Profile lease; a plain context cancel can return while Chrome still owns
+	// the directory and permit two processes to race over the same credentials.
+	_ = chromedp.Cancel(tabCtx)
 	cancelTab()
 	requestTasks.closeAndWait()
 	state.recordBlockedEffects(blockedDownloads, blockedPopups)
-	attestation, violation := state.attestation(request.Policy.TermsPolicyVersion, robotsAllowed)
+	attestation, violation := state.attestation(request.Policy.TermsPolicyVersion, robotsAllowed, profiled)
 	if int64(len(dom)) > request.Plan.MaxDOMBytes {
 		dom = dom[:request.Plan.MaxDOMBytes+1]
 	}
@@ -236,6 +276,25 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	}
 	return result, nil
 }
+
+const profileSanitizedDOM = `(()=>{
+const root=document.documentElement.cloneNode(true);
+root.querySelectorAll('script,style,form,input,textarea,select,button,iframe,object,embed').forEach(node=>node.remove());
+for(const element of [root,...root.querySelectorAll('*')]){
+ for(const attribute of [...element.attributes]){
+  const name=attribute.name.toLowerCase();
+  if(name==='style'||name==='value'||name==='checked'||name==='selected'||name.startsWith('on')||
+    /(token|secret|password|session|authorization|signature|api.?key)/i.test(name)){element.removeAttribute(attribute.name);continue}
+  if(name==='href'||name==='src'){
+   try{const parsed=new URL(attribute.value,location.href);parsed.username='';parsed.password='';parsed.hash='';
+    for(const key of [...parsed.searchParams.keys()])if(/(token|secret|password|session|authorization|signature|api.?key)/i.test(key))parsed.searchParams.delete(key);
+    element.setAttribute(attribute.name,parsed.href)
+   }catch(_){element.removeAttribute(attribute.name)}
+  }
+ }
+}
+return root.outerHTML
+})()`
 
 func runAction(ctx context.Context, state *policyState, runner *Runner, initial *url.URL,
 	action browserdriver.Action) error {
@@ -340,7 +399,7 @@ func (s *policyState) recordBlockedEffects(downloads, popups int) {
 	}
 }
 
-func (s *policyState) attestation(termsVersion uint64, robotsAllowed bool) (browserdriver.Attestation, error) {
+func (s *policyState) attestation(termsVersion uint64, robotsAllowed, profileLeaseAuthorized bool) (browserdriver.Attestation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	methods := make([]string, 0, len(s.methods))
@@ -351,7 +410,7 @@ func (s *policyState) attestation(termsVersion uint64, robotsAllowed bool) (brow
 	return browserdriver.Attestation{DocumentNavigations: s.documentNavigations, ObservedMethods: methods,
 		AllowedWriteRequests: s.writeRequests, CrossOriginDocumentNavigations: s.crossOriginDocuments,
 		FormSubmissions: s.formSubmissions, Downloads: s.downloads, Popups: s.popups, PublicEndpoint: s.firstViolation == nil,
-		RobotsAllowed: robotsAllowed, TermsPolicyVersion: termsVersion}, s.firstViolation
+		RobotsAllowed: robotsAllowed, TermsPolicyVersion: termsVersion, ProfileLeaseAuthorized: profileLeaseAuthorized}, s.firstViolation
 }
 
 func (r *Runner) publicURL(ctx context.Context, raw string) (*url.URL, error) {

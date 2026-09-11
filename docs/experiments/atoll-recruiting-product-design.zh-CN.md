@@ -704,6 +704,8 @@ Profile 与 Source 的关系必须是独立、可版本化的 `SourceProfileBind
 
 每日截点把当时有效的 Listing Profile ID 冻结进 `SourceOccurrence`，随后创建的 Work 继承该 ID，Attempt 再冻结 Profile version。Profile Work 的 dispatch 只能投递到 Profile 的授权 `device_id`；Offer 事务必须再次验证 authenticated Executor 与该设备匹配，不能把定向 wake 当作权限。列表页产生详情 Work 时，按 Source 的独立 Detail Profile 赋值并在同一事务唤醒其设备，所以列表和详情可以安全地运行在不同设备。Source 重新校准也默认读取持久 Listing 绑定，不要求用户每天或每次修复重复输入 Profile。任何 Profile 非 `ready`、安全域与 Recipe scope 不同、设备身份非法或绑定/Source 投影不一致的情况都 fail closed，不进入当日日程或执行领取。
 
+授权设备上的日常 Profile Provider 是同一 `recruiting-executor` 的本地适配器，不是插件 Worker，也不是远程浏览器服务。它使用 `0400/0600` 注册表把 `profile_id + profile_version + security_domain` 映射到 owner-only Chrome `user-data-dir/profile-directory`；注册表只保存本机路径，不保存 Cookie、密码或 OTP，并在每次租用时重读，使修复后的版本轮换无需重启 Executor。Provider 要求 Profile 引用、Attempt 版本和 endpoint host 精确一致，同一 Profile 只允许一个 Chrome Session；必须等待 Chrome 释放目录后才释放租约。Profile 页面离开设备前先删除表单控件、脚本、iframe、事件处理器、敏感属性和敏感 URL 参数，再进入既有 Artifact/Recipe 解析链；普通 `browser.public` 仍使用一次性临时目录且拒绝任何 Profile 引用。
+
 ### 9.6 领域状态机
 
 状态机是确定的设计组成，不依赖 Staircase，也不会因为采用 Atoll 而消失。第一版至少定义：

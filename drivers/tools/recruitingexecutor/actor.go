@@ -140,10 +140,20 @@ func newProductionRuntime(cfg Config) (*productionRuntime, error) {
 		}
 		return &productionRuntime{broker: broker, options: options}, nil
 	}
-	if cfg.Capability == "browser.public" {
-		runner, err := browserbroker.New(cfg.BrowserChromePath)
+	if cfg.Capability == "browser.public" || cfg.Capability == "browser.recipe" {
+		var runner *browserbroker.Runner
+		var err error
+		if cfg.Capability == "browser.recipe" {
+			resolver, resolverErr := browserbroker.NewFileProfileResolver(cfg.BrowserProfileRegistry)
+			if resolverErr != nil {
+				return nil, fmt.Errorf("prepare browser Profile registry: %w", resolverErr)
+			}
+			runner, err = browserbroker.NewProfiled(cfg.BrowserChromePath, resolver)
+		} else {
+			runner, err = browserbroker.New(cfg.BrowserChromePath)
+		}
 		if err != nil {
-			return nil, fmt.Errorf("prepare public browser broker: %w", err)
+			return nil, fmt.Errorf("prepare browser runner: %w", err)
 		}
 		driver, err := browserdriver.New(runner)
 		if err != nil {

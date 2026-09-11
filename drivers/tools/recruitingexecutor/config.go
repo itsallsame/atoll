@@ -40,6 +40,7 @@ type Config struct {
 	BrowserBrokerTokenFile  string        `json:"browser_broker_token_file,omitempty"`
 	BrowserBrokerTimeoutMS  int           `json:"browser_broker_timeout_ms,omitempty"`
 	BrowserChromePath       string        `json:"browser_chrome_path,omitempty"`
+	BrowserProfileRegistry  string        `json:"browser_profile_registry,omitempty"`
 }
 
 func DefaultConfig() json.RawMessage {
@@ -68,17 +69,18 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 	cfg.BrowserBrokerURL = strings.TrimSpace(cfg.BrowserBrokerURL)
 	cfg.BrowserBrokerTokenFile = strings.TrimSpace(cfg.BrowserBrokerTokenFile)
 	cfg.BrowserChromePath = strings.TrimSpace(cfg.BrowserChromePath)
+	cfg.BrowserProfileRegistry = strings.TrimSpace(cfg.BrowserProfileRegistry)
 	if cfg.Capability == "" {
 		return Config{}, fmt.Errorf("recruiting executor config: capability is required")
 	}
 	if cfg.ExecutionEnabled {
-		if (cfg.Capability != "http.fetch" && cfg.Capability != "company.import" && cfg.Capability != "browser.public" && cfg.Capability != "browser.profile.repair") || !executioncontract.ValidToolTarget(string(cfg.ControlActorID)) || cfg.ControlWaitMS < 100 || cfg.ControlWaitMS > 300_000 ||
+		if (cfg.Capability != "http.fetch" && cfg.Capability != "company.import" && cfg.Capability != "browser.public" && cfg.Capability != "browser.recipe" && cfg.Capability != "browser.profile.repair") || !executioncontract.ValidToolTarget(string(cfg.ControlActorID)) || cfg.ControlWaitMS < 100 || cfg.ControlWaitMS > 300_000 ||
 			cfg.ArtifactDeviceName == "" || cfg.ArtifactChannelName == "" || cfg.ArtifactDirectory == "" ||
 			cfg.ArtifactAccessScope == "" || cfg.ArtifactRetention == "" || cfg.ArtifactMaxBytes < 1 || cfg.ArtifactMaxBytes > 20<<20 ||
 			(cfg.ArtifactRedaction != "raw" && cfg.ArtifactRedaction != "redacted") {
 			return Config{}, fmt.Errorf("recruiting executor config: enabled execution requires a supported capability, control, and Artifact policy")
 		}
-		if cfg.Capability == "http.fetch" || cfg.Capability == "browser.public" {
+		if cfg.Capability == "http.fetch" || cfg.Capability == "browser.public" || cfg.Capability == "browser.recipe" {
 			if cfg.TermsPolicyVersion == 0 {
 				return Config{}, fmt.Errorf("recruiting executor config: HTTP execution requires terms policy")
 			}
@@ -92,8 +94,11 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 				return Config{}, fmt.Errorf("recruiting executor config: invalid HTTP or robots policy")
 			}
 		}
-		if cfg.Capability == "browser.public" && cfg.BrowserChromePath == "" {
-			return Config{}, fmt.Errorf("recruiting executor config: public browser execution requires browser_chrome_path")
+		if (cfg.Capability == "browser.public" || cfg.Capability == "browser.recipe") && cfg.BrowserChromePath == "" {
+			return Config{}, fmt.Errorf("recruiting executor config: browser execution requires browser_chrome_path")
+		}
+		if cfg.Capability == "browser.recipe" && (cfg.ArtifactRedaction != "redacted" || cfg.BrowserProfileRegistry == "") {
+			return Config{}, fmt.Errorf("recruiting executor config: Profile browser execution requires redacted Artifacts and a local registry")
 		}
 		if cfg.Capability == "company.import" && (cfg.BatchMaxBytes < 1 || cfg.BatchMaxBytes > 100<<20 || cfg.BatchChunkSize < 1 || cfg.BatchChunkSize > 500) {
 			return Config{}, fmt.Errorf("recruiting executor config: invalid company import byte or chunk limit")
@@ -148,5 +153,6 @@ const ConfigSchema = `{
 	,"browser_broker_token_file":{"type":"string","minLength":1}
 	,"browser_broker_timeout_ms":{"type":"integer","minimum":1000,"maximum":3600000}
 	,"browser_chrome_path":{"type":"string","minLength":1}
+	,"browser_profile_registry":{"type":"string","minLength":1}
   }
 }`

@@ -2,7 +2,11 @@ package recruitingexecutor
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/browserbroker"
 )
 
 func TestParseConfigSupportsManyCapabilityInstances(t *testing.T) {
@@ -114,6 +118,43 @@ func TestParseConfigEnablesPublicBrowserInSameExecutorClass(t *testing.T) {
 	}`)
 	if _, err := parseConfig(withoutChrome); err == nil {
 		t.Fatal("public browser config without a Chrome executable was accepted")
+	}
+}
+
+func TestParseConfigEnablesDailyProfileBrowserOnAuthorizedDevice(t *testing.T) {
+	root := t.TempDir()
+	profileDir := filepath.Join(root, "profile")
+	if err := os.Mkdir(profileDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	registry := filepath.Join(root, "profiles.json")
+	rawRegistry, _ := json.Marshal(map[string]any{"version": browserbroker.ProfileRegistryVersion,
+		"profiles": []map[string]any{{"profile_id": "profile-1", "profile_version": 1,
+			"security_domain": "jobs.example.test", "user_data_dir": profileDir}}})
+	if err := os.WriteFile(registry, rawRegistry, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"capability": "browser.recipe", "execution_enabled": true, "control_actor_id": "tool:control",
+		"artifact_device_name": "worker-a", "artifact_channel_name": "recruiting", "artifact_directory": "artifacts",
+		"artifact_access_scope": "operators", "artifact_retention": "30d", "artifact_redaction": "redacted",
+		"terms_policy_version": 3, "terms_reviewed_at": "2026-09-11T00:00:00Z",
+		"browser_chrome_path": "/bin/sh", "browser_profile_registry": registry,
+	})
+	cfg, err := parseConfig(raw)
+	if err != nil || cfg.Capability != "browser.recipe" || cfg.BrowserProfileRegistry != registry {
+		t.Fatalf("daily Profile Browser config=%+v err=%v", cfg, err)
+	}
+	runtime, err := newProductionRuntime(cfg)
+	if err != nil || runtime.driver == nil || runtime.broker != nil {
+		t.Fatalf("daily Profile Browser runtime=%+v err=%v", runtime, err)
+	}
+	var unsafe map[string]any
+	_ = json.Unmarshal(raw, &unsafe)
+	unsafe["artifact_redaction"] = "raw"
+	unsafeRaw, _ := json.Marshal(unsafe)
+	if _, err := parseConfig(unsafeRaw); err == nil {
+		t.Fatal("daily Profile Browser accepted raw Artifact policy")
 	}
 }
 
