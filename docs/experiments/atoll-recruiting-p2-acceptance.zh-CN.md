@@ -70,6 +70,7 @@ P1 契约基线：`a94d2b8d`
 - Job list 固定按 Source seek pagination，DailyRun list 按 schedule date/ID seek，Occurrence drill-down 按 DailyRun/ID seek；游标绑定父 selector 且严格拒绝未知字段、尾随 JSON 和跨父对象复用，三个查询均有专用索引的 `EXPLAIN FORMAT=JSON` 证据；
 - DailyRun 实时摘要以单条 LEFT JOIN/GROUP BY 快照同时读取运行状态与各 Occurrence 状态计数，避免分两次查询时物化或闭账并发导致自相矛盾；显式返回 expected/materialized/missing/planned/queued/running/completed/exceptions/excluded；
 - migration `000012` 增加 Work `(status, deadline_at, work_id)` 运维索引。System/Capacity Repository 在 Repeatable Read 只读事务中形成同一时点快照，分别返回状态计数、runnable/最老等待/deadline miss、双 outbox backlog，以及最多 100 个活动预算和每类最多 100 个 capability/origin/Profile runnable 分组；分组输入按 `open`/`waiting_retry` 各最多扫描 5,000 条最老 runnable，并返回 exact/truncated 证明，避免有限输出背后的无界 GROUP BY。合同用 `EXPLAIN FORMAT=JSON` 证明 deadline 与 capacity scan 各命中专用索引；
+- migration `000043` 为 Company onboarding 协调补上 `(onboarding_status, updated_at, company_id)` 索引。生产实际形状的 baseline 物化 JOIN、Company readiness 嵌套 EXISTS/NOT EXISTS 和 backfill 物化 EXISTS 三条协调查询均有 `EXPLAIN FORMAT=JSON` 合同，分别命中 `ix_recruiting_baseline_materialization`、`ix_recruiting_company_onboarding` 和 `ix_recruiting_backfill_status`；与既有 Work offer、Occurrence 到期、Attempt/Permit 恢复和 dispatch 到期合同合并后，当前所有会竞争领取全局下一项的协调入口均已有有界索引证据。该新增迁移使用分离的非 root migration/runtime 账号连续重建两轮通过；
 - `make recruiting-mysql-test` 启动一次性 MySQL 8.4，以随机 schema 和非 root `staircase` 测试账号运行 race 集成测试，退出后删除整个测试容器，不连接共享数据库。
 - migration 30 的 Recipe rollout batch Repository 已实现父控制 Work/批次原子创建、最多 500 项的连续预览分块、数据库事实重算 preview hash、成员 seek 分页、确认启动和取消；migration 31 以追加升级补齐不可变 schema/policy version 并将其纳入 hash，不修改历史 migration checksum。预览逐项锁定并复核 Source/Assignment/当前及目标 Recipe，乱序或任一不兼容成员使整块回滚；完成时父 Work 与 Batch 原子进入 `waiting_human(preview_ready)`/`previewed`。确认不在单个事务修改所有 Source，避免 20K 成员热锁；隔离非 root MySQL 8.4 合同覆盖命令重放、原子拒绝、分页和终态活动键释放。
 - migration 32 与成员 Repository 已补齐逐项应用/验证 evidence、单成员 CAS 和活动 wave 的一致快照计数。成员声称“已应用”前必须在同一锁序中反查 Source/Assignment 确实处于目标 Recipe、精确版本及业务时间；伪造声明全事务拒绝，并发陈旧声明不能赢第二次。失败恢复按应用阶段区分：切换前回到 pending，切换后只回到 awaiting validation，不重复切换 Assignment；已应用成员存在时普通 cancel 被拒绝，等待显式批量回滚闭环。
@@ -92,8 +93,7 @@ make build-go
 
 ## 尚未完成
 
-- 其余修改命令的 receipt/聚合/outbox 原子编排随 P3 Actor command handler 实现；P2 已用 Company、Source、Work 命令纵向证明事务模板，并完成全部 Resource 纵向合同；
-- 10,000 条基线不使用超大事务已经验证；仍需所有关键领取查询的 EXPLAIN；
-- 首次 100 轮压力运行暴露的 timeout/autocommit 竞态已修复；修复提交上的完整 100 轮与容器残留核对均已通过，不再列为未完成项。
+- receipt/聚合/outbox 原子编排已随 P3 及后续控制词完成，全部全局协调领取入口的生产 SQL 形状也已有 EXPLAIN 合同；不再作为 P2 缺口。
+- 历史提交 `0af563b3f7d2` 的完整 100 轮与残留核对已通过；包含后续迁移直至 `000043` 的最终合并 revision 仍需重新执行固定 revision 的 4×25 压力门并保存新证据。当前正在运行的固定 `e67f9024` 压力门不得被后续隔离工作树提交冒充。
 
-P2 仍为进行中，不能以首个 Repository 切片替代完整退出门。
+P2 仍为进行中，直到最终合并 revision 的 100 轮压力门和容器/随机 schema 残留核对完成。

@@ -226,7 +226,7 @@ requested_by（来自 Atoll envelope 上下文，不是客户端可填写字段�
 
 ## 7. P2：MySQL Resource、migration 与恢复
 
-执行状态：进行中。Schema ADR、migration/checksum runner、非 root DSN 防护、主要 Resource Repository、DailyRun/全部轻量 SourceOccurrence 的原子截点事务、execution dispatch outbox，以及 Work Center 的绑定游标/索引查询已实现；当前证据记录于 `docs/experiments/atoll-recruiting-p2-acceptance.zh-CN.md`。尚未达到 P2 退出门。
+执行状态：进行中。Schema ADR、migration/checksum runner、非 root DSN 防护、全部 Resource Repository、DailyRun/全部轻量 SourceOccurrence 的原子截点事务、execution dispatch outbox，以及 Work Center 的绑定游标/索引查询已实现。migration `000043` 补齐 Company onboarding 协调索引后，baseline 物化、Company readiness、backfill 物化、Work offer、Occurrence 到期、Attempt/Permit 恢复和 dispatch 到期等所有当前全局协调领取入口均已有生产 SQL 形状的 EXPLAIN 合同。新增迁移已用分离的非 root migration/runtime 账号连续重建两轮通过；最终合并 revision 的固定 4×25 压力门及残留核对尚未完成，因此 P2 仍未达到退出门。当前证据记录于 `docs/experiments/atoll-recruiting-p2-acceptance.zh-CN.md`。
 
 ### 7.1 Schema 设计步骤
 
