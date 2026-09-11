@@ -511,6 +511,8 @@ S15/S16 实现契约已在产品设计冻结：使用 Company/Source 的配置�
 
 执行状态补充（2026-09-12，真实 cancel operation 的业务依赖结算）：migration 48 和 `ScopeControlOperation` 把 Work 投影与业务依赖结算建模为两个可恢复阶段；前者结束只写 `projection_completed`，不会再提前把 cancel operation 标成 completed。每日 occurrence、Source Discovery、Source Validation/独立 ListingRun、Recipe sample validation、Baseline 与已物化 live Backfill 已在取消 Work、过期 Attempt、释放 Permit 的同一有界事务中关闭执行归属对象。父 Backfill 进入 `canceling` 后，协调器继续按每轮最多 500 项结算已预览但尚未物化 Work 的成员，全部 Item 终态后才关闭 Backfill 和 scope operation；Backfill 子 Work 也改为从冻结 Item 强制派生 Company/Source 调度归属。两项真实 MySQL 反例分别覆盖六类执行归属聚合及两条未物化 Item 在 `limit=1` 下必须经过两轮才完成。提交 `2d22700d` 的完整非 root MySQL 8.4 Store 回归 222.297 秒、Actor 3.528 秒，race/vet 与核心冻结检查均通过。Recipe candidate、Source onboarding 等更上层聚合在取消后的可恢复业务状态，以及 cancel/result/通用 Backfill coordinator 的全截点竞态仍需关闭，因此 S15/S16 保持部分完成。
 
+执行状态补充（2026-09-12，取消验证后的可恢复上层状态）：提交 `0fdead09` 关闭了执行 run 已取消但 Source/Recipe 永久停在 `validating` 的缺口。Source Validation 仅在当前候选 Endpoint 仍与被冻结 run 一致时撤销 in-progress claim：初始候选回到 `candidate`，已有生产入口的修复回到 `repairing`，保留 Endpoint 与 configuration version，恢复 scope 后可以重新验证且不伪造 `invalid` 结论。Listing、Detail、Discovery 三类候选 Recipe 在对应 run 关闭时以精确 immutable hash 和状态 CAS 回到 `draft`；rollout sample 的 active Recipe 不回退。状态、审计事件、Work/Attempt/Permit/run 仍在同一取消事务内提交。真实 MySQL 联合矩阵增加 Listing 与 Discovery Recipe 两类并验证 retry transition；完整非 root MySQL 8.4 Store 回归 221.730 秒、Actor 3.698 秒，race/vet 与核心冻结检查通过。剩余主要缺口收敛为跨 Source Backfill 的 Source-only cancel 隔离策略，以及 cancel/result/通用协调器的全截点并发矩阵。
+
 | ID | 场景 | 必须自动化的核心断言 |
 |---|---|---|
 | S01 | 单个公司新增 | command replay、业务去重、0/1/N Source |

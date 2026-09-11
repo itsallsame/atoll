@@ -1,18 +1,20 @@
 {
   "version": "recruiting.scope-execution-fences-evidence.v2",
-  "observed_at": "2026-09-12T03:28:28+08:00",
+  "observed_at": "2026-09-12T03:49:00+08:00",
   "scope": "Company/Source operational, configuration, and cancellation fences across Recruiting execution types",
   "implementation": {
     "execution_fence_commit": "e1e235ca",
     "work_scope_commit": "e3b6fce0",
     "complete_result_matrix_commit": "5d713295",
     "bounded_scope_cancel_commit": "2d22700d",
+    "validation_recovery_commit": "0fdead09",
     "core_modified": false,
     "new_worker_types": 0,
     "new_attempt_authority": "current eligibility gates new claims; configuration_version and execution_fence authorize issued Attempts",
     "rejected_evidence": "DiagnosticResult and RecipeSampleValidationResult retain bounded rejected Artifacts after rolling back fenced business mutations",
     "cancel_phases": "work projection and business dependency settlement are separate durable bounded phases",
-    "backfill_scope": "child Work derives immutable Company/Source ownership from its frozen BackfillItem"
+    "backfill_scope": "child Work derives immutable Company/Source ownership from its frozen BackfillItem",
+    "validation_recovery": "canceled Source validation returns to candidate or repairing; canceled candidate Recipe validation returns to draft; rollout Recipe remains active"
   },
   "contract_observation": {
     "listing": "drain accepted; cancel and configuration change fenced",
@@ -34,8 +36,8 @@
     "database": "ephemeral MySQL 8.4",
     "migration_identity": "staircase_migrator (non-root)",
     "runtime_identity": "staircase_runtime (non-root, DML only)",
-    "full_store_suite": "pass in 222.297s",
-    "actor_suite": "pass in 3.528s",
+    "full_store_suite": "pass in 221.730s",
+    "actor_suite": "pass in 3.698s",
     "targeted_tests": [
       "TestInFlightResultDistinguishesDrainFromCancelFence",
       "TestDetailResultUsesSeparatedScopeFences",
@@ -59,7 +61,7 @@
     "core_boundary": "pass from a94d2b8d; no protocol/runtime/lib/platform/registry changes"
   },
   "limits": [
-    "Result-level matrices and the principal execution-owner cancellation matrix are complete; Recipe candidate and Source onboarding recovery states still need an explicit policy and contracts.",
+    "Result-level matrices, principal execution-owner cancellation, and Source/Recipe validation recovery states are complete.",
     "Cross-Source Backfill behavior under a Source-only cancel and full pause/cancel cutoff/concurrent-coordinator race matrices remain open.",
     "S15 and S16 remain partially complete."
   ]
