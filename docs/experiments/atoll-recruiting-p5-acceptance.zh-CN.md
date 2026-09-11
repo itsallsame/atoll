@@ -1,6 +1,6 @@
 # Atoll Recruiting P5 接入与基线验收记录
 
-状态：进行中，未达到 P5 退出门。
+状态：完成。2026-09-11 已达到 P5 退出门；后续规模、故障矩阵和持续观测仍分别由 P6—P9 管理。
 
 ## 已形成的业务能力
 
@@ -34,17 +34,18 @@
 - 真实链路：普通用户通过 Atoll Portal/WebSocket 新增 Company；Recruiting Actor 建立 generation；真实 daemon 上的 Recruiting Executor 访问公开页面并保存 Artifact；用户接受候选后回读到归属正确、readiness 为 `candidate` 的 Source；发现与接受命令重放均稳定。
 - 真实零 Source 分支：opt-in `TestRecruitingLiveZeroSourceDiscoveryThroughAtoll` 以 IANA `https://example.com/` 作为稳定的公开无招聘入口页面；登录用户启动 Discovery，真实 daemon/HTTP Executor 在 robots、条款和网络边界内读取页面，Recipe 合法返回 0 candidates。Discovery 与 Work 成功终结、Company 原子进入 `blocked_no_sources`，Source/candidate 计数均为零，响应 Artifact 字节与 metadata 均保留。该页面只是零匹配进程 fixture，不被描述为真实招聘公司。
 - 真实 Source 校验：同一普通用户把 MongoDB 的公开 Greenhouse Job Board API 作为确认后的逻辑列表入口，调用 `source.validate` 并重放命令；真实 daemon/Executor 完成 Work 和 Attempt，保存 page/trace Artifact。实际列表不满足 `newest_activity_desc`，系统因此把“执行成功、契约失败”原子落为 Source `invalid`，没有写入任何 Job、ListingObservation 或 Checkpoint。该结果没有被包装成成功发布，也没有进入 baseline；机读证据见 `docs/experiments/evidence/recruiting-live-source-validation-20260909.json`。
+- 真实正向纵向切片：普通用户以 Women’s Aid 官网启动 Company 接入，真实 Atoll Server、daemon、统一 Executor 和隔离非 root MySQL 依次完成官网发现、候选接受、WordPress REST Endpoint 校准、页面 Artifact 回读、四项契约发布、Detail Recipe 绑定、完整 baseline、17 个真实详情以及下一次无变化增量。公开数据中 11 个岗位的 `modified_gmt` 晚于发布时间；其中岗位 52459 在 9 月 4 日发布、9 月 9 日更新，并按修改时间排在 9 月 4 日更晚发布但未再更新的岗位 52466 之前，构成历史更新重新置顶的同一快照证据。结果为 17 Job、17 DetailVersion、0 exception，Checkpoint 从 baseline 的 1 推进到 incremental 的 2；baseline 与 production 命令重放均不改变业务事实。全程单 origin 并发 1、请求最小间隔 10 秒，实测 306.01 秒通过；机读证据见 `docs/experiments/evidence/recruiting-live-qualified-wordpress-20260911.json`。
 - 真实 baseline 页间恢复：`TestRecruitingLiveBaselinePageRecoveryThroughAtoll` 由普通用户启动预置 ready Source 的 baseline，以公开 Lever 招聘 API 的 `skip/limit` 分页每次只读 2 条。Executor 先保存页面 Artifact 并提交 page progress/staging，随后才等待同源预算抓取下一页；测试在第一页后强杀 daemon，使 Attempt A 经 reconcile 变为 `expired`、Work 进入 `waiting_retry`。同一设备的新 daemon incarnation 领取 Attempt B 并从 `skip=0` 重新提交 page sequence 1，而不是沿用旧 Attempt 的 cursor。最终取消后两条 Attempt page progress 均为 sequence 1，staging 只归当前 Attempt，Checkpoint、正式 Observation 和 Job 均为零，两个进程写出的原始 Artifact 均可读取。此 fixture 验证执行/恢复隔离，不冒充该站点已满足增量排序和 update-retop 契约。
 - 隔离数据库：MySQL 8.4；migration 与 runtime 使用不同非 root 账号。合同测试覆盖 discovery 执行、零候选 Company 收口、已有 Source 防误判、候选独立裁决、跨 Company 冲突回滚、validation 原子创建/offer/Attempt/结果、零业务数据副作用、验证证据绑定、发布原子性和命令重放；baseline 覆盖 start、offer、首个 Attempt 页间失败、第二 Attempt 从第 1 页重扫、staging/finalize/物化的 Attempt 隔离、运行中用户取消、Attempt/Permit/容量收口、迟到 page/Failure 隔离、新 generation 重启、详情部分成功/失败、拒绝 accepted gap、终止旧 Work、成员重绑和详情重试成功、completion、并发物化、持久游标、Job/Detail Work 唯一性和结果重放。当前生产物化器另以 10,000 条 staging 实测：20 个至多 500 条的独立事务形成 10,000 个 Job、10,000 个 Detail Work 和 10,000 条成员账本，最终游标为第 10,000 个来源岗位键；两个匹配 Executor 目标只形成每页两个、共 40 个聚合 dispatch，而不是 10,000 次同时唤醒。招聘扩展全部 package 的 race 与 vet 通过；包含 supporting failure Artifact 原子登记和 Detail Recipe rollout 合同的完整非 root store race 套件耗时 81.601 秒。包含日调度恢复、运行中取消、baseline 页间进程恢复、详情 Recipe 人机修复和零 Source 五条真实网站进程用例的 `scripts/recruiting-live-e2e.sh` 本次耗时 176.375 秒。
 - 工程检查：招聘扩展 race、vet 通过；核心边界脚本以 `a94d2b8d` 为冻结基线通过。
 - 首次 Detail Assignment：隔离非 root MySQL 合同验证成功、稳定重放、不可变历史、第二次绑定拒绝及跨 scope 失败零副作用；`TestRecruitingInitialDetailAssignmentThroughServer` 使用普通登录用户、真实 Atoll Server 完成公开命令、重放、Server 重启和 Source/Assignment/历史/receipt/event 精确核对。
 - Recipe 运维 E2E：`TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer` 使用普通登录用户、真实 Atoll server 和非 root MySQL，完成 Detail rollout、inspect、quarantine、Listing 逐 Source rollout、Detail/Listing 历史回滚及 server restart 后的命令重放；仓储合同同时证明 quarantine 不改写当前 Assignment/历史，Listing rollout→rollback 的 Assignment 版本单调，Checkpoint 的 frontier 与边界事实保持不变。
 
-## 尚未通过的退出项
+## 后续阶段仍需覆盖（不阻塞 P5）
 
 - Source validation 的专用 Work、统一 Executor 执行、evidence-only 结果协议和质量违反后 `validating → invalid` 已通过隔离 MySQL及上述真实站点；Endpoint/Recipe 变更排除旧 Work、新 revision/Recipe version 再校验、瞬时故障自动重试和人工拒绝已有合同覆盖。人工终止后重试及在途结果与修复命令并发仍需场景验收。
 - MongoDB 单次真实样本不能证明“历史岗位更新后重新置顶”，因此不得把它标记为 `update_retop=verified`，也没有借此发布为每日增量 Source。
 - baseline generation 的有界分页、staging/finalize、首次 Checkpoint、Job/Detail Work 有界物化、详情成功/人工接受缺口核算、拒绝缺口后的因果 Work 重试修复和 Company ready 已通过隔离 MySQL 合同。普通用户经 Home Channel 完成 `terminated` 人工裁决、Source 级兼容 `recipe.rollout` 和 `work.retry`；Source/Assignment 双版本围栏的隔离 MySQL 合同证明并发单赢家、重放和不兼容切换全事务回滚。新增 opt-in 真实进程旅程从 MongoDB 公开 Greenhouse board 动态选择在售岗位：真实 daemon 以坏 Detail Recipe 读取成功但解析失败，原始 response 与 failure Artifact 的 metadata 作为同 Work/Attempt、ID 唯一的支持证据随失败事务入库，物理 Resource 字节均存在；用户 rollout 到修复版并创建因果 Retry Work 后，同一 daemon 再次读取成功，成员原子重绑并核算 succeeded，唯一 DetailVersion 落库、Baseline 无 exception、Company ready、活动预算归零。全套中的该旅程耗时 45.76 秒；它验证详情修复切点，不把预置的 baseline/listing fixture 冒充该网站的增量契约证据。
 - 零 Source 已通过隔离 MySQL 合同以及上述普通用户/真实 server/daemon/网站旅程。1 万岗位的当前物化路径已经通过上述隔离 MySQL 容量合同；尚未覆盖的是把 1 万条从可执行 listing 分页一直贯通至全部详情终态的端到端负载。baseline 分页执行中断已经通过上述真实进程旅程。运行中 baseline 用户取消已通过两个层次：确定性 server E2E 覆盖用户消息、重放、server 重启和更高 generation；opt-in `TestRecruitingLiveBaselineCancellationThroughAtoll` 又启动真实 server/daemon/Executor，以 MongoDB 公开 Greenhouse API 的只读请求验证 Attempt 已 running 后取消及迟到结果隔离。逐页协议下，取消后的页面提交被持久化为 rejected Page Artifact，且 canceled Work/Baseline、rejected Attempt、released Permit 不变，Checkpoint、Observation、Job、staging 和活动预算均为零。此用例人为预置 ready Source 只为制造取消切点，不能作为该网站满足增量契约的验证证据。详情失败后的用户 rollout 与因果重试现已由上述真实 daemon 旅程覆盖。
 
-只有完成 `discovery → validation → baseline → detail` 的至少一个允许访问的真实站点，并证明同一命令重放不改变岗位数，P5 才能标记完成。
+P5 退出条件已经由 Women’s Aid 的 `discovery → validation → baseline → detail → unchanged incremental` 真实旅程满足，并证明同一 baseline/production 命令重放不改变岗位数或详情数。

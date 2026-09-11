@@ -1,0 +1,62 @@
+{
+  "observed_at": "2026-09-11T23:47:14+08:00",
+  "test": "TestRecruitingLiveQualifiedWordPressSourceThroughAtoll",
+  "command": "ATOLL_RECRUITING_LIVE_E2E=1 go test ./e2e -run '^TestRecruitingLiveQualifiedWordPressSourceThroughAtoll$' -count=1 -v -timeout 16m",
+  "duration_seconds": 306.01,
+  "actor_path": {
+    "operator": "qualified-wordpress-operator",
+    "control": "qualified-wordpress-control",
+    "executor": "qualified-wordpress-executor",
+    "daemon": "real atoll-daemon",
+    "database_accounts": "ephemeral migration/runtime non-root users"
+  },
+  "website": {
+    "company": "Women’s Aid",
+    "discovery_seed": "https://womensaid.org.uk/",
+    "discovered_url": "https://womensaid.org.uk/jobs",
+    "validated_logical_endpoint": "https://womensaid.org.uk/wp-json/wp/v2/job-listings",
+    "access": "read-only public HTTP",
+    "origin_concurrency": 1,
+    "minimum_origin_interval_seconds": 10
+  },
+  "contract": {
+    "identity": "verified",
+    "pagination": "verified",
+    "ordering": "verified",
+    "update_retop": "verified",
+    "checkpoint_strategy": "activity_desc",
+    "activity_field": "modified_gmt",
+    "activity_time_format": "utc_datetime",
+    "overlap_pages": 1,
+    "page_size": 5,
+    "historically_modified_jobs_observed": 11,
+    "retop_example": {
+      "retopped_job_id": 52459,
+      "retopped_published_at": "2026-09-04T14:52:50Z",
+      "retopped_modified_at": "2026-09-09T10:05:11Z",
+      "later_published_job_id": 52466,
+      "later_published_at": "2026-09-04T16:35:12Z",
+      "later_job_modified_at": "2026-09-04T16:43:55Z"
+    }
+  },
+  "result": {
+    "source_readiness": "ready",
+    "company_onboarding_status": "ready",
+    "jobs": 17,
+    "detail_versions": 17,
+    "detail_exceptions": 0,
+    "baseline_checkpoint_version": 1,
+    "incremental_checkpoint_version": 2,
+    "baseline_command_replay_changed_facts": false,
+    "incremental_command_replay_changed_facts": false,
+    "unchanged_incremental_created_duplicate_jobs": false,
+    "unchanged_incremental_created_duplicate_details": false
+  },
+  "evidence_path": {
+    "recipes": "Atoll Resource",
+    "validation_pages": "Atoll Resource plus recruiting_validation_artifact_pages sequence ledger",
+    "validation_trace": "Atoll Resource",
+    "publication": "source validation evidence gate"
+  },
+  "conclusion": "A permitted real source completed company discovery, evidence-backed source publication, full baseline, every current detail, bounded unchanged incremental execution, and command replay through ordinary Atoll server/daemon actors. This closes the P5 real vertical-slice exit gate for the observed source snapshot."
+}

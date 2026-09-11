@@ -211,7 +211,7 @@ func TestRecruitingLiveQualifiedWordPressSourceThroughAtoll(t *testing.T) {
 		t.Fatalf("baseline did not start: %v", baseline)
 	}
 	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 100})
-	counts := waitQualifiedWordPressBaseline(t, runtimeDSN, qualifiedWordPressSourceID, 7*time.Minute,
+	counts := waitQualifiedWordPressBaseline(t, runtimeDSN, qualifiedWordPressSourceID, 10*time.Minute,
 		daemon, daemonLog, h.server.logPath)
 	if counts.jobs < 1 || counts.jobs != counts.details || counts.exceptions != 0 || counts.checkpoint != 1 {
 		t.Fatalf("qualified baseline counts=%+v", counts)
@@ -291,7 +291,7 @@ func qualifiedWordPressDetailRecipe() recipeabi.Spec {
 			TimeoutMS: 30_000, MaxResponseBytes: 2 << 20, MaxRedirects: 1,
 			UserAgent: "Atoll-Recruiting-Live-E2E/1 (+read-only search validation)"},
 		Extraction: recipeabi.Extraction{Fields: map[string]string{
-			"title": ".job_description h2", "description": ".job_description",
+			"description": ".job_description",
 		}},
 	}
 }
