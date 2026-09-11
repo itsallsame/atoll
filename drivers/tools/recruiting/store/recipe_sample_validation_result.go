@@ -83,18 +83,15 @@ func (r *Repository) AcceptRecipeSampleValidationResult(ctx context.Context,
 		return RecipeSampleValidationOutcome{}, err
 	}
 	if work.Purpose != "recipe_validation" || work.TargetType != "recipe" ||
-		run.Status != model.RecipeSampleValidationRunning || run.RecipeKind != input.RecipeKind ||
+		run.RecipeKind != input.RecipeKind ||
 		(run.Mode != model.RecipeSampleValidationRollout && input.ExtractedFieldCount != run.ExpectedFieldCount) ||
 		(run.Mode == model.RecipeSampleValidationRollout && input.ExtractedFieldCount < run.ExpectedFieldCount) {
-		return RecipeSampleValidationOutcome{}, fmt.Errorf("result is not for a running Recipe sample validation")
+		return RecipeSampleValidationOutcome{}, fmt.Errorf("result is not for a Recipe sample validation")
 	}
 	for _, artifact := range input.Artifacts {
 		if artifact.WorkID != work.WorkID {
 			return RecipeSampleValidationOutcome{}, fmt.Errorf("Recipe validation Artifact belongs to another Work")
 		}
-	}
-	if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, input.CompletedAt); err != nil {
-		return RecipeSampleValidationOutcome{}, err
 	}
 	fence, err := loadRecipeSampleValidationOfferFence(ctx, tx, run, attempt.ProfileID, true)
 	if err != nil {
@@ -116,6 +113,12 @@ func (r *Repository) AcceptRecipeSampleValidationResult(ctx context.Context,
 				ErrResultFenced, err, artifactErr)
 		}
 		return RecipeSampleValidationOutcome{}, fmt.Errorf("%w: %v", ErrResultFenced, err)
+	}
+	if run.Status != model.RecipeSampleValidationRunning {
+		return RecipeSampleValidationOutcome{}, fmt.Errorf("result is not for a running Recipe sample validation")
+	}
+	if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, input.CompletedAt); err != nil {
+		return RecipeSampleValidationOutcome{}, err
 	}
 	succeededAttempt, err := attempt.Succeed()
 	if err != nil {

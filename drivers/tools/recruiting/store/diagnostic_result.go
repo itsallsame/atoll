@@ -81,9 +81,8 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 	} else if recipeValidation {
 		expectedResultKind = "recipe_validation"
 	}
-	if (!validation && !recipeValidation && !diagnostic) || input.ResultKind != expectedResultKind ||
-		run.Status != model.ListingRunRunning {
-		return DiagnosticResultOutcome{}, fmt.Errorf("result is not for a running diagnostic listing run")
+	if (!validation && !recipeValidation && !diagnostic) || input.ResultKind != expectedResultKind {
+		return DiagnosticResultOutcome{}, fmt.Errorf("result is not for a diagnostic listing run")
 	}
 	if diagnostic && (!input.Quality.IdentityComplete || !input.Quality.OrderingContractHeld || !input.Quality.PaginationStable) {
 		return DiagnosticResultOutcome{}, fmt.Errorf("diagnostic result requires complete listing quality")
@@ -92,9 +91,6 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 		if artifact.WorkID != work.WorkID {
 			return DiagnosticResultOutcome{}, fmt.Errorf("diagnostic artifact belongs to another Work")
 		}
-	}
-	if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, input.CompletedAt); err != nil {
-		return DiagnosticResultOutcome{}, err
 	}
 	var currentFence model.AttemptFence
 	if validation {
@@ -122,6 +118,12 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 				ErrResultFenced, err, artifactErr)
 		}
 		return DiagnosticResultOutcome{}, fmt.Errorf("%w: %v", ErrResultFenced, err)
+	}
+	if run.Status != model.ListingRunRunning {
+		return DiagnosticResultOutcome{}, fmt.Errorf("result is not for a running diagnostic listing run")
+	}
+	if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, input.CompletedAt); err != nil {
+		return DiagnosticResultOutcome{}, err
 	}
 	succeededAttempt, err := attempt.Succeed()
 	if err != nil {

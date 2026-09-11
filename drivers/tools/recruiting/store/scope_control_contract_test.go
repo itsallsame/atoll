@@ -299,6 +299,348 @@ WHERE work_id = ?`, fixture.offer.Work.WorkID).Scan(&state); err != nil {
 			t.Fatalf("canceled Backfill=%+v items=%+v err=%v/%v", backfill, items, err, itemErr)
 		}
 	})
+
+}
+
+func TestCompletedExecutionOwnersSurviveLaterScopeCancel(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	repository, _, ctx, cleanup := detailContractRepository(t)
+	defer cleanup()
+	now := time.Date(2095, 2, 22, 4, 0, 0, 0, time.UTC)
+
+	assertCompletedExecution := func(t *testing.T, workID, attemptID string) {
+		t.Helper()
+		work, workErr := repository.GetWork(ctx, workID)
+		attempt, attemptErr := repository.GetAttempt(ctx, attemptID)
+		if workErr != nil || attemptErr != nil || work.Status != model.WorkCompleted ||
+			work.Resolution != model.ResolutionSucceeded || attempt.Status != model.AttemptSucceeded {
+			t.Fatalf("completed execution was rewritten: Work=%+v Attempt=%+v err=%v/%v",
+				work, attempt, workErr, attemptErr)
+		}
+	}
+
+	t.Run("source_discovery", func(t *testing.T) {
+		prefix := "scope-result-first-discovery"
+		fixture := createRunningSourceDiscoveryFixture(t, ctx, repository, prefix, now)
+		outcome, err := repository.AcceptSourceDiscoveryResult(ctx, fixture.result)
+		if err != nil || outcome.Discovery.Status != model.SourceDiscoveryCompleted {
+			t.Fatalf("Source Discovery result=%+v err=%v", outcome, err)
+		}
+		operation := cancelCompanyScopeAndReconcile(t, ctx, repository, fixture.company.CompanyID, prefix,
+			fixture.now.Add(10*time.Second))
+		discovery, discoveryErr := repository.GetSourceDiscovery(ctx, fixture.discovery.DiscoveryID)
+		assertCompletedExecution(t, fixture.offer.Work.WorkID, fixture.offer.Attempt.AttemptID)
+		if discoveryErr != nil || operation.Status != model.ScopeControlCompleted ||
+			discovery.Status != model.SourceDiscoveryCompleted || discovery.CandidateCount != 1 {
+			t.Fatalf("late cancel rewrote Source Discovery: operation=%+v discovery=%+v err=%v",
+				operation, discovery, discoveryErr)
+		}
+	})
+
+	t.Run("source_validation", func(t *testing.T) {
+		prefix := "scope-result-first-source-validation"
+		fixture := createRunningSourceValidationFixture(t, ctx, repository, prefix, now.Add(time.Hour))
+		outcome, err := repository.AcceptDiagnosticResult(ctx, fixture.result)
+		if err != nil || outcome.Run.Status != model.ListingRunCompleted {
+			t.Fatalf("Source validation result=%+v err=%v", outcome, err)
+		}
+		before, err := repository.GetSource(ctx, fixture.source.SourceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		operation := cancelSourceScopeAndReconcile(t, ctx, repository, fixture.source.SourceID, prefix,
+			fixture.now.Add(10*time.Second))
+		run, runErr := repository.GetListingRunByWork(ctx, fixture.work.WorkID)
+		after, sourceErr := repository.GetSource(ctx, fixture.source.SourceID)
+		assertCompletedExecution(t, fixture.work.WorkID, fixture.offer.Attempt.AttemptID)
+		if runErr != nil || sourceErr != nil || operation.Status != model.ScopeControlCompleted ||
+			run.Status != model.ListingRunCompleted || after.ReadinessStatus != before.ReadinessStatus {
+			t.Fatalf("late cancel rewrote Source validation: operation=%+v run=%+v before=%+v after=%+v err=%v/%v",
+				operation, run, before, after, runErr, sourceErr)
+		}
+	})
+
+	t.Run("detail_recipe_sample", func(t *testing.T) {
+		prefix := "scope-result-first-detail-recipe"
+		fixture := createRunningDetailRecipeSampleFixture(t, ctx, repository, prefix, now.Add(2*time.Hour))
+		outcome, err := repository.AcceptRecipeSampleValidationResult(ctx, fixture.result)
+		if err != nil || outcome.Run.Status != model.RecipeSampleValidationCompleted {
+			t.Fatalf("Detail Recipe sample result=%+v err=%v", outcome, err)
+		}
+		before, err := repository.GetRecipe(ctx, prefix+"-candidate", 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		operation := cancelSourceScopeAndReconcile(t, ctx, repository, fixture.source.SourceID, prefix,
+			fixture.now.Add(10*time.Second))
+		run, runErr := repository.GetRecipeSampleValidationByWork(ctx, fixture.offer.Work.WorkID)
+		after, recipeErr := repository.GetRecipe(ctx, prefix+"-candidate", 2)
+		assertCompletedExecution(t, fixture.offer.Work.WorkID, fixture.offer.Attempt.AttemptID)
+		if runErr != nil || recipeErr != nil || operation.Status != model.ScopeControlCompleted ||
+			run.Status != model.RecipeSampleValidationCompleted || after.Status != before.Status ||
+			after.StateVersion != before.StateVersion {
+			t.Fatalf("late cancel rewrote Detail Recipe validation: operation=%+v run=%+v before=%+v after=%+v err=%v/%v",
+				operation, run, before, after, runErr, recipeErr)
+		}
+	})
+
+	t.Run("listing_recipe_validation", func(t *testing.T) {
+		prefix := "scope-result-first-listing-recipe"
+		fixture := createRunningListingRecipeValidationFixture(t, ctx, repository, prefix, now.Add(3*time.Hour))
+		outcome, err := repository.AcceptDiagnosticResult(ctx, fixture.result)
+		if err != nil || outcome.Run.Status != model.ListingRunCompleted {
+			t.Fatalf("Listing Recipe result=%+v err=%v", outcome, err)
+		}
+		before, err := repository.GetRecipe(ctx, prefix+"-candidate", 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		operation := cancelSourceScopeAndReconcile(t, ctx, repository, fixture.source.SourceID, prefix,
+			fixture.now.Add(10*time.Second))
+		run, runErr := repository.GetListingRunByWork(ctx, fixture.offer.Work.WorkID)
+		after, recipeErr := repository.GetRecipe(ctx, prefix+"-candidate", 2)
+		assertCompletedExecution(t, fixture.offer.Work.WorkID, fixture.offer.Attempt.AttemptID)
+		if runErr != nil || recipeErr != nil || operation.Status != model.ScopeControlCompleted ||
+			run.Status != model.ListingRunCompleted || after.Status != before.Status ||
+			after.StateVersion != before.StateVersion {
+			t.Fatalf("late cancel rewrote Listing Recipe validation: operation=%+v run=%+v before=%+v after=%+v err=%v/%v",
+				operation, run, before, after, runErr, recipeErr)
+		}
+	})
+
+	t.Run("discovery_recipe_validation", func(t *testing.T) {
+		prefix := "scope-result-first-discovery-recipe"
+		fixture := createRunningDiscoveryRecipeValidationFixture(t, ctx, repository, prefix, now.Add(4*time.Hour))
+		outcome, err := repository.AcceptRecipeSampleValidationResult(ctx, fixture.result)
+		if err != nil || outcome.Run.Status != model.RecipeSampleValidationCompleted {
+			t.Fatalf("Discovery Recipe result=%+v err=%v", outcome, err)
+		}
+		before, err := repository.GetRecipe(ctx, prefix+"-candidate", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		operation := cancelCompanyScopeAndReconcile(t, ctx, repository, fixture.company.CompanyID, prefix,
+			fixture.now.Add(10*time.Second))
+		run, runErr := repository.GetRecipeSampleValidationByWork(ctx, fixture.offer.Work.WorkID)
+		after, recipeErr := repository.GetRecipe(ctx, prefix+"-candidate", 1)
+		assertCompletedExecution(t, fixture.offer.Work.WorkID, fixture.offer.Attempt.AttemptID)
+		if runErr != nil || recipeErr != nil || operation.Status != model.ScopeControlCompleted ||
+			run.Status != model.RecipeSampleValidationCompleted || after.Status != before.Status ||
+			after.StateVersion != before.StateVersion {
+			t.Fatalf("late cancel rewrote Discovery Recipe validation: operation=%+v run=%+v before=%+v after=%+v err=%v/%v",
+				operation, run, before, after, runErr, recipeErr)
+		}
+	})
+
+	t.Run("detail", func(t *testing.T) {
+		prefix := "scope-result-first-detail"
+		fixture := createDetailFixture(t, ctx, repository, prefix, now.Add(5*time.Hour))
+		result := fixture.result(prefix + "-artifact")
+		outcome, err := repository.AcceptDetailResult(ctx, result)
+		if err != nil || outcome.Job.DetailVersion != 1 {
+			t.Fatalf("Detail result=%+v err=%v", outcome, err)
+		}
+		operation := cancelSourceScopeAndReconcile(t, ctx, repository, fixture.source.SourceID, prefix,
+			result.ObservedAt.Add(10*time.Second))
+		job, jobErr := repository.GetJob(ctx, fixture.job.JobID)
+		assertCompletedExecution(t, fixture.work.WorkID, fixture.attempt.AttemptID)
+		if jobErr != nil || operation.Status != model.ScopeControlCompleted || job.DetailVersion != 1 ||
+			job.Status != model.JobAvailable {
+			t.Fatalf("late cancel rewrote Detail result: operation=%+v Job=%+v err=%v", operation, job, jobErr)
+		}
+	})
+
+	t.Run("diagnostic", func(t *testing.T) {
+		prefix := "scope-result-first-diagnostic"
+		fixture := createRunningDiagnosticFixture(t, ctx, repository, prefix, now.Add(6*time.Hour))
+		outcome, err := repository.AcceptDiagnosticResult(ctx, fixture.result)
+		if err != nil || outcome.Run.Status != model.ListingRunCompleted {
+			t.Fatalf("diagnostic result=%+v err=%v", outcome, err)
+		}
+		operation := cancelSourceScopeAndReconcile(t, ctx, repository, fixture.source.SourceID, prefix,
+			fixture.now.Add(10*time.Second))
+		run, runErr := repository.GetListingRunByWork(ctx, fixture.offer.Work.WorkID)
+		assertCompletedExecution(t, fixture.offer.Work.WorkID, fixture.offer.Attempt.AttemptID)
+		if runErr != nil || operation.Status != model.ScopeControlCompleted || run.Status != model.ListingRunCompleted {
+			t.Fatalf("late cancel rewrote diagnostic: operation=%+v run=%+v err=%v", operation, run, runErr)
+		}
+	})
+}
+
+func TestScopeCancelRejectsLateExecutionOwnerResults(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	repository, db, ctx, cleanup := detailContractRepository(t)
+	defer cleanup()
+	now := time.Date(2095, 2, 23, 4, 0, 0, 0, time.UTC)
+
+	assertRejectedArtifacts := func(t *testing.T, attemptID string, want int) {
+		t.Helper()
+		var rejected int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_artifacts
+WHERE attempt_id = ? AND rejected = TRUE`, attemptID).Scan(&rejected); err != nil || rejected != want {
+			t.Fatalf("rejected Artifacts=%d want=%d err=%v", rejected, want, err)
+		}
+	}
+
+	t.Run("source_discovery", func(t *testing.T) {
+		prefix := "scope-cancel-first-discovery"
+		fixture := createRunningSourceDiscoveryFixture(t, ctx, repository, prefix, now)
+		operation := cancelCompanyScopeAndReconcile(t, ctx, repository, fixture.company.CompanyID, prefix,
+			fixture.now.Add(5*time.Second))
+		if _, err := repository.AcceptSourceDiscoveryResult(ctx, fixture.result); !errors.Is(err, ErrResultFenced) {
+			t.Fatalf("late Source Discovery result crossed scope fence: %v", err)
+		}
+		discovery, err := repository.GetSourceDiscovery(ctx, fixture.discovery.DiscoveryID)
+		assertScopeCanceledExecution(t, ctx, db, repository, operation, fixture.offer.Work.WorkID,
+			fixture.offer.Attempt.AttemptID)
+		assertRejectedArtifacts(t, fixture.offer.Attempt.AttemptID, 1)
+		if err != nil || discovery.Status != model.SourceDiscoveryCanceled || discovery.CandidateCount != 0 {
+			t.Fatalf("late result rewrote canceled Source Discovery: %+v err=%v", discovery, err)
+		}
+	})
+
+	t.Run("source_validation", func(t *testing.T) {
+		prefix := "scope-cancel-first-source-validation"
+		fixture := createRunningSourceValidationFixture(t, ctx, repository, prefix, now.Add(time.Hour))
+		operation := cancelSourceScopeAndReconcile(t, ctx, repository, fixture.source.SourceID, prefix,
+			fixture.now.Add(5*time.Second))
+		if _, err := repository.AcceptDiagnosticResult(ctx, fixture.result); !errors.Is(err, ErrResultFenced) {
+			t.Fatalf("late Source validation result crossed scope fence: %v", err)
+		}
+		run, runErr := repository.GetListingRunByWork(ctx, fixture.work.WorkID)
+		source, sourceErr := repository.GetSource(ctx, fixture.source.SourceID)
+		assertScopeCanceledExecution(t, ctx, db, repository, operation, fixture.work.WorkID,
+			fixture.offer.Attempt.AttemptID)
+		assertRejectedArtifacts(t, fixture.offer.Attempt.AttemptID, 2)
+		if runErr != nil || sourceErr != nil || run.Status != model.ListingRunCanceled ||
+			source.ReadinessStatus != model.SourceCandidate {
+			t.Fatalf("late result rewrote canceled Source validation: run=%+v Source=%+v err=%v/%v",
+				run, source, runErr, sourceErr)
+		}
+	})
+
+	t.Run("detail_recipe_sample", func(t *testing.T) {
+		prefix := "scope-cancel-first-detail-recipe"
+		fixture := createRunningDetailRecipeSampleFixture(t, ctx, repository, prefix, now.Add(2*time.Hour))
+		operation := cancelSourceScopeAndReconcile(t, ctx, repository, fixture.source.SourceID, prefix,
+			fixture.now.Add(5*time.Second))
+		if _, err := repository.AcceptRecipeSampleValidationResult(ctx, fixture.result); !errors.Is(err, ErrResultFenced) {
+			t.Fatalf("late Detail Recipe result crossed scope fence: %v", err)
+		}
+		run, runErr := repository.GetRecipeSampleValidationByWork(ctx, fixture.offer.Work.WorkID)
+		recipe, recipeErr := repository.GetRecipe(ctx, prefix+"-candidate", 2)
+		assertScopeCanceledExecution(t, ctx, db, repository, operation, fixture.offer.Work.WorkID,
+			fixture.offer.Attempt.AttemptID)
+		assertRejectedArtifacts(t, fixture.offer.Attempt.AttemptID, 2)
+		if runErr != nil || recipeErr != nil || run.Status != model.RecipeSampleValidationCanceled ||
+			recipe.Status != model.RecipeDraft {
+			t.Fatalf("late result rewrote canceled Detail Recipe validation: run=%+v Recipe=%+v err=%v/%v",
+				run, recipe, runErr, recipeErr)
+		}
+	})
+
+	t.Run("listing_recipe_validation", func(t *testing.T) {
+		prefix := "scope-cancel-first-listing-recipe"
+		fixture := createRunningListingRecipeValidationFixture(t, ctx, repository, prefix, now.Add(3*time.Hour))
+		operation := cancelSourceScopeAndReconcile(t, ctx, repository, fixture.source.SourceID, prefix,
+			fixture.now.Add(5*time.Second))
+		if _, err := repository.AcceptDiagnosticResult(ctx, fixture.result); !errors.Is(err, ErrResultFenced) {
+			t.Fatalf("late Listing Recipe result crossed scope fence: %v", err)
+		}
+		run, runErr := repository.GetListingRunByWork(ctx, fixture.offer.Work.WorkID)
+		recipe, recipeErr := repository.GetRecipe(ctx, prefix+"-candidate", 2)
+		assertScopeCanceledExecution(t, ctx, db, repository, operation, fixture.offer.Work.WorkID,
+			fixture.offer.Attempt.AttemptID)
+		assertRejectedArtifacts(t, fixture.offer.Attempt.AttemptID, 2)
+		if runErr != nil || recipeErr != nil || run.Status != model.ListingRunCanceled ||
+			recipe.Status != model.RecipeDraft {
+			t.Fatalf("late result rewrote canceled Listing Recipe validation: run=%+v Recipe=%+v err=%v/%v",
+				run, recipe, runErr, recipeErr)
+		}
+	})
+
+	t.Run("discovery_recipe_validation", func(t *testing.T) {
+		prefix := "scope-cancel-first-discovery-recipe"
+		fixture := createRunningDiscoveryRecipeValidationFixture(t, ctx, repository, prefix, now.Add(4*time.Hour))
+		operation := cancelCompanyScopeAndReconcile(t, ctx, repository, fixture.company.CompanyID, prefix,
+			fixture.now.Add(5*time.Second))
+		if _, err := repository.AcceptRecipeSampleValidationResult(ctx, fixture.result); !errors.Is(err, ErrResultFenced) {
+			t.Fatalf("late Discovery Recipe result crossed scope fence: %v", err)
+		}
+		run, runErr := repository.GetRecipeSampleValidationByWork(ctx, fixture.offer.Work.WorkID)
+		recipe, recipeErr := repository.GetRecipe(ctx, prefix+"-candidate", 1)
+		assertScopeCanceledExecution(t, ctx, db, repository, operation, fixture.offer.Work.WorkID,
+			fixture.offer.Attempt.AttemptID)
+		assertRejectedArtifacts(t, fixture.offer.Attempt.AttemptID, 2)
+		if runErr != nil || recipeErr != nil || run.Status != model.RecipeSampleValidationCanceled ||
+			recipe.Status != model.RecipeDraft {
+			t.Fatalf("late result rewrote canceled Discovery Recipe validation: run=%+v Recipe=%+v err=%v/%v",
+				run, recipe, runErr, recipeErr)
+		}
+	})
+
+	t.Run("detail", func(t *testing.T) {
+		prefix := "scope-cancel-first-detail"
+		fixture := createDetailFixture(t, ctx, repository, prefix, now.Add(5*time.Hour))
+		operation := cancelSourceScopeAndReconcile(t, ctx, repository, fixture.source.SourceID, prefix,
+			fixture.now.Add(5*time.Second))
+		result := fixture.result(prefix + "-artifact")
+		if _, err := repository.AcceptDetailResult(ctx, result); !errors.Is(err, ErrResultFenced) {
+			t.Fatalf("late Detail result crossed scope fence: %v", err)
+		}
+		job, jobErr := repository.GetJob(ctx, fixture.job.JobID)
+		assertScopeCanceledExecution(t, ctx, db, repository, operation, fixture.work.WorkID,
+			fixture.attempt.AttemptID)
+		assertRejectedArtifacts(t, fixture.attempt.AttemptID, 1)
+		if jobErr != nil || job.Status != model.JobDetailPending || job.DetailVersion != 0 {
+			t.Fatalf("late result rewrote canceled Detail: Job=%+v err=%v", job, jobErr)
+		}
+	})
+
+	t.Run("diagnostic", func(t *testing.T) {
+		prefix := "scope-cancel-first-diagnostic"
+		fixture := createRunningDiagnosticFixture(t, ctx, repository, prefix, now.Add(6*time.Hour))
+		operation := cancelSourceScopeAndReconcile(t, ctx, repository, fixture.source.SourceID, prefix,
+			fixture.now.Add(5*time.Second))
+		if _, err := repository.AcceptDiagnosticResult(ctx, fixture.result); !errors.Is(err, ErrResultFenced) {
+			t.Fatalf("late diagnostic result crossed scope fence: %v", err)
+		}
+		run, runErr := repository.GetListingRunByWork(ctx, fixture.offer.Work.WorkID)
+		assertScopeCanceledExecution(t, ctx, db, repository, operation, fixture.offer.Work.WorkID,
+			fixture.offer.Attempt.AttemptID)
+		assertRejectedArtifacts(t, fixture.offer.Attempt.AttemptID, 2)
+		if runErr != nil || run.Status != model.ListingRunCanceled {
+			t.Fatalf("late result rewrote canceled diagnostic: run=%+v err=%v", run, runErr)
+		}
+	})
+
+	t.Run("baseline_page", func(t *testing.T) {
+		prefix := "scope-cancel-first-baseline"
+		fixture := createRunningBaselineFixture(t, ctx, repository, prefix, now.Add(7*time.Hour))
+		operation := cancelSourceScopeAndReconcile(t, ctx, repository, fixture.source.SourceID, prefix,
+			fixture.now.Add(5*time.Second))
+		if _, err := repository.AcceptListingPage(ctx, fixture.result); !errors.Is(err, ErrResultFenced) {
+			t.Fatalf("late Baseline page crossed scope fence: %v", err)
+		}
+		assertScopeCanceledExecution(t, ctx, db, repository, operation, fixture.offer.Work.WorkID,
+			fixture.offer.Attempt.AttemptID)
+		assertRejectedArtifacts(t, fixture.offer.Attempt.AttemptID, 1)
+		var state []byte
+		if err := db.QueryRowContext(ctx, `SELECT state_json FROM recruiting_baseline_generations
+WHERE work_id = ?`, fixture.offer.Work.WorkID).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		var baseline model.BaselineGeneration
+		if err := json.Unmarshal(state, &baseline); err != nil || baseline.Status != model.BaselineCanceled {
+			t.Fatalf("late page rewrote canceled Baseline=%+v err=%v", baseline, err)
+		}
+	})
 }
 
 func TestCancelScopeControlWaitsForBoundedUnmaterializedBackfillItems(t *testing.T) {
