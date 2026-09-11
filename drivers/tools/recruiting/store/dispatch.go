@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -14,6 +15,7 @@ import (
 
 	mysql "github.com/go-sql-driver/mysql"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
 const defaultDispatchMaxDeliveryAttempts = 8
@@ -72,6 +74,17 @@ func (r *Repository) EnqueueExecutionDispatch(ctx context.Context, intent Execut
 }
 
 func appendExecutionDispatch(ctx context.Context, tx *sql.Tx, intent ExecutionDispatchIntent, createdAt time.Time) error {
+	if intent.ProfileID != "" {
+		var state []byte
+		if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_profiles WHERE profile_id = ?`, intent.ProfileID).Scan(&state); err != nil {
+			return fmt.Errorf("resolve Profile execution dispatch: %w", err)
+		}
+		var profile model.BrowserProfile
+		if err := json.Unmarshal(state, &profile); err != nil || !executioncontract.ValidToolTarget(profile.DeviceID) {
+			return fmt.Errorf("Profile execution dispatch has no authorized Tool Actor")
+		}
+		intent.TargetActorID = profile.DeviceID
+	}
 	validated, err := NewExecutionDispatchIntent(intent.DispatchID, intent.TargetActorID, intent.Capability, intent.Origin,
 		intent.ProfileID, intent.CauseKind, intent.CauseID, intent.NextAttemptAt)
 	if err != nil || validated != intent || createdAt.IsZero() {
@@ -260,6 +273,54 @@ func appendCapabilityDispatches(ctx context.Context, tx *sql.Tx, targets []Execu
 			}
 			created++
 		}
+	}
+	return created, nil
+}
+
+type profileDispatchDemand struct {
+	Capability string
+	ProfileID  string
+	Count      int
+}
+
+// appendProfileDispatches routes Profile-bound work directly to the Tool
+// Actor recorded by the ready BrowserProfile. One wake per Profile is enough;
+// subsequent capacity wakes remain tied to the accepted Attempt's executor.
+func appendProfileDispatches(ctx context.Context, tx *sql.Tx, demands []profileDispatchDemand,
+	causeID string, at time.Time) (int, error) {
+	sort.Slice(demands, func(i, j int) bool {
+		if demands[i].ProfileID != demands[j].ProfileID {
+			return demands[i].ProfileID < demands[j].ProfileID
+		}
+		return demands[i].Capability < demands[j].Capability
+	})
+	created := 0
+	for _, demand := range demands {
+		if demand.Count <= 0 || strings.TrimSpace(demand.ProfileID) == "" || strings.TrimSpace(demand.Capability) == "" {
+			return created, fmt.Errorf("invalid Profile dispatch demand")
+		}
+		var state []byte
+		if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_profiles WHERE profile_id = ? FOR SHARE`,
+			demand.ProfileID).Scan(&state); err != nil {
+			return created, fmt.Errorf("load Profile dispatch target: %w", err)
+		}
+		var profile model.BrowserProfile
+		if err := json.Unmarshal(state, &profile); err != nil {
+			return created, err
+		}
+		if profile.AuthStatus != model.ProfileReady || !executioncontract.ValidToolTarget(profile.DeviceID) {
+			return created, fmt.Errorf("Profile dispatch requires a ready Profile on an authorized Tool Actor")
+		}
+		dispatchID := "dispatch-" + hex.EncodeToString(dispatchDigest("profile\n" + causeID + "\n" + demand.Capability + "\n" + demand.ProfileID)[:16])
+		intent, err := NewExecutionDispatchIntent(dispatchID, profile.DeviceID, demand.Capability, "", demand.ProfileID,
+			"profile_work_materialized", causeID, at)
+		if err != nil {
+			return created, err
+		}
+		if err := appendExecutionDispatch(ctx, tx, intent, at); err != nil {
+			return created, err
+		}
+		created++
 	}
 	return created, nil
 }

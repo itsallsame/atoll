@@ -107,6 +107,9 @@ SELECT status, window_end_at FROM recruiting_daily_runs WHERE daily_run_id = ?`,
 	}
 
 	result := DueWorkMaterializationResult{Selected: len(selected), QueuedByCapability: map[string]int{}}
+	unprofiled := make(map[string]int)
+	type profileKey struct{ capability, profileID string }
+	profiled := make(map[profileKey]int)
 	for _, item := range selected {
 		occurrence := item.Occurrence
 		if err := occurrence.ListingExecution.Validate(occurrence.SourceID); err != nil {
@@ -146,7 +149,8 @@ SELECT status, window_end_at FROM recruiting_daily_runs WHERE daily_run_id = ?`,
 		placement := WorkPlacement{
 			BusinessKey: "daily-listing|" + occurrence.OccurrenceID, Priority: 100,
 			Capability: occurrence.ListingExecution.Execution.RequiredCapability,
-			Origin:     occurrence.ListingExecution.Origin, NotBefore: dueAtForOccurrence(occurrence), DeadlineAt: &deadline,
+			Origin:     occurrence.ListingExecution.Origin, ProfileID: occurrence.ProfileID,
+			NotBefore: dueAtForOccurrence(occurrence), DeadlineAt: &deadline,
 		}
 		if err := insertWork(ctx, tx, work, placement, businessAt); err != nil {
 			return DueWorkMaterializationResult{}, err
@@ -173,12 +177,28 @@ SELECT status, window_end_at FROM recruiting_daily_runs WHERE daily_run_id = ?`,
 		}
 		result.Queued++
 		result.QueuedByCapability[placement.Capability]++
+		if placement.ProfileID == "" {
+			unprofiled[placement.Capability]++
+		} else {
+			profiled[profileKey{capability: placement.Capability, profileID: placement.ProfileID}]++
+		}
 	}
 	if len(targets) != 0 && result.Queued != 0 {
-		result.DispatchesQueued, err = appendCapabilityDispatches(ctx, tx, targets, result.QueuedByCapability, causeMessageID, businessAt)
+		result.DispatchesQueued, err = appendCapabilityDispatches(ctx, tx, targets, unprofiled, causeMessageID, businessAt)
 		if err != nil {
 			return DueWorkMaterializationResult{}, err
 		}
+	}
+	if len(profiled) != 0 {
+		demands := make([]profileDispatchDemand, 0, len(profiled))
+		for key, count := range profiled {
+			demands = append(demands, profileDispatchDemand{Capability: key.capability, ProfileID: key.profileID, Count: count})
+		}
+		profileDispatches, dispatchErr := appendProfileDispatches(ctx, tx, demands, causeMessageID, businessAt)
+		if dispatchErr != nil {
+			return DueWorkMaterializationResult{}, dispatchErr
+		}
+		result.DispatchesQueued += profileDispatches
 	}
 	if err := tx.Commit(); err != nil {
 		return DueWorkMaterializationResult{}, fmt.Errorf("commit due work materialization: %w", err)

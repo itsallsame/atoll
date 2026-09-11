@@ -221,6 +221,11 @@ ORDER BY created_at, attempt_id LIMIT 501`, oldOffer.Attempt.ExecutorActorID, re
 	if !strings.Contains(explain, "ix_recruiting_attempt_executor") {
 		t.Fatalf("executor attempt recovery missed its bounded index: %s", explain)
 	}
+	if _, err := repository.FailListingExecution(ctx, currentOffer.Attempt.AttemptID,
+		currentOffer.Attempt.ExecutorActorID, currentOffer.Attempt.ExecutorIncarnation,
+		"fixture_cleanup", recoveredAt); err != nil {
+		t.Fatal(err)
+	}
 	for _, sourceID := range []string{"presence-old-source-0", "presence-current-source-0"} {
 		source, err := repository.GetSource(ctx, sourceID)
 		if err != nil {

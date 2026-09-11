@@ -37,8 +37,67 @@ type RecruitmentSource struct {
 	ListingAssignment   *SourceRecipeAssignment   `json:"listing_assignment,omitempty"`
 	DetailAssignment    *SourceRecipeAssignment   `json:"detail_assignment,omitempty"`
 	DiscoveryAssignment *SourceRecipeAssignment   `json:"discovery_assignment,omitempty"`
+	ListingProfileID    string                    `json:"listing_profile_id,omitempty"`
+	DetailProfileID     string                    `json:"detail_profile_id,omitempty"`
 	ContractAssessment  *SourceContractAssessment `json:"contract_assessment,omitempty"`
 	Version             uint64                    `json:"version"`
+}
+
+// BindProfile changes the secret-free Profile identity used by future Work.
+// A Listing environment change invalidates source calibration; a Detail
+// environment change is checked by the Profile's own authenticated canary.
+func (s RecruitmentSource) BindProfile(expected uint64, kind RecipeKind, profileID string) (RecruitmentSource, error) {
+	if err := requireVersion(expected, s.Version); err != nil {
+		return RecruitmentSource{}, err
+	}
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" || s.ControlStatus == ControlArchived || s.ReadinessStatus == SourceRejected {
+		return RecruitmentSource{}, fmt.Errorf("active Source and Profile identity are required")
+	}
+	switch kind {
+	case RecipeListing:
+		if s.ListingProfileID == profileID {
+			return RecruitmentSource{}, fmt.Errorf("Listing Profile is already bound")
+		}
+		s.ListingProfileID = profileID
+		s.ContractAssessment = nil
+		if s.ActiveEndpoint != nil {
+			candidate := *s.ActiveEndpoint
+			s.CandidateEndpoint = &candidate
+		}
+		s.ReadinessStatus = SourceRepairing
+	case RecipeDetail:
+		if s.DetailProfileID == profileID {
+			return RecruitmentSource{}, fmt.Errorf("Detail Profile is already bound")
+		}
+		s.DetailProfileID = profileID
+	default:
+		return RecruitmentSource{}, fmt.Errorf("Profile can only bind listing or detail execution")
+	}
+	s.Version++
+	return s, nil
+}
+
+func (s RecruitmentSource) UnbindProfile(expected uint64, kind RecipeKind) (RecruitmentSource, error) {
+	if err := requireVersion(expected, s.Version); err != nil {
+		return RecruitmentSource{}, err
+	}
+	switch kind {
+	case RecipeListing:
+		if s.ListingProfileID == "" {
+			return RecruitmentSource{}, fmt.Errorf("Listing Profile is not bound")
+		}
+		s.ListingProfileID = ""
+	case RecipeDetail:
+		if s.DetailProfileID == "" {
+			return RecruitmentSource{}, fmt.Errorf("Detail Profile is not bound")
+		}
+		s.DetailProfileID = ""
+	default:
+		return RecruitmentSource{}, fmt.Errorf("Profile can only unbind listing or detail execution")
+	}
+	s.Version++
+	return s, nil
 }
 
 type SourceRecipeAssignment struct {

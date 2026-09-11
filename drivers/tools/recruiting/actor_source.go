@@ -127,7 +127,20 @@ func handleSourceValidate(sys actorbase.Sys, cfg Config, repository *store.Repos
 		failStoreError(sys, msg, err)
 		return
 	}
-	placement, err := standaloneListingPlacement(run, payload.ProfileID, payload.Priority, payload.DeadlineAt, businessAt)
+	profileID := strings.TrimSpace(payload.ProfileID)
+	if run.ListingExecution.Execution.RequiredCapability == "browser.recipe" {
+		if preparation.Source.ListingProfileID == "" {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "browser.recipe Source validation requires a persistent Listing Profile binding")
+			return
+		}
+		if profileID == "" {
+			profileID = preparation.Source.ListingProfileID
+		} else if profileID != preparation.Source.ListingProfileID {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "profile_id conflicts with the persistent Listing Profile binding")
+			return
+		}
+	}
+	placement, err := standaloneListingPlacement(run, profileID, payload.Priority, payload.DeadlineAt, businessAt)
 	if err != nil {
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
 		return

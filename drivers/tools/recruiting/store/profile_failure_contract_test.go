@@ -29,7 +29,7 @@ func TestAuthenticationFailureAtomicallyFencesSharedProfile(t *testing.T) {
 	const prefix = "profile-auth-fence"
 	offerAt, _ := prepareListingExecutionWork(t, ctx, repository, prefix, 3)
 	profile, _ := model.NewBrowserProfile("profile-auth-fence-profile", prefix+".example.com",
-		"authorized-device", "secret://profiles/profile-auth-fence/v1")
+		"tool:profile-auth-executor", "secret://profiles/profile-auth-fence/v1")
 	if err := repository.CreateProfile(ctx, profile, offerAt.Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestBudgetFailureDoesNotChangeProfileAuthenticationState(t *testing.T) {
 	const prefix = "profile-budget-failure"
 	offerAt, _ := prepareListingExecutionWork(t, ctx, repository, prefix, 1)
 	profile, _ := model.NewBrowserProfile("profile-budget-failure-profile", prefix+".example.com",
-		"authorized-device", "secret://profiles/profile-budget-failure/v1")
+		"tool:profile-budget-executor", "secret://profiles/profile-budget-failure/v1")
 	if err := repository.CreateProfile(ctx, profile, offerAt.Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}

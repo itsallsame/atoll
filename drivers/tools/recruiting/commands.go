@@ -45,6 +45,8 @@ const (
 	TypeSourceDiscoveryCandidateReject = "recruiting.source.discovery.candidate.reject"
 	TypeSourceGet                      = "recruiting.source.get"
 	TypeSourceList                     = "recruiting.source.list"
+	TypeSourceProfileBind              = "recruiting.source.profile.bind"
+	TypeSourceProfileUnbind            = "recruiting.source.profile.unbind"
 	TypeBaselineStart                  = "recruiting.baseline.start"
 
 	TypeJobGet           = "recruiting.job.get"

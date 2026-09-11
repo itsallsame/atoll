@@ -54,7 +54,7 @@ LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&baselineState)
 	if err := json.Unmarshal(baselineState, &baseline); err != nil {
 		return BaselineMaterializationResult{}, fmt.Errorf("decode baseline materialization: %w", err)
 	}
-	capability, err := loadDetailCapability(ctx, tx, baseline.SourceID)
+	capability, detailProfileID, err := loadDetailPlacement(ctx, tx, baseline.SourceID)
 	if err != nil {
 		return BaselineMaterializationResult{}, fmt.Errorf("baseline detail assignment: %w", err)
 	}
@@ -107,7 +107,7 @@ ORDER BY stage.source_job_key LIMIT ?`, baseline.SourceID, baseline.Generation, 
 		}
 		result, err := applyListingObservationTx(ctx, tx, ListingIngest{Observation: observation, ObservedAt: at,
 			Origin: origin, Capability: capability, Priority: 200, NotBefore: at,
-			ParentWorkID: observation.OccurrenceID, ForceDetailRefresh: true})
+			ProfileID: detailProfileID, ParentWorkID: observation.OccurrenceID, ForceDetailRefresh: true})
 		if err != nil {
 			return BaselineMaterializationResult{}, fmt.Errorf("materialize baseline observation: %w", err)
 		}
@@ -142,7 +142,14 @@ WHERE source_id = ? AND baseline_generation = ? AND version = ?`, advanced.Mater
 		return BaselineMaterializationResult{}, ErrProgressConflict
 	}
 	causeID := "baseline-page-" + fmt.Sprintf("%x", dispatchDigest(fmt.Sprintf("%s\n%d\n%d", advanced.SourceID, advanced.Generation, advanced.Version))[:16])
-	dispatches, err := appendCapabilityDispatches(ctx, tx, targets, map[string]int{capability: len(staged)}, causeID, at.UTC())
+	dispatches := 0
+	if detailProfileID == "" {
+		dispatches, err = appendCapabilityDispatches(ctx, tx, targets, map[string]int{capability: len(staged)}, causeID, at.UTC())
+	} else {
+		dispatches, err = appendProfileDispatches(ctx, tx, []profileDispatchDemand{{
+			Capability: capability, ProfileID: detailProfileID, Count: len(staged),
+		}}, causeID, at.UTC())
+	}
 	if err != nil {
 		return BaselineMaterializationResult{}, fmt.Errorf("dispatch materialized baseline detail work: %w", err)
 	}

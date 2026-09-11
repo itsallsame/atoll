@@ -322,6 +322,25 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	if err != nil {
 		return ExecutionOffer{}, err
 	}
+	// A directed wake is only a scheduling hint. Re-authorize every ordinary
+	// Profile-backed claim inside the transaction so an executor that guesses
+	// a Profile ID cannot bypass its device binding by calling offer directly.
+	if placement.ProfileID != "" && work.Purpose != "profile_repair" && work.Purpose != "profile_verify" {
+		var profileState []byte
+		if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_profiles WHERE profile_id = ? FOR SHARE`,
+			placement.ProfileID).Scan(&profileState); err != nil {
+			return ExecutionOffer{}, fmt.Errorf("authorize Profile execution device: %w", err)
+		}
+		var profile model.BrowserProfile
+		if err := json.Unmarshal(profileState, &profile); err != nil {
+			return ExecutionOffer{}, err
+		}
+		if profile.AuthStatus != model.ProfileReady || fence.ProfileID != profile.ProfileID ||
+			fence.ProfileVersion != profile.Version ||
+			!executioncontract.TargetMatchesAuthenticatedActor(profile.DeviceID, request.ExecutorActorID) {
+			return ExecutionOffer{}, fmt.Errorf("Profile execution is not authorized for this device")
+		}
+	}
 	if work.Purpose == "profile_repair" || work.Purpose == "profile_verify" {
 		var profileState []byte
 		if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_profiles WHERE profile_id = ?`,

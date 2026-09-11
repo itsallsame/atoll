@@ -36,6 +36,8 @@ func TestCompanyMergeLogicalMappingContract(t *testing.T) {
 	aliasA = readyMergeCompany(t, ctx, repository, aliasA, now)
 	canonicalDailySource := persistReadyDailySource(t, ctx, repository, canonical, "merge-canonical-daily", now)
 	aliasDailySource := persistReadyDailySource(t, ctx, repository, aliasA, "merge-alias-daily", now)
+	defer pauseExecutionSource(t, ctx, repository, canonicalDailySource.SourceID, now.Add(10*time.Minute))
+	defer pauseExecutionSource(t, ctx, repository, aliasDailySource.SourceID, now.Add(10*time.Minute))
 	source, err := model.NewRecruitmentSource("merge-alias-source", aliasA.CompanyID, "https://jobs.merge.example/a", "all", 1)
 	if err != nil || repository.CreateSource(ctx, source, now) != nil {
 		t.Fatalf("create alias source=%+v err=%v", source, err)

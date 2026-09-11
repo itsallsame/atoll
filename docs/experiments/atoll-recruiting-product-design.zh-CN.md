@@ -700,6 +700,10 @@ Resource 中大对象或批量结果的稳定引用，包括页面、截图、�
 
 持久 Browser Profile 是安全 Resource，不是聊天凭证。至少保存 `profile_id`、站点/安全域、授权设备、版本、认证状态和最近验证时间；Cookie、密码和 OTP 不进入 Message、普通 Artifact 或 AI 上下文。控制面接受绑定当前 Profile 版本的 `auth_expired` 或 `captcha` 失败时，必须在保存失败证据、关闭 Attempt、释放预算、阻塞 Work 和创建/加入 RepairIncident 的同一事务内，把 Profile 从 `ready` 推进到 `repairing` 并增加版本；Secret 引用和设备绑定不变。此后新的 Work 不得用该 Profile 领取，已在途的旧 Attempt 可以保存失败证据并加入同一修复，但不得重复增加 Profile 版本，也不得再次熔断已修复或禁用的 Profile。Profile 故障按失败版本和稳定签名单飞，共享该 Profile 的 Work 只产生一个对应修复事项。
 
+Profile 与 Source 的关系必须是独立、可版本化的 `SourceProfileBinding`，Listing 与 Detail 分别绑定，不能把一次人工命令中的临时 `profile_id` 当作长期配置。绑定只保存 `source_id + recipe_kind + profile_id + effective_at + version`，不复制 Secret；当前投影与不可变历史和 Source 版本在一个事务提交。Listing Profile 改变了列表观测环境，必须把 Source 置为 `repairing`、清除旧四维校准并重新验证；Detail Profile 的可用性由该 Profile 自身的站点 canary 保证，不因此伪造 Listing 重校准。仍使用 `browser.recipe` 的 Assignment 不允许解绑；应先切换到不需要 Profile 的已验证 Recipe，再清除绑定。
+
+每日截点把当时有效的 Listing Profile ID 冻结进 `SourceOccurrence`，随后创建的 Work 继承该 ID，Attempt 再冻结 Profile version。Profile Work 的 dispatch 只能投递到 Profile 的授权 `device_id`；Offer 事务必须再次验证 authenticated Executor 与该设备匹配，不能把定向 wake 当作权限。列表页产生详情 Work 时，按 Source 的独立 Detail Profile 赋值并在同一事务唤醒其设备，所以列表和详情可以安全地运行在不同设备。Source 重新校准也默认读取持久 Listing 绑定，不要求用户每天或每次修复重复输入 Profile。任何 Profile 非 `ready`、安全域与 Recipe scope 不同、设备身份非法或绑定/Source 投影不一致的情况都 fail closed，不进入当日日程或执行领取。
+
 ### 9.6 领域状态机
 
 状态机是确定的设计组成，不依赖 Staircase，也不会因为采用 Atoll 而消失。第一版至少定义：

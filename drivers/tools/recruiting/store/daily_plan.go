@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	mysql "github.com/go-sql-driver/mysql"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
@@ -116,6 +118,12 @@ INSERT INTO recruiting_source_occurrences(
 		if err != nil {
 			return DailyPlanResult{}, err
 		}
+		if snapshot.Binding != nil {
+			occurrence, err = occurrence.WithProfile(snapshot.Binding.ProfileID)
+			if err != nil {
+				return DailyPlanResult{}, err
+			}
+		}
 		occurrenceState, err := json.Marshal(occurrence)
 		if err != nil {
 			return DailyPlanResult{}, fmt.Errorf("encode cutoff occurrence: %w", err)
@@ -152,20 +160,28 @@ type eligibleSourceSnapshot struct {
 	Company model.Company
 	Source  model.RecruitmentSource
 	Recipe  model.Recipe
+	Binding *model.SourceProfileBinding
 }
 
 func readEligibleSourceSnapshots(ctx context.Context, tx *sql.Tx) ([]eligibleSourceSnapshot, error) {
 	rows, err := tx.QueryContext(ctx, `
-SELECT c.state_json, s.state_json, a.state_json, r.state_json
+SELECT c.state_json, s.state_json, a.state_json, r.state_json, b.state_json, p.state_json
 FROM recruiting_sources s
 JOIN recruiting_companies c ON c.company_id = s.company_id
 JOIN recruiting_source_assignments a
   ON a.source_id = s.source_id AND a.recipe_kind = 'listing'
 JOIN recruiting_recipes r
   ON r.recipe_id = a.recipe_id AND r.recipe_version = a.recipe_version AND r.status = 'active'
+LEFT JOIN recruiting_source_profile_bindings b
+  ON b.source_id = s.source_id AND b.recipe_kind = 'listing' AND b.profile_id IS NOT NULL
+LEFT JOIN recruiting_profiles p ON p.profile_id = b.profile_id
 WHERE c.onboarding_status = 'ready' AND c.control_status = 'active'
   AND s.readiness_status = 'ready' AND s.control_status = 'active'
   AND s.health_status <> 'circuit_open'
+  AND ((JSON_UNQUOTE(JSON_EXTRACT(r.state_json, '$.execution.required_capability')) = 'browser.recipe'
+        AND b.profile_id IS NOT NULL AND p.auth_status = 'ready')
+       OR (JSON_UNQUOTE(JSON_EXTRACT(r.state_json, '$.execution.required_capability')) <> 'browser.recipe'
+        AND b.profile_id IS NULL))
   AND NOT EXISTS (
     SELECT 1 FROM recruiting_company_aliases ca
     WHERE ca.alias_company_id = c.company_id AND ca.active_alias_key IS NOT NULL
@@ -178,7 +194,8 @@ ORDER BY s.source_id`)
 	var result []eligibleSourceSnapshot
 	for rows.Next() {
 		var companyState, sourceState, assignmentState, recipeState []byte
-		if err := rows.Scan(&companyState, &sourceState, &assignmentState, &recipeState); err != nil {
+		var bindingState, profileState sql.NullString
+		if err := rows.Scan(&companyState, &sourceState, &assignmentState, &recipeState, &bindingState, &profileState); err != nil {
 			return nil, fmt.Errorf("scan cutoff source roster: %w", err)
 		}
 		var company model.Company
@@ -206,7 +223,22 @@ ORDER BY s.source_id`)
 			recipe.ContractHash != assignment.ContractHash {
 			return nil, fmt.Errorf("eligible source %s listing assignment invariant failed", source.SourceID)
 		}
-		result = append(result, eligibleSourceSnapshot{Company: company, Source: source, Recipe: recipe})
+		var binding *model.SourceProfileBinding
+		if recipe.Execution.RequiredCapability == "browser.recipe" {
+			var value model.SourceProfileBinding
+			var profile model.BrowserProfile
+			if !bindingState.Valid || !profileState.Valid || json.Unmarshal([]byte(bindingState.String), &value) != nil ||
+				json.Unmarshal([]byte(profileState.String), &profile) != nil || value.Validate() != nil ||
+				value.ProfileID == "" || value.ProfileID != source.ListingProfileID || profile.ProfileID != value.ProfileID ||
+				profile.AuthStatus != model.ProfileReady || !strings.EqualFold(profile.SecurityDomain, recipe.Scope) ||
+				!executioncontract.ValidToolTarget(profile.DeviceID) {
+				return nil, fmt.Errorf("eligible source %s Profile binding invariant failed", source.SourceID)
+			}
+			binding = &value
+		} else if source.ListingProfileID != "" || bindingState.Valid {
+			return nil, fmt.Errorf("eligible source %s has a stale Listing Profile binding", source.SourceID)
+		}
+		result = append(result, eligibleSourceSnapshot{Company: company, Source: source, Recipe: recipe, Binding: binding})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate cutoff source roster: %w", err)

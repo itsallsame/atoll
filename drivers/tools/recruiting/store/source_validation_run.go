@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
@@ -156,10 +158,35 @@ func (r *Repository) ApplySourceValidationCommand(ctx context.Context, expectedS
 	if err != nil {
 		return CommandResult{}, err
 	}
+	expectedProfileID := ""
+	if run.ListingExecution.Execution.RequiredCapability == "browser.recipe" {
+		expectedProfileID = current.Source.ListingProfileID
+		if expectedProfileID == "" || run.ListingExecution.Execution.Transport != model.RecipeTransportBrowser {
+			return CommandResult{}, fmt.Errorf("browser.recipe Source validation requires a persistent Listing Profile binding")
+		}
+		binding, bindingErr := getSourceProfileBinding(ctx, tx, current.Source.SourceID, model.RecipeListing, true)
+		if bindingErr != nil {
+			return CommandResult{}, fmt.Errorf("lock Source validation Profile binding: %w", bindingErr)
+		}
+		if binding.ProfileID != expectedProfileID {
+			return CommandResult{}, fmt.Errorf("Source validation Profile binding does not match Source projection")
+		}
+		var profileState []byte
+		if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_profiles WHERE profile_id = ? FOR SHARE`,
+			expectedProfileID).Scan(&profileState); err != nil {
+			return CommandResult{}, fmt.Errorf("lock Source validation Profile: %w", err)
+		}
+		var profile model.BrowserProfile
+		if err := json.Unmarshal(profileState, &profile); err != nil || profile.AuthStatus != model.ProfileReady ||
+			!strings.EqualFold(profile.SecurityDomain, current.Recipe.Scope) ||
+			!executioncontract.ValidToolTarget(profile.DeviceID) {
+			return CommandResult{}, fmt.Errorf("Source validation Profile is not ready on the Recipe security domain and authorized device")
+		}
+	}
 	if !reflect.DeepEqual(expectedSource, nextSource) || !reflect.DeepEqual(expectedRun, run) ||
 		placement.BusinessKey != "source-validation|"+run.ListingRunID ||
 		placement.Capability != run.ListingExecution.Execution.RequiredCapability || placement.Origin != run.ListingExecution.Origin ||
-		!placement.NotBefore.Equal(businessAt.UTC()) {
+		placement.ProfileID != expectedProfileID || !placement.NotBefore.Equal(businessAt.UTC()) {
 		return CommandResult{}, fmt.Errorf("source validation input changed before commit")
 	}
 	if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {

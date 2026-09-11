@@ -28,10 +28,20 @@ type SourceOccurrence struct {
 	SourceVersion         uint64                   `json:"source_version"`
 	DueAt                 string                   `json:"due_at"`
 	ListingExecution      ListingExecutionSnapshot `json:"listing_execution"`
+	ProfileID             string                   `json:"profile_id,omitempty"`
 	WorkID                string                   `json:"work_id,omitempty"`
 	Status                OccurrenceStatus         `json:"occurrence_status"`
 	Outcome               string                   `json:"outcome,omitempty"`
 	Version               uint64                   `json:"version"`
+}
+
+func (o SourceOccurrence) WithProfile(profileID string) (SourceOccurrence, error) {
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" || o.Version == 0 || o.Status != OccurrencePlanned || o.WorkID != "" {
+		return SourceOccurrence{}, fmt.Errorf("only a new planned occurrence can freeze a Profile identity")
+	}
+	o.ProfileID = profileID
+	return o, nil
 }
 
 type ListingExecutionSnapshot struct {

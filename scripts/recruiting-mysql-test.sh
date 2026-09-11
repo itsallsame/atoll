@@ -69,6 +69,8 @@ for iteration in $(seq 1 "${iterations}"); do
 SET FOREIGN_KEY_CHECKS = 0;
 DROP TABLE IF EXISTS
   recruiting_execution_dispatch_outbox,
+  recruiting_source_profile_binding_history,
+  recruiting_source_profile_bindings,
   recruiting_repair_affected_works,
   recruiting_event_outbox,
   recruiting_command_receipts,

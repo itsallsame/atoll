@@ -235,9 +235,9 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 	if progress.PageSequence != input.PageSequence {
 		return ListingPageOutcome{}, nil, ErrProgressConflict
 	}
-	capability := ""
+	capability, detailProfileID := "", ""
 	if execution.Baseline == nil {
-		capability, err = loadDetailCapability(ctx, tx, execution.sourceID())
+		capability, detailProfileID, err = loadDetailPlacement(ctx, tx, execution.sourceID())
 		if err != nil && len(input.Observations) != 0 {
 			return ListingPageOutcome{}, err, nil
 		}
@@ -246,6 +246,7 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 		return ListingPageOutcome{}, nil, err
 	}
 	items := make([]ListingIngestResult, 0, len(input.Observations))
+	profileDetailWorks := 0
 	for _, observation := range input.Observations {
 		validatedObservation, err := model.NewListingObservation(observation)
 		if err != nil {
@@ -276,11 +277,14 @@ ON DUPLICATE KEY UPDATE attempt_id = VALUES(attempt_id), observation_id = VALUES
 			}
 			result, err := applyListingObservationTx(ctx, tx, ListingIngest{Observation: observation,
 				ObservedAt: input.ObservedAt, Origin: origin, Capability: capability, Priority: 200,
-				NotBefore: input.ObservedAt, ParentWorkID: work.WorkID})
+				ProfileID: detailProfileID, NotBefore: input.ObservedAt, ParentWorkID: work.WorkID})
 			if err != nil {
 				return ListingPageOutcome{}, nil, err
 			}
 			items = append(items, result)
+			if result.DetailWork != nil && detailProfileID != "" {
+				profileDetailWorks++
+			}
 		}
 	}
 	state, _ := json.Marshal(progress)
@@ -301,6 +305,14 @@ INSERT INTO recruiting_listing_page_progress(
 	}
 	if err := reserveResultReceipt(ctx, tx, input.CommandID, executioncontract.TypeResult, input.RequestHash, outcome, input.ObservedAt); err != nil {
 		return ListingPageOutcome{}, nil, err
+	}
+	if profileDetailWorks != 0 {
+		causeID := "listing-page-" + fmt.Sprintf("%x", dispatchDigest(fmt.Sprintf("%s\n%d", attempt.AttemptID, input.PageSequence))[:16])
+		if _, err := appendProfileDispatches(ctx, tx, []profileDispatchDemand{{
+			Capability: capability, ProfileID: detailProfileID, Count: profileDetailWorks,
+		}}, causeID, input.ObservedAt); err != nil {
+			return ListingPageOutcome{}, nil, fmt.Errorf("dispatch Profile detail work: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return ListingPageOutcome{}, nil, err
@@ -709,7 +721,7 @@ FROM recruiting_artifacts WHERE artifact_id = ?`, artifactID).Scan(&artifact.Kin
 	return artifact, rejected, true, nil
 }
 
-func loadDetailCapability(ctx context.Context, tx *sql.Tx, sourceID string) (string, error) {
+func loadDetailPlacement(ctx context.Context, tx *sql.Tx, sourceID string) (string, string, error) {
 	var sourceState, recipeState []byte
 	err := tx.QueryRowContext(ctx, `
 SELECT s.state_json, r.state_json
@@ -718,22 +730,28 @@ JOIN recruiting_source_assignments a ON a.source_id = s.source_id AND a.recipe_k
 JOIN recruiting_recipes r ON r.recipe_id = a.recipe_id AND r.recipe_version = a.recipe_version
 WHERE s.source_id = ?`, sourceID).Scan(&sourceState, &recipeState)
 	if err != nil {
-		return "", fmt.Errorf("load detail execution placement: %w", err)
+		return "", "", fmt.Errorf("load detail execution placement: %w", err)
 	}
 	var source model.RecruitmentSource
 	var recipe model.Recipe
 	if err := json.Unmarshal(sourceState, &source); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := json.Unmarshal(recipeState, &recipe); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if source.DetailAssignment == nil || recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDetail ||
 		recipe.RecipeID != source.DetailAssignment.RecipeID || recipe.Version != source.DetailAssignment.RecipeVersion ||
 		recipe.ContractHash != source.DetailAssignment.ContractHash {
-		return "", fmt.Errorf("source has no active matching detail recipe")
+		return "", "", fmt.Errorf("source has no active matching detail recipe")
 	}
-	return recipe.Execution.RequiredCapability, nil
+	if recipe.Execution.RequiredCapability == "browser.recipe" && source.DetailProfileID == "" {
+		return "", "", fmt.Errorf("browser.recipe detail Assignment has no Source Profile binding")
+	}
+	if recipe.Execution.RequiredCapability != "browser.recipe" && source.DetailProfileID != "" {
+		return "", "", fmt.Errorf("non-Profile detail Assignment has a stale Source Profile binding")
+	}
+	return recipe.Execution.RequiredCapability, source.DetailProfileID, nil
 }
 
 func canonicalOrigin(rawURL string) (string, error) {

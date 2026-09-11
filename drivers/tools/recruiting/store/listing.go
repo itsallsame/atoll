@@ -21,6 +21,7 @@ type ListingIngest struct {
 	DetailWorkID string
 	Origin       string
 	Capability   string
+	ProfileID    string
 	Priority     int
 	NotBefore    time.Time
 	ParentWorkID string
@@ -158,9 +159,9 @@ INSERT INTO recruiting_works(
   work_id, parent_work_id, business_key, target_type, target_id, purpose,
   trigger_kind, status, resolution, priority, capability, origin, profile_id,
   not_before, deadline_at, acceptance_version, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
 			work.WorkID, nullableString(work.ParentWorkID), businessKey, work.TargetType, work.TargetID, work.Purpose, work.Trigger, work.Status,
-			input.Priority, input.Capability, input.Origin, input.NotBefore.UTC(), work.AcceptanceVersion,
+			input.Priority, input.Capability, input.Origin, nullableString(input.ProfileID), input.NotBefore.UTC(), work.AcceptanceVersion,
 			work.Version, state, input.ObservedAt.UTC(), input.ObservedAt.UTC())
 		if err != nil {
 			return ListingIngestResult{}, fmt.Errorf("create detail work intent: %w", err)

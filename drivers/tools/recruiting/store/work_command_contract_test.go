@@ -49,6 +49,11 @@ func TestWorkCommandsKeepReceiptStateOutboxAndRetryCausalityAtomic(t *testing.T)
 		record.Placement.BusinessKey != placement.BusinessKey || record.Placement.Origin != placement.Origin {
 		t.Fatalf("stored work record = %+v %v", record, err)
 	}
+	correctedProfile, _ := model.NewBrowserProfile("profile-corrected", "jobs.example.com",
+		"tool:executor-http-a", "secret://profiles/profile-corrected/v1")
+	if err := repository.CreateProfile(ctx, correctedProfile, now); err != nil {
+		t.Fatal(err)
+	}
 	corrected, _ := work.CorrectPlacement(work.Version)
 	correctedPlacement := placement
 	correctedPlacement.Priority, correctedPlacement.ProfileID = 900, "profile-corrected"
@@ -140,7 +145,7 @@ func TestWorkCommandsKeepReceiptStateOutboxAndRetryCausalityAtomic(t *testing.T)
 	retryPlacement.NotBefore = now.Add(4 * time.Second)
 	retryReceipt, _ := model.NewCommandReceipt("work-retry-command", "recruiting.work.retry", "sha256:retry-work", json.RawMessage(`{"work_id":"command-work-retry"}`))
 	retryEvent, _ := model.NewEventIntent("work-retry-event", "work.retry_created", "work", retry.WorkID, 1, now.Add(4*time.Second).Format(time.RFC3339), retryReceipt.CommandID, json.RawMessage(`{}`))
-	retryDispatch, _ := NewExecutionDispatchIntent("dispatch-work-retry-command", "tool:executor-http-b", retryPlacement.Capability,
+	retryDispatch, _ := NewExecutionDispatchIntent("dispatch-work-retry-command", correctedProfile.DeviceID, retryPlacement.Capability,
 		retryPlacement.Origin, retryPlacement.ProfileID, "work_retry_created", retryReceipt.CommandID, retryPlacement.NotBefore)
 	retryResult, err := repository.ApplyRetryWorkCommandWithDispatch(ctx, canceled.Version, canceled.WorkID, retry, retryPlacement,
 		retryReceipt, retryEvent, &retryDispatch, now.Add(4*time.Second))
