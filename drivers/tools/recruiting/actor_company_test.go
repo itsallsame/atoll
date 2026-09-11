@@ -25,7 +25,8 @@ func TestCompanyCommandHashIsStableAcrossAuthenticatedSessions(t *testing.T) {
 func TestCompanyEventVocabularyIsPastTense(t *testing.T) {
 	for word, expected := range map[string]string{
 		TypeCompanyAdd: "company.added", TypeCompanyUpdate: "company.updated",
-		TypeCompanyPause: "company.paused", TypeCompanyResume: "company.resumed",
+		TypeCompanyWebsiteRollback: "company.website_rolled_back",
+		TypeCompanyPause:           "company.paused", TypeCompanyResume: "company.resumed",
 		TypeCompanyArchive: "company.archived", TypeCompanyRestore: "company.restored",
 	} {
 		if actual := companyEventKind(word); actual != expected {

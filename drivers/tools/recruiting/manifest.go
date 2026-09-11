@@ -27,6 +27,7 @@ func manifest() introspect.Manifest {
 			TypeCompanyImportItemResolve:       {Description: "retry or explicitly skip one waiting company import item and reaggregate its parent"},
 			TypeCompanyAdd:                     {Description: "add a recruiting company with an idempotent command"},
 			TypeCompanyUpdate:                  {Description: "update company identity fields with version fencing"},
+			TypeCompanyWebsiteRollback:         {Description: "restore the immutable previous website of the current Company website revision and append a new review revision"},
 			TypeCompanyPause:                   {Description: "pause a company using an explicit drain policy"},
 			TypeCompanyResume:                  {Description: "resume a paused company"},
 			TypeCompanyArchive:                 {Description: "archive a company without deleting history"},

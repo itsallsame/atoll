@@ -25,6 +25,7 @@ type SourceDiscovery struct {
 	CompanyID         string                `json:"company_id"`
 	Generation        uint64                `json:"generation"`
 	CompanyVersion    uint64                `json:"company_version"`
+	WebsiteRevisionID string                `json:"website_revision_id,omitempty"`
 	SeedURL           string                `json:"seed_url"`
 	RecipeID          string                `json:"recipe_id"`
 	RecipeVersion     uint64                `json:"recipe_version"`
@@ -35,6 +36,23 @@ type SourceDiscovery struct {
 	NextChunkSequence uint64                `json:"next_chunk_sequence"`
 	Status            SourceDiscoveryStatus `json:"status"`
 	Version           uint64                `json:"version"`
+}
+
+// BindWebsiteRevision records why a new non-daily discovery generation exists.
+// The Repository additionally proves that this revision is still the Company's
+// current website head in the same transaction that creates the discovery.
+func (d SourceDiscovery) BindWebsiteRevision(company Company, revision CompanyWebsiteRevision) (SourceDiscovery, error) {
+	if d.Version != 1 || d.Status != SourceDiscoveryQueued || d.WebsiteRevisionID != "" ||
+		company.CompanyID != d.CompanyID || company.Version != d.CompanyVersion || company.Website != d.SeedURL ||
+		revision.CompanyID != company.CompanyID || revision.Website != company.Website ||
+		revision.ConfigurationVersion != company.ConfigurationVersion {
+		return SourceDiscovery{}, fmt.Errorf("source discovery website revision must match its frozen Company website")
+	}
+	if err := revision.Validate(); err != nil {
+		return SourceDiscovery{}, err
+	}
+	d.WebsiteRevisionID = revision.RevisionID
+	return d, nil
 }
 
 type SourceCandidateDisposition string

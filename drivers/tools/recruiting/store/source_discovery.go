@@ -35,7 +35,7 @@ func (r *Repository) CreateSourceDiscovery(ctx context.Context, discovery model.
 		return fmt.Errorf("begin source discovery: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := lockSourceDiscoveryDependencies(ctx, tx, discovery, placement); err != nil {
+	if err := lockSourceDiscoveryDependencies(ctx, tx, discovery, work, placement); err != nil {
 		return err
 	}
 	if err := insertWork(ctx, tx, work, placement, businessAt); err != nil {
@@ -131,7 +131,7 @@ WHERE company_id = ? AND version = ?`, nullableString(company.Website), company.
 	} else if companyEvent != nil {
 		return CommandResult{}, fmt.Errorf("unchanged discovery Company cannot emit a transition event")
 	}
-	if err := lockSourceDiscoveryDependencies(ctx, tx, discovery, placement); err != nil {
+	if err := lockSourceDiscoveryDependencies(ctx, tx, discovery, work, placement); err != nil {
 		return CommandResult{}, err
 	}
 	if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {
@@ -171,7 +171,8 @@ WHERE company_id = ? AND version = ?`, nullableString(company.Website), company.
 func validateNewSourceDiscovery(discovery model.SourceDiscovery, work model.Work, placement WorkPlacement, businessAt time.Time) error {
 	if discovery.DiscoveryID == "" || discovery.Version != 1 || discovery.Status != model.SourceDiscoveryQueued ||
 		discovery.WorkID != work.WorkID || work.TargetType != "company" || work.TargetID != discovery.CompanyID ||
-		work.Purpose != "source_discovery" || work.Status != model.WorkOpen || work.Version != 1 || businessAt.IsZero() {
+		work.Purpose != "source_discovery" || work.Status != model.WorkOpen || work.Version != 1 || businessAt.IsZero() ||
+		(discovery.WebsiteRevisionID == "") != (work.CauseWorkID == "") {
 		return fmt.Errorf("source discovery requires matching queued discovery and open Work")
 	}
 	origin, err := canonicalOrigin(discovery.SeedURL)
@@ -181,7 +182,8 @@ func validateNewSourceDiscovery(discovery model.SourceDiscovery, work model.Work
 	return nil
 }
 
-func lockSourceDiscoveryDependencies(ctx context.Context, tx *sql.Tx, discovery model.SourceDiscovery, placement WorkPlacement) error {
+func lockSourceDiscoveryDependencies(ctx context.Context, tx *sql.Tx, discovery model.SourceDiscovery, work model.Work,
+	placement WorkPlacement) error {
 	var companyState []byte
 	if err := tx.QueryRowContext(ctx, "SELECT state_json FROM recruiting_companies WHERE company_id = ? FOR UPDATE", discovery.CompanyID).Scan(&companyState); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -196,6 +198,29 @@ func lockSourceDiscoveryDependencies(ctx context.Context, tx *sql.Tx, discovery 
 	if company.Version != discovery.CompanyVersion ||
 		company.ControlStatus == model.ControlArchived || company.Website != discovery.SeedURL {
 		return fmt.Errorf("source discovery is fenced by changed or unavailable Company")
+	}
+	var websiteRevisionID string
+	headErr := tx.QueryRowContext(ctx, `SELECT revision_id FROM recruiting_company_website_heads
+WHERE company_id = ? FOR UPDATE`, discovery.CompanyID).Scan(&websiteRevisionID)
+	if headErr != nil && !errors.Is(headErr, sql.ErrNoRows) {
+		return fmt.Errorf("lock source discovery website head: %w", headErr)
+	}
+	if errors.Is(headErr, sql.ErrNoRows) {
+		if discovery.WebsiteRevisionID != "" || work.CauseWorkID != "" {
+			return fmt.Errorf("source discovery cites a Company without website revision history")
+		}
+	} else {
+		if websiteRevisionID != discovery.WebsiteRevisionID {
+			return fmt.Errorf("%w: source discovery cites a superseded revision", ErrWebsiteRevisionConflict)
+		}
+		revision, err := getCompanyWebsiteRevisionWith(ctx, tx, websiteRevisionID, true)
+		if err != nil {
+			return err
+		}
+		if revision.CompanyID != company.CompanyID || revision.Website != company.Website ||
+			revision.ConfigurationVersion != company.ConfigurationVersion || revision.ReviewWorkID != work.CauseWorkID {
+			return fmt.Errorf("%w: source discovery does not descend from the current website review", ErrWebsiteRevisionConflict)
+		}
 	}
 	var recipeState []byte
 	if err := tx.QueryRowContext(ctx, `
@@ -228,11 +253,11 @@ func insertSourceDiscovery(ctx context.Context, executor interface {
 	state, _ := json.Marshal(discovery)
 	_, err := executor.ExecContext(ctx, `
 INSERT INTO recruiting_source_discoveries(
-  discovery_id, work_id, company_id, discovery_generation, company_version,
+  discovery_id, work_id, company_id, discovery_generation, company_version, website_revision_id,
   seed_url, recipe_id, recipe_version, discovery_status, candidate_count,
   next_chunk_sequence, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, discovery.DiscoveryID, discovery.WorkID,
-		discovery.CompanyID, discovery.Generation, discovery.CompanyVersion, discovery.SeedURL, discovery.RecipeID,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, discovery.DiscoveryID, discovery.WorkID,
+		discovery.CompanyID, discovery.Generation, discovery.CompanyVersion, nullableString(discovery.WebsiteRevisionID), discovery.SeedURL, discovery.RecipeID,
 		discovery.RecipeVersion, discovery.Status, discovery.CandidateCount, discovery.NextChunkSequence,
 		discovery.Version, state, at.UTC(), at.UTC())
 	if err == nil {

@@ -172,7 +172,7 @@ func run(sys actorbase.Sys, cfg Config) error {
 		case TypeCompanyImport, TypeCompanyImportGet, TypeCompanyImportItems, TypeCompanyImportConfirm, TypeCompanyImportCancel,
 			TypeCompanyImportItemResolve:
 			handleCompanyImport(sys, cfg, repository, msg)
-		case TypeCompanyAdd, TypeCompanyUpdate, TypeCompanyPause, TypeCompanyResume, TypeCompanyArchive, TypeCompanyRestore,
+		case TypeCompanyAdd, TypeCompanyUpdate, TypeCompanyWebsiteRollback, TypeCompanyPause, TypeCompanyResume, TypeCompanyArchive, TypeCompanyRestore,
 			TypeCompanyGet, TypeCompanyList:
 			handleCompanyMessage(sys, repository, msg)
 		case TypeSourceAdd, TypeSourceUpdate, TypeSourceValidate, TypeSourceValidationPublish, TypeSourceValidationReject, TypeSourcePause, TypeSourceResume, TypeSourceArchive, TypeSourceRestore:

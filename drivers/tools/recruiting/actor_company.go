@@ -28,6 +28,11 @@ type companyUpdatePayload struct {
 	Website *string `json:"website,omitempty"`
 }
 
+type companyWebsiteRollbackPayload struct {
+	MutationCommand
+	RevisionID string `json:"revision_id"`
+}
+
 type companyPausePayload struct {
 	MutationCommand
 	PauseMode model.PauseMode `json:"pause_mode"`
@@ -38,12 +43,14 @@ type companyGetPayload struct {
 }
 
 type companyCommandResponse struct {
-	ContractVersion         string        `json:"contract_version"`
-	CorrelationID           string        `json:"correlation_id"`
-	RequestedBy             string        `json:"requested_by"`
-	Company                 model.Company `json:"company"`
-	NextAction              string        `json:"next_action"`
-	ScopeControlOperationID string        `json:"scope_control_operation_id,omitempty"`
+	ContractVersion         string                        `json:"contract_version"`
+	CorrelationID           string                        `json:"correlation_id"`
+	RequestedBy             string                        `json:"requested_by"`
+	Company                 model.Company                 `json:"company"`
+	NextAction              string                        `json:"next_action"`
+	ScopeControlOperationID string                        `json:"scope_control_operation_id,omitempty"`
+	WebsiteRevision         *model.CompanyWebsiteRevision `json:"website_revision,omitempty"`
+	ReviewWork              *model.Work                   `json:"review_work,omitempty"`
 }
 
 func handleCompanyMessage(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
@@ -74,6 +81,13 @@ func handleCompanyMessage(sys actorbase.Sys, repository *store.Repository, msg a
 			return
 		}
 		response := map[string]any{"contract_version": ContractVersion, "company": company, "is_alias": isAlias}
+		websiteRevision, headVersion, revisionErr := repository.GetCurrentCompanyWebsiteRevision(msg.Ctx(), company.CompanyID)
+		if revisionErr == nil {
+			response["website_revision"], response["website_head_version"] = websiteRevision, headVersion
+		} else if !errors.Is(revisionErr, store.ErrNotFound) {
+			failStoreError(sys, msg, revisionErr)
+			return
+		}
 		if isAlias {
 			response["canonical_company_id"], response["alias_mapping"] = alias.CanonicalCompanyID, alias
 		}
@@ -130,6 +144,7 @@ func handleCompanyAdd(sys actorbase.Sys, repository *store.Repository, msg actor
 func handleCompanyMutation(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
 	var command MutationCommand
 	var update companyUpdatePayload
+	var rollback companyWebsiteRollbackPayload
 	var pause companyPausePayload
 	switch msg.Type {
 	case TypeCompanyUpdate:
@@ -137,6 +152,11 @@ func handleCompanyMutation(sys actorbase.Sys, repository *store.Repository, msg 
 			return
 		}
 		command = update.MutationCommand
+	case TypeCompanyWebsiteRollback:
+		if !decode(sys, msg, &rollback) {
+			return
+		}
+		command = rollback.MutationCommand
 	case TypeCompanyPause:
 		if !decode(sys, msg, &pause) {
 			return
@@ -168,6 +188,8 @@ func handleCompanyMutation(sys actorbase.Sys, repository *store.Repository, msg 
 		return
 	}
 	var next model.Company
+	websiteChanged := false
+	var revertsRevisionID string
 	switch msg.Type {
 	case TypeCompanyUpdate:
 		changed, updateErr := current.Update(command.ExpectedVersion, model.CompanyUpdate{Name: update.Name, Website: update.Website})
@@ -180,6 +202,31 @@ func handleCompanyMutation(sys actorbase.Sys, repository *store.Repository, msg 
 			return
 		}
 		next = changed.Company
+		websiteChanged = changed.WebsiteChanged
+	case TypeCompanyWebsiteRollback:
+		if strings.TrimSpace(rollback.RevisionID) == "" {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "revision_id is required")
+			return
+		}
+		target, targetErr := repository.GetCompanyWebsiteRevision(msg.Ctx(), rollback.RevisionID)
+		if targetErr != nil {
+			failStoreError(sys, msg, targetErr)
+			return
+		}
+		if target.CompanyID != current.CompanyID {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "website revision belongs to another company")
+			return
+		}
+		changed, updateErr := current.Update(command.ExpectedVersion, model.CompanyUpdate{Website: &target.PreviousWebsite})
+		if updateErr != nil {
+			failStoreError(sys, msg, updateErr)
+			return
+		}
+		if !changed.Changed || !changed.WebsiteChanged {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "website revision does not change the current company website")
+			return
+		}
+		next, websiteChanged, revertsRevisionID = changed.Company, true, target.RevisionID
 	case TypeCompanyPause:
 		next, err = current.Pause(command.ExpectedVersion, pause.PauseMode)
 	case TypeCompanyResume:
@@ -196,6 +243,16 @@ func handleCompanyMutation(sys actorbase.Sys, repository *store.Repository, msg 
 		return
 	}
 	response := makeCompanyResponse(msg, next)
+	if websiteChanged {
+		result, applyErr := applyCompanyWebsiteCommandFacts(repository, msg, commandContext, command.Reason,
+			current, next, revertsRevisionID, response)
+		if applyErr != nil {
+			failStoreError(sys, msg, applyErr)
+			return
+		}
+		_, _ = sys.Reply(msg, json.RawMessage(result.Response))
+		return
+	}
 	operationID := ""
 	if msg.Type == TypeCompanyPause || msg.Type == TypeCompanyResume {
 		operationID = "scope-control-" + stableDigest(command.CommandID+"|company|"+next.CompanyID)
@@ -208,6 +265,56 @@ func handleCompanyMutation(sys actorbase.Sys, repository *store.Repository, msg 
 		return
 	}
 	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
+}
+
+func applyCompanyWebsiteCommandFacts(repository *store.Repository, msg actorbase.Msg, commandContext CommandContext,
+	reason string, previous, company model.Company, revertsRevisionID string,
+	response companyCommandResponse) (store.CommandResult, error) {
+	commandID := commandContext.Command.CommandID
+	businessAt := time.UnixMilli(msg.TS).UTC()
+	suffix := stableDigest(commandID + "|company.website")
+	work, err := model.NewWork("work-company-website-review-"+suffix, "company", company.CompanyID,
+		"source_relationship_review", "human")
+	if err != nil {
+		return store.CommandResult{}, err
+	}
+	work, err = work.WithCausality(commandContext.RequestedBy, string(msg.ID), "")
+	if err != nil {
+		return store.CommandResult{}, err
+	}
+	revision, err := model.NewCompanyWebsiteRevision("company-website-revision-"+suffix, previous, company,
+		work.WorkID, commandContext.RequestedBy, reason, revertsRevisionID, businessAt)
+	if err != nil {
+		return store.CommandResult{}, err
+	}
+	response.WebsiteRevision, response.ReviewWork = &revision, &work
+	response.NextAction = "review_source_relationships"
+	responseBytes, _ := json.Marshal(response)
+	receipt, err := model.NewCommandReceipt(commandID, msg.Type, commandRequestHash(msg), responseBytes)
+	if err != nil {
+		return store.CommandResult{}, err
+	}
+	auditPayload, _ := json.Marshal(map[string]any{
+		"requested_by": commandContext.RequestedBy, "reason": reason,
+		"website_revision_id": revision.RevisionID, "review_work_id": work.WorkID,
+	})
+	eventKind := companyEventKind(msg.Type)
+	companyEvent, err := model.NewEventIntent("event-"+stableDigest(commandID+"|"+eventKind), eventKind,
+		"company", company.CompanyID, company.Version, businessAt.Format(time.RFC3339Nano), commandID, auditPayload)
+	if err != nil {
+		return store.CommandResult{}, err
+	}
+	reviewEvent, err := model.NewEventIntent("event-"+stableDigest(commandID+"|company.website_review_required"),
+		"company.website_review_required", "work", work.WorkID, work.Version,
+		businessAt.Format(time.RFC3339Nano), commandID, auditPayload)
+	if err != nil {
+		return store.CommandResult{}, err
+	}
+	return repository.ApplyCompanyWebsiteChangeCommand(msg.Ctx(), commandContext.Command.ExpectedVersion,
+		company, revision, work, store.WorkPlacement{
+			BusinessKey: fmt.Sprintf("company-website-review|%s|%d", company.CompanyID, company.ConfigurationVersion),
+			NotBefore:   businessAt,
+		}, receipt, companyEvent, reviewEvent, businessAt)
 }
 
 func applyCompanyCommandFacts(repository *store.Repository, msg actorbase.Msg, commandID, reason string, response companyCommandResponse,
@@ -254,6 +361,8 @@ func companyEventKind(word string) string {
 		return "company.added"
 	case TypeCompanyUpdate:
 		return "company.updated"
+	case TypeCompanyWebsiteRollback:
+		return "company.website_rolled_back"
 	case TypeCompanyPause:
 		return "company.paused"
 	case TypeCompanyResume:
@@ -303,6 +412,8 @@ func failStoreError(sys actorbase.Sys, msg actorbase.Msg, err error) {
 		code = ErrorQualityRejected
 	case errors.Is(err, store.ErrWorkCorrectionInProgress):
 		code = ErrorWaitingHuman
+	case errors.Is(err, store.ErrWebsiteRevisionConflict):
+		code = ErrorVersionConflict
 	default:
 		var conflict *model.VersionConflictError
 		var transition *model.InvalidTransitionError

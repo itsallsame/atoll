@@ -14,6 +14,7 @@ import (
 const (
 	TypeCompanyAdd               = "recruiting.company.add"
 	TypeCompanyUpdate            = "recruiting.company.update"
+	TypeCompanyWebsiteRollback   = "recruiting.company.website.rollback"
 	TypeCompanyPause             = "recruiting.company.pause"
 	TypeCompanyResume            = "recruiting.company.resume"
 	TypeCompanyArchive           = "recruiting.company.archive"

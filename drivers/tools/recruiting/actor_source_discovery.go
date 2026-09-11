@@ -2,6 +2,7 @@ package recruiting
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -205,14 +206,26 @@ func handleSourceDiscover(sys actorbase.Sys, cfg Config, repository *store.Repos
 		return
 	}
 	businessAt := time.UnixMilli(msg.TS).UTC()
+	websiteRevision, _, revisionErr := repository.GetCurrentCompanyWebsiteRevision(msg.Ctx(), company.CompanyID)
+	if revisionErr != nil && !errors.Is(revisionErr, store.ErrNotFound) {
+		failStoreError(sys, msg, revisionErr)
+		return
+	}
+	websiteCauseWorkID := ""
+	if revisionErr == nil {
+		websiteCauseWorkID = websiteRevision.ReviewWorkID
+	}
 	work, err := model.NewWork(strings.TrimSpace(payload.WorkID), "company", company.CompanyID, "source_discovery", "human")
 	if err == nil {
-		work, err = work.WithCausality(commandContext.RequestedBy, string(msg.ID), "")
+		work, err = work.WithCausality(commandContext.RequestedBy, string(msg.ID), websiteCauseWorkID)
 	}
 	discovery := model.SourceDiscovery{}
 	if err == nil {
 		discovery, err = model.NewSourceDiscovery(strings.TrimSpace(payload.DiscoveryID), work.WorkID, nextCompany,
 			payload.Generation, nextCompany.Website, recipe)
+	}
+	if err == nil && revisionErr == nil {
+		discovery, err = discovery.BindWebsiteRevision(nextCompany, websiteRevision)
 	}
 	if err != nil {
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
