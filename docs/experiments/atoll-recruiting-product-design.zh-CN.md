@@ -562,7 +562,7 @@ recruiting.work.create / get / list / pause / resume
 recruiting.work.correct / retry / cancel / resolve
 recruiting.run.diagnostic / join_occurrence / production
 recruiting.recipe.inspect / validate / approve / reject / rollout / rollback
-recruiting.recipe.rollout.batch / batch.get / batch.items / batch.confirm / batch.cancel
+recruiting.recipe.rollout.batch / batch.get / batch.items / batch.confirm / batch.resume / batch.rollback / batch.cancel
 recruiting.execution.offer / accept / started / result / failed
 recruiting.daily_run.get / list / summary
 recruiting.jobs.search
@@ -581,6 +581,8 @@ recruiting.capacity.status
 `recruiting.company.import.cancel` 适用于预览或应用中的批次。请求事务先把批次推进到 `canceling`，取消已有协调 Work 并提升 acceptance fence，使旧 Executor 结果立即失效，再创建同一 capability 的高优先级取消协调 Work。已经成功、跳过或等待人工的逐项事实保持不变；尚未开始的项目仍按有界页和独立事务创建 canceled 子 Work/outcome，不能以一次大范围 UPDATE 伪造逐项控制边界。全部未开始项终结后批次和父 Work 才进入 `canceled`。
 
 Recipe 批量发布使用 `recipe-rollout-sources.v1` JSON Resource，正文只含相同 `schema_version` 和最多 20,000 个唯一规范 `source_ids`；命令另携带原始字节 SHA-256、policy version、目标 active Recipe、canary size 和不超过 500 的 wave size。Recruiting Actor 可读取 KV 或 File Resource，严格拒绝未知字段、尾随 JSON、重复或带空白的 Source ID，并以 `SHA-256(batch_id|source_id)` 形成与输入排列无关的确定性 canary 顺序。预览按最多 500 项的短事务逐块重读 Source、当前 Assignment/Recipe 和目标 Recipe；最终 preview hash 同时绑定输入 hash、schema/policy、目标 Recipe 的 kind/scope/contract/capability 及每个 Source/Assignment version。完成预览时父 Work 进入 `waiting_human(preview_ready)`。确认只原子启动批次和父 Work、开放第一个 canary 范围，不提前修改任何 Source，也不产生 Executor dispatch；后续逐 Source 发布、校验与 wave 推进由 Recruiting Actor 的有界 reconcile 完成。
+
+批量发布任一 wave 失败后，固定该 wave 并暂停父 Work，用户可以在修复后显式 `batch.resume`，也可以显式 `batch.rollback`。批量 rollback 的产品含义是回滚该批次已经发布的完整前缀，而不是只回滚报错成员：此前成功 wave 与当前 wave 中已经切换的成员都恢复到各自预览时冻结的 Assignment；尚未发布的后续成员不产生无意义版本。回滚按确定性逆序、每批最多 500 项推进，每个 Source 仍复用逐 Source Assignment/Checkpoint 原子切换，追加新 Assignment version，绝不删除目标版本、验证证据或已接受岗位事实。Listing 回滚后必须用旧 Recipe 创建新的 Source validation generation；只有全部已发布成员重新验证成功，批次才进入 `rolled_back` 并释放 active scope。进程退出只续跑未完成成员；版本漂移、旧 Recipe 被隔离、活动验证未终结或回滚验证失败都会暂停 rollback 并交给人处理，不得跳过后把父 Work 伪装成成功。
 
 ## 9. 最小领域模型
 

@@ -69,6 +69,7 @@ func handleRecipeRolloutBatch(sys actorbase.Sys, repository *store.Repository, m
 		return
 	}
 	if msg.Type == TypeRecipeRolloutBatchConfirm || msg.Type == TypeRecipeRolloutBatchResume ||
+		msg.Type == TypeRecipeRolloutBatchRollback ||
 		msg.Type == TypeRecipeRolloutBatchCancel {
 		handleRecipeRolloutBatchControl(sys, repository, msg)
 		return
@@ -250,7 +251,16 @@ func handleRecipeRolloutBatchControl(sys actorbase.Sys, repository *store.Reposi
 			nextParent, err = parent.Start(parent.Version)
 		}
 	} else if msg.Type == TypeRecipeRolloutBatchResume {
-		nextBatch, err = batch.Resume(payload.ExpectedVersion)
+		if batch.Status == model.RecipeRolloutBatchRollbackPaused {
+			nextBatch, err = batch.ResumeRollback(payload.ExpectedVersion)
+		} else {
+			nextBatch, err = batch.Resume(payload.ExpectedVersion)
+		}
+		if err == nil {
+			nextParent, err = parent.Start(parent.Version)
+		}
+	} else if msg.Type == TypeRecipeRolloutBatchRollback {
+		nextBatch, err = batch.BeginRollback(payload.ExpectedVersion)
 		if err == nil {
 			nextParent, err = parent.Start(parent.Version)
 		}
@@ -267,6 +277,9 @@ func handleRecipeRolloutBatchControl(sys actorbase.Sys, repository *store.Reposi
 	nextAction, eventType := "monitor_canary", "recipe.rollout_batch.started"
 	if msg.Type == TypeRecipeRolloutBatchResume {
 		eventType = "recipe.rollout_batch.resumed"
+	}
+	if msg.Type == TypeRecipeRolloutBatchRollback {
+		nextAction, eventType = "monitor_rollback", "recipe.rollout_batch.rollback_started"
 	}
 	if msg.Type == TypeRecipeRolloutBatchCancel {
 		nextAction, eventType = "none", "recipe.rollout_batch.canceled"
@@ -285,7 +298,15 @@ func handleRecipeRolloutBatchControl(sys actorbase.Sys, repository *store.Reposi
 		result, err = repository.ApplyStartRecipeRolloutBatchCommand(msg.Ctx(), batch.Version, parent.Version,
 			nextBatch, nextParent, receipt, event, businessAt)
 	} else if msg.Type == TypeRecipeRolloutBatchResume {
-		result, err = repository.ApplyResumeRecipeRolloutBatchCommand(msg.Ctx(), batch.Version, parent.Version,
+		if batch.Status == model.RecipeRolloutBatchRollbackPaused {
+			result, err = repository.ApplyResumeRecipeRolloutBatchRollbackCommand(msg.Ctx(), batch.Version,
+				parent.Version, nextBatch, nextParent, receipt, event, businessAt)
+		} else {
+			result, err = repository.ApplyResumeRecipeRolloutBatchCommand(msg.Ctx(), batch.Version, parent.Version,
+				nextBatch, nextParent, receipt, event, businessAt)
+		}
+	} else if msg.Type == TypeRecipeRolloutBatchRollback {
+		result, err = repository.ApplyBeginRecipeRolloutBatchRollbackCommand(msg.Ctx(), batch.Version, parent.Version,
 			nextBatch, nextParent, receipt, event, businessAt)
 	} else {
 		result, err = repository.ApplyCancelRecipeRolloutBatchCommand(msg.Ctx(), batch.Version, parent.Version,

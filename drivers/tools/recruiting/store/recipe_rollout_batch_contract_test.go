@@ -227,7 +227,7 @@ WHERE active_batch_key IS NOT NULL AND batch_id = ?`, batch.BatchID).Scan(&activ
 	}
 
 	transitionBatch := createStartedRolloutBatchForTest(t, ctx, repository, targetRecipe,
-		sourceIDs[:1], now.Add(10*time.Second), "transition")
+		sourceIDs[:2], now.Add(10*time.Second), "transition")
 	item, err := repository.GetRecipeRolloutBatchItem(ctx, transitionBatch.BatchID, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +263,7 @@ WHERE active_batch_key IS NOT NULL AND batch_id = ?`, batch.BatchID).Scan(&activ
 		t.Fatal("stale rollout member transition won twice")
 	}
 	_, progress, err := repository.GetRecipeRolloutWaveProgress(ctx, transitionBatch.BatchID)
-	if err != nil || progress.AwaitingValidation != 1 || progress.Pending != 0 {
+	if err != nil || progress.AwaitingValidation != 1 || progress.Pending != 1 {
 		t.Fatalf("post-application progress=%+v err=%v", progress, err)
 	}
 	failAt := now.Add(12 * time.Second)
@@ -276,6 +276,13 @@ WHERE active_batch_key IS NOT NULL AND batch_id = ?`, batch.BatchID).Scan(&activ
 	if err != nil || storedItem.Status != model.RecipeRolloutItemFailed ||
 		storedItem.AppliedAt != applyAt.Format(time.RFC3339Nano) || progress.Failed != 1 {
 		t.Fatalf("failed item=%+v progress=%+v err=%v", storedItem, progress, err)
+	}
+	interruptedItem, _ := repository.GetRecipeRolloutBatchItem(ctx, transitionBatch.BatchID, 2)
+	interruptedPlanned, _ := interruptedItem.PlanApply(interruptedItem.Version,
+		now.Add(12*time.Second).Format(time.RFC3339Nano))
+	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, interruptedItem.Version,
+		interruptedPlanned, now.Add(12*time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	pausedBatch, changed, err := repository.ReconcileRecipeRolloutWave(ctx, transitionBatch.BatchID,
 		now.Add(13*time.Second))
@@ -322,6 +329,118 @@ WHERE active_batch_key IS NOT NULL AND batch_id = ?`, batch.BatchID).Scan(&activ
 		retriedItem.AppliedAssignmentVersion != claimed.AppliedAssignmentVersion {
 		t.Fatalf("resumed item=%+v", retriedItem)
 	}
+
+	rollbackFailed, _ := retriedItem.MarkFailed(retriedItem.Version, "quality_rejected_after_retry")
+	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, retriedItem.Version,
+		rollbackFailed, now.Add(20*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	rollbackPausedBatch, changed, err := repository.ReconcileRecipeRolloutWave(ctx, resumedBatch.BatchID,
+		now.Add(21*time.Second))
+	if err != nil || !changed || rollbackPausedBatch.Status != model.RecipeRolloutBatchPaused {
+		t.Fatalf("rollback candidate pause=%+v changed=%v err=%v", rollbackPausedBatch, changed, err)
+	}
+	rollbackParent, _ := repository.GetWork(ctx, resumedBatch.ParentWorkID)
+	rollbackStartedBatch, _ := rollbackPausedBatch.BeginRollback(rollbackPausedBatch.Version)
+	rollbackStartedParent, _ := rollbackParent.Start(rollbackParent.Version)
+	rollbackStartAt := now.Add(22 * time.Second)
+	rollbackReceipt, _ := model.NewCommandReceipt("rollout-batch-rollback", "recruiting.recipe.rollout.batch.rollback",
+		"sha256:rollout-batch-rollback", json.RawMessage(`{"status":"rolling_back"}`))
+	rollbackEvent, _ := model.NewEventIntent("rollout-batch-rollback-event", "recipe.rollout_batch.rollback_started",
+		"work", rollbackParent.WorkID, rollbackStartedParent.Version, rollbackStartAt.Format(time.RFC3339Nano),
+		rollbackReceipt.CommandID, json.RawMessage(`{}`))
+	startedRollback, err := repository.ApplyBeginRecipeRolloutBatchRollbackCommand(ctx,
+		rollbackPausedBatch.Version, rollbackParent.Version, rollbackStartedBatch, rollbackStartedParent,
+		rollbackReceipt, rollbackEvent, rollbackStartAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayedRollback, err := repository.ApplyBeginRecipeRolloutBatchRollbackCommand(ctx,
+		rollbackPausedBatch.Version, rollbackParent.Version, rollbackStartedBatch, rollbackStartedParent,
+		rollbackReceipt, rollbackEvent, rollbackStartAt)
+	if err != nil || !replayedRollback.Replayed || string(replayedRollback.Response) != string(startedRollback.Response) {
+		t.Fatalf("batch rollback replay=%+v err=%v", replayedRollback, err)
+	}
+	storedRollbackBatch, _ := repository.GetRecipeRolloutBatch(ctx, resumedBatch.BatchID)
+	storedRollbackParent, _ := repository.GetWork(ctx, resumedBatch.ParentWorkID)
+	if storedRollbackBatch.Status != model.RecipeRolloutBatchRollingBack || storedRollbackBatch.RollbackThrough != 2 ||
+		storedRollbackParent.Status != model.WorkRunning {
+		t.Fatalf("started batch rollback=%+v parent=%+v", storedRollbackBatch, storedRollbackParent)
+	}
+	interruptedDuringRollback, _ := repository.GetRecipeRolloutBatchItem(ctx, resumedBatch.BatchID, 2)
+	unappliedDuringRollback, err := interruptedDuringRollback.MarkFailed(interruptedDuringRollback.Version,
+		"rollback_before_application")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, interruptedDuringRollback.Version,
+		unappliedDuringRollback, now.Add(23*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	skippedDuringRollback, err := unappliedDuringRollback.BeginRollback(unappliedDuringRollback.Version)
+	if err != nil || skippedDuringRollback.RollbackStatus != model.RecipeRollbackItemSkipped {
+		t.Fatalf("interrupted unapplied member=%+v err=%v", skippedDuringRollback, err)
+	}
+	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, unappliedDuringRollback.Version,
+		skippedDuringRollback, now.Add(24*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	rollbackMember, _ := repository.GetRecipeRolloutBatchItem(ctx, storedRollbackBatch.BatchID, 1)
+	rollbackBots, err := repository.ListRecipeRollbackItems(ctx, storedRollbackBatch.BatchID, 500)
+	if err != nil || len(rollbackBots) != 1 || rollbackBots[0].Ordinal != 1 {
+		t.Fatalf("rollback worklist=%+v err=%v", rollbackBots, err)
+	}
+	initializedRollback, err := rollbackMember.BeginRollback(rollbackMember.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, rollbackMember.Version,
+		initializedRollback, now.Add(25*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	failedRollback, _ := initializedRollback.MarkRollbackFailed(initializedRollback.Version,
+		"previous_recipe_unavailable")
+	if err := repository.ApplyRecipeRolloutBatchItemTransition(ctx, initializedRollback.Version,
+		failedRollback, now.Add(26*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	rollbackPausedAgain, changed, err := repository.ReconcileRecipeRollback(ctx, storedRollbackBatch.BatchID,
+		now.Add(27*time.Second))
+	if err != nil || !changed || rollbackPausedAgain.Status != model.RecipeRolloutBatchRollbackPaused ||
+		rollbackPausedAgain.RollbackFailedCount != 1 {
+		t.Fatalf("rollback failure reconcile=%+v changed=%v err=%v", rollbackPausedAgain, changed, err)
+	}
+	rollbackWaitingParent, _ := repository.GetWork(ctx, storedRollbackBatch.ParentWorkID)
+	if rollbackWaitingParent.Status != model.WorkWaitingHuman || rollbackWaitingParent.WaitingReason != "rollback_failed" {
+		t.Fatalf("rollback failure parent=%+v", rollbackWaitingParent)
+	}
+	rollbackResumedBatch, _ := rollbackPausedAgain.ResumeRollback(rollbackPausedAgain.Version)
+	rollbackResumedParent, _ := rollbackWaitingParent.Start(rollbackWaitingParent.Version)
+	rollbackResumeAt := now.Add(28 * time.Second)
+	rollbackResumeReceipt, _ := model.NewCommandReceipt("rollout-batch-rollback-resume",
+		"recruiting.recipe.rollout.batch.resume", "sha256:rollout-batch-rollback-resume",
+		json.RawMessage(`{"status":"rolling_back"}`))
+	rollbackResumeEvent, _ := model.NewEventIntent("rollout-batch-rollback-resume-event",
+		"recipe.rollout_batch.resumed", "work", rollbackWaitingParent.WorkID, rollbackResumedParent.Version,
+		rollbackResumeAt.Format(time.RFC3339Nano), rollbackResumeReceipt.CommandID, json.RawMessage(`{}`))
+	rollbackResumeResult, err := repository.ApplyResumeRecipeRolloutBatchRollbackCommand(ctx,
+		rollbackPausedAgain.Version, rollbackWaitingParent.Version, rollbackResumedBatch, rollbackResumedParent,
+		rollbackResumeReceipt, rollbackResumeEvent, rollbackResumeAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackResumeReplay, err := repository.ApplyResumeRecipeRolloutBatchRollbackCommand(ctx,
+		rollbackPausedAgain.Version, rollbackWaitingParent.Version, rollbackResumedBatch, rollbackResumedParent,
+		rollbackResumeReceipt, rollbackResumeEvent, rollbackResumeAt)
+	if err != nil || !rollbackResumeReplay.Replayed ||
+		string(rollbackResumeReplay.Response) != string(rollbackResumeResult.Response) {
+		t.Fatalf("rollback resume replay=%+v err=%v", rollbackResumeReplay, err)
+	}
+	retriedRollbackItem, _ := repository.GetRecipeRolloutBatchItem(ctx, resumedBatch.BatchID, 1)
+	if retriedRollbackItem.RollbackStatus != model.RecipeRollbackItemPending ||
+		retriedRollbackItem.RollbackFailureCode != "" {
+		t.Fatalf("retried rollback item=%+v", retriedRollbackItem)
+	}
 }
 
 func createStartedRolloutBatchForTest(t *testing.T, ctx context.Context, repository *Repository,
@@ -332,7 +451,7 @@ func createStartedRolloutBatchForTest(t *testing.T, ctx context.Context, reposit
 	parent, _ = parent.WithCausality("human:batch-operator", "message:"+suffix, "")
 	batch, _ := model.NewRecipeRolloutBatch("rollout-"+suffix, parent.WorkID, targetRecipe,
 		"artifact://rollout/"+suffix, "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		"recipe-rollout-sources.v1", 1, 1, 1)
+		"recipe-rollout-sources.v1", 1, len(sourceIDs), 1)
 	placement := WorkPlacement{BusinessKey: "recipe-rollout-batch|" + batch.BatchID, NotBefore: now}
 	createReceipt, _ := model.NewCommandReceipt("rollout-"+suffix+"-create", "recruiting.recipe.rollout.batch",
 		"sha256:rollout-"+suffix+"-create", json.RawMessage(`{"status":"previewing"}`))

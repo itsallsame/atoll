@@ -12,11 +12,15 @@ import (
 )
 
 type recipeRolloutReconcileResult struct {
-	BatchesScanned     int `json:"batches_scanned"`
-	ItemsPlanned       int `json:"items_planned"`
-	AssignmentsApplied int `json:"assignments_applied"`
-	ValidationsStarted int `json:"validations_started"`
-	WavesAdvanced      int `json:"waves_advanced"`
+	BatchesScanned             int `json:"batches_scanned"`
+	ItemsPlanned               int `json:"items_planned"`
+	AssignmentsApplied         int `json:"assignments_applied"`
+	ValidationsStarted         int `json:"validations_started"`
+	WavesAdvanced              int `json:"waves_advanced"`
+	RollbackItemsPlanned       int `json:"rollback_items_planned"`
+	RollbackAssignmentsApplied int `json:"rollback_assignments_applied"`
+	RollbackValidationsStarted int `json:"rollback_validations_started"`
+	RollbacksReconciled        int `json:"rollbacks_reconciled"`
 }
 
 // reconcileRecipeRolloutBatches performs bounded control-plane steps only.
@@ -31,6 +35,22 @@ func reconcileRecipeRolloutBatches(ctx context.Context, cfg Config, repository *
 	result.BatchesScanned = len(batches)
 	remaining := limit
 	for _, listed := range batches {
+		if listed.Status == model.RecipeRolloutBatchRollingBack {
+			processed, rollbackResult, rollbackErr := reconcileRecipeRollbackBatch(ctx, cfg, repository,
+				listed.BatchID, remaining, now)
+			if rollbackErr != nil {
+				return result, rollbackErr
+			}
+			remaining -= processed
+			result.RollbackItemsPlanned += rollbackResult.ItemsPlanned
+			result.RollbackAssignmentsApplied += rollbackResult.AssignmentsApplied
+			result.RollbackValidationsStarted += rollbackResult.ValidationsStarted
+			result.RollbacksReconciled += rollbackResult.Reconciled
+			if remaining == 0 {
+				break
+			}
+			continue
+		}
 		batch, changed, err := repository.ReconcileRecipeRolloutWave(ctx, listed.BatchID, now)
 		if err != nil {
 			return result, err

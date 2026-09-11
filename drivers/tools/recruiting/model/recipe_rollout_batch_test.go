@@ -106,6 +106,46 @@ func TestRecipeRolloutBatchFailureStopsExpansionAndNeedsExplicitResume(t *testin
 	}
 }
 
+func TestRecipeRolloutBatchRollbackCoversTheWholePublishedPrefix(t *testing.T) {
+	batch := previewedRolloutBatch(t, "batch-rollback", 10, 2, 4)
+	running, _ := batch.Start(batch.Version, batch.PreviewHash)
+	secondWave, _ := running.ObserveWave(running.Version, RecipeRolloutWaveProgress{
+		From: 1, Through: 2, Succeeded: 2,
+	})
+	paused, _ := secondWave.ObserveWave(secondWave.Version, RecipeRolloutWaveProgress{
+		From: 3, Through: 6, Succeeded: 3, Failed: 1,
+	})
+	rollingBack, err := paused.BeginRollback(paused.Version)
+	if err != nil || rollingBack.Status != RecipeRolloutBatchRollingBack ||
+		rollingBack.Phase != RecipeRolloutRollback || rollingBack.RollbackThrough != 6 {
+		t.Fatalf("begin rollback=%+v err=%v", rollingBack, err)
+	}
+	waiting, err := rollingBack.ObserveRollback(rollingBack.Version, RecipeRollbackProgress{
+		Through: 6, Unstarted: 2, AwaitingValidation: 2, Succeeded: 2,
+	})
+	if err != nil || waiting != rollingBack {
+		t.Fatalf("incomplete rollback changed batch: before=%+v after=%+v err=%v", rollingBack, waiting, err)
+	}
+	rollbackPaused, err := rollingBack.ObserveRollback(rollingBack.Version, RecipeRollbackProgress{
+		Through: 6, Succeeded: 4, Failed: 1, Skipped: 1,
+	})
+	if err != nil || rollbackPaused.Status != RecipeRolloutBatchRollbackPaused ||
+		rollbackPaused.RollbackFailedCount != 1 || rollbackPaused.RolledBackCount != 4 {
+		t.Fatalf("failed rollback=%+v err=%v", rollbackPaused, err)
+	}
+	resumed, err := rollbackPaused.ResumeRollback(rollbackPaused.Version)
+	if err != nil || resumed.Status != RecipeRolloutBatchRollingBack {
+		t.Fatalf("resume rollback=%+v err=%v", resumed, err)
+	}
+	rolledBack, err := resumed.ObserveRollback(resumed.Version, RecipeRollbackProgress{
+		Through: 6, Succeeded: 5, Skipped: 1,
+	})
+	if err != nil || rolledBack.Status != RecipeRolloutBatchRolledBack ||
+		rolledBack.RolledBackCount != 5 {
+		t.Fatalf("completed rollback=%+v err=%v", rolledBack, err)
+	}
+}
+
 func TestRecipeRolloutBatchRejectsStaleMalformedAndUnsafeTransitions(t *testing.T) {
 	recipe := activeRolloutBatchRecipe(t)
 	if _, err := NewRecipeRolloutBatch("batch", "work", recipe, "artifact://input",
@@ -210,6 +250,33 @@ func TestRecipeRolloutItemsFreezeVersionsAndBindDeterministicCanaryOrder(t *test
 	succeeded, err := bound.MarkSucceeded(bound.Version, "work-validation", "2026-09-10T01:01:00Z")
 	if err != nil || succeeded.Status != RecipeRolloutItemSucceeded {
 		t.Fatalf("succeeded item=%+v err=%v", succeeded, err)
+	}
+	rollbackPending, err := succeeded.BeginRollback(succeeded.Version)
+	if err != nil || rollbackPending.RollbackStatus != RecipeRollbackItemPending {
+		t.Fatalf("rollback pending item=%+v err=%v", rollbackPending, err)
+	}
+	rollbackApplying, err := rollbackPending.PlanRollback(rollbackPending.Version, "2026-09-10T02:00:00Z")
+	if err != nil || rollbackApplying.RollbackStatus != RecipeRollbackItemApplying {
+		t.Fatalf("rollback applying item=%+v err=%v", rollbackApplying, err)
+	}
+	rollbackApplied, err := rollbackApplying.MarkRollbackApplied(rollbackApplying.Version,
+		succeeded.ValidationSourceVersion+1, succeeded.AppliedAssignmentVersion+1)
+	if err != nil || rollbackApplied.RollbackStatus != RecipeRollbackItemAwaitingValidation {
+		t.Fatalf("rollback applied item=%+v err=%v", rollbackApplied, err)
+	}
+	rollbackBound, err := rollbackApplied.BindRollbackValidation(rollbackApplied.Version,
+		"work-rollback-validation", "run-rollback-validation", rollbackApplied.RolledBackSourceVersion+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackSucceeded, err := rollbackBound.MarkRollbackSucceeded(rollbackBound.Version,
+		"2026-09-10T02:01:00Z")
+	if err != nil || rollbackSucceeded.RollbackStatus != RecipeRollbackItemSucceeded {
+		t.Fatalf("rollback succeeded item=%+v err=%v", rollbackSucceeded, err)
+	}
+	unappliedRollback, err := stored.BeginRollback(stored.Version)
+	if err != nil || unappliedRollback.RollbackStatus != RecipeRollbackItemSkipped {
+		t.Fatalf("unapplied item rollback=%+v err=%v", unappliedRollback, err)
 	}
 	failed, err := applied.MarkFailed(applied.Version, "quality_rejected")
 	if err != nil {

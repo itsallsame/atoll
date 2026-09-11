@@ -88,9 +88,11 @@ func (s RecruitmentSource) AssignRecipe(expected uint64, assignment SourceRecipe
 	if err := requireVersion(expected, s.Version); err != nil {
 		return RecruitmentSource{}, err
 	}
-	if (s.ReadinessStatus != SourceReady && s.ReadinessStatus != SourceRepairing) ||
+	assignableStatus := s.ReadinessStatus == SourceReady || s.ReadinessStatus == SourceRepairing ||
+		(s.ReadinessStatus == SourceInvalid && assignment.Kind == RecipeListing)
+	if !assignableStatus ||
 		assignment.SourceID != s.SourceID || assignment.AssignmentVersion == 0 {
-		return RecruitmentSource{}, fmt.Errorf("ready/repairing source and matching complete assignment are required")
+		return RecruitmentSource{}, fmt.Errorf("assignable source status and matching complete assignment are required")
 	}
 	copyOf := assignment
 	switch assignment.Kind {

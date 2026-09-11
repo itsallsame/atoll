@@ -58,6 +58,7 @@ func manifest() introspect.Manifest {
 			TypeRecipeRolloutBatchItems:        {Description: "seek-page frozen Source members and rollout outcomes"},
 			TypeRecipeRolloutBatchConfirm:      {Description: "confirm an exact Recipe rollout preview and open only its canary"},
 			TypeRecipeRolloutBatchResume:       {Description: "explicitly retry a paused Recipe rollout wave after failed validation work is resolved"},
+			TypeRecipeRolloutBatchRollback:     {Description: "roll back the complete published prefix of a paused Recipe rollout batch"},
 			TypeRecipeRolloutBatchCancel:       {Description: "cancel a Recipe rollout batch and release its active scope key"},
 			TypeRecipeRollback:                 {Description: "append a new Source detail assignment from immutable assignment history with version fencing"},
 			TypeBaselineStart:                  {Description: "start one immutable, version-fenced baseline listing generation"},

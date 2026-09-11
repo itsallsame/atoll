@@ -185,7 +185,7 @@ func TestRecipeRolloutReconcileAppliesListingAndStartsRealValidation(t *testing.
 		RequestHash: "sha256:actor-rollout-retry-result", AttemptID: retryOffer.Attempt.AttemptID,
 		ExecutorActorID: retryOffer.Attempt.ExecutorActorID, ExecutorIncarnation: retryOffer.Attempt.ExecutorIncarnation,
 		ResultKind: "source_validation", Artifacts: []model.ArtifactMetadata{retryPage, retryTrace},
-		Quality: executioncontract.ListingQuality{IdentityComplete: true, OrderingContractHeld: true,
+		Quality: executioncontract.ListingQuality{IdentityComplete: true, OrderingContractHeld: false,
 			PaginationStable: true, ItemCount: 3}, CompletedAt: now.Add(10 * time.Second)}); err != nil {
 		t.Fatal(err)
 	}
@@ -193,27 +193,110 @@ func TestRecipeRolloutReconcileAppliesListingAndStartsRealValidation(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	rollbackPaused, _ := repository.GetRecipeRolloutBatch(ctx, batch.BatchID)
+	rollbackFailedItem, _ := repository.GetRecipeRolloutBatchItem(ctx, batch.BatchID, 1)
+	rollbackPausedParent, _ := repository.GetWork(ctx, batch.ParentWorkID)
+	rollbackInvalidSource, _ := repository.GetSource(ctx, source.SourceID)
+	if sixth.WavesAdvanced != 1 || rollbackPaused.Status != model.RecipeRolloutBatchPaused ||
+		rollbackFailedItem.Status != model.RecipeRolloutItemFailed ||
+		rollbackPausedParent.Status != model.WorkWaitingHuman ||
+		rollbackInvalidSource.ReadinessStatus != model.SourceInvalid {
+		t.Fatalf("sixth=%+v batch=%+v item=%+v parent=%+v source=%+v", sixth,
+			rollbackPaused, rollbackFailedItem, rollbackPausedParent, rollbackInvalidSource)
+	}
+	rollbackAt := now.Add(12 * time.Second)
+	rollingBack, _ := rollbackPaused.BeginRollback(rollbackPaused.Version)
+	rollbackParent, _ := rollbackPausedParent.Start(rollbackPausedParent.Version)
+	rollbackReceipt, _ := model.NewCommandReceipt("actor-rollout-rollback", TypeRecipeRolloutBatchRollback,
+		"sha256:actor-rollout-rollback", json.RawMessage(`{"status":"rolling_back"}`))
+	rollbackEvent, _ := model.NewEventIntent("actor-rollout-rollback-event", "recipe.rollout_batch.rollback_started",
+		"work", batch.ParentWorkID, rollbackParent.Version, rollbackAt.Format(time.RFC3339Nano),
+		rollbackReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyBeginRecipeRolloutBatchRollbackCommand(ctx, rollbackPaused.Version,
+		rollbackPausedParent.Version, rollingBack, rollbackParent, rollbackReceipt, rollbackEvent, rollbackAt); err != nil {
+		t.Fatal(err)
+	}
+	var rollbackStep recipeRolloutReconcileResult
+	for step := 13; step <= 16; step++ {
+		repository, _ = store.NewRepository(db)
+		rollbackStep, err = reconcileRecipeRolloutBatches(ctx, cfg, repository, 10,
+			now.Add(time.Duration(step)*time.Second))
+		if err != nil {
+			t.Fatalf("rollback step %d: %v", step, err)
+		}
+	}
+	rollbackItem, _ := repository.GetRecipeRolloutBatchItem(ctx, batch.BatchID, 1)
+	if rollbackStep.RollbackValidationsStarted != 1 ||
+		rollbackItem.RollbackStatus != model.RecipeRollbackItemAwaitingValidation ||
+		rollbackItem.RollbackValidationWorkID == "" ||
+		rollbackItem.RollbackValidationWorkID == retriedItem.ValidationWorkID {
+		t.Fatalf("rollback step=%+v item=%+v", rollbackStep, rollbackItem)
+	}
+	rollbackRun, err := repository.GetListingRunByWork(ctx, rollbackItem.RollbackValidationWorkID)
+	if err != nil || rollbackRun.ListingExecution.RecipeID != currentRecipe.RecipeID {
+		t.Fatalf("rollback validation run=%+v err=%v", rollbackRun, err)
+	}
+	rollbackOffer, err := repository.OfferExecution(ctx, store.ListingOfferRequest{
+		AttemptID: "actor-rollout-rollback-attempt", ExecutorActorID: "tool:actor-rollout:1",
+		ExecutorIncarnation: "actor-rollout-boot", Capability: rollbackRun.ListingExecution.Execution.RequiredCapability,
+		Origin: rollbackRun.ListingExecution.Origin, OfferedAt: now.Add(17 * time.Second),
+		BudgetPolicy: cfg.executionBudgetPolicy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, rollbackOffer.Attempt.AttemptID,
+		rollbackOffer.Attempt.ExecutorActorID, rollbackOffer.Attempt.ExecutorIncarnation,
+		now.Add(17*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, rollbackOffer.Attempt.AttemptID,
+		rollbackOffer.Attempt.ExecutorActorID, rollbackOffer.Attempt.ExecutorIncarnation,
+		now.Add(17*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	rollbackPage, _ := model.NewArtifactMetadata("actor-rollout-rollback-page", model.ArtifactPage,
+		"sha256:rollback-page", "artifact://actor-rollout/rollback-page", rollbackItem.RollbackValidationWorkID,
+		rollbackOffer.Attempt.AttemptID, "recruiting:operator", "30d", true)
+	rollbackTrace, _ := model.NewArtifactMetadata("actor-rollout-rollback-trace", model.ArtifactTrace,
+		"sha256:rollback-trace", "artifact://actor-rollout/rollback-trace", rollbackItem.RollbackValidationWorkID,
+		rollbackOffer.Attempt.AttemptID, "recruiting:operator", "30d", true)
+	if _, err := repository.AcceptDiagnosticResult(ctx, store.DiagnosticResult{
+		CommandID: "actor-rollout-rollback-result", RequestHash: "sha256:actor-rollout-rollback-result",
+		AttemptID: rollbackOffer.Attempt.AttemptID, ExecutorActorID: rollbackOffer.Attempt.ExecutorActorID,
+		ExecutorIncarnation: rollbackOffer.Attempt.ExecutorIncarnation, ResultKind: "source_validation",
+		Artifacts: []model.ArtifactMetadata{rollbackPage, rollbackTrace},
+		Quality: executioncontract.ListingQuality{IdentityComplete: true, OrderingContractHeld: true,
+			PaginationStable: true, ItemCount: 3}, CompletedAt: now.Add(18 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	final, err := reconcileRecipeRolloutBatches(ctx, cfg, repository, 10, now.Add(19*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
 	completedBatch, _ := repository.GetRecipeRolloutBatch(ctx, batch.BatchID)
 	completedItem, _ := repository.GetRecipeRolloutBatchItem(ctx, batch.BatchID, 1)
 	completedParent, _ := repository.GetWork(ctx, batch.ParentWorkID)
 	completedSource, _ := repository.GetSource(ctx, source.SourceID)
-	if sixth.WavesAdvanced != 1 || completedBatch.Status != model.RecipeRolloutBatchCompleted ||
-		completedItem.Status != model.RecipeRolloutItemSucceeded || completedParent.Status != model.WorkCompleted ||
-		completedSource.ReadinessStatus != model.SourceReady || !completedSource.HasVerifiedIncrementalContract() {
-		t.Fatalf("sixth=%+v batch=%+v item=%+v parent=%+v source=%+v", sixth,
-			completedBatch, completedItem, completedParent, completedSource)
+	completedAssignment, _ := repository.GetAssignment(ctx, source.SourceID, model.RecipeListing)
+	if final.RollbacksReconciled != 1 || completedBatch.Status != model.RecipeRolloutBatchRolledBack ||
+		completedItem.RollbackStatus != model.RecipeRollbackItemSucceeded ||
+		completedParent.Status != model.WorkCompleted || completedParent.Resolution != model.ResolutionTerminated ||
+		completedSource.ReadinessStatus != model.SourceReady || !completedSource.HasVerifiedIncrementalContract() ||
+		completedAssignment.RecipeID != currentRecipe.RecipeID {
+		t.Fatalf("final=%+v batch=%+v item=%+v parent=%+v source=%+v assignment=%+v", final,
+			completedBatch, completedItem, completedParent, completedSource, completedAssignment)
 	}
 	var assignmentHistory int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_source_assignment_versions
 WHERE source_id = ? AND recipe_kind = ?`, source.SourceID, model.RecipeListing).Scan(&assignmentHistory); err != nil {
 		t.Fatal(err)
 	}
-	if assignmentHistory != 2 {
-		t.Fatalf("reconcile duplicated the applied Assignment history: %d", assignmentHistory)
+	if assignmentHistory != 3 {
+		t.Fatalf("rollout/rollback Assignment history=%d want old,target,restored", assignmentHistory)
 	}
-	replayedBatch, changed, err := repository.ReconcileRecipeRolloutWave(ctx, batch.BatchID, now.Add(12*time.Second))
+	replayedBatch, changed, err := repository.ReconcileRecipeRollback(ctx, batch.BatchID, now.Add(20*time.Second))
 	if err != nil || changed || replayedBatch != completedBatch {
-		t.Fatalf("completed rollout changed on reconcile: %+v changed=%v err=%v", replayedBatch, changed, err)
+		t.Fatalf("completed rollback changed on reconcile: %+v changed=%v err=%v", replayedBatch, changed, err)
 	}
 }
 
