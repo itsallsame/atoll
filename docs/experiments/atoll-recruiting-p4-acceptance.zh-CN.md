@@ -101,6 +101,6 @@ make recruiting-live-smoke
 - Recipe KV 与 Artifact File 已在真实 Atoll server/daemon 的允许路径通过；权限拒绝和重启保持 e2e 仍待补齐；
 - 已有 Repository 合同证明旧 listing Attempt 只保存 rejected Artifact、不能提交业务结果；仍缺真实 Executor Actor 经 Atoll Message 提交该迟到结果的进程级端到端证明。
 - 页面进度已改为 Attempt 作用域，并通过 MySQL 8.4 的 crash/retry 合同：Attempt A 接受第一页后失败，Attempt B 可从第一页重新运行；A/B 页面证据同时保留，B 的 completion 只统计 B 的页面。Failure Artifact 的原子控制面合同及真实进程自动执行正常路径已闭合；启用前仍须补齐真实进程崩溃切点。
-- accept/start/failed 以及 page/completion/detail 的 command receipt 已闭合，控制面也已有 capability-aware fleet 的持久单次 wake 和 authenticated completion acknowledgement；“控制面已提交 dispatch、首次投递前 Server 退出”和“Executor 已处理、控制面未保存 completion acknowledgement”已有真实 Atoll 进程恢复证明。Executor 在 baseline 第一页后被 `SIGKILL` 的真实进程测试也证明旧 Attempt 到期、新进程从第 1 页安全重跑，且未提前发布业务事实。“业务结果已提交但响应丢失”已有 Executor 精确重试合同与非 root MySQL 稳定 receipt 两层证据，但尚缺在真实 Server/daemon 连接上强制切断回包的进程级证据。
+- accept/start/failed 以及 page/completion/detail 的 command receipt 已闭合，控制面也已有 capability-aware fleet 的持久单次 wake 和 authenticated completion acknowledgement；“控制面已提交 dispatch、首次投递前 Server 退出”和“Executor 已处理、控制面未保存 completion acknowledgement”已有真实 Atoll 进程恢复证明。Executor 在 baseline 第一页后被 `SIGKILL` 的真实进程测试也证明旧 Attempt 到期、新进程从第 1 页安全重跑，且未提前发布业务事实。业务 result response 丢失除精确客户端重试与非 root MySQL receipt 合同外，也已在真实 Server/daemon 链路以事务 fault gate→暂停 daemon→提交 result→杀死 daemon→新 daemon 恢复的顺序通过；首次切点只有一个 receipt/page，旧 Attempt expired，最终 production recovery 只完成一次。
 
 P4 仍为进行中；ABI 冻结不等于 Driver 与真实站点验收完成。

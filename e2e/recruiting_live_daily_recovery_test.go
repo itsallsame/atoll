@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,7 +27,8 @@ const recruitingLiveDailyRecoveryURL = "https://boards-api.greenhouse.io/v1/boar
 // TestRecruitingLiveDailyRecoveryThroughAtoll proves the missing last half of
 // the compensation journey: a closed occurrence remains an exception while a
 // normal operator's production recovery is actually executed against a public
-// board and appends recovered=1 to the live projection.
+// board and appends recovered=1 to the live projection. It also cuts the first
+// page result between its MySQL commit and the daemon processing its response.
 func TestRecruitingLiveDailyRecoveryThroughAtoll(t *testing.T) {
 	if os.Getenv("ATOLL_RECRUITING_LIVE_E2E") != "1" {
 		t.Skip("set ATOLL_RECRUITING_LIVE_E2E=1 to run the real-website daily recovery test")
@@ -55,11 +59,13 @@ func TestRecruitingLiveDailyRecoveryThroughAtoll(t *testing.T) {
 	device := registrarRequest(t, ws, homeID, systemActor, "system.device.create", map[string]any{"name": deviceName})
 	deviceID := stringField(t, device, "id")
 	attachDevice(t, ws, homeID, deviceID)
-	daemonLog := filepath.Join(h.root, "logs", "live-daily-recovery-daemon.log")
-	daemon := startProc(t, "live-daily-recovery-daemon", filepath.Join(e2eBinDir, "atoll-daemon"), []string{
+	firstDaemonLog := filepath.Join(h.root, "logs", "live-daily-recovery-daemon-1.log")
+	daemonArgs := []string{
 		"--server", fmt.Sprintf("ws://127.0.0.1:%d/compute", h.port), "--key", stringField(t, device, "key"),
 		"--name", deviceName, "--home", filepath.Join(h.root, "live-daily-recovery-daemon"),
-	}, h.env, filepath.Join(h.root, "work"), daemonLog)
+	}
+	firstDaemon := startProc(t, "live-daily-recovery-daemon-1", filepath.Join(e2eBinDir, "atoll-daemon"), daemonArgs,
+		h.env, filepath.Join(h.root, "work"), firstDaemonLog)
 
 	const contentRef = "recipe://e2e-live-daily-recovery-listing"
 	specBytes, _ := json.Marshal(spec)
@@ -86,7 +92,8 @@ func TestRecruitingLiveDailyRecoveryThroughAtoll(t *testing.T) {
 		"config": map[string]any{
 			"executor_id":           "tool:" + executorName,
 			"executors":             []map[string]any{{"actor_id": "tool:" + executorName, "capability": "http.fetch"}},
-			"reconcile_interval_ms": 500, "daily_schedule_enabled": false,
+			"reconcile_interval_ms": 500, "attempt_stale_after_ms": 10000,
+			"attempt_recovery_limit": 20, "daily_schedule_enabled": false,
 		}, "visibility": "private",
 	})
 	controlIntro := ws.request(homeID, "system.member.create", systemActor, map[string]any{"decl_id": controlName})
@@ -110,12 +117,13 @@ func TestRecruitingLiveDailyRecoveryThroughAtoll(t *testing.T) {
 		"decl_id": executorName, "desired_host": deviceID,
 	})
 	executorID := stringField(t, executorIntro, "member")
-	waitActorPresenceInChannel(t, ws, homeID, executorID, daemon, daemonLog)
+	waitActorPresenceInChannel(t, ws, homeID, executorID, firstDaemon, firstDaemonLog)
 
 	before := ws.request(homeID, "recruiting.daily_run.summary", controlID,
 		map[string]any{"id": daily.DailyRunID, "limit": 10})
 	assertDailyRecoveryProgress(t, before, 1, 0)
 	source := ws.request(homeID, "recruiting.source.get", controlID, map[string]any{"id": sourceID})
+	ackGate := installLiveResultAcknowledgementGate(t, runtimeDSN)
 	created := ws.request(homeID, "recruiting.run.production", controlID, map[string]any{
 		"command_id": "e2e-live-daily-recovery-create", "run_id": "e2e-live-daily-recovery-run",
 		"work_id": "e2e-live-daily-recovery-work", "recovery_of_occurrence_id": original.OccurrenceID,
@@ -127,11 +135,35 @@ func TestRecruitingLiveDailyRecoveryThroughAtoll(t *testing.T) {
 		t.Fatalf("live daily recovery lost occurrence lineage: %v", created)
 	}
 	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 20})
+	ackGate.waitBlocked(t, 30*time.Second, firstDaemonLog, h.server.logPath)
+	firstAttempt := liveDailyRecoveryLatestAttempt(t, runtimeDSN)
+	// The control transaction is waiting on the test-only MySQL gate. Stop the
+	// daemon without closing its carrier, release the transaction to commit,
+	// observe the durable receipt/page, and only then kill the process. This
+	// makes "committed but response not processed" deterministic.
+	if err := syscall.Kill(-firstDaemon.cmd.Process.Pid, syscall.SIGSTOP); err != nil {
+		t.Fatalf("pause daemon before result acknowledgement: %v", err)
+	}
+	ackGate.release(t)
+	ackGate.waitCommitted(t, 30*time.Second)
+	firstDaemon.kill9(t)
+
+	time.Sleep(10500 * time.Millisecond)
+	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 20})
+	waitLiveDailyRecoveryAttemptStatus(t, runtimeDSN, firstAttempt, model.AttemptExpired, 10*time.Second)
+	secondDaemonLog := filepath.Join(h.root, "logs", "live-daily-recovery-daemon-2.log")
+	secondDaemon := startProc(t, "live-daily-recovery-daemon-2", filepath.Join(e2eBinDir, "atoll-daemon"), daemonArgs,
+		h.env, filepath.Join(h.root, "work"), secondDaemonLog)
+	waitActorPresenceInChannel(t, ws, homeID, executorID, secondDaemon, secondDaemonLog)
+	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 20})
 	work, attempt := waitLiveDailyRecoveryWork(t, runtimeDSN, "e2e-live-daily-recovery-work", 150*time.Second,
-		daemonLog, h.server.logPath)
+		firstDaemonLog, secondDaemonLog, h.server.logPath)
 	if work.Status != model.WorkCompleted || work.Resolution != model.ResolutionSucceeded ||
 		attempt != string(model.AttemptSucceeded) {
 		t.Fatalf("live daily recovery work=%+v attempt=%s", work, attempt)
+	}
+	if latest := liveDailyRecoveryLatestAttempt(t, runtimeDSN); latest == firstAttempt {
+		t.Fatalf("lost-response recovery reused expired Attempt %s", firstAttempt)
 	}
 	after := ws.request(homeID, "recruiting.daily_run.summary", controlID,
 		map[string]any{"id": daily.DailyRunID, "limit": 10})
@@ -144,6 +176,164 @@ func TestRecruitingLiveDailyRecoveryThroughAtoll(t *testing.T) {
 		t.Fatalf("live recovery rewrote original occurrence: %v", after)
 	}
 	assertLiveDailyRecoveryFacts(t, runtimeDSN, daily, original)
+}
+
+func liveDailyRecoveryLatestAttempt(t *testing.T, dsn string) string {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var attemptID string
+	if err := db.QueryRow(`SELECT attempt_id FROM recruiting_attempts
+WHERE work_id = 'e2e-live-daily-recovery-work' ORDER BY created_at DESC LIMIT 1`).Scan(&attemptID); err != nil {
+		t.Fatal(err)
+	}
+	return attemptID
+}
+
+func waitLiveDailyRecoveryAttemptStatus(t *testing.T, dsn, attemptID string, want model.AttemptStatus,
+	timeout time.Duration) {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var status string
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		if err := db.QueryRow(`SELECT attempt_status FROM recruiting_attempts WHERE attempt_id = ?`, attemptID).Scan(&status); err == nil &&
+			status == string(want) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("Attempt %s status=%s want=%s", attemptID, status, want)
+}
+
+type liveResultAcknowledgementGate struct {
+	holder   *sql.Conn
+	observer *sql.DB
+	admin    *sql.DB
+	lockName string
+	signal   string
+	released bool
+}
+
+func installLiveResultAcknowledgementGate(t *testing.T, runtimeDSN string) *liveResultAcknowledgementGate {
+	t.Helper()
+	// startRecruitingMySQL creates this exact pair of per-test, non-root
+	// credentials. The migrator owns only this ephemeral schema; runtime still
+	// performs every product DML operation.
+	migrationDSN := strings.Replace(runtimeDSN,
+		"staircase_runtime:e2e_runtime_", "staircase_migrator:e2e_migration_", 1)
+	if migrationDSN == runtimeDSN {
+		t.Fatal("derive non-root migration DSN for acknowledgement fault gate")
+	}
+	admin, err := store.Open(migrationDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer, err := store.Open(runtimeDSN)
+	if err != nil {
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+	const lockName = "recruiting_e2e_result_ack_gate"
+	const signalName = "recruiting_e2e_result_ack_reached"
+	if _, err := admin.Exec(`CREATE TRIGGER recruiting_e2e_result_ack_gate
+AFTER INSERT ON recruiting_command_receipts
+FOR EACH ROW
+BEGIN
+  IF NEW.word_name LIKE 'recruiting.execution.result%' THEN
+    DO GET_LOCK('recruiting_e2e_result_ack_reached', 0);
+    DO GET_LOCK('recruiting_e2e_result_ack_gate', 30);
+    DO RELEASE_LOCK('recruiting_e2e_result_ack_reached');
+    DO RELEASE_LOCK('recruiting_e2e_result_ack_gate');
+  END IF;
+END`); err != nil {
+		_ = observer.Close()
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+	holder, err := observer.Conn(context.Background())
+	if err != nil {
+		_ = observer.Close()
+		_ = admin.Close()
+		t.Fatal(err)
+	}
+	var acquired int
+	if err := holder.QueryRowContext(context.Background(), `SELECT GET_LOCK(?, 0)`, lockName).Scan(&acquired); err != nil || acquired != 1 {
+		_ = holder.Close()
+		_ = observer.Close()
+		_ = admin.Close()
+		t.Fatalf("acquire acknowledgement gate: acquired=%d err=%v", acquired, err)
+	}
+	gate := &liveResultAcknowledgementGate{holder: holder, observer: observer, admin: admin,
+		lockName: lockName, signal: signalName}
+	t.Cleanup(func() {
+		if !gate.released {
+			var ignored sql.NullInt64
+			_ = gate.holder.QueryRowContext(context.Background(), `SELECT RELEASE_LOCK(?)`, gate.lockName).Scan(&ignored)
+		}
+		_ = gate.holder.Close()
+		_ = gate.observer.Close()
+		_, _ = gate.admin.Exec(`DROP TRIGGER IF EXISTS recruiting_e2e_result_ack_gate`)
+		_ = gate.admin.Close()
+	})
+	return gate
+}
+
+func (g *liveResultAcknowledgementGate) waitBlocked(t *testing.T, timeout time.Duration, logPaths ...string) {
+	t.Helper()
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		var owner sql.NullInt64
+		if err := g.observer.QueryRow(`SELECT IS_USED_LOCK(?)`, g.signal).Scan(&owner); err == nil && owner.Valid {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	var workStatus, attemptStatus, receiptWords string
+	diagnosticErr := g.observer.QueryRow(`SELECT
+  COALESCE((SELECT status FROM recruiting_works WHERE work_id = 'e2e-live-daily-recovery-work'), ''),
+  COALESCE((SELECT attempt_status FROM recruiting_attempts
+            WHERE work_id = 'e2e-live-daily-recovery-work' ORDER BY created_at DESC LIMIT 1), ''),
+  COALESCE((SELECT GROUP_CONCAT(CONCAT(word_name, ':', command_id) ORDER BY committed_at)
+            FROM recruiting_command_receipts), '')`).Scan(&workStatus, &attemptStatus, &receiptWords)
+	logs := ""
+	for _, path := range logPaths {
+		logs += "\n" + path + ":\n" + tailLog(path, 100)
+	}
+	t.Fatalf("result transaction did not reach the acknowledgement fault gate: work=%s attempt=%s receipts=%s diagnostic_err=%v%s",
+		workStatus, attemptStatus, receiptWords, diagnosticErr, logs)
+}
+
+func (g *liveResultAcknowledgementGate) release(t *testing.T) {
+	t.Helper()
+	var released sql.NullInt64
+	if err := g.holder.QueryRowContext(context.Background(), `SELECT RELEASE_LOCK(?)`, g.lockName).Scan(&released); err != nil ||
+		!released.Valid || released.Int64 != 1 {
+		t.Fatalf("release acknowledgement gate: released=%v err=%v", released, err)
+	}
+	g.released = true
+}
+
+func (g *liveResultAcknowledgementGate) waitCommitted(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		var receipts, pages int
+		err := g.observer.QueryRow(`SELECT
+  (SELECT COUNT(*) FROM recruiting_command_receipts
+   WHERE word_name LIKE 'recruiting.execution.result%'),
+  (SELECT COUNT(*) FROM recruiting_listing_page_progress
+   WHERE work_id = 'e2e-live-daily-recovery-work')`).Scan(&receipts, &pages)
+		if err == nil && receipts == 1 && pages == 1 {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("business result did not commit after acknowledgement gate release")
 }
 
 func seedLiveDailyRecoveryDetailAssignment(t *testing.T, dsn, sourceID, contentRef string,

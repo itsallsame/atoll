@@ -23,11 +23,15 @@
       "result": "pass",
       "environment": "ephemeral MySQL 8.4 with separate non-root migration and runtime accounts",
       "observed_seconds": 8.6
+    },
+    {
+      "command": "ATOLL_RECRUITING_LIVE_E2E=1 go test ./e2e -run '^TestRecruitingLiveDailyRecoveryThroughAtoll$' -count=1 -v -timeout 240s",
+      "result": "pass",
+      "environment": "real Atoll Server, two daemon lifetimes, ordinary operator, public read-only Greenhouse board, ephemeral MySQL 8.4 non-root fault gate",
+      "observed_seconds": 41.308
     }
   ],
-  "limitations": [
-    "the real Server-to-daemon socket has not yet been forcibly cut after commit and before acknowledgement"
-  ],
+  "limitations": [],
   "third_party_writes": false,
   "atoll_core_modified": false
 }

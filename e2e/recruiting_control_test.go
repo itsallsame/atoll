@@ -670,7 +670,7 @@ func startRecruitingMySQL(t *testing.T) string {
 		"-e", "MYSQL_DATABASE="+databaseName, "-e", "MYSQL_USER=staircase_migrator",
 		"-e", "MYSQL_PASSWORD="+migrationPassword,
 		"-v", initSQL+":/docker-entrypoint-initdb.d/10-runtime.sql:ro",
-		"mysql:8.4", "--default-time-zone=+00:00")
+		"mysql:8.4", "--default-time-zone=+00:00", "--log-bin-trust-function-creators=1")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("start recruiting MySQL: %v\n%s", err, output)
 	}

@@ -4,7 +4,7 @@
   "target": "https://boards-api.greenhouse.io/v1/boards/acuitymd/jobs",
   "access": "public read-only GET",
   "test": "TestRecruitingLiveDailyRecoveryThroughAtoll",
-  "duration_seconds": 16.03,
+  "duration_seconds": 41.308,
   "execution": {
     "atoll_server": true,
     "daemon_executor": true,
@@ -13,6 +13,15 @@
     "checkpoint_strategy": "frontier_keys",
     "active_detail_assignment_required": true,
     "operator_command": "recruiting.run.production"
+  },
+  "result_response_fault": {
+    "cut": "listing page transaction reached a non-root MySQL named-lock gate; daemon was SIGSTOPed, the gate was released until receipt and page facts committed, then the still-stopped daemon was SIGKILLed before it could process the response",
+    "fault_gate_scope": "ephemeral test schema only",
+    "root_database_identity_used": false,
+    "first_attempt_status": "expired",
+    "retry_attempt_is_distinct": true,
+    "first_cut_receipt_count": 1,
+    "first_cut_page_progress_count": 1
   },
   "observed_results": {
     "work_status": "completed",
