@@ -116,6 +116,17 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 	if _, err := repository.StartListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID, offer.Attempt.ExecutorIncarnation, now.Add(3*time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	currentSource, err := repository.GetSource(ctx, source.SourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainingSource, err := currentSource.Pause(currentSource.Version, model.PauseDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateSourceCAS(ctx, currentSource.Version, drainingSource, now.Add(3500*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
 	failedOffer := offer
 	staleArtifact, _ := model.NewArtifactMetadata("executable-baseline-stale-page", model.ArtifactPage,
 		"sha256:baseline-stale-page", "object://baseline/stale-page", work.WorkID, failedOffer.Attempt.AttemptID,
@@ -133,6 +144,17 @@ func TestExecutableBaselineCreatesCheckpointFromStagedPages(t *testing.T) {
 		PageSequence: 1, ResumeCursor: "page-2", Artifact: staleArtifact,
 		Observations: []model.ListingObservation{staleObservation}, ObservedAt: now.Add(4 * time.Second)}); err != nil || page.Progress.PageSequence != 1 {
 		t.Fatalf("stage failed baseline attempt page=%+v %v", page, err)
+	}
+	currentSource, err = repository.GetSource(ctx, source.SourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedSource, err := currentSource.Resume(currentSource.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateSourceCAS(ctx, currentSource.Version, resumedSource, now.Add(4500*time.Millisecond)); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := repository.FailListingExecution(ctx, failedOffer.Attempt.AttemptID, failedOffer.Attempt.ExecutorActorID,
 		failedOffer.Attempt.ExecutorIncarnation, "executor_crash", now.Add(5*time.Second)); err != nil {

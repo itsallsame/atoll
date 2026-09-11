@@ -559,6 +559,17 @@ func TestLiveBackfillResultCreatesIndependentOutputWithoutChangingJobOrCheckpoin
 	if err != nil {
 		t.Fatal(err)
 	}
+	currentSource, err := repository.GetSource(ctx, fixture.source.SourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drainingSource, err := currentSource.Pause(currentSource.Version, model.PauseDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateSourceCAS(ctx, currentSource.Version, drainingSource, now.Add(4500*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
 	jobBefore, _ := repository.GetJob(ctx, fixture.job.JobID)
 	var checkpointsBefore int
 	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_checkpoints").Scan(&checkpointsBefore)
@@ -575,6 +586,17 @@ func TestLiveBackfillResultCreatesIndependentOutputWithoutChangingJobOrCheckpoin
 	if err != nil || outcome.Backfill.Status != model.BackfillCompleted || outcome.Output.ClaimsHistoricalSnapshot ||
 		outcome.Output.RefetchedAt == "" || outcome.ParentWork == nil || outcome.ParentWork.Status != model.WorkCompleted {
 		t.Fatalf("live result=%+v err=%v", outcome, err)
+	}
+	currentSource, err = repository.GetSource(ctx, fixture.source.SourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedSource, err := currentSource.Resume(currentSource.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateSourceCAS(ctx, currentSource.Version, resumedSource, now.Add(5500*time.Millisecond)); err != nil {
+		t.Fatal(err)
 	}
 	jobAfter, _ := repository.GetJob(ctx, fixture.job.JobID)
 	var checkpointsAfter, detailVersions, outputs int

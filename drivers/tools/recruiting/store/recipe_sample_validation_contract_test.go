@@ -87,6 +87,19 @@ func TestDetailRecipeValidationRecordsEvidenceWithoutPublishingJobData(t *testin
 		offer.Attempt.ExecutorIncarnation, now); err != nil {
 		t.Fatal(err)
 	}
+	// A drain is operational control, not a configuration change: the accepted
+	// in-flight validation result remains valid against its original fence.
+	currentSource, err := repository.GetSource(ctx, source.SourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draining, err := currentSource.Pause(currentSource.Version, model.PauseDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateSourceCAS(ctx, currentSource.Version, draining, now.Add(500*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
 	response := mustResultArtifact(t, "detail-validation-response", model.ArtifactResponse, work.WorkID, offer.Attempt.AttemptID)
 	trace := mustResultArtifact(t, "detail-validation-trace", model.ArtifactTrace, work.WorkID, offer.Attempt.AttemptID)
 	result := RecipeSampleValidationResult{CommandID: "detail-validation-result", RequestHash: "sha256:detail-validation-result",

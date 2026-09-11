@@ -98,17 +98,30 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 	}
 	var currentFence model.AttemptFence
 	if validation {
-		currentFence, err = loadSourceValidationOfferFence(ctx, tx, run, attempt.ProfileID)
+		currentFence, err = loadSourceValidationOfferFence(ctx, tx, run, attempt.ProfileID, true)
 	} else if recipeValidation {
-		currentFence, err = loadRecipeValidationOfferFence(ctx, tx, run, attempt.ProfileID)
+		currentFence, err = loadRecipeValidationOfferFence(ctx, tx, run, attempt.ProfileID, true)
 	} else {
 		_, currentFence, err = loadStandaloneListingOfferFence(ctx, tx, run, attempt.ProfileID, true)
 	}
 	if err != nil {
-		return DiagnosticResultOutcome{}, err
+		_ = tx.Rollback()
+		if artifactErr := r.saveRejectedArtifacts(ctx, input.Artifacts, input.CompletedAt); artifactErr != nil {
+			return DiagnosticResultOutcome{}, fmt.Errorf("%w: %v; also failed to retain rejected Artifacts: %v",
+				ErrResultFenced, err, artifactErr)
+		}
+		return DiagnosticResultOutcome{}, fmt.Errorf("%w: %v", ErrResultFenced, err)
 	}
 	if err := canAcceptResultTx(ctx, tx, attempt, work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
-		return DiagnosticResultOutcome{}, err
+		// Fence loss rejects every business mutation while retaining the bounded
+		// page/trace evidence for operations. Roll back first so the independent
+		// Artifact transaction cannot wait on locks held by this result.
+		_ = tx.Rollback()
+		if artifactErr := r.saveRejectedArtifacts(ctx, input.Artifacts, input.CompletedAt); artifactErr != nil {
+			return DiagnosticResultOutcome{}, fmt.Errorf("%w: %v; also failed to retain rejected Artifacts: %v",
+				ErrResultFenced, err, artifactErr)
+		}
+		return DiagnosticResultOutcome{}, fmt.Errorf("%w: %v", ErrResultFenced, err)
 	}
 	succeededAttempt, err := attempt.Succeed()
 	if err != nil {

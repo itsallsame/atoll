@@ -79,6 +79,18 @@ func TestDiagnosticRunExecutesWithEvidenceAndNoBusinessWrites(t *testing.T) {
 	if _, err := repository.StartListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID, offer.Attempt.ExecutorIncarnation, now); err != nil {
 		t.Fatal(err)
 	}
+	// Drain stops new claims without invalidating this already-issued Attempt.
+	currentSource, err := repository.GetSource(ctx, source.SourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draining, err := currentSource.Pause(currentSource.Version, model.PauseDrain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateSourceCAS(ctx, currentSource.Version, draining, now.Add(500*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
 	page := mustResultArtifact(t, "diagnostic-page", model.ArtifactPage, work.WorkID, offer.Attempt.AttemptID)
 	trace := mustResultArtifact(t, "diagnostic-trace", model.ArtifactTrace, work.WorkID, offer.Attempt.AttemptID)
 	quality := executioncontract.ListingQuality{IdentityComplete: true, OrderingContractHeld: true, PaginationStable: true,

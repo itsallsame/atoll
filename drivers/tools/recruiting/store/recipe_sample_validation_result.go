@@ -96,12 +96,26 @@ func (r *Repository) AcceptRecipeSampleValidationResult(ctx context.Context,
 	if err := ensureBudgetPermitActiveTx(ctx, tx, attempt.AttemptID, input.CompletedAt); err != nil {
 		return RecipeSampleValidationOutcome{}, err
 	}
-	fence, err := loadRecipeSampleValidationOfferFence(ctx, tx, run, attempt.ProfileID)
+	fence, err := loadRecipeSampleValidationOfferFence(ctx, tx, run, attempt.ProfileID, true)
 	if err != nil {
-		return RecipeSampleValidationOutcome{}, err
+		_ = tx.Rollback()
+		if artifactErr := r.saveRejectedArtifacts(ctx, input.Artifacts, input.CompletedAt); artifactErr != nil {
+			return RecipeSampleValidationOutcome{}, fmt.Errorf("%w: %v; also failed to retain rejected Artifacts: %v",
+				ErrResultFenced, err, artifactErr)
+		}
+		return RecipeSampleValidationOutcome{}, fmt.Errorf("%w: %v", ErrResultFenced, err)
 	}
 	if err := canAcceptResultTx(ctx, tx, attempt, work, fence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
-		return RecipeSampleValidationOutcome{}, err
+		// Release the aggregate locks before retaining diagnostic evidence in a
+		// separate transaction. A canceled or reconfigured scope must not accept
+		// business facts, but the executor's bounded evidence remains useful to
+		// an operator investigating why the result lost its fence.
+		_ = tx.Rollback()
+		if artifactErr := r.saveRejectedArtifacts(ctx, input.Artifacts, input.CompletedAt); artifactErr != nil {
+			return RecipeSampleValidationOutcome{}, fmt.Errorf("%w: %v; also failed to retain rejected Artifacts: %v",
+				ErrResultFenced, err, artifactErr)
+		}
+		return RecipeSampleValidationOutcome{}, fmt.Errorf("%w: %v", ErrResultFenced, err)
 	}
 	succeededAttempt, err := attempt.Succeed()
 	if err != nil {

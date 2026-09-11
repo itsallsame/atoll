@@ -127,7 +127,7 @@ func (e listingResultExecution) currentFence(ctx context.Context, tx *sql.Tx, pr
 		if err != nil {
 			return model.AttemptFence{}, err
 		}
-		_, fence, err := loadBaselineOfferFence(ctx, tx, work, placement)
+		_, fence, err := loadBaselineOfferFence(ctx, tx, work, placement, true)
 		return fence, err
 	}
 	return model.AttemptFence{}, ErrNotFound

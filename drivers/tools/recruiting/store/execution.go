@@ -311,22 +311,22 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	case "source_validation":
 		listingRun, err = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
 		if err == nil {
-			fence, err = loadSourceValidationOfferFence(ctx, tx, listingRun, placement.ProfileID)
+			fence, err = loadSourceValidationOfferFence(ctx, tx, listingRun, placement.ProfileID, false)
 		}
 	case "recipe_validation":
 		listingRun, err = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
 		if errors.Is(err, ErrNotFound) {
 			recipeSampleValidation, err = getRecipeSampleValidationByWorkWith(ctx, tx, work.WorkID, true)
 			if err == nil {
-				fence, err = loadRecipeSampleValidationOfferFence(ctx, tx, recipeSampleValidation, placement.ProfileID)
+				fence, err = loadRecipeSampleValidationOfferFence(ctx, tx, recipeSampleValidation, placement.ProfileID, false)
 			}
 		} else if err == nil {
-			fence, err = loadRecipeValidationOfferFence(ctx, tx, listingRun, placement.ProfileID)
+			fence, err = loadRecipeValidationOfferFence(ctx, tx, listingRun, placement.ProfileID, false)
 		}
 	case "detail_sync":
 		detail, fence, err = loadDetailOfferFence(ctx, tx, work, placement, allowPausedCausal)
 	case "historical_backfill_item":
-		backfillInput, fence, err = loadBackfillOfferFence(ctx, tx, work, placement)
+		backfillInput, fence, err = loadBackfillOfferFence(ctx, tx, work, placement, false)
 	case "company_import":
 		companyImport, err = getCompanyImportByWorkWith(ctx, tx, work.WorkID, true)
 		if err == nil {
@@ -345,7 +345,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	case "source_discovery":
 		discovery, discoveryRecipe, fence, err = loadSourceDiscoveryOfferFence(ctx, tx, work, placement, allowPausedCausal)
 	case "baseline_listing":
-		baseline, fence, err = loadBaselineOfferFence(ctx, tx, work, placement)
+		baseline, fence, err = loadBaselineOfferFence(ctx, tx, work, placement, false)
 	case "profile_repair":
 		profileRepair, fence, err = loadProfileRepairOfferFence(ctx, tx, work, placement,
 			request.ExecutorActorID, request.OfferedAt)
@@ -717,8 +717,8 @@ WHERE s.source_id = ?`, occurrence.SourceID).Scan(&companyState, &sourceState, &
 		return nil, model.AttemptFence{}, err
 	}
 	snapshot := occurrence.ListingExecution
-	if (!acceptPausedResult && (company.Version != occurrence.CompanyVersion || company.OnboardingStatus != model.CompanyReady || company.ControlStatus != model.ControlActive ||
-		source.Version != occurrence.SourceVersion || source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy)) ||
+	if (!acceptPausedResult && (company.OnboardingStatus != model.CompanyReady || company.ControlStatus != model.ControlActive ||
+		source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy)) ||
 		assignment != snapshot.Assignment || recipe.Status != model.RecipeActive || recipe.RecipeID != snapshot.RecipeID ||
 		recipe.Version != snapshot.RecipeVersion || recipe.ContentHash != snapshot.ContentHash || recipe.ContractHash != snapshot.ContractHash || recipe.Execution != snapshot.Execution {
 		return nil, model.AttemptFence{}, fmt.Errorf("listing work is fenced by changed or unavailable cutoff configuration")
@@ -777,8 +777,10 @@ func loadStandaloneListingOfferFence(ctx context.Context, tx *sql.Tx, run model.
 	// started it while a scheduled run advances the current checkpoint. All
 	// executable code and aggregate versions must still remain identical.
 	expected.Checkpoint, expected.CheckpointVersion = run.Checkpoint, run.CheckpointVersion
-	if (!acceptPausedResult && (expected.CompanyVersion != run.CompanyVersion || expected.SourceVersion != run.SourceVersion)) ||
-		!reflect.DeepEqual(expected.ListingExecution, run.ListingExecution) {
+	// Aggregate versions also move for health and operator control. The
+	// separated configuration/execution columns are the authority fence.
+	expected.CompanyVersion, expected.SourceVersion = run.CompanyVersion, run.SourceVersion
+	if !reflect.DeepEqual(expected.ListingExecution, run.ListingExecution) {
 		return nil, model.AttemptFence{}, fmt.Errorf("standalone listing run is fenced by changed source or recipe")
 	}
 	fence := model.AttemptFence{CompanyVersion: run.CompanyVersion, SourceVersion: run.SourceVersion,
@@ -801,7 +803,8 @@ func loadStandaloneListingOfferFence(ctx context.Context, tx *sql.Tx, run model.
 	return run.Checkpoint, fence, nil
 }
 
-func loadSourceValidationOfferFence(ctx context.Context, tx *sql.Tx, run model.ListingRun, profileID string) (model.AttemptFence, error) {
+func loadSourceValidationOfferFence(ctx context.Context, tx *sql.Tx, run model.ListingRun, profileID string,
+	acceptPausedResult bool) (model.AttemptFence, error) {
 	if run.Mode != model.ListingRunValidation || run.Checkpoint != nil || run.CheckpointVersion != 0 ||
 		(run.Status != model.ListingRunQueued && run.Status != model.ListingRunRunning) {
 		return model.AttemptFence{}, fmt.Errorf("source validation run is not executable")
@@ -811,8 +814,7 @@ func loadSourceValidationOfferFence(ctx context.Context, tx *sql.Tx, run model.L
 	if err != nil {
 		return model.AttemptFence{}, err
 	}
-	if current.Source.ReadinessStatus != model.SourceValidating || current.Source.Version != run.SourceVersion ||
-		current.Company.Version != run.CompanyVersion {
+	if !acceptPausedResult && current.Source.ReadinessStatus != model.SourceValidating {
 		return model.AttemptFence{}, fmt.Errorf("source validation run is fenced by changed aggregate state")
 	}
 	execution, err := model.NewCandidateListingExecutionSnapshot(current.Source, current.Recipe,
@@ -840,7 +842,8 @@ func loadSourceValidationOfferFence(ctx context.Context, tx *sql.Tx, run model.L
 	return fence, nil
 }
 
-func loadRecipeValidationOfferFence(ctx context.Context, tx *sql.Tx, run model.ListingRun, profileID string) (model.AttemptFence, error) {
+func loadRecipeValidationOfferFence(ctx context.Context, tx *sql.Tx, run model.ListingRun, profileID string,
+	acceptPausedResult bool) (model.AttemptFence, error) {
 	if run.Mode != model.ListingRunRecipeValidation || run.Checkpoint != nil || run.CheckpointVersion != 0 ||
 		(run.Status != model.ListingRunQueued && run.Status != model.ListingRunRunning) {
 		return model.AttemptFence{}, fmt.Errorf("Recipe validation run is not executable")
@@ -868,10 +871,10 @@ WHERE s.source_id = ? FOR UPDATE`, run.ListingExecution.RecipeID, run.ListingExe
 			return model.AttemptFence{}, err
 		}
 	}
-	if company.Version != run.CompanyVersion || company.OnboardingStatus != model.CompanyReady ||
-		company.ControlStatus != model.ControlActive || source.Version != run.SourceVersion ||
+	if (!acceptPausedResult && (company.OnboardingStatus != model.CompanyReady ||
+		company.ControlStatus != model.ControlActive ||
 		source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive ||
-		source.HealthStatus != model.HealthHealthy || source.ListingAssignment == nil ||
+		source.HealthStatus != model.HealthHealthy)) || source.ListingAssignment == nil ||
 		!reflect.DeepEqual(*source.ListingAssignment, currentAssignment) || recipe.Status != model.RecipeValidating ||
 		recipe.Kind != model.RecipeListing || recipe.ContentHash != run.ListingExecution.ContentHash ||
 		recipe.ContractHash != run.ListingExecution.ContractHash || recipe.Execution != run.ListingExecution.Execution {
@@ -903,13 +906,13 @@ WHERE s.source_id = ? FOR UPDATE`, run.ListingExecution.RecipeID, run.ListingExe
 }
 
 func loadRecipeSampleValidationOfferFence(ctx context.Context, tx *sql.Tx, run model.RecipeSampleValidation,
-	profileID string) (model.AttemptFence, error) {
+	profileID string, acceptPausedResult bool) (model.AttemptFence, error) {
 	if err := run.Validate(); err != nil || (run.Status != model.RecipeSampleValidationQueued &&
 		run.Status != model.RecipeSampleValidationRunning) {
 		return model.AttemptFence{}, fmt.Errorf("Recipe sample validation run is not executable")
 	}
 	if run.RecipeKind == model.RecipeDiscovery {
-		return loadDiscoveryRecipeValidationOfferFence(ctx, tx, run, profileID)
+		return loadDiscoveryRecipeValidationOfferFence(ctx, tx, run, profileID, acceptPausedResult)
 	}
 	var companyState, sourceState, assignmentState, recipeState, jobState []byte
 	err := tx.QueryRowContext(ctx, `SELECT c.state_json, s.state_json, a.state_json, r.state_json, j.state_json
@@ -941,10 +944,10 @@ WHERE s.source_id = ? FOR UPDATE`, run.Candidate.RecipeID, run.Candidate.Version
 	if mode == "" {
 		mode = model.RecipeSampleValidationCandidate
 	}
-	if company.Version != run.CompanyVersion || company.OnboardingStatus != model.CompanyReady ||
-		company.ControlStatus != model.ControlActive || source.Version != run.SourceVersion ||
+	if (!acceptPausedResult && (company.OnboardingStatus != model.CompanyReady ||
+		company.ControlStatus != model.ControlActive ||
 		source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive ||
-		source.HealthStatus != model.HealthHealthy || source.DetailAssignment == nil ||
+		source.HealthStatus != model.HealthHealthy)) || source.DetailAssignment == nil ||
 		!reflect.DeepEqual(*source.DetailAssignment, assignment) || recipe != run.Candidate ||
 		(mode == model.RecipeSampleValidationCandidate && recipe.Status != model.RecipeValidating) ||
 		(mode == model.RecipeSampleValidationRollout && recipe.Status != model.RecipeActive) ||
@@ -979,7 +982,7 @@ WHERE s.source_id = ? FOR UPDATE`, run.Candidate.RecipeID, run.Candidate.Version
 }
 
 func loadDiscoveryRecipeValidationOfferFence(ctx context.Context, tx *sql.Tx, run model.RecipeSampleValidation,
-	profileID string) (model.AttemptFence, error) {
+	profileID string, acceptPausedResult bool) (model.AttemptFence, error) {
 	var companyState, recipeState []byte
 	if err := tx.QueryRowContext(ctx, `SELECT c.state_json, r.state_json FROM recruiting_companies c
 JOIN recruiting_recipes r ON r.recipe_id = ? AND r.recipe_version = ?
@@ -995,7 +998,7 @@ WHERE c.company_id = ? FOR UPDATE`, run.Candidate.RecipeID, run.Candidate.Versio
 	if err := json.Unmarshal(recipeState, &recipe); err != nil {
 		return model.AttemptFence{}, err
 	}
-	if company.Version != run.CompanyVersion || company.ControlStatus != model.ControlActive ||
+	if (!acceptPausedResult && company.ControlStatus != model.ControlActive) ||
 		company.Website != run.EndpointURL || recipe != run.Candidate || recipe.Status != model.RecipeValidating {
 		return model.AttemptFence{}, fmt.Errorf("Discovery Recipe validation is fenced by changed Company or candidate")
 	}
@@ -1014,7 +1017,8 @@ WHERE c.company_id = ? FOR UPDATE`, run.Candidate.RecipeID, run.Candidate.Versio
 	return fence, nil
 }
 
-func loadBaselineOfferFence(ctx context.Context, tx *sql.Tx, work model.Work, placement WorkPlacement) (model.BaselineGeneration, model.AttemptFence, error) {
+func loadBaselineOfferFence(ctx context.Context, tx *sql.Tx, work model.Work, placement WorkPlacement,
+	acceptPausedResult bool) (model.BaselineGeneration, model.AttemptFence, error) {
 	if work.Purpose != "baseline_listing" || work.TargetType != "source" {
 		return model.BaselineGeneration{}, model.AttemptFence{}, fmt.Errorf("baseline requires source listing Work")
 	}
@@ -1031,7 +1035,19 @@ WHERE work_id = ? FOR UPDATE`, work.WorkID).Scan(&state); err != nil {
 	if err != nil {
 		return model.BaselineGeneration{}, model.AttemptFence{}, err
 	}
-	expected, err := model.NewExecutableBaselineGeneration(work.WorkID, preparation.Company, preparation.Source,
+	companyForFence, sourceForFence := preparation.Company, preparation.Source
+	companyForFence.Version = baseline.CompanyVersion
+	sourceForFence.Version = baseline.SourceVersion
+	if acceptPausedResult {
+		// Operational state/version changes are checked by the separated scope
+		// fences. Rebuild the immutable execution snapshot with the versions
+		// frozen by this Baseline so drain and health updates do not masquerade as
+		// configuration changes.
+		companyForFence.ControlStatus = model.ControlActive
+		sourceForFence.ControlStatus = model.ControlActive
+		sourceForFence.HealthStatus = model.HealthHealthy
+	}
+	expected, err := model.NewExecutableBaselineGeneration(work.WorkID, companyForFence, sourceForFence,
 		baseline.Generation, preparation.Recipe)
 	if err != nil || !reflect.DeepEqual(expected, baseline) || baseline.ListingFinalized ||
 		placement.Capability != baseline.ListingExecution.Execution.RequiredCapability || placement.Origin != baseline.ListingExecution.Origin {
@@ -1134,7 +1150,7 @@ WHERE s.source_id = ?`, job.SourceID).Scan(&companyState, &sourceState, &assignm
 }
 
 func loadBackfillOfferFence(ctx context.Context, tx *sql.Tx, work model.Work,
-	placement WorkPlacement) (*executioncontract.BackfillInput, model.AttemptFence, error) {
+	placement WorkPlacement, acceptPausedResult bool) (*executioncontract.BackfillInput, model.AttemptFence, error) {
 	if work.TargetType != "backfill_item" || work.Purpose != "historical_backfill_item" {
 		return nil, model.AttemptFence{}, fmt.Errorf("backfill execution requires a historical backfill item Work")
 	}
@@ -1186,8 +1202,8 @@ WHERE company.company_id = ? AND source.source_id = ? AND job.job_id = ? FOR UPD
 		return nil, model.AttemptFence{}, err
 	}
 	origin, err := canonicalOrigin(item.DetailURL)
-	if err != nil || company.CompanyID != item.CompanyID || company.Version != item.CompanyVersion ||
-		source.SourceID != item.SourceID || source.CompanyID != item.CompanyID || source.Version != item.SourceVersion ||
+	if err != nil || company.CompanyID != item.CompanyID ||
+		source.SourceID != item.SourceID || source.CompanyID != item.CompanyID ||
 		job.JobID != item.JobID || job.SourceID != item.SourceID || job.Version != item.JobVersion ||
 		job.RefreshGeneration != item.RefreshGeneration || job.DetailURL != item.DetailURL ||
 		recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDetail ||
@@ -1232,9 +1248,9 @@ WHERE detail_version_id = ? AND job_id = ?`, item.InputDetailVersionID, item.Job
 		if item.InputDetailVersionID != "" || item.InputArtifactID != "" || item.InputObservedAt != "" {
 			return nil, model.AttemptFence{}, fmt.Errorf("live backfill cannot carry historical input lineage")
 		}
-		if company.ControlStatus != model.ControlActive || company.OnboardingStatus != model.CompanyReady ||
+		if !acceptPausedResult && (company.ControlStatus != model.ControlActive || company.OnboardingStatus != model.CompanyReady ||
 			source.ControlStatus != model.ControlActive || source.ReadinessStatus != model.SourceReady ||
-			source.HealthStatus != model.HealthHealthy {
+			source.HealthStatus != model.HealthHealthy) {
 			return nil, model.AttemptFence{}, fmt.Errorf("live backfill requires a ready active Company and healthy Source")
 		}
 	} else {
@@ -1310,7 +1326,7 @@ WHERE c.company_id = ?`, discovery.RecipeID, discovery.RecipeVersion, discovery.
 	origin, err := canonicalOrigin(discovery.SeedURL)
 	if err != nil || discovery.WorkID != work.WorkID || discovery.CompanyID != work.TargetID ||
 		(discovery.Status != model.SourceDiscoveryQueued && discovery.Status != model.SourceDiscoveryRunning) ||
-		(!acceptPausedResult && (company.Version != discovery.CompanyVersion || company.ControlStatus != model.ControlActive)) || company.Website != discovery.SeedURL ||
+		(!acceptPausedResult && company.ControlStatus != model.ControlActive) || company.Website != discovery.SeedURL ||
 		recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDiscovery || recipe.RecipeID != discovery.RecipeID ||
 		recipe.Version != discovery.RecipeVersion || recipe.ContentHash != discovery.RecipeContentHash ||
 		recipe.ContractHash != discovery.ContractHash || recipe.Execution != discovery.Execution ||
@@ -1603,17 +1619,17 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 		case "source_validation":
 			listingRun, fenceErr = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
 			if fenceErr == nil {
-				currentFence, fenceErr = loadSourceValidationOfferFence(ctx, tx, listingRun, attempt.ProfileID)
+				currentFence, fenceErr = loadSourceValidationOfferFence(ctx, tx, listingRun, attempt.ProfileID, true)
 			}
 		case "recipe_validation":
 			listingRun, fenceErr = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
 			if errors.Is(fenceErr, ErrNotFound) {
 				recipeSampleValidation, fenceErr = getRecipeSampleValidationByWorkWith(ctx, tx, work.WorkID, true)
 				if fenceErr == nil {
-					currentFence, fenceErr = loadRecipeSampleValidationOfferFence(ctx, tx, recipeSampleValidation, attempt.ProfileID)
+					currentFence, fenceErr = loadRecipeSampleValidationOfferFence(ctx, tx, recipeSampleValidation, attempt.ProfileID, true)
 				}
 			} else if fenceErr == nil {
-				currentFence, fenceErr = loadRecipeValidationOfferFence(ctx, tx, listingRun, attempt.ProfileID)
+				currentFence, fenceErr = loadRecipeValidationOfferFence(ctx, tx, listingRun, attempt.ProfileID, true)
 			}
 		case "detail_sync":
 			placement, placementErr := getWorkPlacementWith(ctx, tx, work.WorkID)
@@ -1627,7 +1643,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			if placementErr != nil {
 				fenceErr = placementErr
 			} else {
-				_, currentFence, fenceErr = loadBackfillOfferFence(ctx, tx, work, placement)
+				_, currentFence, fenceErr = loadBackfillOfferFence(ctx, tx, work, placement, true)
 			}
 		case "company_import":
 			var batch model.CompanyImport
@@ -1653,7 +1669,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			if placementErr != nil {
 				fenceErr = placementErr
 			} else {
-				_, currentFence, fenceErr = loadBaselineOfferFence(ctx, tx, work, placement)
+				_, currentFence, fenceErr = loadBaselineOfferFence(ctx, tx, work, placement, true)
 			}
 		case "profile_repair":
 			placement, placementErr := getWorkPlacementWith(ctx, tx, work.WorkID)

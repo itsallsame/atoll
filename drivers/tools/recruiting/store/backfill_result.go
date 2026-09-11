@@ -109,7 +109,7 @@ func (r *Repository) acceptBackfillResultTransaction(ctx context.Context,
 	if err != nil {
 		return BackfillResultOutcome{}, nil, err
 	}
-	offerInput, currentFence, err := loadBackfillOfferFence(ctx, tx, work, placement)
+	offerInput, currentFence, err := loadBackfillOfferFence(ctx, tx, work, placement, true)
 	if err != nil {
 		return BackfillResultOutcome{}, err, nil
 	}
