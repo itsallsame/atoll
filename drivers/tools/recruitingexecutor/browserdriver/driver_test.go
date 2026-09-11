@@ -81,7 +81,8 @@ func TestExecutePageKeepsProfileOpaqueAndSavesBeforeParsing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if broker.request.ProfileRef != "profile://device/profile-1" || len(sink.writes) != 1 || len(result.Document.Items) != 1 {
+	if broker.request.ProfileRef != "profile://device/profile-1" || broker.request.ProfileVersion != 1 ||
+		len(sink.writes) != 1 || len(result.Document.Items) != 1 {
 		t.Fatalf("browser boundary result=%+v request=%+v writes=%d", result, broker.request, len(sink.writes))
 	}
 	encoded, _ := json.Marshal(broker.request)

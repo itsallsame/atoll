@@ -106,7 +106,7 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	if ctx == nil || r == nil || strings.TrimSpace(r.chromePath) == "" {
 		return browserdriver.SessionResult{}, errors.New("browser runner is not configured")
 	}
-	if request.ProfileRef != "" {
+	if request.ProfileRef != "" || request.ProfileVersion != 0 {
 		return browserdriver.SessionResult{}, policyFailure(errors.New("public browser runner does not resolve Profile material"))
 	}
 	if err := request.Plan.Validate(); err != nil {

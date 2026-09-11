@@ -36,6 +36,7 @@ type SessionRequest struct {
 	UserAgent      string         `json:"user_agent"`
 	AcceptLanguage string         `json:"accept_language,omitempty"`
 	ProfileRef     string         `json:"profile_ref,omitempty"`
+	ProfileVersion uint64         `json:"profile_version,omitempty"`
 	Plan           Plan           `json:"plan"`
 	PlanHash       string         `json:"plan_hash"`
 	AttemptID      string         `json:"attempt_id"`
@@ -183,7 +184,8 @@ func (d *Driver) ExecutePage(ctx context.Context, spec recipeabi.Spec, input rec
 	}
 	request := SessionRequest{EndpointURL: input.Endpoint.URL, UserAgent: spec.Request.UserAgent,
 		AcceptLanguage: spec.Request.Headers["Accept-Language"], ProfileRef: input.ProfileRef,
-		Plan: plan, PlanHash: planHash, AttemptID: input.Attempt.AttemptID,
+		ProfileVersion: input.Attempt.ProfileVersion,
+		Plan:           plan, PlanHash: planHash, AttemptID: input.Attempt.AttemptID,
 		TimeoutMS:      spec.Request.TimeoutMS,
 		Policy:         policy,
 		AllowedMethods: []string{http.MethodGet, http.MethodHead}, SameOriginDocs: true, BlockDownloads: true, BlockPopups: true}
