@@ -1,0 +1,23 @@
+{
+  "schema_version": "recruiting.mysql-stress-evidence.v1",
+  "commit": "e67f9024d336a1ae434e8aadd8f06982b9827272",
+  "completed_at": "2026-09-12T00:53:25+08:00",
+  "mysql_version": "8.4",
+  "total_iterations": 100,
+  "shards": 4,
+  "iterations_per_shard": 25,
+  "race_enabled": true,
+  "migration_identity": "staircase_migrator",
+  "runtime_identity": "staircase_runtime",
+  "failure_scan": "clean",
+  "all_containers_removed": true,
+  "logs": [
+    {"shard": 1, "sha256": "0b4f8492640a1e3c340e875edbc81a27cc247df7997d28fb1a13f213062fb5db", "success_results": 25, "shard_success_markers": 1},
+    {"shard": 2, "sha256": "557bb1bc07a3146d055833dc9c258d7325b32338f1c27fa80db56d743b3f208b", "success_results": 25, "shard_success_markers": 1},
+    {"shard": 3, "sha256": "80849654180e547dcfed072cc052cd8b3148d676eb38312245865853b3622f7a", "success_results": 25, "shard_success_markers": 1},
+    {"shard": 4, "sha256": "6a06644c55138e397b1776869d8ff0d64928aeb876cd9da67cb77e6a6df57e72", "success_results": 25, "shard_success_markers": 1}
+  ],
+  "runtime_log_directory": ".cache/recruiting-mysql-stress-20260911T141700Z",
+  "result": "passed",
+  "scope_limit": "This evidence is bound to e67f9024 only and does not validate later isolated-worktree migrations or code."
+}

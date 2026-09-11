@@ -94,6 +94,6 @@ make build-go
 ## 尚未完成
 
 - receipt/聚合/outbox 原子编排已随 P3 及后续控制词完成，全部全局协调领取入口的生产 SQL 形状也已有 EXPLAIN 合同；不再作为 P2 缺口。
-- 历史提交 `0af563b3f7d2` 的完整 100 轮与残留核对已通过；包含后续迁移直至 `000044` 的最终合并 revision 仍需重新执行固定 revision 的 4×25 压力门并保存新证据。当前正在运行的固定 `e67f9024` 压力门不得被后续隔离工作树提交冒充。
+- 历史提交 `0af563b3f7d2` 的完整 100 轮与残留核对已通过。固定提交 `e67f9024d336` 又在 2026-09-12 完成 4×25：四个 shard 各有 25 个 suite success 和唯一 shard success marker，失败扫描为空，退出后测试容器为零；证据见 `evidence/recruiting-mysql-stress-e67f9024.json`。该运行不包含隔离工作树的后续提交，不能冒充包含 migration `000044` 的最终合并 revision；最终 revision 仍需重新执行相同压力门。
 
 P2 仍为进行中，直到最终合并 revision 的 100 轮压力门和容器/随机 schema 残留核对完成。
