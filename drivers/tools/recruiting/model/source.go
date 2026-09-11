@@ -35,6 +35,7 @@ type RecruitmentSource struct {
 	ConfigurationVersion uint64                    `json:"configuration_version"`
 	ControlEpoch         uint64                    `json:"control_epoch"`
 	ExecutionFence       uint64                    `json:"execution_fence"`
+	EndpointRevisionSeq  uint64                    `json:"endpoint_revision_sequence"`
 	CandidateEndpoint    *SourceEndpoint           `json:"candidate_endpoint,omitempty"`
 	ActiveEndpoint       *SourceEndpoint           `json:"active_endpoint,omitempty"`
 	ListingAssignment    *SourceRecipeAssignment   `json:"listing_assignment,omitempty"`
@@ -208,7 +209,7 @@ func NewRecruitmentSource(sourceID, companyID, endpoint, category string, discov
 		SourceID: sourceID, CompanyID: companyID, DiscoveryGeneration: discoveryGeneration,
 		ReadinessStatus: SourceCandidate, ControlStatus: ControlActive, HealthStatus: HealthHealthy,
 		CandidateEndpoint:    &SourceEndpoint{URL: canonical, Category: strings.TrimSpace(category), CanonicalKey: key, Revision: 1},
-		ConfigurationVersion: 1, ControlEpoch: 1, ExecutionFence: 1, Version: 1,
+		ConfigurationVersion: 1, ControlEpoch: 1, ExecutionFence: 1, EndpointRevisionSeq: 1, Version: 1,
 	}, nil
 }
 
@@ -315,14 +316,19 @@ func (s RecruitmentSource) StageEndpoint(expected uint64, endpoint, category str
 	if err != nil {
 		return RecruitmentSource{}, err
 	}
-	revision := uint64(1)
-	if s.ActiveEndpoint != nil {
-		revision = s.ActiveEndpoint.Revision + 1
+	revision := s.EndpointRevisionSeq
+	if s.ActiveEndpoint != nil && s.ActiveEndpoint.Revision > revision {
+		revision = s.ActiveEndpoint.Revision
 	}
-	if s.CandidateEndpoint != nil && s.CandidateEndpoint.Revision >= revision {
-		revision = s.CandidateEndpoint.Revision + 1
+	if s.CandidateEndpoint != nil && s.CandidateEndpoint.Revision > revision {
+		revision = s.CandidateEndpoint.Revision
+	}
+	revision++
+	if revision == 0 {
+		return RecruitmentSource{}, fmt.Errorf("Source endpoint revision exhausted")
 	}
 	s.CandidateEndpoint = &SourceEndpoint{URL: canonical, Category: strings.TrimSpace(category), CanonicalKey: key, Revision: revision}
+	s.EndpointRevisionSeq = revision
 	if s.ReadinessStatus == SourceReady || s.ReadinessStatus == SourceValidating {
 		s.ReadinessStatus = SourceRepairing
 	}

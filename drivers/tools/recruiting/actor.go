@@ -214,7 +214,7 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleDailyRunOccurrenceExclude(sys, repository, msg)
 		case TypeExecutionOffer, TypeExecutionAccept, TypeExecutionStarted, TypeExecutionFailed, TypeExecutionWakeCompleted:
 			handleExecutionControlMessage(sys, cfg, repository, state, msg)
-		case TypeSourceGet, TypeSourceList, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
+		case TypeSourceGet, TypeSourceList, TypeSourceEndpointHistory, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
 			TypeJobGet, TypeJobList, TypeJobCorrectionGet, TypeProfileGet, TypeWorkGet, TypeWorkList,
 			TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary, TypeRepairGet, TypeRepairList, TypeRecipeInspect,
 			TypeRecipeRolloutBatchGet, TypeRecipeRolloutBatchItems,

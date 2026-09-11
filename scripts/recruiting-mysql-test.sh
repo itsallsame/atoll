@@ -88,6 +88,8 @@ SET FOREIGN_KEY_CHECKS = 0;
 DROP TABLE IF EXISTS
   recruiting_execution_dispatch_outbox,
   recruiting_company_website_heads,
+  recruiting_source_endpoint_activations,
+  recruiting_source_endpoint_changes,
   recruiting_source_lineage,
   recruiting_source_reassignment_previews,
   recruiting_company_website_revisions,

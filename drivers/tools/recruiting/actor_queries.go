@@ -37,6 +37,11 @@ type sourceListPayload struct {
 	PageRequest
 }
 
+type sourceEndpointHistoryPayload struct {
+	SourceID string `json:"source_id"`
+	Limit    int    `json:"limit,omitempty"`
+}
+
 type sourceDiscoveryCandidateListPayload struct {
 	DiscoveryID string `json:"discovery_id"`
 	PageRequest
@@ -88,6 +93,10 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 	}
 	if msg.Type == TypeSourceList {
 		handleSourceListQuery(sys, repository, msg)
+		return
+	}
+	if msg.Type == TypeSourceEndpointHistory {
+		handleSourceEndpointHistoryQuery(sys, repository, msg)
 		return
 	}
 	if msg.Type == TypeSourceDiscoveryCandidates {
@@ -172,6 +181,32 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		return
 	}
 	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "entity": value})
+}
+
+func handleSourceEndpointHistoryQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload sourceEndpointHistoryPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.SourceID = strings.TrimSpace(payload.SourceID)
+	if payload.Limit == 0 {
+		payload.Limit = 50
+	}
+	if payload.SourceID == "" || payload.Limit < 1 || payload.Limit > 100 {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "source_id and limit in [1,100] are required")
+		return
+	}
+	if _, err := repository.GetSource(msg.Ctx(), payload.SourceID); err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	items, err := repository.ListSourceEndpointHistory(msg.Ctx(), payload.SourceID, payload.Limit)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "source_id": payload.SourceID,
+		"items": items})
 }
 
 func handleScopeControlGetQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

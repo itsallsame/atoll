@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -125,7 +126,20 @@ WHERE company_id = ? AND canonical_source_key = ? FOR SHARE`, companyID, canonic
 // receipt, and outbox event share one transaction, so an acknowledged command
 // can never exist without its domain state and recoverable event intent.
 func (r *Repository) ApplySourceCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource, receipt model.CommandReceipt, event model.EventIntent, businessAt time.Time) (CommandResult, error) {
-	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, "", "", "", businessAt)
+	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, "", "", "", nil, businessAt)
+}
+
+// ApplyStageSourceEndpointCommand persists the Source candidate and immutable
+// redirect/correction intent in the same CAS transaction. A later validation
+// publication appends activation separately.
+func (r *Repository) ApplyStageSourceEndpointCommand(ctx context.Context, expectedVersion uint64,
+	source model.RecruitmentSource, change model.SourceEndpointChange, receipt model.CommandReceipt,
+	event model.EventIntent, businessAt time.Time) (CommandResult, error) {
+	if change.SourceID != source.SourceID || change.StagedSourceVersion != source.Version ||
+		source.CandidateEndpoint == nil || change.ToEndpoint != *source.CandidateEndpoint {
+		return CommandResult{}, fmt.Errorf("staged Source and endpoint change facts are inconsistent")
+	}
+	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, "", "", "", &change, businessAt)
 }
 
 func (r *Repository) ApplySourcePauseCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource,
@@ -134,7 +148,7 @@ func (r *Repository) ApplySourcePauseCommand(ctx context.Context, expectedVersio
 		return CommandResult{}, fmt.Errorf("paused Source and scope control operation identity are required")
 	}
 	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, strings.TrimSpace(operationID), "",
-		source.LastPauseMode, businessAt)
+		source.LastPauseMode, nil, businessAt)
 }
 
 // ApplySourceRestoreCommand creates a cancel-mode pause projection for the
@@ -147,7 +161,7 @@ func (r *Repository) ApplySourceRestoreCommand(ctx context.Context, expectedVers
 		return CommandResult{}, fmt.Errorf("restored paused Source and scope control operation identity are required")
 	}
 	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, strings.TrimSpace(operationID), "",
-		model.PauseCancel, businessAt)
+		model.PauseCancel, nil, businessAt)
 }
 
 func (r *Repository) ApplySourceResumeCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource,
@@ -155,12 +169,12 @@ func (r *Repository) ApplySourceResumeCommand(ctx context.Context, expectedVersi
 	if source.ControlStatus != model.ControlActive || strings.TrimSpace(operationID) == "" {
 		return CommandResult{}, fmt.Errorf("active Source and scope control operation identity are required")
 	}
-	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, "", strings.TrimSpace(operationID), "", businessAt)
+	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, "", strings.TrimSpace(operationID), "", nil, businessAt)
 }
 
 func (r *Repository) applySourceCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource,
 	receipt model.CommandReceipt, event model.EventIntent, pauseOperationID, resumeOperationID string,
-	pauseOperationMode model.PauseMode, businessAt time.Time) (CommandResult, error) {
+	pauseOperationMode model.PauseMode, endpointChange *model.SourceEndpointChange, businessAt time.Time) (CommandResult, error) {
 	if expectedVersion == 0 || source.SourceID == "" || source.Version != expectedVersion+1 || receipt.CommandID == "" ||
 		event.AggregateType != "source" || event.AggregateID != source.SourceID || event.AggregateVersion != source.Version ||
 		event.CauseCommandID != receipt.CommandID {
@@ -187,6 +201,28 @@ func (r *Repository) applySourceCommand(ctx context.Context, expectedVersion uin
 		return CommandResult{}, err
 	} else if found {
 		return CommandResult{Response: replay, Replayed: true}, nil
+	}
+	if endpointChange != nil {
+		var lockedState []byte
+		if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_sources WHERE source_id = ? FOR UPDATE`,
+			source.SourceID).Scan(&lockedState); errors.Is(err, sql.ErrNoRows) {
+			return CommandResult{}, ErrNotFound
+		} else if err != nil {
+			return CommandResult{}, fmt.Errorf("lock Source for endpoint change: %w", err)
+		}
+		var locked model.RecruitmentSource
+		if err := json.Unmarshal(lockedState, &locked); err != nil {
+			return CommandResult{}, fmt.Errorf("decode Source for endpoint change: %w", err)
+		}
+		stagedAt, err := time.Parse(time.RFC3339Nano, endpointChange.StagedAt)
+		if err != nil {
+			return CommandResult{}, fmt.Errorf("parse Source endpoint change time: %w", err)
+		}
+		rebuilt, err := model.NewSourceEndpointChange(endpointChange.ChangeID, endpointChange.Kind, locked, source,
+			endpointChange.ChangedBy, endpointChange.Reason, stagedAt)
+		if err != nil || !reflect.DeepEqual(rebuilt, *endpointChange) {
+			return CommandResult{}, fmt.Errorf("Source endpoint change does not match locked state")
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO recruiting_command_receipts(command_id, word_name, request_hash, response_bytes, committed_at)
@@ -228,6 +264,25 @@ WHERE source_id = ? AND version = ?`,
 			return CommandResult{}, fmt.Errorf("read source version after failed CAS: %w", readErr)
 		}
 		return CommandResult{}, &model.VersionConflictError{Expected: expectedVersion, Actual: actual}
+	}
+	if endpointChange != nil {
+		changeState, err := json.Marshal(endpointChange)
+		if err != nil {
+			return CommandResult{}, fmt.Errorf("encode Source endpoint change: %w", err)
+		}
+		stagedAt, err := time.Parse(time.RFC3339Nano, endpointChange.StagedAt)
+		if err != nil {
+			return CommandResult{}, fmt.Errorf("parse Source endpoint change time: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO recruiting_source_endpoint_changes(
+  change_id, source_id, change_kind, from_revision, to_revision, state_json, staged_at
+) VALUES (?, ?, ?, ?, ?, ?, ?)`, endpointChange.ChangeID, endpointChange.SourceID, endpointChange.Kind,
+			endpointChange.FromEndpoint.Revision, endpointChange.ToEndpoint.Revision, changeState, stagedAt.UTC()); err != nil {
+			if isDuplicateKey(err) {
+				return CommandResult{}, fmt.Errorf("%w: Source endpoint change", ErrBusinessKeyExists)
+			}
+			return CommandResult{}, fmt.Errorf("insert Source endpoint change: %w", err)
+		}
 	}
 	if pauseOperationID != "" && resumeOperationID != "" {
 		return CommandResult{}, fmt.Errorf("source command cannot pause and resume the scope together")

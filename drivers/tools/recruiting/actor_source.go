@@ -23,8 +23,9 @@ type sourceAddPayload struct {
 
 type sourceUpdatePayload struct {
 	MutationCommand
-	Endpoint *string `json:"endpoint,omitempty"`
-	Category *string `json:"category,omitempty"`
+	Endpoint       *string                        `json:"endpoint,omitempty"`
+	Category       *string                        `json:"category,omitempty"`
+	TransitionKind model.SourceEndpointChangeKind `json:"transition_kind,omitempty"`
 }
 
 type sourcePausePayload struct {
@@ -59,15 +60,16 @@ type sourceValidationPublishPayload struct {
 }
 
 type sourceCommandResponse struct {
-	ContractVersion         string                  `json:"contract_version"`
-	CorrelationID           string                  `json:"correlation_id"`
-	RequestedBy             string                  `json:"requested_by"`
-	Source                  model.RecruitmentSource `json:"source"`
-	Target                  Target                  `json:"target"`
-	NextAction              string                  `json:"next_action"`
-	ValidationWork          *model.Work             `json:"validation_work,omitempty"`
-	ValidationRun           *model.ListingRun       `json:"validation_run,omitempty"`
-	ScopeControlOperationID string                  `json:"scope_control_operation_id,omitempty"`
+	ContractVersion         string                      `json:"contract_version"`
+	CorrelationID           string                      `json:"correlation_id"`
+	RequestedBy             string                      `json:"requested_by"`
+	Source                  model.RecruitmentSource     `json:"source"`
+	Target                  Target                      `json:"target"`
+	NextAction              string                      `json:"next_action"`
+	ValidationWork          *model.Work                 `json:"validation_work,omitempty"`
+	ValidationRun           *model.ListingRun           `json:"validation_run,omitempty"`
+	ScopeControlOperationID string                      `json:"scope_control_operation_id,omitempty"`
+	EndpointChange          *model.SourceEndpointChange `json:"endpoint_change,omitempty"`
 }
 
 func handleSourceMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -217,7 +219,7 @@ func handleSourceAdd(sys actorbase.Sys, repository *store.Repository, msg actorb
 		return
 	}
 	response := makeSourceResponse(msg, source)
-	result, err := applySourceCommandFacts(repository, msg, payload.CommandID, payload.Reason, response, source, 0, "")
+	result, err := applySourceCommandFacts(repository, msg, payload.CommandID, payload.Reason, response, source, 0, "", nil)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
@@ -386,7 +388,24 @@ func handleSourceMutation(sys actorbase.Sys, repository *store.Repository, msg a
 		failStoreError(sys, msg, err)
 		return
 	}
+	var endpointChange *model.SourceEndpointChange
+	if msg.Type == TypeSourceUpdate && current.ActiveEndpoint != nil && next.CandidateEndpoint != nil &&
+		*current.ActiveEndpoint != *next.CandidateEndpoint {
+		kind := update.TransitionKind
+		if kind == "" {
+			kind = model.SourceEndpointCorrection
+		}
+		change, changeErr := model.NewSourceEndpointChange(
+			"source-endpoint-change-"+stableDigest(command.CommandID+"|"+next.SourceID), kind, current, next,
+			commandContext.RequestedBy, command.Reason, time.UnixMilli(msg.TS).UTC())
+		if changeErr != nil {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, changeErr.Error())
+			return
+		}
+		endpointChange = &change
+	}
 	response := makeSourceResponse(msg, next)
+	response.EndpointChange = endpointChange
 	operationID := ""
 	if msg.Type == TypeSourcePause || msg.Type == TypeSourceResume || msg.Type == TypeSourceRestore {
 		operationKind := "source"
@@ -397,7 +416,7 @@ func handleSourceMutation(sys actorbase.Sys, repository *store.Repository, msg a
 		response.ScopeControlOperationID = operationID
 	}
 	result, err := applySourceCommandFacts(repository, msg, command.CommandID, command.Reason, response, next,
-		commandContext.Command.ExpectedVersion, operationID)
+		commandContext.Command.ExpectedVersion, operationID, endpointChange)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
@@ -438,7 +457,8 @@ func applySourceEndpointUpdate(current model.RecruitmentSource, expected uint64,
 }
 
 func applySourceCommandFacts(repository *store.Repository, msg actorbase.Msg, commandID, reason string, response sourceCommandResponse,
-	source model.RecruitmentSource, expectedVersion uint64, operationID string) (store.CommandResult, error) {
+	source model.RecruitmentSource, expectedVersion uint64, operationID string,
+	endpointChange *model.SourceEndpointChange) (store.CommandResult, error) {
 	businessAt := time.UnixMilli(msg.TS).UTC()
 	responseBytes, _ := json.Marshal(response)
 	receipt, err := model.NewCommandReceipt(commandID, msg.Type, commandRequestHash(msg), responseBytes)
@@ -454,6 +474,10 @@ func applySourceCommandFacts(repository *store.Repository, msg actorbase.Msg, co
 	}
 	if expectedVersion == 0 {
 		return repository.ApplyCreateSourceCommand(msg.Ctx(), source, receipt, event, businessAt)
+	}
+	if endpointChange != nil {
+		return repository.ApplyStageSourceEndpointCommand(msg.Ctx(), expectedVersion, source, *endpointChange,
+			receipt, event, businessAt)
 	}
 	if msg.Type == TypeSourcePause {
 		return repository.ApplySourcePauseCommand(msg.Ctx(), expectedVersion, source, receipt, event, operationID, businessAt)

@@ -52,6 +52,7 @@ func manifest() introspect.Manifest {
 			TypeSourceDiscoveryCandidateReject: {Description: "independently reject one discovered candidate with an audited reason"},
 			TypeSourceGet:                      {Description: "get one recruitment source"},
 			TypeSourceList:                     {Description: "seek-page sources globally or for one company"},
+			TypeSourceEndpointHistory:          {Description: "inspect immutable staged and evidence-activated endpoint redirect or correction history"},
 			TypeSourceProfileBind:              {Description: "bind future listing or detail Browser work to a ready Profile on its authorized device"},
 			TypeSourceProfileUnbind:            {Description: "remove a versioned Source Profile binding after its Recipe no longer requires that Profile"},
 			TypeRecipeInspect:                  {Description: "inspect one immutable Recipe version, optional browser-capture provenance, and its current Source assignment count"},

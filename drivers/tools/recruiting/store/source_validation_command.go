@@ -239,6 +239,9 @@ WHERE source_id = ? AND version = ?`, endpoint.CanonicalKey, origin, next.Readin
 	if changed, _ := result.RowsAffected(); changed != 1 {
 		return CommandResult{}, &model.VersionConflictError{Expected: expectedSourceVersion, Actual: current.Version}
 	}
+	if err := appendSourceEndpointActivation(ctx, tx, current, next, assignment, businessAt); err != nil {
+		return CommandResult{}, err
+	}
 	assignmentState, _ := json.Marshal(assignment)
 	effectiveAt, _ := time.Parse(time.RFC3339, assignment.EffectiveAt)
 	reusesAssignment := expectedAssignmentVersion > 0 && assignment.AssignmentVersion == expectedAssignmentVersion
