@@ -128,6 +128,18 @@ func (r *Repository) applyCompanyCommand(ctx context.Context, expectedVersion ui
 	} else if found {
 		return CommandResult{Response: replay, Replayed: true}, nil
 	}
+	if receipt.Word == "recruiting.company.restore" {
+		var erasureID string
+		err := tx.QueryRowContext(ctx, `SELECT erasure_id FROM recruiting_company_erasures
+WHERE active_company_key = ? LIMIT 1 FOR SHARE`, company.CompanyID).Scan(&erasureID)
+		if err == nil {
+			return CommandResult{}, &model.InvalidTransitionError{Entity: "company", From: string(model.ControlArchived),
+				Action: "restore while compliance erasure " + erasureID + " is active"}
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return CommandResult{}, fmt.Errorf("inspect active Company erasure before restore: %w", err)
+		}
+	}
 
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO recruiting_command_receipts(command_id, word_name, request_hash, response_bytes, committed_at)

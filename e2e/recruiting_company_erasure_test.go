@@ -101,6 +101,14 @@ VALUES (?, 'response', 'sha256:e2e-erasure-artifact', ?, ?, NULL, 'company', 'co
 		!strings.HasPrefix(stringField(t, started, "requested_by"), "human:erasure-requester:") {
 		t.Fatalf("erasure preview start=%v", started)
 	}
+	if _, terminal, err := requesterWS.tryRequest(sharedID, "recruiting.company.restore", controlID, map[string]any{
+		"command_id":       "e2e-erasure-blocked-company-restore",
+		"target":           map[string]any{"target_type": "company", "target_id": "e2e-erasure-company"},
+		"expected_version": nestedNumberField(t, archived, "company", "version"),
+		"reason":           "must not invalidate an active compliance scope",
+	}); err == nil || terminal["error_code"] != "quality_rejected" {
+		t.Fatalf("active erasure allowed Company restore terminal=%v err=%v", terminal, err)
+	}
 	first := requesterWS.request(sharedID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 1})
 	if numberField(t, first, "company_erasure_previewed") != 1 || first["company_erasure_preview_done"] == true {
 		t.Fatalf("first bounded erasure page=%v", first)
