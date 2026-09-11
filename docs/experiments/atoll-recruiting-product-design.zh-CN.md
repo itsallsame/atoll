@@ -270,6 +270,8 @@ detail_completion
 
 Daily Run 截点固化 Source 及其当时的 Company/Source 配置版本和 occurrence key。截点后才 ready 的 Source 默认次日纳入；需要当天补跑时显式创建 catch-up occurrence。截点后暂停或归档不改写分母，而记录 `skipped_after_cutoff`、`canceled_by_archive` 等明确结果。日报关闭后不回写历史结论；后续修复以 `recovered` 补偿记录关联原 occurrence。
 
+DailyRun 本身不提供修改窗口、名单、期望数或终态摘要的通用 mutation；这些都是截点/关闭事务产生的审计事实。窗口内的人工控制落在具体 SourceOccurrence：`recruiting.daily_run.occurrence.exclude` 只接受仍为 `planned`、尚无 Work 的 occurrence，并同时要求 DailyRun/Occurrence 精确 version、running 状态、当前业务时间早于冻结的 `window_end_at`。事务不删除 occurrence、不减少分母、不改变 DailyRun version，只将该项记为 `excluded`，保存 authenticated operator、原因、receipt 和事件。它与到期 Work 物化竞争同一 occurrence 行锁，最终只能是 excluded 或 queued；到期后不能把本应记录的窗口异常改写成人工排除。已 queued/running 的项使用 Work pause/cancel/retry，关闭后的缺口使用带原 occurrence 谱系的 production recovery。
+
 ### 5.9 公司、Source 与岗位数据规则
 
 - 公司或 Source 更新采用版本化修改；正在运行的 Attempt 固定其接受时配置。Company 的名称或普通元数据更新不使采集结果失效；官网变更只派生 Source 关系复核，不能自动替换仍然有效的生产入口。
@@ -564,7 +566,7 @@ recruiting.run.diagnostic / join_occurrence / production
 recruiting.recipe.inspect / validate / approve / reject / rollout / rollback
 recruiting.recipe.rollout.batch / batch.get / batch.items / batch.confirm / batch.resume / batch.rollback / batch.cancel
 recruiting.execution.offer / accept / started / result / failed
-recruiting.daily_run.get / list / summary
+recruiting.daily_run.get / list / summary / occurrence.exclude
 recruiting.jobs.search
 recruiting.system.status
 recruiting.capacity.status

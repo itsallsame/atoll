@@ -89,6 +89,7 @@ func manifest() introspect.Manifest {
 			TypeDailyRunGet:                    {Description: "get one immutable daily coverage run"},
 			TypeDailyRunList:                   {Description: "seek-page immutable daily coverage runs"},
 			TypeDailyRunSummary:                {Description: "inspect live coverage counts and seek-page source occurrences"},
+			TypeDailyRunOccurrenceExclude:      {Description: "explicitly exclude one still-planned occurrence without rewriting the daily roster"},
 			TypeRepairGet:                      {Description: "inspect one shared repair incident and seek-page its affected operational work"},
 			TypeRepairList:                     {Description: "seek-page shared repair incidents by lifecycle status"},
 			TypeRepairValidate:                 {Description: "bind an open shared repair to one executor-succeeded causal validation Work"},

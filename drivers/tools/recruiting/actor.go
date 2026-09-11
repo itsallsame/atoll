@@ -191,6 +191,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleStandaloneListingRun(sys, cfg, repository, msg, RunDiagnostic)
 		case TypeRunProduction:
 			handleStandaloneListingRun(sys, cfg, repository, msg, RunProduction)
+		case TypeDailyRunOccurrenceExclude:
+			handleDailyRunOccurrenceExclude(sys, repository, msg)
 		case TypeExecutionOffer, TypeExecutionAccept, TypeExecutionStarted, TypeExecutionFailed, TypeExecutionWakeCompleted:
 			handleExecutionControlMessage(sys, cfg, repository, msg)
 		case TypeSourceGet, TypeSourceList, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,

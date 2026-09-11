@@ -91,18 +91,19 @@ const (
 	TypeExecutionFailed        = executioncontract.TypeFailed
 	TypeExecutionWakeCompleted = executioncontract.TypeWakeCompleted
 
-	TypeDailyRunGet     = "recruiting.daily_run.get"
-	TypeDailyRunList    = "recruiting.daily_run.list"
-	TypeDailyRunSummary = "recruiting.daily_run.summary"
-	TypeRepairGet       = "recruiting.repair.get"
-	TypeRepairList      = "recruiting.repair.list"
-	TypeRepairValidate  = "recruiting.repair.validation.begin"
-	TypeRepairResolve   = "recruiting.repair.resolve"
-	TypeRepairRecover   = "recruiting.repair.recover"
-	TypeJobsSearch      = "recruiting.jobs.search"
-	TypeSystemStatus    = "recruiting.system.status"
-	TypeSystemReconcile = "recruiting.system.reconcile"
-	TypeCapacityStatus  = "recruiting.capacity.status"
+	TypeDailyRunGet               = "recruiting.daily_run.get"
+	TypeDailyRunList              = "recruiting.daily_run.list"
+	TypeDailyRunSummary           = "recruiting.daily_run.summary"
+	TypeDailyRunOccurrenceExclude = "recruiting.daily_run.occurrence.exclude"
+	TypeRepairGet                 = "recruiting.repair.get"
+	TypeRepairList                = "recruiting.repair.list"
+	TypeRepairValidate            = "recruiting.repair.validation.begin"
+	TypeRepairResolve             = "recruiting.repair.resolve"
+	TypeRepairRecover             = "recruiting.repair.recover"
+	TypeJobsSearch                = "recruiting.jobs.search"
+	TypeSystemStatus              = "recruiting.system.status"
+	TypeSystemReconcile           = "recruiting.system.reconcile"
+	TypeCapacityStatus            = "recruiting.capacity.status"
 )
 
 type Target struct {

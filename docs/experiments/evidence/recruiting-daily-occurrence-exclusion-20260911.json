@@ -1,0 +1,38 @@
+{
+  "observed_at": "2026-09-11",
+  "branch": "codex/atoll-recruiting",
+  "scenario": "operator excludes one planned occurrence without rewriting immutable DailyRun coverage",
+  "public_word": "recruiting.daily_run.occurrence.exclude",
+  "mysql_contract": {
+    "command": "RECRUITING_MYSQL_TEST_RUN='^TestDaily(CoverageRepositoryContract|OccurrenceExclusionRacesDueMaterialization)$' scripts/recruiting-mysql-test.sh",
+    "mysql": "8.4",
+    "migration_identity": "staircase_migrator",
+    "runtime_identity": "staircase_runtime",
+    "elapsed_seconds": 3.124,
+    "passed": true,
+    "proved": [
+      "the DailyRun snapshot and version remain unchanged",
+      "an exclusion after immutable window_end_at rolls back without a receipt",
+      "command replay does not duplicate the event",
+      "concurrent exclusion and due materialization produce exactly one terminal winner",
+      "excluded means one receipt and no Work; queued means one Work and no exclusion receipt"
+    ]
+  },
+  "process_e2e": {
+    "command": "go test ./e2e -run '^TestRecruitingOperatorExcludesPlannedDailyOccurrenceWithoutRewritingRun$' -count=1",
+    "elapsed_seconds": 21.714,
+    "passed": true,
+    "actors": "ordinary operator and real Atoll server",
+    "flow": "daily summary -> occurrence.exclude -> server restart -> command replay -> daily summary",
+    "final_progress": {
+      "expected_sources": 1,
+      "planned": 0,
+      "excluded": 1,
+      "uncovered": 1,
+      "listing_works": 0
+    }
+  },
+  "daily_run_mutated": false,
+  "new_worker_or_actor_class": false,
+  "atoll_core_modified": false
+}

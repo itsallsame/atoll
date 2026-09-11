@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -159,8 +160,39 @@ WHERE cause_id = 'timer:daily-work' AND target_actor_id = 'tool:http-executor-a'
 		t.Fatal(err)
 	}
 	excluded, _ := second.Exclude(second.Version, "operator paused source before cutoff")
-	if err := repository.UpdateOccurrenceCAS(ctx, second.Version, excluded, now.Add(3*time.Hour)); err != nil {
-		t.Fatal(err)
+	lateReceipt, _ := model.NewCommandReceipt("daily-exclude-late", "recruiting.daily_run.occurrence.exclude",
+		"sha256:daily-exclude-late", json.RawMessage(`{"late":true}`))
+	lateEvent, _ := model.NewEventIntent("daily-exclude-late-event", "source_occurrence.excluded", "source_occurrence",
+		excluded.OccurrenceID, excluded.Version, now.Add(7*time.Hour).Format(time.RFC3339), lateReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyExcludeDailyOccurrenceCommand(ctx, running.Version, second.Version, excluded,
+		lateReceipt, lateEvent, now.Add(7*time.Hour)); err == nil {
+		t.Fatal("occurrence was excluded after the immutable window")
+	}
+	if _, found, err := repository.LookupCommand(ctx, lateReceipt.CommandID, lateReceipt.RequestHash); err != nil || found {
+		t.Fatalf("late occurrence exclusion left receipt found=%v err=%v", found, err)
+	}
+	excludeResponse := json.RawMessage(`{"occurrence":{"occurrence_id":"daily-occurrence-2","occurrence_status":"excluded","version":2}}`)
+	excludeReceipt, _ := model.NewCommandReceipt("daily-exclude-command", "recruiting.daily_run.occurrence.exclude",
+		"sha256:daily-exclude", excludeResponse)
+	excludeEvent, _ := model.NewEventIntent("daily-exclude-event", "source_occurrence.excluded", "source_occurrence",
+		excluded.OccurrenceID, excluded.Version, now.Add(3*time.Hour).Format(time.RFC3339), excludeReceipt.CommandID, json.RawMessage(`{}`))
+	excludeResult, err := repository.ApplyExcludeDailyOccurrenceCommand(ctx, running.Version, second.Version, excluded,
+		excludeReceipt, excludeEvent, now.Add(3*time.Hour))
+	if err != nil || excludeResult.Replayed || string(excludeResult.Response) != string(excludeResponse) {
+		t.Fatalf("exclude daily occurrence = %+v err=%v", excludeResult, err)
+	}
+	if replay, err := repository.ApplyExcludeDailyOccurrenceCommand(ctx, running.Version, second.Version, excluded,
+		excludeReceipt, excludeEvent, now.Add(3*time.Hour)); err != nil || !replay.Replayed {
+		t.Fatalf("exclude daily occurrence replay = %+v err=%v", replay, err)
+	}
+	storedRun, err := repository.GetDailyRun(ctx, running.DailyRunID)
+	if err != nil || storedRun != running {
+		t.Fatalf("occurrence exclusion changed daily run: %+v err=%v", storedRun, err)
+	}
+	var excludeEvents int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_event_outbox
+WHERE event_id = ? AND aggregate_version = ?`, excludeEvent.EventID, excluded.Version).Scan(&excludeEvents); err != nil || excludeEvents != 1 {
+		t.Fatalf("occurrence exclusion event count=%d err=%v", excludeEvents, err)
 	}
 	mutated := excluded
 	mutated.SourceVersion++
@@ -191,6 +223,106 @@ WHERE cause_id = 'timer:daily-work' AND target_actor_id = 'tool:http-executor-a'
 	}
 	if _, err := repository.MaterializeOccurrences(ctx, scheduled, now.Add(6*time.Hour)); err == nil {
 		t.Fatal("closed daily run accepted occurrence materialization")
+	}
+}
+
+func TestDailyOccurrenceExclusionRacesDueMaterialization(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	now := time.Date(2091, 3, 4, 0, 0, 0, 0, time.UTC)
+	company, _ := model.NewCompany("daily-exclude-race-company", "Race Company", "https://daily-exclude-race.example")
+	if err := repository.CreateCompany(ctx, company, now); err != nil {
+		t.Fatal(err)
+	}
+	source, _ := model.NewRecruitmentSource("daily-exclude-race-source", company.CompanyID,
+		"https://daily-exclude-race.example/jobs", "all", 1)
+	if err := repository.CreateSource(ctx, source, now); err != nil {
+		t.Fatal(err)
+	}
+	run, _ := model.NewDailyRun("daily-exclude-race", "2091-03-04", 1, model.DailySchedule{PolicyVersion: 1,
+		CutoffAt: now.Format(time.RFC3339), WindowStartAt: now.Format(time.RFC3339), WindowEndAt: now.Add(6 * time.Hour).Format(time.RFC3339)})
+	if err := repository.CreateDailyRun(ctx, run, now); err != nil {
+		t.Fatal(err)
+	}
+	running, _ := run.Start(run.Version)
+	if err := repository.StartDailyRunCAS(ctx, run.Version, running, now); err != nil {
+		t.Fatal(err)
+	}
+	dueAt := now.Add(2 * time.Hour)
+	occurrence, _ := model.NewSourceOccurrence("daily-exclude-race-occurrence", run.DailyRunID, source.SourceID,
+		run.ScheduleDate, run.SchedulePolicyVersion, company.Version, source.Version, dueAt.Format(time.RFC3339),
+		testListingExecutionSnapshot(source.SourceID))
+	if _, err := repository.MaterializeOccurrences(ctx, []ScheduledOccurrence{{Occurrence: occurrence, DueAt: dueAt}}, now); err != nil {
+		t.Fatal(err)
+	}
+	excluded, _ := occurrence.Exclude(occurrence.Version, "operator excludes at the scheduling boundary")
+	receipt, _ := model.NewCommandReceipt("daily-exclude-race-command", "recruiting.daily_run.occurrence.exclude",
+		"sha256:daily-exclude-race", json.RawMessage(`{"excluded":true}`))
+	event, _ := model.NewEventIntent("daily-exclude-race-event", "source_occurrence.excluded", "source_occurrence",
+		excluded.OccurrenceID, excluded.Version, dueAt.Format(time.RFC3339), receipt.CommandID, json.RawMessage(`{}`))
+	type exclusionResult struct {
+		result CommandResult
+		err    error
+	}
+	exclusionDone := make(chan exclusionResult, 1)
+	materializationDone := make(chan struct {
+		result DueWorkMaterializationResult
+		err    error
+	}, 1)
+	go func() {
+		result, excludeErr := repository.ApplyExcludeDailyOccurrenceCommand(ctx, running.Version, occurrence.Version,
+			excluded, receipt, event, dueAt)
+		exclusionDone <- exclusionResult{result: result, err: excludeErr}
+	}()
+	go func() {
+		result, materializeErr := repository.MaterializeDueOccurrenceWorks(ctx, dueAt, 1, "recruiting",
+			"daily-exclude-race-timer", dueAt)
+		materializationDone <- struct {
+			result DueWorkMaterializationResult
+			err    error
+		}{result: result, err: materializeErr}
+	}()
+	exclusion, materialization := <-exclusionDone, <-materializationDone
+	if materialization.err != nil {
+		t.Fatalf("due materialization race failed: %v", materialization.err)
+	}
+	stored, err := repository.GetOccurrence(ctx, occurrence.OccurrenceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var works, receipts int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_works WHERE business_key = ?",
+		"daily-listing|"+occurrence.OccurrenceID).Scan(&works); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id = ?",
+		receipt.CommandID).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	switch stored.Status {
+	case model.OccurrenceExcluded:
+		if exclusion.err != nil || materialization.result.Queued != 0 || works != 0 || receipts != 1 {
+			t.Fatalf("exclude won with mixed facts: exclusion=%+v materialization=%+v works=%d receipts=%d",
+				exclusion, materialization, works, receipts)
+		}
+	case model.OccurrenceQueued:
+		if exclusion.err == nil || materialization.result.Queued != 1 || works != 1 || receipts != 0 {
+			t.Fatalf("materialization won with mixed facts: exclusion=%+v materialization=%+v works=%d receipts=%d",
+				exclusion, materialization, works, receipts)
+		}
+	default:
+		t.Fatalf("race left occurrence in %s: %+v", stored.Status, stored)
 	}
 }
 
