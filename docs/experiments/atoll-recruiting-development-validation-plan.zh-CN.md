@@ -527,6 +527,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 | S24 | 重试/人工结案 | 失败分类、策略快照、resolution、recovered |
 | S25 | 10K/20K 日常运行 | 全部 occurrence 有结果、详情放大、无热点失控 |
 
+执行状态补充（2026-09-11，S21 有界历史回填预览）：migration 38 和纯领域状态机已经建立独立 Backfill/Item/Output 血缘，公开 `backfill.create/get/items/confirm` 接通普通用户控制边界。`artifact_recompute` 按请求半开时间范围枚举每个已接受 DetailVersion，同一 Job 的多个历史版本不会折叠，并冻结原始 DetailVersion、Artifact 与 observed time；`live_refetch` 按范围内 Listing Observation 选择唯一 Job，不携带历史输入且不能声称历史快照。预览复用现有 Recruiting Actor durable reconcile timer，每个活动 Backfill 每 tick 最多推进 500 项；滚动 SHA-256 同时绑定请求事实和全部冻结项，不需在最终确认时把全量成员载入内存。最后一块与父 Work `waiting_human(preview_ready)`、内部 receipt/event 原子提交；确认要求 Backfill/Work 双 version 与精确 preview hash。非 root migration/runtime MySQL 8.4 合同已验证同 Job 两个历史版本、实时选择、seek 分页、确认状态和 Checkpoint 行数不变；Atoll 核心冻结检查通过。两种执行数据面、Output/Artifact 提交、逐项失败/accepted gap、暂停恢复取消、缺口报告和真实 Server/Executor 网站旅程仍待完成，因此 S21 继续保持进行中。
+
 S01—S24 至少有 model/Repository/actor 测试中的一种自动化覆盖，并有一个端到端用户旅程覆盖其关键交互；不可安全施加给第三方的并发和故障全部在本地 fixture 或测试数据库中完成。
 
 ## 14. P9：容量、可靠性和生产准入

@@ -287,6 +287,10 @@ DailyRun 本身不提供修改窗口、名单、期望数或终态摘要的通�
 - 原始 `ListingObservation`、已验证详情版本和 `CuratedOverride` 分层保存。有效字段优先级为 `manual override > verified detail > listing observation`；人工覆盖可撤销或过期，后续抓取仍保存来源事实但不静默覆盖有效人工值。公开 `job.correct` 的 set/clear 命令同时使用 Job version 与当前 override-head identity/version 双重 CAS；每次变更追加不可变 override version，并把命令 receipt 和不含字段值的审计事件原子提交，绝不改写 Job、Observation 或 DetailVersion。`job.correction.get` 按 Job+field 返回当前 head 与有界历史，让其他会话无需数据库权限即可安全接续；撤销只移除人工优先级，底层最新 verified/listing 事实会重新生效。
 - 历史回填必须声明 `artifact_recompute|live_refetch`。后者只是重新访问当前网页，不得声称恢复历史快照；普通回填永不读取或推进日常 Incremental Checkpoint。
 
+`artifact_recompute` 的选择单位是时间范围内每一个已接受的 `JobDetailVersion`，不是 Job 当前指针，也不是每个 Job 只取一条；同一岗位的多个历史版本必须分别冻结 `detail_version_id + Artifact + observed_at`，输出只能把该原始观测时间声明为其历史时点。`live_refetch` 的选择单位是时间范围内出现过 Listing Observation 的唯一 Job，冻结当前 Job/Source/Recipe fence 后重新访问当前详情页；其输出只记录实际 refetch 时间且 `claims_historical_snapshot=false`。两种模式均建立独立不可变输出谱系，不调用正常 Detail 接受事务、不修改 Job 当前详情版本或 refresh generation；若需发布到当前业务视图，必须另走数据纠正与重算的显式 plan/审批。
+
+回填预览按稳定 seek cursor、每块最多 500 项冻结，不能在确认时重新执行范围查询。preview hash 使用绑定 Target、模式、半开时间范围、字段、Recipe/policy 版本和全部冻结项的增量 SHA-256 accumulator；因此内存和事务大小不随总项数增长。预览结束后父 Work 才进入 `waiting_human(preview_ready)`，用户必须同时提交精确 Backfill version、父 Work version 和 preview hash 才能启动。历史 Artifact 缺失、已拒绝或不可读必须成为逐项可审计 gap/failed 事实，不能悄悄退化为 live refetch。
+
 ### 5.10 浏览器插件与 Recipe 复用闭环
 
 Recipe 是已经确认的核心产品资产，不只是待选技术。其价值是把一次性分析成本转换成可重复执行的代码：

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
 // Public business words are application vocabulary. They intentionally live
@@ -53,6 +54,11 @@ const (
 	TypeJobList          = "recruiting.job.list"
 	TypeJobCorrect       = "recruiting.job.correct"
 	TypeJobCorrectionGet = "recruiting.job.correction.get"
+
+	TypeBackfillCreate  = "recruiting.backfill.create"
+	TypeBackfillGet     = "recruiting.backfill.get"
+	TypeBackfillItems   = "recruiting.backfill.items"
+	TypeBackfillConfirm = "recruiting.backfill.confirm"
 
 	TypeProfileRegister    = "recruiting.profile.register"
 	TypeProfileGet         = "recruiting.profile.get"
@@ -201,22 +207,9 @@ func (m RunMode) WritesBusinessData() bool { return m != RunDiagnostic }
 
 func (m RunMode) MayAdvanceCheckpoint() bool { return m == RunJoinOccurrence || m == RunProduction }
 
-type BackfillMode string
+type BackfillMode = model.BackfillMode
 
 const (
-	BackfillArtifactRecompute BackfillMode = "artifact_recompute"
-	BackfillLiveRefetch       BackfillMode = "live_refetch"
+	BackfillArtifactRecompute = model.BackfillArtifactRecompute
+	BackfillLiveRefetch       = model.BackfillLiveRefetch
 )
-
-func (m BackfillMode) Validate() error {
-	switch m {
-	case BackfillArtifactRecompute, BackfillLiveRefetch:
-		return nil
-	default:
-		return fmt.Errorf("unknown backfill mode %q", m)
-	}
-}
-
-// Backfill never advances the daily incremental checkpoint, regardless of how
-// its input is obtained.
-func (m BackfillMode) MayAdvanceCheckpoint() bool { return false }
