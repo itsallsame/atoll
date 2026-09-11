@@ -195,3 +195,22 @@ func TestExecutePageClassifiesBrokerPolicyViolationWithoutRetry(t *testing.T) {
 		t.Fatalf("broker policy error class=%v, want effect_policy_violated", err)
 	}
 }
+
+func TestExecutePageClassifiesBrowserCrashAndPreservesPartialEvidence(t *testing.T) {
+	partialDOM := []byte(`<main><div class="job" data-id="42">partial`)
+	broker := &fakeBroker{result: SessionResult{
+		FinalURL: "https://jobs.example.com/openings", ContentType: "text/html", DOM: partialDOM,
+		Attestation: Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET"}, PublicEndpoint: true,
+			RobotsAllowed: true, TermsPolicyVersion: 1, ProfileLeaseAuthorized: true},
+	}, err: errors.New("chrome process exited before DOM completion")}
+	sink := &memorySink{}
+	driver, _ := New(broker)
+	result, err := driver.ExecutePage(context.Background(), browserSpec(), browserInput(), browserPlan(), browserPolicy, sink)
+	var runErr *RunError
+	if !errors.As(err, &runErr) || runErr.Class != "browser_transport" {
+		t.Fatalf("browser crash class=%v, want browser_transport", err)
+	}
+	if result.Artifact.ArtifactID == "" || len(sink.writes) != 1 || string(sink.writes[0].Body) != string(partialDOM) {
+		t.Fatalf("browser crash evidence result=%+v writes=%d body=%q", result, len(sink.writes), sink.writes[0].Body)
+	}
+}

@@ -547,6 +547,8 @@ S01—S24 至少有 model/Repository/actor 测试中的一种自动化覆盖，�
 
 MySQL 故障注入进展（2026-09-11）：除既有行锁超时、真实 InnoDB deadlock 单赢家以及子进程在事务提交前/后的 `SIGKILL` 合同外，新增两个非 root runtime 合同。连接池唯一连接被占用时，Repository 必须服从调用方 deadline 且不留下 Company 事实；会话被切到 `TRANSACTION READ ONLY` 时，业务写明确失败、读取仍可核对且不产生半条事实。两项在真实 MySQL 8.4 通过。它们关闭连接耗尽和只读切片，不代表连接抖动、主从切换、全矩阵切点或生产恢复已经验收。
 
+Browser 故障注入进展（2026-09-11）：受控 Broker 在导航后、DOM 完成前异常退出时，Driver 把错误稳定分类为 `browser_transport`，并在返回失败前保存绑定原 Attempt 的部分 DOM Artifact；不会把残缺页面送入离线 Recipe 或形成业务结果。该合同关闭 Browser crash 的 Driver 切片，控制面状态收口继续复用统一 `execution.failed` 合同；真实 Chrome 进程 kill 与 Artifact provider 同时不可用的组合切点仍未完成。
+
 ### 14.1 负载模型
 
 至少运行以下可复现档位：
