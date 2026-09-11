@@ -59,3 +59,20 @@ func TestExecuteHTMLRejectsInvalidSelectorAndMissingAttribute(t *testing.T) {
 		t.Fatal("missing stable job identity attribute was accepted")
 	}
 }
+
+func TestExecuteHTMLNormalizesDeclaredUTCDateTimeActivity(t *testing.T) {
+	spec := htmlListingSpec()
+	spec.Listing.ActivityTimeFormat = "utc_datetime"
+	document := []byte(`<!doctype html><html><body>
+      <article class="job"><a class="role" data-job-id="job-2" href="/jobs/2"><span class="title">New</span></a><time datetime="2026-09-11T09:40:32"></time><i class="pin" data-pinned="false"></i></article>
+      <article class="job"><a class="role" data-job-id="job-1" href="/jobs/1"><span class="title">Old</span></a><time datetime="2026-09-11T09:39:54"></time><i class="pin" data-pinned="false"></i></article>
+    </body></html>`)
+	result, err := ExecuteHTML(spec, document)
+	if err != nil || !result.Quality.OrderingContractHeld {
+		t.Fatalf("declared HTML UTC datetime result=%+v err=%v", result, err)
+	}
+	var activity string
+	if err := json.Unmarshal(result.Items[0]["activity_at"], &activity); err != nil || activity != "2026-09-11T09:40:32Z" {
+		t.Fatalf("normalized HTML activity=%q err=%v", activity, err)
+	}
+}
