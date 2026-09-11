@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
@@ -16,6 +17,50 @@ type AttemptRecoveryResult struct {
 	Expired     int `json:"expired"`
 	RetryQueued int `json:"retry_queued"`
 	Conflicts   int `json:"conflicts"`
+}
+
+type ExecutorAttemptRecoveryResult struct {
+	AttemptRecoveryResult
+	HasMore bool `json:"has_more"`
+}
+
+type attemptRecoveryCondition struct {
+	StaleBefore     *time.Time
+	ExecutorActorID string
+	CreatedBefore   time.Time
+	Reason          string
+	CausePrefix     string
+}
+
+func (r *Repository) ListActiveExecutorActors(ctx context.Context, limit int) ([]string, bool, error) {
+	if limit < 1 || limit > 10_000 {
+		return nil, false, fmt.Errorf("active executor list limit must be in [1,10000]")
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT DISTINCT executor_actor_id
+FROM recruiting_attempts FORCE INDEX (ix_recruiting_attempt_executor)
+WHERE executor_actor_id IS NOT NULL AND attempt_status IN ('offered', 'accepted', 'running')
+ORDER BY executor_actor_id LIMIT ?`, limit+1)
+	if err != nil {
+		return nil, false, fmt.Errorf("list active executor actors: %w", err)
+	}
+	defer rows.Close()
+	ids := make([]string, 0, limit+1)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, false, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(ids) > limit
+	if hasMore {
+		ids = ids[:limit]
+	}
+	return ids, hasMore, nil
 }
 
 // RecoverStaleAttempts releases abandoned execution authority in bounded,
@@ -82,7 +127,9 @@ ORDER BY p.expires_at, p.attempt_id LIMIT ?`, recoveredAt.UTC(), remaining)
 	}
 	result := AttemptRecoveryResult{Scanned: len(attemptIDs)}
 	for _, attemptID := range attemptIDs {
-		retryQueued, recovered, err := r.recoverStaleAttempt(ctx, attemptID, staleBefore, recoveredAt)
+		retryQueued, recovered, err := r.recoverAttempt(ctx, attemptID, recoveredAt, attemptRecoveryCondition{
+			StaleBefore: &staleBefore, Reason: "executor_progress_timeout", CausePrefix: "reconcile:",
+		})
 		if errors.Is(err, ErrAttemptConflict) {
 			result.Conflicts++
 			continue
@@ -100,7 +147,74 @@ ORDER BY p.expires_at, p.attempt_id LIMIT ?`, recoveredAt.UTC(), remaining)
 	return result, nil
 }
 
-func (r *Repository) recoverStaleAttempt(ctx context.Context, attemptID string, staleBefore, recoveredAt time.Time) (bool, bool, error) {
+// RecoverExecutorAttempts expires authority proven to belong to an absent or
+// replaced Atoll actor incarnation. The caller supplies a conservative upper
+// bound for the current bind instant; attempts at or after that bound are
+// never touched.
+func (r *Repository) RecoverExecutorAttempts(ctx context.Context, executorActorID string, createdBefore time.Time,
+	limit int, recoveredAt time.Time, reason string) (ExecutorAttemptRecoveryResult, error) {
+	if executorActorID == "" || createdBefore.IsZero() || recoveredAt.IsZero() || createdBefore.After(recoveredAt) ||
+		limit < 1 || limit > 500 || (reason != "executor_not_present" && reason != "executor_incarnation_replaced") {
+		return ExecutorAttemptRecoveryResult{}, fmt.Errorf("executor attempt recovery requires identity, ordered times, known reason, and limit in [1,500]")
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT attempt_id FROM recruiting_attempts FORCE INDEX (ix_recruiting_attempt_executor)
+WHERE executor_actor_id = ? AND attempt_status IN ('offered', 'accepted', 'running') AND created_at < ?
+ORDER BY created_at, attempt_id LIMIT ?`, executorActorID, createdBefore.UTC(), limit+1)
+	if err != nil {
+		return ExecutorAttemptRecoveryResult{}, fmt.Errorf("list invalid executor attempts: %w", err)
+	}
+	ids := make([]string, 0, limit+1)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return ExecutorAttemptRecoveryResult{}, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return ExecutorAttemptRecoveryResult{}, err
+	}
+	if err := rows.Err(); err != nil {
+		return ExecutorAttemptRecoveryResult{}, err
+	}
+	result := ExecutorAttemptRecoveryResult{HasMore: len(ids) > limit}
+	if result.HasMore {
+		ids = ids[:limit]
+	}
+	result.Scanned = len(ids)
+	for _, attemptID := range ids {
+		retryQueued, recovered, err := r.recoverAttempt(ctx, attemptID, recoveredAt, attemptRecoveryCondition{
+			ExecutorActorID: executorActorID, CreatedBefore: createdBefore.UTC(), Reason: reason, CausePrefix: "presence-reconcile:",
+		})
+		if errors.Is(err, ErrAttemptConflict) {
+			result.Conflicts++
+			continue
+		}
+		if err != nil {
+			return result, err
+		}
+		if recovered {
+			result.Expired++
+		}
+		if retryQueued {
+			result.RetryQueued++
+		}
+	}
+	// A replacement may appear after the predecessor sweep already drained.
+	// Re-arm its durable wake independently so it does not inherit the former
+	// incarnation's long acknowledgement deadline.
+	if result.Scanned == 0 {
+		if err := r.AccelerateExecutorDispatches(ctx, executorActorID, recoveredAt, reason); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
+func (r *Repository) recoverAttempt(ctx context.Context, attemptID string, recoveredAt time.Time,
+	condition attemptRecoveryCondition) (bool, bool, error) {
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return false, false, err
@@ -108,10 +222,12 @@ func (r *Repository) recoverStaleAttempt(ctx context.Context, attemptID string, 
 	defer func() { _ = tx.Rollback() }()
 	var attemptState []byte
 	var status model.AttemptStatus
-	var updatedAt time.Time
+	var executorActorID sql.NullString
+	var createdAt, updatedAt time.Time
 	err = tx.QueryRowContext(ctx, `
-SELECT state_json, attempt_status, updated_at
-FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE SKIP LOCKED`, attemptID).Scan(&attemptState, &status, &updatedAt)
+SELECT state_json, attempt_status, executor_actor_id, created_at, updated_at
+FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE SKIP LOCKED`, attemptID).
+		Scan(&attemptState, &status, &executorActorID, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, false, ErrAttemptConflict
 	}
@@ -125,7 +241,13 @@ FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE SKIP LOCKED`, attemptID
 		return false, false, permitErr
 	}
 	permitExpired := permitErr == nil && permitStatus == model.PermitGranted && !recoveredAt.UTC().Before(permitExpiresAt.UTC())
-	if (updatedAt.After(staleBefore) && !permitExpired) || (status != model.AttemptOffered && status != model.AttemptAccepted && status != model.AttemptRunning) {
+	eligible := false
+	if condition.StaleBefore != nil {
+		eligible = !updatedAt.After(condition.StaleBefore.UTC()) || permitExpired
+	} else {
+		eligible = executorActorID.String == condition.ExecutorActorID && createdAt.Before(condition.CreatedBefore)
+	}
+	if !eligible || (status != model.AttemptOffered && status != model.AttemptAccepted && status != model.AttemptRunning) {
 		return false, false, ErrAttemptConflict
 	}
 	var attempt model.Attempt
@@ -143,7 +265,7 @@ FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE SKIP LOCKED`, attemptID
 	retryQueued := false
 	if attempt.AcceptanceVersion == work.AcceptanceVersion && attempt.Status == model.AttemptRunning && work.Status == model.WorkRunning {
 		previousVersion := work.Version
-		work, err = work.WaitRetry(work.Version, "executor_progress_timeout")
+		work, err = work.WaitRetry(work.Version, condition.Reason)
 		if err != nil {
 			return false, false, err
 		}
@@ -171,12 +293,17 @@ WHERE attempt_id = ? AND attempt_status = ?`, expired.Status, expiredState,
 	if err := releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitExpired, recoveredAt); err != nil {
 		return false, false, err
 	}
+	if retryQueued && condition.ExecutorActorID != "" {
+		if err := accelerateExecutorDispatchTx(ctx, tx, condition.ExecutorActorID, recoveredAt, condition.Reason); err != nil {
+			return false, false, err
+		}
+	}
 	payload, _ := json.Marshal(map[string]any{
 		"attempt_id": attempt.AttemptID, "work_id": attempt.WorkID, "previous_status": attempt.Status,
-		"retry_queued": retryQueued, "reason": "executor_progress_timeout",
+		"retry_queued": retryQueued, "reason": condition.Reason,
 	})
 	event, err := model.NewEventIntent("attempt-expired-"+attempt.AttemptID, "attempt.expired", "attempt",
-		attempt.AttemptID, 1, recoveredAt.UTC().Format(time.RFC3339Nano), "reconcile:"+attempt.AttemptID, payload)
+		attempt.AttemptID, 1, recoveredAt.UTC().Format(time.RFC3339Nano), condition.CausePrefix+attempt.AttemptID, payload)
 	if err != nil {
 		return false, false, err
 	}
@@ -187,6 +314,34 @@ WHERE attempt_id = ? AND attempt_status = ?`, expired.Status, expiredState,
 		return false, false, err
 	}
 	return retryQueued, true, nil
+}
+
+func accelerateExecutorDispatchTx(ctx context.Context, tx *sql.Tx, executorActorID string, at time.Time, reason string) error {
+	targets := []string{executorActorID}
+	parts := strings.Split(executorActorID, ":")
+	if len(parts) == 3 {
+		targets = append(targets, parts[0]+":"+parts[1])
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE recruiting_execution_dispatch_outbox
+SET next_attempt_at = LEAST(next_attempt_at, ?), last_error_class = ?
+WHERE delivery_status = 'pending' AND target_actor_id IN (?, ?)`, at.UTC(), reason, targets[0], targets[len(targets)-1])
+	return err
+}
+
+func (r *Repository) AccelerateExecutorDispatches(ctx context.Context, executorActorID string, at time.Time,
+	reason string) error {
+	if executorActorID == "" || at.IsZero() || (reason != "executor_not_present" && reason != "executor_incarnation_replaced") {
+		return fmt.Errorf("executor dispatch acceleration requires identity, time, and known reason")
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := accelerateExecutorDispatchTx(ctx, tx, executorActorID, at, reason); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func resetProfileRepairSessionAfterAttemptExpiryTx(ctx context.Context, tx *sql.Tx, work model.Work,

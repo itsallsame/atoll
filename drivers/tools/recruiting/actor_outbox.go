@@ -266,6 +266,7 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 	}
 	if repository != nil {
 		now := time.Now().UTC()
+		_, _ = reconcileExecutorPresence(sys, cfg, state, repository, now)
 		_, _ = repository.RecoverStaleAttempts(msg.Ctx(), now.Add(-time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond), cfg.AttemptRecoveryLimit, now)
 		_, _ = repository.ExpireProfileRepairSessions(msg.Ctx(), now, defaultReconcileLimit)
 		_, _ = reconcileOutbox(msg.Ctx(), sys, repository, defaultReconcileLimit, now)

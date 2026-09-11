@@ -469,7 +469,7 @@ Work 是用户能理解和运维的业务工作；Attempt 是对 Work 的一次�
 5. 取消、暂停和人工修正不被旧结果覆盖；
 6. 能实施站点、凭证和全局资源预算。
 
-是否需要 lease、heartbeat 和 token，根据任务时长、Atoll incarnation、跨进程恢复和故障测试决定。即使不用 lease，也必须使用 `attempt_id` 和版本条件隔离陈旧结果。
+是否需要 lease、heartbeat 和 token，根据任务时长、Atoll incarnation、跨进程恢复和故障测试决定。即使不用 lease，也必须使用 `attempt_id` 和版本条件隔离陈旧结果。首版不增加 Executor 自报 heartbeat：Recruiting Actor 只读取 Atoll 已有 `system.member.list` 的 substrate-owned `present/uptime` 作为快速失效信号；它只能加速回收，不能替代 Attempt/incarnation/acceptance/domain fence，长期无进展超时仍是兜底。
 
 ### 6.7 外部安全预算优先
 
@@ -691,6 +691,8 @@ offered → accepted → running → succeeded / failed / expired / rejected
 保存 `attempt_id`、`work_id`、Executor identity/incarnation、capability 快照、Recipe 版本、状态、接受版本、时间和结果/失败 Artifact 引用。`acceptance_version` 是逻辑 fencing 条件，但不要求一定使用 lease token。
 
 Attempt 还固定 Company/Source 配置版本、Recipe Assignment、Checkpoint 版本、Job refresh generation 和 Profile 版本中与本次工作相关的接受条件。Work fencing 不能代替这些领域对象自己的 CAS。
+
+控制面在成功 offer 后记录 authenticated concrete Executor Actor ID。首次可信 present 观测以 `observed_at - uptime - 1s` 推导保守的本次绑定下界；只回收严格早于该下界的 Attempt。`present→absent` 或成员从 catalog 消失时，以观测时刻回收旧 Attempt；`absent→present` 或 uptime 明显回退时，按新绑定下界回收前一 incarnation。在线信号不授予新执行权，也不接受任何结果；其职责只是提前关闭已经由数据库 fence 定义的旧执行权并唤醒持久 dispatch。
 
 ### 9.5 Artifact
 
@@ -949,6 +951,8 @@ Recruiting Actor 只做短时、确定性的校验与领域事务，不在 Actor
 
 Recruiting Actor 的恢复 handler 检查长期无进展 Work/Attempt、已上传但未接受的 Artifact、状态投影差异、失效 incarnation、废弃 Recipe 引用和长期未进入 ledger 的事件意图。只有出现独立权限、生命周期或故障边界后才拆 Reconciler Actor。
 
+失效 incarnation 对账复用同一个 durable reconcile timer。Actor 启动时从活动 Attempt 有界恢复需要观测的 concrete Executor ID，之后只跟踪实际成功领取过 Work 的成员；每 tick 调用 Atoll 公共成员查询，按排序游标公平轮转，数据库 sweep 数和 Attempt 回收数都受 `attempt_recovery_limit` 约束。回收、Permit 释放、running Work 转 `waiting_retry`、`attempt.expired` 事件和对应 dispatch 提前到期在短事务内完成。Actor 状态丢失或成员查询失败不会误判执行权，只退化到原有 stale timeout。
+
 首次全量的大批量结果先按 generation 分块写 staging，最终用一次 fencing finalize 使其可见；Detail Work 使用可重放意图逐步补齐。批量导入、纠正和发布采用父 Work 加逐项结果，默认不要求跨所有 Target 的大事务。
 
 ### 11.4 Atoll 暂时不可用
@@ -1084,6 +1088,7 @@ Review Queue 是 `status=waiting_human` 的 Work Center 视图，可再按结构
 - 旧 `expected_version` 明确拒绝；
 - 重复命令、交付和结果不产生重复业务结果；
 - Executor 退出后 Work 可恢复；
+- Executor 的可信 presence 消失或 incarnation 更换能加速恢复，成员查询失败时仍由无进展超时兜底；
 - 旧 Attempt 不能覆盖新事实；
 - Checkpoint CAS、Job refresh generation、Source/Recipe/Profile 版本分别拒绝跨 Work 的陈旧结果；
 - shared Recipe 或 Profile 故障只产生一个修复事项，恢复时不会形成重试风暴；

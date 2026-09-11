@@ -400,7 +400,7 @@ func handleListingCompletionResult(sys actorbase.Sys, repository *store.Reposito
 	_, _ = sys.Reply(msg, response)
 }
 
-func handleExecutionControlMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
+func handleExecutionControlMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, state *storedState, msg actorbase.Msg) {
 	if repository == nil {
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
 		return
@@ -410,7 +410,7 @@ func handleExecutionControlMessage(sys actorbase.Sys, cfg Config, repository *st
 		return
 	}
 	if msg.Type == TypeExecutionOffer {
-		handleListingOffer(sys, cfg, repository, msg)
+		handleListingOffer(sys, cfg, repository, state, msg)
 		return
 	}
 	if msg.Type == TypeExecutionWakeCompleted {
@@ -441,7 +441,7 @@ func handleExecutionWakeCompleted(sys actorbase.Sys, repository *store.Repositor
 		"delivery_id": payload.DeliveryID, "status": "completed"})
 }
 
-func handleListingOffer(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
+func handleListingOffer(sys actorbase.Sys, cfg Config, repository *store.Repository, state *storedState, msg actorbase.Msg) {
 	var payload listingOfferPayload
 	if !decode(sys, msg, &payload) {
 		return
@@ -475,6 +475,18 @@ func handleListingOffer(sys actorbase.Sys, cfg Config, repository *store.Reposit
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
+	}
+	if state != nil {
+		if state.ExecutorPresence == nil {
+			state.ExecutorPresence = map[string]executorPresenceObservation{}
+		}
+		if _, tracked := state.ExecutorPresence[string(msg.Sender.ID)]; !tracked {
+			state.ExecutorPresence[string(msg.Sender.ID)] = executorPresenceObservation{}
+			// Presence is an acceleration hint. Failure to persist it must not
+			// turn an already committed offer into an ambiguous business result;
+			// stale-attempt recovery remains the authoritative backstop.
+			_ = persist(sys, state)
+		}
 	}
 	response.Available, response.Offer = true, &offer
 	_, _ = sys.Reply(msg, response)

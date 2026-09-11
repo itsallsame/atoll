@@ -69,8 +69,10 @@ func TestRecruitingLiveBaselinePageRecoveryThroughAtoll(t *testing.T) {
 		"config": map[string]any{
 			"executor_id":           "tool:" + executorName,
 			"executors":             []map[string]any{{"actor_id": "tool:" + executorName, "capability": "http.fetch"}},
-			"reconcile_interval_ms": 30000, "daily_schedule_enabled": false,
-			"attempt_stale_after_ms": 1000, "attempt_recovery_limit": 20,
+			"reconcile_interval_ms": 500, "daily_schedule_enabled": false,
+			// Deliberately too long for this test: recovery must come from
+			// Atoll's substrate-owned presence edge, not the stale timeout.
+			"attempt_stale_after_ms": 3600000, "attempt_recovery_limit": 20,
 		},
 		"visibility": "private",
 	})
@@ -111,13 +113,9 @@ func TestRecruitingLiveBaselinePageRecoveryThroughAtoll(t *testing.T) {
 	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 20})
 	firstWork, firstAttempt, firstArtifact := waitLiveBaselineFirstPage(t, runtimeDSN,
 		"e2e-live-baseline-recovery-work", "", 30*time.Second, firstLog, h.server.logPath)
+	killedAt := time.Now()
 	firstDaemon.kill9(t)
-
-	time.Sleep(1500 * time.Millisecond)
-	recovery := ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 20})
-	if numberField(t, recovery, "attempts_expired") < 1 || numberField(t, recovery, "works_retry_queued") < 1 {
-		t.Fatalf("stale page Attempt was not recovered: %v", recovery)
-	}
+	recoveredIn := waitLivePresenceRecovery(t, runtimeDSN, firstWork.WorkID, firstAttempt, 15*time.Second)
 	assertLiveAttemptState(t, runtimeDSN, firstAttempt, model.AttemptExpired)
 
 	secondLog := filepath.Join(h.root, "logs", "live-baseline-recovery-daemon-2.log")
@@ -153,8 +151,33 @@ func TestRecruitingLiveBaselinePageRecoveryThroughAtoll(t *testing.T) {
 			t.Fatalf("durable page Artifact missing at %s: info=%v err=%v", physical, info, err)
 		}
 	}
-	t.Logf("live page recovery: expired_attempt=%s retry_attempt=%s both restarted at page_sequence=1",
-		firstAttempt, secondAttempt)
+	t.Logf("live page recovery: expired_attempt=%s retry_attempt=%s presence_recovery=%s after_kill=%s; both restarted at page_sequence=1",
+		firstAttempt, secondAttempt, recoveredIn, time.Since(killedAt))
+}
+
+func waitLivePresenceRecovery(t *testing.T, dsn, workID, attemptID string, timeout time.Duration) time.Duration {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	started := time.Now()
+	for deadline := started.Add(timeout); time.Now().Before(deadline); {
+		var attemptStatus, workStatus, waitingReason string
+		err = db.QueryRow(`SELECT
+  (SELECT attempt_status FROM recruiting_attempts WHERE attempt_id = ?),
+  (SELECT status FROM recruiting_works WHERE work_id = ?),
+  (SELECT COALESCE(JSON_UNQUOTE(JSON_EXTRACT(state_json, '$.waiting_reason')), '') FROM recruiting_works WHERE work_id = ?)`,
+			attemptID, workID, workID).Scan(&attemptStatus, &workStatus, &waitingReason)
+		if err == nil && attemptStatus == string(model.AttemptExpired) && workStatus == string(model.WorkWaitingRetry) &&
+			(waitingReason == "executor_not_present" || waitingReason == "executor_incarnation_replaced") {
+			return time.Since(started)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("presence did not recover Attempt before one-hour stale timeout: work=%s attempt=%s err=%v", workID, attemptID, err)
+	return 0
 }
 
 func recruitingLiveLeverRecipe() recipeabi.Spec {

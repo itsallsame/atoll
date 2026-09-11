@@ -25,13 +25,15 @@ import (
 const stateKey resource.ResourceID = "recruiting.p0.state"
 
 type storedState struct {
-	Works             map[string]model.ProbeWork `json:"works"`
-	CommandWorks      map[string]string          `json:"command_works"`
-	Receipts          map[string]json.RawMessage `json:"receipts"`
-	ReconcileTimerID  string                     `json:"reconcile_timer_id,omitempty"`
-	DailyTimerID      string                     `json:"daily_timer_id,omitempty"`
-	DailyWorkTimerID  string                     `json:"daily_work_timer_id,omitempty"`
-	DailyCloseTimerID string                     `json:"daily_close_timer_id,omitempty"`
+	Works               map[string]model.ProbeWork             `json:"works"`
+	CommandWorks        map[string]string                      `json:"command_works"`
+	Receipts            map[string]json.RawMessage             `json:"receipts"`
+	ReconcileTimerID    string                                 `json:"reconcile_timer_id,omitempty"`
+	DailyTimerID        string                                 `json:"daily_timer_id,omitempty"`
+	DailyWorkTimerID    string                                 `json:"daily_work_timer_id,omitempty"`
+	DailyCloseTimerID   string                                 `json:"daily_close_timer_id,omitempty"`
+	ExecutorPresence    map[string]executorPresenceObservation `json:"executor_presence,omitempty"`
+	ExecutorSweepCursor string                                 `json:"executor_sweep_cursor,omitempty"`
 }
 
 type probeStartPayload struct {
@@ -110,6 +112,11 @@ func run(sys actorbase.Sys, cfg Config) error {
 	state, err := loadState(sys)
 	if err != nil {
 		return err
+	}
+	if repository != nil {
+		if err := bootstrapExecutorPresence(sys, state, repository); err != nil {
+			return fmt.Errorf("recruiting: bootstrap executor presence: %w", err)
+		}
 	}
 	if repository != nil && state.ReconcileTimerID == "" {
 		if err := armReconcileTimer(sys, cfg, state); err != nil {
@@ -196,7 +203,7 @@ func run(sys actorbase.Sys, cfg Config) error {
 		case TypeDailyRunOccurrenceExclude:
 			handleDailyRunOccurrenceExclude(sys, repository, msg)
 		case TypeExecutionOffer, TypeExecutionAccept, TypeExecutionStarted, TypeExecutionFailed, TypeExecutionWakeCompleted:
-			handleExecutionControlMessage(sys, cfg, repository, msg)
+			handleExecutionControlMessage(sys, cfg, repository, state, msg)
 		case TypeSourceGet, TypeSourceList, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
 			TypeJobGet, TypeJobList, TypeJobCorrectionGet, TypeProfileGet, TypeWorkGet, TypeWorkList,
 			TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary, TypeRepairGet, TypeRepairList, TypeRecipeInspect,
@@ -239,7 +246,29 @@ func loadState(sys actorbase.Sys) (*storedState, error) {
 	if state.Receipts == nil {
 		state.Receipts = map[string]json.RawMessage{}
 	}
+	if state.ExecutorPresence == nil {
+		state.ExecutorPresence = map[string]executorPresenceObservation{}
+	}
 	return state, nil
+}
+
+func bootstrapExecutorPresence(sys actorbase.Sys, state *storedState, repository *store.Repository) error {
+	ids, _, err := repository.ListActiveExecutorActors(sys.Life(), 10_000)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for _, id := range ids {
+		if _, tracked := state.ExecutorPresence[id]; tracked {
+			continue
+		}
+		state.ExecutorPresence[id] = executorPresenceObservation{}
+		changed = true
+	}
+	if changed {
+		return persist(sys, state)
+	}
+	return nil
 }
 
 func persist(sys actorbase.Sys, state *storedState) error {

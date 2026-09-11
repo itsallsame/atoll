@@ -1,0 +1,33 @@
+{
+  "evidence_version": "recruiting-evidence.v1",
+  "recorded_at": "2026-09-11T00:00:00Z",
+  "scope": "P3 trusted Atoll presence-accelerated Executor Attempt recovery",
+  "branch": "codex/atoll-recruiting",
+  "core_boundary_base": "a94d2b8d",
+  "target": "Lever public postings API",
+  "fault_cut": "the first daemon is sent SIGKILL after its first baseline page is durable; the configured stale fallback is one hour",
+  "claims": [
+    "Recruiting consumes Atoll substrate-owned member presence and uptime without adding a self-reported heartbeat or modifying core",
+    "only Attempts strictly older than the conservative Executor bind boundary are expired",
+    "presence loss releases the old Permit, retries the same Work, and accelerates its durable dispatch",
+    "a new daemon incarnation receives a distinct Attempt and restarts at page sequence 1",
+    "presence is advisory acceleration; Attempt, incarnation, acceptance and domain fences remain authoritative, with stale timeout as fallback"
+  ],
+  "verification": [
+    {
+      "command": "ATOLL_E2E_BIN=$PWD/bin ATOLL_RECRUITING_LIVE_E2E=1 go test ./e2e -run '^TestRecruitingLiveBaselinePageRecoveryThroughAtoll$' -count=1 -v -timeout 180s",
+      "result": "pass",
+      "environment": "real Atoll Server, two real daemon processes, ordinary operator, Artifact File Resource, ephemeral MySQL 8.4 non-root accounts, public read-only website",
+      "observed_total_seconds": 25.419,
+      "observed_presence_recovery_ms": 104.373,
+      "configured_stale_fallback_ms": 3600000
+    },
+    {
+      "command": "RECRUITING_MYSQL_TEST_RUN='^(TestStaleAttemptRecoveryReleasesOffersAndRetriesRunningWork|TestExecutorIncarnationRecoveryIsActorAndBindTimeFenced)$' scripts/recruiting-mysql-test.sh",
+      "result": "pass",
+      "environment": "ephemeral MySQL 8.4, separate non-root migrator/runtime accounts"
+    }
+  ],
+  "third_party_writes": false,
+  "atoll_core_modified": false
+}
