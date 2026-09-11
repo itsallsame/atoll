@@ -43,6 +43,8 @@ func manifest() introspect.Manifest {
 			TypeSourceResume:                   {Description: "resume a paused recruitment source"},
 			TypeSourceArchive:                  {Description: "archive a recruitment source without deleting history"},
 			TypeSourceRestore:                  {Description: "restore an archived source into paused validation"},
+			TypeSourceReassignPreview:          {Description: "preview a version-fenced cross-company Source reassignment without rewriting historical ownership"},
+			TypeSourceReassignConfirm:          {Description: "confirm an exact Source reassignment preview and create an independently validated successor or split Source"},
 			TypeSourceDiscover:                 {Description: "explicitly start one version-fenced source discovery generation for a company"},
 			TypeSourceDiscoveryGet:             {Description: "get one durable source discovery generation"},
 			TypeSourceDiscoveryCandidates:      {Description: "seek-page independently reviewable candidates from one source discovery"},

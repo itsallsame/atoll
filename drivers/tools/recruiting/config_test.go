@@ -150,6 +150,7 @@ func TestManifestExposesControlAndExecutorResultWords(t *testing.T) {
 		TypeCompanyArchive, TypeCompanyRestore, TypeCompanyGet, TypeCompanyList,
 		TypeSourceAdd, TypeSourceUpdate, TypeSourceValidate, TypeSourceValidationPublish, TypeSourceValidationReject, TypeSourcePause,
 		TypeSourceResume, TypeSourceArchive, TypeSourceRestore, TypeSourceGet, TypeSourceList,
+		TypeSourceReassignPreview, TypeSourceReassignConfirm,
 		TypeSourceProfileBind, TypeSourceProfileUnbind,
 		TypeRunDiagnostic,
 		TypeRunProduction,

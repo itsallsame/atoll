@@ -40,6 +40,8 @@ const (
 	TypeSourceResume                   = "recruiting.source.resume"
 	TypeSourceArchive                  = "recruiting.source.archive"
 	TypeSourceRestore                  = "recruiting.source.restore"
+	TypeSourceReassignPreview          = "recruiting.source.reassign.preview"
+	TypeSourceReassignConfirm          = "recruiting.source.reassign.confirm"
 	TypeSourceDiscover                 = "recruiting.source.discover"
 	TypeSourceDiscoveryGet             = "recruiting.source.discovery.get"
 	TypeSourceDiscoveryCandidates      = "recruiting.source.discovery.candidates"

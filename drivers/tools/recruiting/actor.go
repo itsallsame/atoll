@@ -177,6 +177,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleCompanyMessage(sys, repository, msg)
 		case TypeSourceAdd, TypeSourceUpdate, TypeSourceValidate, TypeSourceValidationPublish, TypeSourceValidationReject, TypeSourcePause, TypeSourceResume, TypeSourceArchive, TypeSourceRestore:
 			handleSourceMessage(sys, cfg, repository, msg)
+		case TypeSourceReassignPreview, TypeSourceReassignConfirm:
+			handleSourceReassignment(sys, repository, msg)
 		case TypeSourceProfileBind, TypeSourceProfileUnbind:
 			handleSourceProfileBinding(sys, repository, msg)
 		case TypeRecipePropose, TypeRecipeValidate, TypeRecipeApprove, TypeRecipeReject, TypeRecipeAssign, TypeRecipeRollout,
