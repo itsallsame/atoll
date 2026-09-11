@@ -342,8 +342,12 @@ func (i RecipeRolloutBatchItem) BindRollbackValidation(expected uint64, workID, 
 		return RecipeRolloutBatchItem{}, err
 	}
 	workID, runID = strings.TrimSpace(workID), strings.TrimSpace(runID)
+	validSourceVersion := sourceVersion > i.RolledBackSourceVersion
+	if i.PreviousAssignment.Kind == RecipeDetail {
+		validSourceVersion = sourceVersion == i.RolledBackSourceVersion
+	}
 	if i.RollbackStatus != RecipeRollbackItemAwaitingValidation || i.RollbackValidationWorkID != "" ||
-		workID == "" || runID == "" || sourceVersion <= i.RolledBackSourceVersion {
+		workID == "" || runID == "" || !validSourceVersion {
 		return RecipeRolloutBatchItem{}, fmt.Errorf("awaiting rollback item and validation Work/run are required")
 	}
 	i.RollbackValidationWorkID, i.RollbackValidationRunID = workID, runID
@@ -356,9 +360,12 @@ func (i RecipeRolloutBatchItem) MarkRollbackSucceeded(expected uint64, validated
 	if err := requireVersion(expected, i.Version); err != nil {
 		return RecipeRolloutBatchItem{}, err
 	}
+	validSourceVersion := i.RollbackValidationSourceVersion > i.RolledBackSourceVersion
+	if i.PreviousAssignment.Kind == RecipeDetail {
+		validSourceVersion = i.RollbackValidationSourceVersion == i.RolledBackSourceVersion
+	}
 	if i.RollbackStatus != RecipeRollbackItemAwaitingValidation || !validRFC3339(validatedAt) ||
-		i.RollbackValidationWorkID == "" || i.RollbackValidationRunID == "" ||
-		i.RollbackValidationSourceVersion <= i.RolledBackSourceVersion {
+		i.RollbackValidationWorkID == "" || i.RollbackValidationRunID == "" || !validSourceVersion {
 		return RecipeRolloutBatchItem{}, &InvalidTransitionError{Entity: "recipe_rollout_item", From: string(i.RollbackStatus), Action: "complete rollback"}
 	}
 	i.RolledBackAt = strings.TrimSpace(validatedAt)

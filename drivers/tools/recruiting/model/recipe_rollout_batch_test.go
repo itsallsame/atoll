@@ -19,6 +19,40 @@ func activeRolloutBatchRecipe(t *testing.T) Recipe {
 	return active
 }
 
+func TestDetailRolloutAndRollbackValidationKeepSourceVersionStable(t *testing.T) {
+	previous := SourceRecipeAssignment{SourceID: "detail-source", Kind: RecipeDetail,
+		RecipeID: "detail-old", RecipeVersion: 1, ContractHash: "detail-contract",
+		EffectiveAt: "2026-09-11T00:00:00Z", AssignmentVersion: 1}
+	item := RecipeRolloutBatchItem{BatchID: "detail-batch", Ordinal: 1, SourceID: previous.SourceID,
+		ExpectedSourceVersion: 4, ExpectedAssignmentVersion: 1, PreviousAssignment: previous,
+		Status: RecipeRolloutItemPending, Version: 1}
+	planned, _ := item.PlanApply(item.Version, "2026-09-11T00:01:00Z")
+	applied, err := planned.MarkApplied(planned.Version, 5, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := applied.BindValidation(applied.Version, "detail-validation-work", "detail-validation-run", 5)
+	if err != nil {
+		t.Fatalf("Detail validation changed Source version requirement: %v", err)
+	}
+	succeeded, _ := bound.MarkSucceeded(bound.Version, bound.ValidationWorkID, "2026-09-11T00:02:00Z")
+	rollbackPending, _ := succeeded.BeginRollback(succeeded.Version)
+	rollbackApplying, _ := rollbackPending.PlanRollback(rollbackPending.Version, "2026-09-11T00:03:00Z")
+	rollbackApplied, err := rollbackApplying.MarkRollbackApplied(rollbackApplying.Version, 6, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackBound, err := rollbackApplied.BindRollbackValidation(rollbackApplied.Version,
+		"detail-rollback-work", "detail-rollback-run", 6)
+	if err != nil {
+		t.Fatalf("Detail rollback validation changed Source version requirement: %v", err)
+	}
+	rolledBack, err := rollbackBound.MarkRollbackSucceeded(rollbackBound.Version, "2026-09-11T00:04:00Z")
+	if err != nil || rolledBack.RollbackStatus != RecipeRollbackItemSucceeded {
+		t.Fatalf("Detail rollback completion=%+v err=%v", rolledBack, err)
+	}
+}
+
 func previewedRolloutBatch(t *testing.T, batchID string, sourceCount, canarySize, waveSize int) RecipeRolloutBatch {
 	t.Helper()
 	batch, err := NewRecipeRolloutBatch(batchID, "work-"+batchID, activeRolloutBatchRecipe(t),

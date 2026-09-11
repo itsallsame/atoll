@@ -63,19 +63,29 @@ func reconcileRecipeRollbackBatch(ctx context.Context, cfg Config, repository *s
 			}
 		case model.RecipeRollbackItemApplying:
 			var applied bool
-			applied, stepErr = reconcileListingRecipeRollbackApplication(ctx, repository, batch, item, now)
+			applied, stepErr = reconcileRecipeRollbackApplication(ctx, repository, batch, item, now)
 			if applied {
 				result.AssignmentsApplied++
 			}
 		case model.RecipeRollbackItemAwaitingValidation:
 			if item.RollbackValidationWorkID == "" {
 				var started bool
-				started, stepErr = reconcileListingRecipeRollbackValidation(ctx, cfg, repository, batch, item, now)
+				switch batch.Kind {
+				case model.RecipeListing:
+					started, stepErr = reconcileListingRecipeRollbackValidation(ctx, cfg, repository, batch, item, now)
+				case model.RecipeDetail:
+					started, stepErr = reconcileDetailRecipeRollbackValidation(ctx, cfg, repository, batch, item, now)
+				}
 				if started {
 					result.ValidationsStarted++
 				}
 			} else {
-				_, stepErr = reconcileListingRecipeRollbackValidationOutcome(ctx, repository, batch, item, now)
+				switch batch.Kind {
+				case model.RecipeListing:
+					_, stepErr = reconcileListingRecipeRollbackValidationOutcome(ctx, repository, batch, item, now)
+				case model.RecipeDetail:
+					_, stepErr = reconcileDetailRecipeRollbackValidationOutcome(ctx, repository, batch, item, now)
+				}
 			}
 		}
 		if stepErr != nil && !isRolloutReconcileRace(stepErr) {
@@ -121,7 +131,7 @@ func reconcileInterruptedRolloutApplicationForRollback(ctx context.Context, repo
 	return fmt.Errorf("%w: interrupted rollout application facts drifted before rollback", store.ErrRecipeRolloutRejected)
 }
 
-func reconcileListingRecipeRollbackApplication(ctx context.Context, repository *store.Repository,
+func reconcileRecipeRollbackApplication(ctx context.Context, repository *store.Repository,
 	batch model.RecipeRolloutBatch, item model.RecipeRolloutBatchItem, now time.Time) (bool, error) {
 	requestedAt, err := time.Parse(time.RFC3339, item.RollbackRequestedAt)
 	if err != nil {
@@ -156,7 +166,7 @@ func reconcileListingRecipeRollbackApplication(ctx context.Context, repository *
 		if replaceErr != nil {
 			return false, replaceErr
 		}
-		nextSource, assignErr := source.AssignRecipe(source.Version, replacement, true)
+		nextSource, assignErr := source.AssignRecipe(source.Version, replacement, batch.Kind == model.RecipeListing)
 		if assignErr != nil {
 			return false, failRecipeRollbackItem(ctx, repository, item, "source_not_rollback_ready", now)
 		}
@@ -166,8 +176,12 @@ func reconcileListingRecipeRollbackApplication(ctx context.Context, repository *
 			"source_version": nextSource.Version, "assignment_version": replacement.AssignmentVersion})
 		receipt, _ := model.NewCommandReceipt(commandID, "recruiting.internal.recipe_rollout.rollback.apply",
 			"sha256:"+stableDigest(commandID+"|"+item.RollbackRequestedAt), response)
-		event, _ := model.NewEventIntent("event-"+stableDigest(commandID+"|source.listing_recipe_rolled_back"),
-			"source.listing_recipe_rolled_back", "source", item.SourceID, nextSource.Version,
+		eventType := "source.detail_recipe_rolled_back"
+		if batch.Kind == model.RecipeListing {
+			eventType = "source.listing_recipe_rolled_back"
+		}
+		event, _ := model.NewEventIntent("event-"+stableDigest(commandID+"|"+eventType),
+			eventType, "source", item.SourceID, nextSource.Version,
 			requestedAt.UTC().Format(time.RFC3339Nano), commandID,
 			json.RawMessage(`{"initiated_by":"recipe_rollout_batch_rollback"}`))
 		if _, err := repository.ApplyRecipeAssignmentChangeCommand(ctx, source.Version,
@@ -179,11 +193,14 @@ func reconcileListingRecipeRollbackApplication(ctx context.Context, repository *
 		}
 		source, assignment = nextSource, replacement
 	}
+	projected := source.DetailAssignment
+	if batch.Kind == model.RecipeListing {
+		projected = source.ListingAssignment
+	}
 	if assignment.AssignmentVersion <= item.AppliedAssignmentVersion ||
 		assignment.RecipeID != item.PreviousAssignment.RecipeID ||
 		assignment.RecipeVersion != item.PreviousAssignment.RecipeVersion ||
-		assignment.ContractHash != item.PreviousAssignment.ContractHash || source.ListingAssignment == nil ||
-		*source.ListingAssignment != assignment {
+		assignment.ContractHash != item.PreviousAssignment.ContractHash || projected == nil || *projected != assignment {
 		return false, failRecipeRollbackItem(ctx, repository, item, "source_or_assignment_changed", now)
 	}
 	applied, err := item.MarkRollbackApplied(item.Version, source.Version, assignment.AssignmentVersion)

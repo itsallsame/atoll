@@ -729,8 +729,8 @@ func recipeRollbackStateChanged(current, next model.RecipeRolloutBatchItem) bool
 
 func validateRecipeRollbackAppliedFacts(ctx context.Context, tx *sql.Tx, batch model.RecipeRolloutBatch,
 	item model.RecipeRolloutBatchItem) error {
-	if batch.Kind != model.RecipeListing {
-		return fmt.Errorf("Recipe batch rollback for %s is not implemented", batch.Kind)
+	if batch.Kind != model.RecipeListing && batch.Kind != model.RecipeDetail {
+		return fmt.Errorf("Recipe batch rollback for %s is unsupported", batch.Kind)
 	}
 	source, err := getSourceForUpdate(ctx, tx, item.SourceID)
 	if err != nil {
@@ -744,26 +744,69 @@ func validateRecipeRollbackAppliedFacts(ctx context.Context, tx *sql.Tx, batch m
 	if err != nil {
 		return fmt.Errorf("Recipe rollback request time is invalid")
 	}
+	projected := source.DetailAssignment
+	if batch.Kind == model.RecipeListing {
+		projected = source.ListingAssignment
+	}
 	if !found || source.Version != item.RolledBackSourceVersion ||
 		assignment.AssignmentVersion != item.RolledBackAssignmentVersion ||
 		assignment.AssignmentVersion <= item.AppliedAssignmentVersion ||
 		assignment.RecipeID != item.PreviousAssignment.RecipeID ||
 		assignment.RecipeVersion != item.PreviousAssignment.RecipeVersion ||
 		assignment.ContractHash != item.PreviousAssignment.ContractHash ||
-		assignment.Kind != batch.Kind || source.ListingAssignment == nil ||
-		*source.ListingAssignment != assignment || source.ReadinessStatus != model.SourceRepairing ||
-		source.ContractAssessment != nil || source.CandidateEndpoint == nil ||
+		assignment.Kind != batch.Kind || projected == nil || *projected != assignment ||
 		!rolloutTimeEquals(assignment.EffectiveAt, rollbackAt) {
 		return fmt.Errorf("%w: rolled back Source/Assignment facts do not match the frozen previous Recipe",
 			ErrRecipeRolloutRejected)
+	}
+	if batch.Kind == model.RecipeListing &&
+		(source.ReadinessStatus != model.SourceRepairing || source.ContractAssessment != nil ||
+			source.CandidateEndpoint == nil) {
+		return fmt.Errorf("%w: rolled back Listing Source is not awaiting recalibration", ErrRecipeRolloutRejected)
+	}
+	if batch.Kind == model.RecipeDetail && source.ReadinessStatus != model.SourceReady {
+		return fmt.Errorf("%w: rolled back Detail Source is not ready", ErrRecipeRolloutRejected)
 	}
 	return nil
 }
 
 func validateRecipeRollbackValidationBinding(ctx context.Context, tx *sql.Tx, batch model.RecipeRolloutBatch,
 	current, next model.RecipeRolloutBatchItem) error {
+	if batch.Kind == model.RecipeDetail {
+		work, err := getWorkWith(ctx, tx, next.RollbackValidationWorkID, true)
+		if err != nil {
+			return err
+		}
+		run, err := getRecipeSampleValidationByWorkWith(ctx, tx, next.RollbackValidationWorkID, true)
+		if err != nil {
+			return err
+		}
+		source, err := getSourceForUpdate(ctx, tx, current.SourceID)
+		if err != nil {
+			return err
+		}
+		assignment, found, err := getAssignmentForUpdate(ctx, tx, current.SourceID, batch.Kind)
+		if err != nil {
+			return err
+		}
+		if !found || work.TargetType != "recipe" || work.Purpose != "recipe_validation" || work.Terminal() ||
+			run.Mode != model.RecipeSampleValidationRollout ||
+			run.ValidationRunID != next.RollbackValidationRunID || run.WorkID != work.WorkID ||
+			run.SourceID != current.SourceID ||
+			next.RollbackValidationSourceVersion != current.RolledBackSourceVersion ||
+			run.SourceVersion != next.RollbackValidationSourceVersion ||
+			source.Version != next.RollbackValidationSourceVersion || source.ReadinessStatus != model.SourceReady ||
+			source.DetailAssignment == nil || *source.DetailAssignment != assignment ||
+			assignment.AssignmentVersion != current.RolledBackAssignmentVersion ||
+			run.Candidate.RecipeID != current.PreviousAssignment.RecipeID ||
+			run.Candidate.Version != current.PreviousAssignment.RecipeVersion ||
+			run.Candidate.ContractHash != current.PreviousAssignment.ContractHash || run.ProposedAssignment != assignment {
+			return fmt.Errorf("Detail Recipe rollback validation Work/run does not match restored member facts")
+		}
+		return nil
+	}
 	if batch.Kind != model.RecipeListing {
-		return fmt.Errorf("Recipe batch rollback validation for %s is not implemented", batch.Kind)
+		return fmt.Errorf("Recipe batch rollback validation for %s is unsupported", batch.Kind)
 	}
 	work, err := getWorkWith(ctx, tx, next.RollbackValidationWorkID, true)
 	if err != nil {
@@ -794,6 +837,45 @@ func validateRecipeRollbackValidationBinding(ctx context.Context, tx *sql.Tx, ba
 
 func validateRecipeRollbackValidationOutcome(ctx context.Context, tx *sql.Tx, batch model.RecipeRolloutBatch,
 	item model.RecipeRolloutBatchItem, targetStatus model.RecipeRollbackItemStatus) error {
+	if batch.Kind == model.RecipeDetail {
+		work, err := getWorkWith(ctx, tx, item.RollbackValidationWorkID, true)
+		if err != nil {
+			return err
+		}
+		run, err := getRecipeSampleValidationByWorkWith(ctx, tx, item.RollbackValidationWorkID, true)
+		if err != nil {
+			return err
+		}
+		source, err := getSourceForUpdate(ctx, tx, item.SourceID)
+		if err != nil {
+			return err
+		}
+		assignment, found, err := getAssignmentForUpdate(ctx, tx, item.SourceID, batch.Kind)
+		if err != nil {
+			return err
+		}
+		if !found || run.Mode != model.RecipeSampleValidationRollout ||
+			run.ValidationRunID != item.RollbackValidationRunID || run.SourceID != item.SourceID ||
+			run.SourceVersion != item.RollbackValidationSourceVersion ||
+			source.Version != item.RollbackValidationSourceVersion || source.DetailAssignment == nil ||
+			*source.DetailAssignment != assignment || assignment.AssignmentVersion != item.RolledBackAssignmentVersion ||
+			assignment.RecipeID != item.PreviousAssignment.RecipeID ||
+			assignment.RecipeVersion != item.PreviousAssignment.RecipeVersion ||
+			assignment.ContractHash != item.PreviousAssignment.ContractHash || run.ProposedAssignment != assignment {
+			return fmt.Errorf("Detail Recipe rollback validation no longer matches the restored Assignment")
+		}
+		if targetStatus == model.RecipeRollbackItemSucceeded {
+			if work.Status != model.WorkCompleted || work.Resolution != model.ResolutionSucceeded ||
+				run.Status != model.RecipeSampleValidationCompleted {
+				return fmt.Errorf("Detail Recipe rollback member has no completed validation evidence")
+			}
+			return nil
+		}
+		if work.Status != model.WorkWaitingHuman && work.Status != model.WorkCanceled {
+			return fmt.Errorf("Detail Recipe rollback validation has not reached a failure requiring pause")
+		}
+		return nil
+	}
 	work, err := getWorkWith(ctx, tx, item.RollbackValidationWorkID, true)
 	if err != nil {
 		return err

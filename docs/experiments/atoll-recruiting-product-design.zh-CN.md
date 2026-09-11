@@ -584,7 +584,7 @@ Recipe 批量发布使用 `recipe-rollout-sources.v1` JSON Resource，正文只�
 
 Listing 与 Detail 共享上述批次、成员、Attempt 和 wave 状态机，但验证策略属于业务领域，不强行抽成一种动作。Listing Assignment 切换后 Source 离开每日调度并执行完整 Source validation，成功发布新的活动倒序、分页和身份校准。Detail Assignment 切换不改变 Source 的 Listing 就绪状态；控制面从该 Source 当前 `available` 岗位中按稳定主键选择一个真实样本，使用目标 active Recipe 创建独立 `recipe_validation` Work。该执行只保存 response/trace Artifact、抽取字段数和规范化哈希，不写 Job、DetailVersion 或刷新代次；样本 Job、Source、Company、Assignment、Recipe 或 Profile 任一 fence 改变都会拒绝结果。没有可用样本不是“默认成功”，而是暂停该 wave 并等待人工补齐或选择回滚。
 
-批量发布任一 wave 失败后，固定该 wave 并暂停父 Work，用户可以在修复后显式 `batch.resume`，也可以显式 `batch.rollback`。批量 rollback 的产品含义是回滚该批次已经发布的完整前缀，而不是只回滚报错成员：此前成功 wave 与当前 wave 中已经切换的成员都恢复到各自预览时冻结的 Assignment；尚未发布的后续成员不产生无意义版本。回滚按确定性逆序、每批最多 500 项推进，每个 Source 仍复用逐 Source Assignment/Checkpoint 原子切换，追加新 Assignment version，绝不删除目标版本、验证证据或已接受岗位事实。Listing 回滚后必须用旧 Recipe 创建新的 Source validation generation；只有全部已发布成员重新验证成功，批次才进入 `rolled_back` 并释放 active scope。进程退出只续跑未完成成员；版本漂移、旧 Recipe 被隔离、活动验证未终结或回滚验证失败都会暂停 rollback 并交给人处理，不得跳过后把父 Work 伪装成成功。
+批量发布任一 wave 失败后，固定该 wave 并暂停父 Work，用户可以在修复后显式 `batch.resume`，也可以显式 `batch.rollback`。批量 rollback 的产品含义是回滚该批次已经发布的完整前缀，而不是只回滚报错成员：此前成功 wave 与当前 wave 中已经切换的成员都恢复到各自预览时冻结的 Assignment；尚未发布的后续成员不产生无意义版本。回滚按确定性逆序、每批最多 500 项推进，每个 Source 仍复用逐 Source Assignment/Checkpoint 原子切换，追加新 Assignment version，绝不删除目标版本、验证证据或已接受岗位事实。Listing 回滚后必须用旧 Recipe 创建新的 Source validation generation；Detail 回滚保持 Source ready，但也必须用恢复后的旧 Assignment 创建新的 evidence-only Job sample validation。只有全部已发布成员重新验证成功，批次才进入 `rolled_back` 并释放 active scope。进程退出只续跑未完成成员；版本漂移、旧 Recipe 被隔离、活动验证未终结或回滚验证失败都会暂停 rollback 并交给人处理，不得跳过后把父 Work 伪装成成功。
 
 ## 9. 最小领域模型
 
