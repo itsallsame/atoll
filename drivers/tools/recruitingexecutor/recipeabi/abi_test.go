@@ -69,6 +69,7 @@ func TestBrowserPlanIsRequiredAndCompatibilityHashBound(t *testing.T) {
 	spec := validListingSpec()
 	spec.Transport = TransportBrowser
 	spec.RequiredCapability = "browser.public"
+	spec.Extraction.Next = ""
 	if err := spec.Validate(); err == nil {
 		t.Fatal("browser Recipe without a persisted plan was accepted")
 	}

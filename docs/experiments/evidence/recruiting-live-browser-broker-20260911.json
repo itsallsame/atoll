@@ -1,0 +1,30 @@
+{
+  "evidence_version": "recruiting-evidence.v1",
+  "recorded_at": "2026-09-11T00:00:00Z",
+  "scope": "P4 public Browser Broker with real Chrome/CDP",
+  "branch": "codex/atoll-recruiting",
+  "core_boundary_base": "a94d2b8d",
+  "target": "https://example.com",
+  "claims": [
+    "browser.public uses the existing Recruiting Executor class and immutable Recipe Browser Plan",
+    "each session uses a fresh Chrome process and temporary user-data directory",
+    "a POST attempted by page JavaScript is blocked by CDP before reaching the origin",
+    "the public-site run verifies public addressing, robots policy, same-origin document navigation, bounded DOM capture, and effect attestation",
+    "DOM and attestation enter the existing Artifact, Listing, Detail, Discovery, and Failure contracts"
+  ],
+  "verification": [
+    {
+      "command": "go test -mod=mod ./drivers/tools/recruitingexecutor/... ./tools/recruiting-extension/bridge/... -count=1 -timeout 180s",
+      "result": "pass",
+      "environment": "Google Chrome with deterministic local origin and Recruiting extension unit contracts"
+    },
+    {
+      "command": "ATOLL_RECRUITING_LIVE_BROWSER_URL=https://example.com go test -mod=mod ./drivers/tools/recruitingexecutor/browserbroker -run TestRunnerReadsOptInPublicWebsiteInRealChrome -count=1 -v -timeout 90s",
+      "result": "pass",
+      "environment": "Google Chrome, public network, read-only public website"
+    }
+  ],
+  "third_party_writes": false,
+  "os_container_egress_isolation_verified": false,
+  "atoll_core_modified": false
+}

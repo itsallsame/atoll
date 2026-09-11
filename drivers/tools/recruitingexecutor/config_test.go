@@ -90,6 +90,33 @@ func TestParseConfigEnablesProfileBrokerInSameExecutorClass(t *testing.T) {
 	}
 }
 
+func TestParseConfigEnablesPublicBrowserInSameExecutorClass(t *testing.T) {
+	raw := json.RawMessage(`{
+		"capability":"browser.public","execution_enabled":true,"control_actor_id":"tool:control",
+		"artifact_device_name":"worker-a","artifact_channel_name":"recruiting","artifact_directory":"artifacts",
+		"artifact_access_scope":"operators","artifact_retention":"30d","artifact_redaction":"redacted",
+		"terms_policy_version":3,"terms_reviewed_at":"2026-09-08T00:00:00Z",
+		"browser_chrome_path":"/bin/sh"
+	}`)
+	cfg, err := parseConfig(raw)
+	if err != nil || cfg.Capability != "browser.public" || cfg.BrowserChromePath != "/bin/sh" {
+		t.Fatalf("public browser config=%+v err=%v", cfg, err)
+	}
+	runtime, err := newProductionRuntime(cfg)
+	if err != nil || runtime.driver == nil || runtime.broker != nil {
+		t.Fatalf("public browser runtime=%+v err=%v", runtime, err)
+	}
+	withoutChrome := json.RawMessage(`{
+		"capability":"browser.public","execution_enabled":true,"control_actor_id":"tool:control",
+		"artifact_device_name":"worker-a","artifact_channel_name":"recruiting","artifact_directory":"artifacts",
+		"artifact_access_scope":"operators","artifact_retention":"30d","artifact_redaction":"redacted",
+		"terms_policy_version":3,"terms_reviewed_at":"2026-09-08T00:00:00Z"
+	}`)
+	if _, err := parseConfig(withoutChrome); err == nil {
+		t.Fatal("public browser config without a Chrome executable was accepted")
+	}
+}
+
 func TestManifestHasOneExecutorClass(t *testing.T) {
 	m := manifest()
 	if m.Class != Class {

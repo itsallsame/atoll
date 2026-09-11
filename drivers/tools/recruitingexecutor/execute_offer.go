@@ -54,9 +54,6 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 	if err != nil {
 		return fmt.Errorf("validate immutable execution offer: %w", err)
 	}
-	if expectation.Transport != recipeabi.TransportHTTPJSON && expectation.Transport != recipeabi.TransportHTTPHTML {
-		return fmt.Errorf("HTTP executor cannot run recipe transport %q", expectation.Transport)
-	}
 	if err := options.Compliance.Validate(); err != nil {
 		return fmt.Errorf("validate execution compliance evidence: %w", err)
 	}

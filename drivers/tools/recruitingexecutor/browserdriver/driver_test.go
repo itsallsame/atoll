@@ -27,6 +27,10 @@ type memorySink struct {
 	writes []ArtifactWrite
 }
 
+type policyBrokerError struct{ error }
+
+func (policyBrokerError) BrowserFailureClass() string { return "effect_policy_violated" }
+
 func (s *memorySink) Put(_ context.Context, write ArtifactWrite) (recipeabi.ArtifactRef, error) {
 	write.Body = append([]byte(nil), write.Body...)
 	s.writes = append(s.writes, write)
@@ -128,6 +132,17 @@ func TestPlanRejectsArbitraryInteraction(t *testing.T) {
 			t.Fatalf("unsafe action %q was accepted", kind)
 		}
 	}
+	tooManyNavigations := browserPlan()
+	tooManyNavigations.MaxNavigations = 1
+	tooManyNavigations.Actions = []Action{{Kind: ActionFollowLink, Selector: "a.next"}}
+	if err := tooManyNavigations.Validate(); err == nil {
+		t.Fatal("plan with more declared navigations than its limit was accepted")
+	}
+	emptyScroll := browserPlan()
+	emptyScroll.Actions = []Action{{Kind: ActionScrollPage}}
+	if err := emptyScroll.Validate(); err == nil {
+		t.Fatal("scroll action without a positive repeat count was accepted")
+	}
 }
 
 func TestInvalidExtractionIsRejectedBeforeOpeningBrowser(t *testing.T) {
@@ -162,5 +177,19 @@ func TestExecutePageRejectsPlanDifferentFromImmutableRecipe(t *testing.T) {
 	}
 	if broker.calls != 0 {
 		t.Fatal("browser opened before immutable plan fence was checked")
+	}
+}
+
+func TestExecutePageClassifiesBrokerPolicyViolationWithoutRetry(t *testing.T) {
+	session := SessionResult{FinalURL: "https://jobs.example.com/openings", ContentType: "text/html",
+		DOM: []byte(`<div class="job"></div>`),
+		Attestation: Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET", "POST"},
+			AllowedWriteRequests: 1, PublicEndpoint: false, RobotsAllowed: true, TermsPolicyVersion: 1,
+			ProfileLeaseAuthorized: true}}
+	driver, _ := New(&fakeBroker{result: session, err: policyBrokerError{errors.New("write was blocked")}})
+	_, err := driver.ExecutePage(context.Background(), browserSpec(), browserInput(), browserPlan(), browserPolicy, &memorySink{})
+	var runErr *RunError
+	if !errors.As(err, &runErr) || runErr.Class != "effect_policy_violated" {
+		t.Fatalf("broker policy error class=%v, want effect_policy_violated", err)
 	}
 }

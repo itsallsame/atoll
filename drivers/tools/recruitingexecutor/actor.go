@@ -14,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/browserbroker"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/browserdriver"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/httpdriver"
 	"github.com/wanpengxie/atoll/lib/actorbase"
 	"github.com/wanpengxie/atoll/lib/behavior"
@@ -45,7 +47,7 @@ type resultPayload struct {
 type wakePayload = executioncontract.WakeRequest
 
 type productionRuntime struct {
-	driver       *httpdriver.Driver
+	driver       executionHTTPDriver
 	broker       browserBroker
 	options      executeOfferOptions
 	batchOptions companyImportOptions
@@ -137,6 +139,18 @@ func newProductionRuntime(cfg Config) (*productionRuntime, error) {
 			return nil, fmt.Errorf("prepare browser Profile broker: %w", err)
 		}
 		return &productionRuntime{broker: broker, options: options}, nil
+	}
+	if cfg.Capability == "browser.public" {
+		runner, err := browserbroker.New(cfg.BrowserChromePath)
+		if err != nil {
+			return nil, fmt.Errorf("prepare public browser broker: %w", err)
+		}
+		driver, err := browserdriver.New(runner)
+		if err != nil {
+			return nil, fmt.Errorf("prepare public browser driver: %w", err)
+		}
+		options.Compliance = httpdriver.ComplianceEvidence{TermsPolicyVersion: cfg.TermsPolicyVersion, TermsReviewedAt: cfg.TermsReviewedAt}
+		return &productionRuntime{driver: &browserExecutionDriver{driver: driver}, options: options}, nil
 	}
 	robots, err := httpdriver.NewRobotsTxtChecker(httpdriver.RobotsPolicy{Timeout: time.Duration(cfg.RobotsTimeoutMS) * time.Millisecond,
 		MaxBytes: cfg.RobotsMaxBytes, CacheTTL: time.Duration(cfg.RobotsCacheTTLMS) * time.Millisecond})

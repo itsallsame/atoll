@@ -53,10 +53,10 @@
 - browserdriver 已固定受控 Browser Broker 边界：招聘 Executor 只发送 profile:// opaque ref，Cookie、密码、OTP 和 Authorization 不出现在 SessionRequest；秘密只允许由授权设备侧 Broker 解析；
 - Browser Plan 仅支持 wait_selector、scroll_page 和 follow_link，没有任意 JavaScript、输入文本、表单提交、通用 click 或下载动作；selector、次数、导航数、DOM 字节和整次 timeout 均有硬上限，follow_link 必须由 Broker 解析 href 后按同源 GET 导航；
 - Broker 必须返回网络效果 attestation：只允许 GET/HEAD，写请求、跨源文档导航、表单、下载和 popup 都必须为 0；同时证明解析地址为公网、robots allowed、条款版本吻合，以及使用 Profile 时 lease 已授权。任一项不符均分类为 effect policy violation；
-- Browser DOM 同样先保存 Artifact，之后才检查 attestation、最终 URL 与离线 DOM Recipe；策略违规、跨源、超量和解析失败仍保留证据。当前实现是安全契约和可替换 Broker adapter，尚未宣称已经接入某个 Chromium 运行时。
+- Browser DOM 同样先保存 Artifact，之后才检查 attestation、最终 URL 与离线 DOM Recipe；策略违规、跨源、超量和解析失败仍保留证据。`browser.public` 已接入真实 Chrome/CDP Runner：每个 Session 启动独立 Chrome 进程与临时 user-data-dir，Fetch 拦截只放行 GET/HEAD，拒绝私网目标、跨源文档导航、下载和 popup，并在进入现有 Listing/Detail/Discovery 结果合同前保存 DOM 与 attestation trace。应用层校验不替代生产部署的 OS/container 出站隔离，因此 P4 仍未关闭；
 - `extensioncapture` 把浏览器插件严格定位为人工发现/修复入口，而非新的长期 Worker：用户确认后只能提交绑定 Source/Endpoint version 的候选 Recipe、结构化 selector 轨迹和 `artifact://` 证据；候选内容生成稳定哈希，但没有 active、Assignment 或 Checkpoint 字段；
 - 插件轨迹没有输入值、请求体、Cookie/storage 或凭据字段，候选仍受 Recipe GET/header/预算校验；带凭据 URL、疑似 secret query、signed object URL、任意交互以及“仍依赖 extension 执行”的候选均拒绝。Browser 候选必须转成受控 Browser Plan，HTTP 候选不能夹带 Browser action；发布、灰度和 Assignment 仍只能由 Recruiting Actor 后续审批命令完成。
-- `recipe.propose` 已把权限受控的 Recipe Spec Resource 和可选 Extension Capture Resource 接入 Recruiting Actor：Source version/active Endpoint revision 是提案 fence，Actor 与 Executor 共享严格有界 Recipe decoder，并严格解码 Capture，自行计算 content/compatibility contract hash 和 scope。Capture actor 必须等于消息信封身份；Listing 页面必须等于锁定 Endpoint，Detail 则额外由 Bridge、Actor 和事务逐层锁定同 Source Job version/detail URL。migration 26 将 trace/evidence 引用的不可变 Proposal 与 draft、receipt/event 原子保存，`recipe.inspect` 可审计读回；客户端仍不能提交 active 状态、Assignment 或自报 contract hash。Manifest V3 开发预览 UI、Listing/Detail 真实 DOM 捕获、普通用户 Resource 上传链以及三类候选的执行验证均已实现；整包自动加载点击、Browser Broker/Profile 尚未完成，不能把整个插件产品描述为已交付。
+- `recipe.propose` 已把权限受控的 Recipe Spec Resource 和可选 Extension Capture Resource 接入 Recruiting Actor：Source version/active Endpoint revision 是提案 fence，Actor 与 Executor 共享严格有界 Recipe decoder，并严格解码 Capture，自行计算 content/compatibility contract hash 和 scope。Capture actor 必须等于消息信封身份；Listing 页面必须等于锁定 Endpoint，Detail 则额外由 Bridge、Actor 和事务逐层锁定同 Source Job version/detail URL。migration 26 将 trace/evidence 引用的不可变 Proposal 与 draft、receipt/event 原子保存，`recipe.inspect` 可审计读回；客户端仍不能提交 active 状态、Assignment 或自报 contract hash。Manifest V3 开发预览 UI、Listing/Detail 真实 DOM 捕获、普通用户 Resource 上传链以及三类候选的执行验证均已实现；公共 Browser Runner 已接入，整包自动加载点击和设备侧 Profile provider 尚未完成，不能把整个插件产品描述为已交付。
 - Listing 候选 Recipe 已有真实执行式验证和独立审批：`recipe.validate` 原子冻结候选 version 与 ready Source 的生产 Endpoint/Company/Source fence，创建 `recipe_validation` ListingRun、Work 和 capability dispatch；拟议 Assignment 只用于 immutable offer，不写入 Source 当前 Assignment 或历史。Executor 复用 Listing validation driver，只提交 page/trace Artifact 与质量证明；结果不写 Job、Observation 或 Checkpoint。
 - `recipe.approve` 重新核对 candidate content/contract/execution、指定 Work/run、唯一成功 Attempt、绑定该 Attempt 的未拒绝 Artifact 数量，以及 identity/ordering/pagination 三项证明；失败统一为 `quality_rejected` 且不发布。共享 execution result contract 与客户端 acknowledgement 已显式增加 `recipe_validation` 分支，避免执行完成后因客户端闭集遗漏而把 Attempt 留在 running。
 - `recipe.reject` 不允许用 Recipe 状态切换隐式遗弃运行中的验证。它要求精确 validation Work 已为 completed/failed/canceled 且没有活动 Attempt，否则返回 `waiting_human`；成功时仅把候选返回 draft，保留全部 Work/Attempt/Artifact 证据并支持命令重放。普通用户 server E2E 已覆盖 open Work 拒绝失败、显式 cancel、拒绝成功及 server restart 后重放。
@@ -93,9 +93,11 @@ make recruiting-live-smoke
 ./scripts/recruiting-live-e2e.sh
 ```
 
+2026-09-11 新增的 Chrome 活体门直接运行本机 Google Chrome，而非伪 Broker：确定性站点证明正常 DOM 可采集；页面脚本尝试 POST 时，CDP 在请求到达 origin 前阻断且 origin 写入计数保持 0；显式公网用例访问 `https://example.com`，完成公网地址、robots、同源导航、DOM 和 attestation 检查。紧凑证据见 `docs/experiments/evidence/recruiting-live-browser-broker-20260911.json`。
+
 ## 尚未完成
 
-- 通用 Browser Broker 的 Chromium/CDP 实现、OS/container 级隔离，以及插件整包在 Chrome for Testing/Chromium 中的自动加载点击门；开发预览插件、本机安全 Bridge、真实 DOM 捕获内核、Extension Proposal→持久 Draft 和设备绑定 Profile 修复 relay 已接通，但真实授权登录站点 canary 与日常 Browser Driver 使用的设备侧 Profile provider 仍缺；Listing 候选完成真实负向验证，Detail 候选完成隔离 MySQL 与真实站点的 evidence-only 验证及审批；
+- Browser Runner 已有 Chromium/CDP 实现并接入统一 Executor 的 `browser.public` capability；尚缺生产部署的 OS/container 级出站隔离、插件整包在 Chrome for Testing/Chromium 中的自动加载点击门、真实授权登录站点 canary，以及日常 Browser Driver 使用的设备侧 Profile provider；
 - 本地确定性站点的全部异常矩阵；
 - 更多站型的 Nightly/Weekly Live 验证，以及由正式 Artifact 存储提供保留期，而不是验收机本地文件；
 - Recipe KV 与 Artifact File 已在真实 Atoll server/daemon 的允许路径通过；权限拒绝和重启保持 e2e 仍待补齐；

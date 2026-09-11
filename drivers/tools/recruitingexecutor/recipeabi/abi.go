@@ -196,6 +196,7 @@ func (p BrowserPlan) Validate() error {
 		p.MaxDOMBytes < 1 || p.MaxDOMBytes > 20<<20 {
 		return fmt.Errorf("browser plan requires supported version and bounded actions/navigation/DOM")
 	}
+	navigations := 1
 	for index, action := range p.Actions {
 		if action.TimeoutMS < 0 || action.TimeoutMS > 30_000 || action.MaxRepeats < 0 || action.MaxRepeats > 100 {
 			return fmt.Errorf("browser action %d exceeds time or repeat bounds", index)
@@ -208,13 +209,22 @@ func (p BrowserPlan) Validate() error {
 			if _, err := cascadia.Parse(action.Selector); err != nil {
 				return fmt.Errorf("browser action %d selector: %w", index, err)
 			}
+			if action.MaxRepeats != 0 || (action.Kind == BrowserActionFollowLink && action.TimeoutMS != 0) {
+				return fmt.Errorf("browser action %d declares parameters unused by %q", index, action.Kind)
+			}
+			if action.Kind == BrowserActionFollowLink {
+				navigations++
+			}
 		case BrowserActionScrollPage:
-			if action.Selector != "" {
-				return fmt.Errorf("scroll_page cannot target an interactive element")
+			if action.Selector != "" || action.TimeoutMS != 0 || action.MaxRepeats < 1 {
+				return fmt.Errorf("scroll_page requires a positive bounded repeat count without selector or timeout")
 			}
 		default:
 			return fmt.Errorf("browser action %d has unsupported kind %q", index, action.Kind)
 		}
+	}
+	if navigations > p.MaxNavigations {
+		return fmt.Errorf("browser plan declares %d navigations above its limit of %d", navigations, p.MaxNavigations)
 	}
 	return nil
 }
@@ -365,6 +375,9 @@ func (s Spec) Validate() error {
 		}
 		if err := s.BrowserPlan.Validate(); err != nil {
 			return err
+		}
+		if s.Extraction.Next != "" || s.Extraction.NextAttribute != "" || s.OffsetPagination != nil {
+			return fmt.Errorf("browser recipe plan must produce one terminal DOM without a second pagination protocol")
 		}
 	} else if s.BrowserPlan != nil && s.Transport != TransportBrowser {
 		return fmt.Errorf("non-browser recipe cannot carry a browser plan")

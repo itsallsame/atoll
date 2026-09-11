@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -127,8 +128,10 @@ func New(broker Broker) (*Driver, error) {
 }
 
 type PageResult struct {
-	Document recipeexec.DocumentResult
-	Artifact recipeabi.ArtifactRef
+	Document    recipeexec.DocumentResult
+	Artifact    recipeabi.ArtifactRef
+	FinalURL    string
+	Attestation Attestation
 }
 
 type RunError struct {
@@ -138,6 +141,11 @@ type RunError struct {
 
 func (e *RunError) Error() string { return fmt.Sprintf("browser driver %s: %v", e.Class, e.Cause) }
 func (e *RunError) Unwrap() error { return e.Cause }
+
+type ClassifiedBrokerError interface {
+	error
+	BrowserFailureClass() string
+}
 
 func (d *Driver) ExecutePage(ctx context.Context, spec recipeabi.Spec, input recipeabi.RunInput, plan Plan, policy PolicyEvidence, sink ArtifactSink) (PageResult, error) {
 	if sink == nil {
@@ -193,8 +201,12 @@ func (d *Driver) ExecutePage(ctx context.Context, spec recipeabi.Spec, input rec
 	}
 	sum := sha256.Sum256(body)
 	contentHash := "sha256:" + hex.EncodeToString(sum[:])
+	artifactURL := session.FinalURL
+	if strings.TrimSpace(artifactURL) == "" {
+		artifactURL = input.Endpoint.URL
+	}
 	artifact, artifactErr := sink.Put(ctx, ArtifactWrite{Kind: "browser_dom", AttemptID: input.Attempt.AttemptID,
-		URL: session.FinalURL, ContentType: session.ContentType, ContentHash: contentHash, Attestation: session.Attestation, Body: body})
+		URL: artifactURL, ContentType: session.ContentType, ContentHash: contentHash, Attestation: session.Attestation, Body: body})
 	if artifactErr != nil {
 		return PageResult{}, fmt.Errorf("save browser artifact before parsing: %w", artifactErr)
 	}
@@ -205,8 +217,15 @@ func (d *Driver) ExecutePage(ctx context.Context, spec recipeabi.Spec, input rec
 	if artifact.ContentHash != contentHash {
 		return PageResult{}, fmt.Errorf("browser artifact sink changed content hash")
 	}
-	result := PageResult{Artifact: artifact}
+	result := PageResult{Artifact: artifact, FinalURL: session.FinalURL, Attestation: session.Attestation}
 	if brokerErr != nil {
+		var classified ClassifiedBrokerError
+		if errors.As(brokerErr, &classified) {
+			switch class := classified.BrowserFailureClass(); class {
+			case "effect_policy_violated", "endpoint_rejected", "robots_disallowed":
+				return result, &RunError{Class: class, Cause: brokerErr}
+			}
+		}
 		return result, &RunError{Class: "browser_transport", Cause: brokerErr}
 	}
 	if tooLarge {
