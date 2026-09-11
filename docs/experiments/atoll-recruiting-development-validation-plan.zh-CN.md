@@ -517,6 +517,8 @@ S15/S16 实现契约已在产品设计冻结：使用 Company/Source 的配置�
 
 执行状态补充（2026-09-12，Backfill cancel 截点与协调器交接）：提交 `e454ab35` 增加真实 pause operation 的两个结果提交截点。pause fence 先提交、Work 尚未投影时，迟到结果已经被拒绝，只保留 rejected Artifact 且不创建 Output；结果先提交时，后续 scope projection 不改写已经 completed/succeeded 的 Backfill 子 Work 与 Attempt。另一个有界测试让 scope coordinator 先结算一条未物化 Item、通用 Backfill coordinator 接手最后一条、scope operation 再观察依赖清空；测试发现通用终结器会对已经由 scope 取消的父 Work 再次 Cancel 并卡住 Backfill，现仅把精确 `WorkCanceled` 视为幂等前置状态，其他矛盾终态仍报错。交接最终只产生一个稳定 `backfill.canceled` 事件。完整非 root MySQL 8.4 Store 回归 222.297 秒、Actor 3.055 秒，race/vet 与核心冻结检查通过。Backfill 的关键 cancel/result/coordinator 截点已闭合；S15/S16 仍需把同等级证据扩到其余执行类型，并做重复并发压力验证。
 
+执行状态补充（2026-09-12，跨执行类型 cancel/result 提交顺序）：提交 `516d79dc` 把真实 `ScopeControlOperation(cancel)` 的 result-first/cancel-first 证据扩到 Source Discovery、Source Validation、Detail、独立 Diagnostic、Listing/Detail/Discovery Recipe validation，并覆盖 Baseline 的 cancel-first 晚到页面。结果先提交的七类终态执行保持 owner completed、Work completed/succeeded、Attempt succeeded，随后 scope operation 只能关闭其他仍未终态 Work；取消先提交时，owner/Work/Attempt/Permit 保持一致取消，晚到 Artifact 以 rejected 证据保存且不产生 Candidate、DetailVersion、Listing Observation 或验证成功事实。该矩阵发现 Diagnostic 与 Recipe sample 入口在 owner 已取消后先返回普通状态错误，绕过了统一拒绝审计；现改为先验证静态类型与归属，再验证 Attempt/Work/scope fence，最后判断 owner running。定向非 root MySQL 8.4 两组 15 个子场景通过；完整 Store race 回归 226.276 秒、Actor 3.094 秒，vet、diff check 与从 `a94d2b8d` 的核心冻结检查均通过。主要执行类型的 operation-driven 提交顺序正确性已闭合；S15/S16 仍需重复并发压力矩阵，因此继续保持部分完成。
+
 | ID | 场景 | 必须自动化的核心断言 |
 |---|---|---|
 | S01 | 单个公司新增 | command replay、业务去重、0/1/N Source |
