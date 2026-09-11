@@ -216,6 +216,10 @@ func TestRecruitingLiveQualifiedWordPressSourceThroughAtoll(t *testing.T) {
 	if counts.jobs < 1 || counts.jobs != counts.details || counts.exceptions != 0 || counts.checkpoint != 1 {
 		t.Fatalf("qualified baseline counts=%+v", counts)
 	}
+	baselinePages := qualifiedWordPressPageCount(t, runtimeDSN, "e2e-live-qualified-wordpress-baseline-work")
+	if baselinePages < 3 {
+		t.Fatalf("current source sample is too small to prove a bounded incremental scan: baseline_pages=%d", baselinePages)
+	}
 	beforeReplay := counts
 	baselineReplay := ws.request(homeID, "recruiting.baseline.start", controlID, baselineCommand)
 	if nestedStringField(t, baselineReplay, "work", "work_id") != "e2e-live-qualified-wordpress-baseline-work" {
@@ -245,12 +249,17 @@ func TestRecruitingLiveQualifiedWordPressSourceThroughAtoll(t *testing.T) {
 		afterIncremental.checkpoint != counts.checkpoint+1 {
 		t.Fatalf("unchanged incremental duplicated business facts: before=%+v after=%+v", counts, afterIncremental)
 	}
+	incrementalPages := qualifiedWordPressPageCount(t, runtimeDSN, "e2e-live-qualified-wordpress-incremental-work")
+	if incrementalPages < 1 || incrementalPages >= baselinePages {
+		t.Fatalf("incremental did not stop before the full baseline range: baseline_pages=%d incremental_pages=%d",
+			baselinePages, incrementalPages)
+	}
 	ws.request(homeID, "recruiting.run.production", controlID, productionCommand)
 	if replayed := qualifiedWordPressCounts(t, runtimeDSN, qualifiedWordPressSourceID); replayed != afterIncremental {
 		t.Fatalf("incremental command replay changed facts: before=%+v after=%+v", afterIncremental, replayed)
 	}
-	t.Logf("qualified real source: jobs=%d details=%d baseline checkpoint=1 incremental checkpoint=2; discovery, validation, baseline, detail and replay passed",
-		counts.jobs, counts.details)
+	t.Logf("qualified real source: jobs=%d details=%d baseline_pages=%d incremental_pages=%d baseline checkpoint=1 incremental checkpoint=2; discovery, validation, baseline, detail and replay passed",
+		counts.jobs, counts.details, baselinePages, incrementalPages)
 }
 
 func qualifiedWordPressDiscoveryRecipe() recipeabi.Spec {
@@ -464,6 +473,20 @@ func qualifiedWordPressCounts(t *testing.T, dsn, sourceID string) qualifiedCount
 		t.Fatal(err)
 	}
 	return value
+}
+
+func qualifiedWordPressPageCount(t *testing.T, dsn, workID string) int {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var pages int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM recruiting_listing_page_progress WHERE work_id = ?`, workID).Scan(&pages); err != nil {
+		t.Fatal(err)
+	}
+	return pages
 }
 
 func waitQualifiedWordPressBaseline(t *testing.T, dsn, sourceID string, timeout time.Duration,
