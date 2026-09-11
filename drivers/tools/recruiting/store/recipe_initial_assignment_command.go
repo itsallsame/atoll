@@ -96,9 +96,11 @@ func (r *Repository) ApplyInitialDetailAssignmentCommand(ctx context.Context, ex
 	sourceState, _ := json.Marshal(next)
 	result, err := tx.ExecContext(ctx, `UPDATE recruiting_sources
 SET canonical_source_key = ?, origin = ?, readiness_status = ?, control_status = ?, health_status = ?,
+    configuration_version = ?, control_epoch = ?, execution_fence = ?,
     discovery_generation = ?, version = ?, state_json = ?, updated_at = ?
 WHERE source_id = ? AND version = ?`, endpoint.CanonicalKey, origin, next.ReadinessStatus, next.ControlStatus,
-		next.HealthStatus, next.DiscoveryGeneration, next.Version, sourceState, businessAt.UTC(), next.SourceID,
+		next.HealthStatus, next.ConfigurationVersion, next.ControlEpoch, next.ExecutionFence,
+		next.DiscoveryGeneration, next.Version, sourceState, businessAt.UTC(), next.SourceID,
 		expectedSourceVersion)
 	if err != nil {
 		return CommandResult{}, fmt.Errorf("update Source during initial Detail assignment: %w", err)

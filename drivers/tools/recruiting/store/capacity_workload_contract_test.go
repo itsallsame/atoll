@@ -296,11 +296,15 @@ func insertCapacityWork(ctx context.Context, tx *sql.Tx, work model.Work, placem
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO recruiting_works(
   work_id, parent_work_id, initiator_actor_id, cause_message_id, cause_work_id,
+  company_id, source_id, root_work_id,
   business_key, target_type, target_id, purpose, trigger_kind, status, resolution,
   priority, capability, origin, profile_id, blocked_by_repair_work_id, not_before,
   deadline_at, acceptance_version, version, state_json, created_at, updated_at
-) VALUES (?, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?, ?, ?, ?)`,
-		work.WorkID, work.InitiatorActorID, work.CauseMessageID, placement.BusinessKey, work.TargetType,
+) VALUES (?, NULL, ?, ?, NULL,
+  (SELECT company_id FROM recruiting_sources WHERE source_id = ?), ?, ?,
+  ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, ?, NULL, ?, ?, ?, ?, ?)`,
+		work.WorkID, work.InitiatorActorID, work.CauseMessageID, work.TargetID, work.TargetID, work.WorkID,
+		placement.BusinessKey, work.TargetType,
 		work.TargetID, work.Purpose, work.Trigger, work.Status, placement.Priority, placement.Capability,
 		placement.Origin, placement.NotBefore, work.AcceptanceVersion, work.Version, state, now, now)
 	return err

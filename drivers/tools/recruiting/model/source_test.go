@@ -239,3 +239,20 @@ func TestListingAssignmentContractChangeRequiresCompatibilityProof(t *testing.T)
 		t.Fatalf("orthogonal detail assignment = %+v %v", updated, err)
 	}
 }
+
+func TestSourceSeparatesConfigurationControlAndCancellationFences(t *testing.T) {
+	source, _ := NewRecruitmentSource("source-fences", "company-fences", "https://fences.example/jobs", "", 1)
+	staged, err := source.StageEndpoint(source.Version, "https://fences.example/careers", "")
+	if err != nil || staged.ConfigurationVersion != source.ConfigurationVersion+1 || staged.ControlEpoch != source.ControlEpoch {
+		t.Fatalf("configuration fences=%+v err=%v", staged, err)
+	}
+	drained, err := staged.Pause(staged.Version, PauseDrain)
+	if err != nil || drained.ControlEpoch != source.ControlEpoch+1 || drained.ExecutionFence != source.ExecutionFence {
+		t.Fatalf("drain fences=%+v err=%v", drained, err)
+	}
+	resumed, _ := drained.Resume(drained.Version)
+	canceled, err := resumed.Pause(resumed.Version, PauseCancel)
+	if err != nil || canceled.ControlEpoch != source.ControlEpoch+3 || canceled.ExecutionFence != source.ExecutionFence+1 {
+		t.Fatalf("cancel fences=%+v err=%v", canceled, err)
+	}
+}

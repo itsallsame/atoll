@@ -25,22 +25,25 @@ type SourceEndpoint struct {
 }
 
 type RecruitmentSource struct {
-	SourceID            string                    `json:"source_id"`
-	CompanyID           string                    `json:"company_id"`
-	DiscoveryGeneration uint64                    `json:"discovery_generation"`
-	ReadinessStatus     SourceReadinessStatus     `json:"readiness_status"`
-	ControlStatus       ControlStatus             `json:"control_status"`
-	HealthStatus        HealthStatus              `json:"health_status"`
-	LastPauseMode       PauseMode                 `json:"last_pause_mode,omitempty"`
-	CandidateEndpoint   *SourceEndpoint           `json:"candidate_endpoint,omitempty"`
-	ActiveEndpoint      *SourceEndpoint           `json:"active_endpoint,omitempty"`
-	ListingAssignment   *SourceRecipeAssignment   `json:"listing_assignment,omitempty"`
-	DetailAssignment    *SourceRecipeAssignment   `json:"detail_assignment,omitempty"`
-	DiscoveryAssignment *SourceRecipeAssignment   `json:"discovery_assignment,omitempty"`
-	ListingProfileID    string                    `json:"listing_profile_id,omitempty"`
-	DetailProfileID     string                    `json:"detail_profile_id,omitempty"`
-	ContractAssessment  *SourceContractAssessment `json:"contract_assessment,omitempty"`
-	Version             uint64                    `json:"version"`
+	SourceID             string                    `json:"source_id"`
+	CompanyID            string                    `json:"company_id"`
+	DiscoveryGeneration  uint64                    `json:"discovery_generation"`
+	ReadinessStatus      SourceReadinessStatus     `json:"readiness_status"`
+	ControlStatus        ControlStatus             `json:"control_status"`
+	HealthStatus         HealthStatus              `json:"health_status"`
+	LastPauseMode        PauseMode                 `json:"last_pause_mode,omitempty"`
+	ConfigurationVersion uint64                    `json:"configuration_version"`
+	ControlEpoch         uint64                    `json:"control_epoch"`
+	ExecutionFence       uint64                    `json:"execution_fence"`
+	CandidateEndpoint    *SourceEndpoint           `json:"candidate_endpoint,omitempty"`
+	ActiveEndpoint       *SourceEndpoint           `json:"active_endpoint,omitempty"`
+	ListingAssignment    *SourceRecipeAssignment   `json:"listing_assignment,omitempty"`
+	DetailAssignment     *SourceRecipeAssignment   `json:"detail_assignment,omitempty"`
+	DiscoveryAssignment  *SourceRecipeAssignment   `json:"discovery_assignment,omitempty"`
+	ListingProfileID     string                    `json:"listing_profile_id,omitempty"`
+	DetailProfileID      string                    `json:"detail_profile_id,omitempty"`
+	ContractAssessment   *SourceContractAssessment `json:"contract_assessment,omitempty"`
+	Version              uint64                    `json:"version"`
 }
 
 // BindProfile changes the secret-free Profile identity used by future Work.
@@ -74,6 +77,7 @@ func (s RecruitmentSource) BindProfile(expected uint64, kind RecipeKind, profile
 	default:
 		return RecruitmentSource{}, fmt.Errorf("Profile can only bind listing or detail execution")
 	}
+	s.ConfigurationVersion++
 	s.Version++
 	return s, nil
 }
@@ -96,6 +100,7 @@ func (s RecruitmentSource) UnbindProfile(expected uint64, kind RecipeKind) (Recr
 	default:
 		return RecruitmentSource{}, fmt.Errorf("Profile can only unbind listing or detail execution")
 	}
+	s.ConfigurationVersion++
 	s.Version++
 	return s, nil
 }
@@ -182,6 +187,7 @@ func (s RecruitmentSource) AssignRecipe(expected uint64, assignment SourceRecipe
 		return RecruitmentSource{}, fmt.Errorf("unknown recipe kind %q", assignment.Kind)
 	}
 	s.Version++
+	s.ConfigurationVersion++
 	return s, nil
 }
 
@@ -201,8 +207,8 @@ func NewRecruitmentSource(sourceID, companyID, endpoint, category string, discov
 	return RecruitmentSource{
 		SourceID: sourceID, CompanyID: companyID, DiscoveryGeneration: discoveryGeneration,
 		ReadinessStatus: SourceCandidate, ControlStatus: ControlActive, HealthStatus: HealthHealthy,
-		CandidateEndpoint: &SourceEndpoint{URL: canonical, Category: strings.TrimSpace(category), CanonicalKey: key, Revision: 1},
-		Version:           1,
+		CandidateEndpoint:    &SourceEndpoint{URL: canonical, Category: strings.TrimSpace(category), CanonicalKey: key, Revision: 1},
+		ConfigurationVersion: 1, ControlEpoch: 1, ExecutionFence: 1, Version: 1,
 	}, nil
 }
 
@@ -251,6 +257,7 @@ func (s RecruitmentSource) PublishValidated(expected uint64, assignment SourceRe
 	s.ContractAssessment = &assessmentCopy
 	s.ReadinessStatus = SourceReady
 	s.HealthStatus = HealthHealthy
+	s.ConfigurationVersion++
 	s.Version++
 	return s, nil
 }
@@ -269,6 +276,7 @@ func (s RecruitmentSource) RejectCandidate(expected uint64) (RecruitmentSource, 
 	} else {
 		s.ReadinessStatus = SourceRejected
 	}
+	s.ConfigurationVersion++
 	s.Version++
 	return s, nil
 }
@@ -299,6 +307,7 @@ func (s RecruitmentSource) StageEndpoint(expected uint64, endpoint, category str
 	if s.ReadinessStatus == SourceReady || s.ReadinessStatus == SourceValidating {
 		s.ReadinessStatus = SourceRepairing
 	}
+	s.ConfigurationVersion++
 	s.Version++
 	return s, nil
 }
@@ -343,6 +352,10 @@ func (s RecruitmentSource) Pause(expected uint64, mode PauseMode) (RecruitmentSo
 		return RecruitmentSource{}, &InvalidTransitionError{Entity: "source", From: string(s.ControlStatus), Action: "pause"}
 	}
 	s.ControlStatus, s.LastPauseMode = ControlPaused, mode
+	s.ControlEpoch++
+	if mode == PauseCancel {
+		s.ExecutionFence++
+	}
 	s.Version++
 	return s, nil
 }
@@ -355,6 +368,7 @@ func (s RecruitmentSource) Resume(expected uint64) (RecruitmentSource, error) {
 		return RecruitmentSource{}, &InvalidTransitionError{Entity: "source", From: string(s.ControlStatus), Action: "resume"}
 	}
 	s.ControlStatus = ControlActive
+	s.ControlEpoch++
 	s.Version++
 	return s, nil
 }
@@ -367,6 +381,8 @@ func (s RecruitmentSource) Archive(expected uint64) (RecruitmentSource, error) {
 		return RecruitmentSource{}, &InvalidTransitionError{Entity: "source", From: string(s.ControlStatus), Action: "archive"}
 	}
 	s.ControlStatus = ControlArchived
+	s.ControlEpoch++
+	s.ExecutionFence++
 	s.Version++
 	return s, nil
 }
@@ -380,6 +396,7 @@ func (s RecruitmentSource) Restore(expected uint64) (RecruitmentSource, error) {
 	}
 	s.ControlStatus = ControlPaused
 	s.LastPauseMode = PauseDrain
+	s.ControlEpoch++
 	if s.ReadinessStatus == SourceReady {
 		s.ReadinessStatus = SourceRepairing
 		if s.ActiveEndpoint != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	mysql "github.com/go-sql-driver/mysql"
@@ -77,11 +78,13 @@ VALUES (?, ?, ?, ?, ?)`, receipt.CommandID, receipt.Word, receipt.RequestHash, [
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO recruiting_sources(
   source_id, company_id, canonical_source_key, origin, readiness_status,
-  control_status, health_status, discovery_generation, version, state_json,
+  control_status, configuration_version, control_epoch, execution_fence,
+  health_status, discovery_generation, version, state_json,
   created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		source.SourceID, source.CompanyID, endpoint.CanonicalKey, origin, source.ReadinessStatus,
-		source.ControlStatus, source.HealthStatus, source.DiscoveryGeneration, source.Version, state,
+		source.ControlStatus, source.ConfigurationVersion, source.ControlEpoch, source.ExecutionFence,
+		source.HealthStatus, source.DiscoveryGeneration, source.Version, state,
 		businessAt.UTC(), businessAt.UTC()); err != nil {
 		var mysqlError *mysql.MySQLError
 		if errors.As(err, &mysqlError) && mysqlError.Number == 1062 {
@@ -102,6 +105,19 @@ INSERT INTO recruiting_sources(
 // receipt, and outbox event share one transaction, so an acknowledged command
 // can never exist without its domain state and recoverable event intent.
 func (r *Repository) ApplySourceCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource, receipt model.CommandReceipt, event model.EventIntent, businessAt time.Time) (CommandResult, error) {
+	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, "", businessAt)
+}
+
+func (r *Repository) ApplySourcePauseCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource,
+	receipt model.CommandReceipt, event model.EventIntent, operationID string, businessAt time.Time) (CommandResult, error) {
+	if source.ControlStatus != model.ControlPaused || strings.TrimSpace(operationID) == "" {
+		return CommandResult{}, fmt.Errorf("paused Source and scope control operation identity are required")
+	}
+	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, strings.TrimSpace(operationID), businessAt)
+}
+
+func (r *Repository) applySourceCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource,
+	receipt model.CommandReceipt, event model.EventIntent, operationID string, businessAt time.Time) (CommandResult, error) {
 	if expectedVersion == 0 || source.SourceID == "" || source.Version != expectedVersion+1 || receipt.CommandID == "" ||
 		event.AggregateType != "source" || event.AggregateID != source.SourceID || event.AggregateVersion != source.Version ||
 		event.CauseCommandID != receipt.CommandID {
@@ -142,9 +158,11 @@ VALUES (?, ?, ?, ?, ?)`, receipt.CommandID, receipt.Word, receipt.RequestHash, [
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_sources
 SET canonical_source_key = ?, origin = ?, readiness_status = ?, control_status = ?,
+    configuration_version = ?, control_epoch = ?, execution_fence = ?,
     health_status = ?, discovery_generation = ?, version = ?, state_json = ?, updated_at = ?
 WHERE source_id = ? AND version = ?`,
-		endpoint.CanonicalKey, origin, source.ReadinessStatus, source.ControlStatus, source.HealthStatus,
+		endpoint.CanonicalKey, origin, source.ReadinessStatus, source.ControlStatus,
+		source.ConfigurationVersion, source.ControlEpoch, source.ExecutionFence, source.HealthStatus,
 		source.DiscoveryGeneration, source.Version, state, businessAt.UTC(), source.SourceID, expectedVersion)
 	if err != nil {
 		var mysqlError *mysql.MySQLError
@@ -167,6 +185,13 @@ WHERE source_id = ? AND version = ?`,
 			return CommandResult{}, fmt.Errorf("read source version after failed CAS: %w", readErr)
 		}
 		return CommandResult{}, &model.VersionConflictError{Expected: expectedVersion, Actual: actual}
+	}
+	if operationID != "" {
+		if err := createPauseScopeControlOperationTx(ctx, tx, operationID, "source", source.SourceID,
+			source.LastPauseMode, source.Version, source.ConfigurationVersion, source.ControlEpoch,
+			source.ExecutionFence, businessAt); err != nil {
+			return CommandResult{}, err
+		}
 	}
 	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
 		return CommandResult{}, err

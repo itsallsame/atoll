@@ -185,9 +185,11 @@ func (r *Repository) PublishSourceAssignment(ctx context.Context, expectedSource
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_sources
 SET canonical_source_key = ?, origin = ?, readiness_status = ?, control_status = ?,
+    configuration_version = ?, control_epoch = ?, execution_fence = ?,
     health_status = ?, discovery_generation = ?, version = ?, state_json = ?, updated_at = ?
 WHERE source_id = ? AND version = ?`,
-		endpoint.CanonicalKey, origin, source.ReadinessStatus, source.ControlStatus, source.HealthStatus,
+		endpoint.CanonicalKey, origin, source.ReadinessStatus, source.ControlStatus,
+		source.ConfigurationVersion, source.ControlEpoch, source.ExecutionFence, source.HealthStatus,
 		source.DiscoveryGeneration, source.Version, sourceState, businessAt.UTC(), source.SourceID, expectedSourceVersion)
 	if err != nil {
 		return fmt.Errorf("publish source projection: %w", err)

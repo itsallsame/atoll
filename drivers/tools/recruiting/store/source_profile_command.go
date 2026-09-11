@@ -144,8 +144,10 @@ func (r *Repository) ApplySourceProfileBindingCommand(ctx context.Context, expec
 	}
 	nextState, _ := json.Marshal(nextSource)
 	result, err := tx.ExecContext(ctx, `UPDATE recruiting_sources SET readiness_status = ?, control_status = ?,
-health_status = ?, version = ?, state_json = ?, updated_at = ? WHERE source_id = ? AND version = ?`,
-		nextSource.ReadinessStatus, nextSource.ControlStatus, nextSource.HealthStatus, nextSource.Version,
+configuration_version = ?, control_epoch = ?, execution_fence = ?, health_status = ?,
+version = ?, state_json = ?, updated_at = ? WHERE source_id = ? AND version = ?`,
+		nextSource.ReadinessStatus, nextSource.ControlStatus, nextSource.ConfigurationVersion,
+		nextSource.ControlEpoch, nextSource.ExecutionFence, nextSource.HealthStatus, nextSource.Version,
 		nextState, businessAt.UTC(), nextSource.SourceID, expectedSourceVersion)
 	if err != nil {
 		return CommandResult{}, err

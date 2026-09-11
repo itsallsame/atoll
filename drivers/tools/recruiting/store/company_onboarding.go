@@ -64,8 +64,10 @@ LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&state)
 	}
 	readyState, _ := json.Marshal(ready)
 	result, err := tx.ExecContext(ctx, `UPDATE recruiting_companies
-SET onboarding_status = ?, version = ?, state_json = ?, updated_at = ?
-WHERE company_id = ? AND version = ?`, ready.OnboardingStatus, ready.Version, readyState, at.UTC(),
+SET onboarding_status = ?, configuration_version = ?, control_epoch = ?, execution_fence = ?,
+    version = ?, state_json = ?, updated_at = ?
+WHERE company_id = ? AND version = ?`, ready.OnboardingStatus, ready.ConfigurationVersion, ready.ControlEpoch, ready.ExecutionFence,
+		ready.Version, readyState, at.UTC(),
 		ready.CompanyID, company.Version)
 	if err != nil {
 		return nil, err

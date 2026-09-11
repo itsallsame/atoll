@@ -17,13 +17,16 @@ const (
 )
 
 type Company struct {
-	CompanyID        string                  `json:"company_id"`
-	Name             string                  `json:"name"`
-	Website          string                  `json:"website,omitempty"`
-	OnboardingStatus CompanyOnboardingStatus `json:"onboarding_status"`
-	ControlStatus    ControlStatus           `json:"control_status"`
-	LastPauseMode    PauseMode               `json:"last_pause_mode,omitempty"`
-	Version          uint64                  `json:"version"`
+	CompanyID            string                  `json:"company_id"`
+	Name                 string                  `json:"name"`
+	Website              string                  `json:"website,omitempty"`
+	OnboardingStatus     CompanyOnboardingStatus `json:"onboarding_status"`
+	ControlStatus        ControlStatus           `json:"control_status"`
+	LastPauseMode        PauseMode               `json:"last_pause_mode,omitempty"`
+	ConfigurationVersion uint64                  `json:"configuration_version"`
+	ControlEpoch         uint64                  `json:"control_epoch"`
+	ExecutionFence       uint64                  `json:"execution_fence"`
+	Version              uint64                  `json:"version"`
 }
 
 type CompanyUpdate struct {
@@ -49,7 +52,8 @@ func NewCompany(companyID, name, website string) (Company, error) {
 	}
 	return Company{
 		CompanyID: companyID, Name: name, Website: canonicalWebsite,
-		OnboardingStatus: CompanyNew, ControlStatus: ControlActive, Version: 1,
+		OnboardingStatus: CompanyNew, ControlStatus: ControlActive,
+		ConfigurationVersion: 1, ControlEpoch: 1, ExecutionFence: 1, Version: 1,
 	}, nil
 }
 
@@ -74,6 +78,9 @@ func (c Company) Update(expected uint64, patch CompanyUpdate) (CompanyUpdateResu
 	}
 	changed := next.Name != c.Name || next.Website != c.Website
 	if changed {
+		if next.Website != c.Website {
+			next.ConfigurationVersion++
+		}
 		next.Version++
 	}
 	return CompanyUpdateResult{Company: next, Changed: changed, WebsiteChanged: next.Website != c.Website}, nil
@@ -135,6 +142,10 @@ func (c Company) Pause(expected uint64, mode PauseMode) (Company, error) {
 		return Company{}, &InvalidTransitionError{Entity: "company", From: string(c.ControlStatus), Action: "pause"}
 	}
 	c.ControlStatus, c.LastPauseMode = ControlPaused, mode
+	c.ControlEpoch++
+	if mode == PauseCancel {
+		c.ExecutionFence++
+	}
 	c.Version++
 	return c, nil
 }
@@ -147,6 +158,7 @@ func (c Company) Resume(expected uint64) (Company, error) {
 		return Company{}, &InvalidTransitionError{Entity: "company", From: string(c.ControlStatus), Action: "resume"}
 	}
 	c.ControlStatus = ControlActive
+	c.ControlEpoch++
 	c.Version++
 	return c, nil
 }
@@ -159,6 +171,8 @@ func (c Company) Archive(expected uint64) (Company, error) {
 		return Company{}, &InvalidTransitionError{Entity: "company", From: string(c.ControlStatus), Action: "archive"}
 	}
 	c.ControlStatus = ControlArchived
+	c.ControlEpoch++
+	c.ExecutionFence++
 	c.Version++
 	return c, nil
 }
@@ -172,6 +186,7 @@ func (c Company) Restore(expected uint64) (Company, error) {
 	}
 	c.ControlStatus = ControlPaused
 	c.LastPauseMode = PauseDrain
+	c.ControlEpoch++
 	c.Version++
 	return c, nil
 }

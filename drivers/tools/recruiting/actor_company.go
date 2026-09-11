@@ -38,11 +38,12 @@ type companyGetPayload struct {
 }
 
 type companyCommandResponse struct {
-	ContractVersion string        `json:"contract_version"`
-	CorrelationID   string        `json:"correlation_id"`
-	RequestedBy     string        `json:"requested_by"`
-	Company         model.Company `json:"company"`
-	NextAction      string        `json:"next_action"`
+	ContractVersion         string        `json:"contract_version"`
+	CorrelationID           string        `json:"correlation_id"`
+	RequestedBy             string        `json:"requested_by"`
+	Company                 model.Company `json:"company"`
+	NextAction              string        `json:"next_action"`
+	ScopeControlOperationID string        `json:"scope_control_operation_id,omitempty"`
 }
 
 func handleCompanyMessage(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
@@ -118,7 +119,7 @@ func handleCompanyAdd(sys actorbase.Sys, repository *store.Repository, msg actor
 		return
 	}
 	response := makeCompanyResponse(msg, company)
-	result, err := applyCompanyCommandFacts(repository, msg, payload.CommandID, payload.Reason, response, company, 0)
+	result, err := applyCompanyCommandFacts(repository, msg, payload.CommandID, payload.Reason, response, company, 0, "")
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
@@ -195,7 +196,13 @@ func handleCompanyMutation(sys actorbase.Sys, repository *store.Repository, msg 
 		return
 	}
 	response := makeCompanyResponse(msg, next)
-	result, err := applyCompanyCommandFacts(repository, msg, command.CommandID, command.Reason, response, next, commandContext.Command.ExpectedVersion)
+	operationID := ""
+	if msg.Type == TypeCompanyPause {
+		operationID = "scope-control-" + stableDigest(command.CommandID+"|company|"+next.CompanyID)
+		response.ScopeControlOperationID = operationID
+	}
+	result, err := applyCompanyCommandFacts(repository, msg, command.CommandID, command.Reason, response, next,
+		commandContext.Command.ExpectedVersion, operationID)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
@@ -203,7 +210,8 @@ func handleCompanyMutation(sys actorbase.Sys, repository *store.Repository, msg 
 	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
 }
 
-func applyCompanyCommandFacts(repository *store.Repository, msg actorbase.Msg, commandID, reason string, response companyCommandResponse, company model.Company, expectedVersion uint64) (store.CommandResult, error) {
+func applyCompanyCommandFacts(repository *store.Repository, msg actorbase.Msg, commandID, reason string, response companyCommandResponse,
+	company model.Company, expectedVersion uint64, operationID string) (store.CommandResult, error) {
 	businessAt := time.UnixMilli(msg.TS).UTC()
 	responseBytes, _ := json.Marshal(response)
 	receipt, err := model.NewCommandReceipt(commandID, msg.Type, commandRequestHash(msg), responseBytes)
@@ -219,6 +227,9 @@ func applyCompanyCommandFacts(repository *store.Repository, msg actorbase.Msg, c
 	}
 	if expectedVersion == 0 {
 		return repository.ApplyCreateCompanyCommand(msg.Ctx(), company, receipt, event, businessAt)
+	}
+	if operationID != "" {
+		return repository.ApplyCompanyPauseCommand(msg.Ctx(), expectedVersion, company, receipt, event, operationID, businessAt)
 	}
 	return repository.ApplyCompanyCommand(msg.Ctx(), expectedVersion, company, receipt, event, businessAt)
 }

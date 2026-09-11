@@ -50,6 +50,8 @@ type Work struct {
 	LastFailureClass      string         `json:"last_failure_class,omitempty"`
 	RetryNotBefore        string         `json:"retry_not_before,omitempty"`
 	BlockedByRepairWorkID string         `json:"blocked_by_repair_work_id,omitempty"`
+	PausedFromStatus      WorkStatus     `json:"paused_from_status,omitempty"`
+	PausedWaitingReason   string         `json:"paused_waiting_reason,omitempty"`
 }
 
 type FailureRoute string
@@ -255,6 +257,7 @@ func (w Work) Pause(expected uint64) (Work, error) {
 	if w.Terminal() || w.Status == WorkPaused {
 		return Work{}, &InvalidTransitionError{Entity: "work", From: string(w.Status), Action: "pause"}
 	}
+	w.PausedFromStatus, w.PausedWaitingReason = w.Status, w.WaitingReason
 	w.Status, w.WaitingReason = WorkPaused, ""
 	w.AcceptanceVersion++
 	w.Version++
@@ -268,7 +271,11 @@ func (w Work) Resume(expected uint64) (Work, error) {
 	if w.Status != WorkPaused {
 		return Work{}, &InvalidTransitionError{Entity: "work", From: string(w.Status), Action: "resume"}
 	}
-	w.Status = WorkOpen
+	w.Status, w.WaitingReason = w.PausedFromStatus, w.PausedWaitingReason
+	if w.Status == "" || w.Status == WorkPaused || w.Status == WorkRunning || w.Terminal() {
+		w.Status, w.WaitingReason = WorkOpen, ""
+	}
+	w.PausedFromStatus, w.PausedWaitingReason = "", ""
 	w.Version++
 	return w, nil
 }

@@ -117,9 +117,11 @@ func (r *Repository) ApplyCreateSourceDiscoveryCommand(ctx context.Context, expe
 		}
 		companyState, _ := json.Marshal(company)
 		result, updateErr := tx.ExecContext(ctx, `UPDATE recruiting_companies
-SET normalized_website = ?, name = ?, onboarding_status = ?, control_status = ?, version = ?, state_json = ?, updated_at = ?
+SET normalized_website = ?, name = ?, onboarding_status = ?, control_status = ?,
+    configuration_version = ?, control_epoch = ?, execution_fence = ?, version = ?, state_json = ?, updated_at = ?
 WHERE company_id = ? AND version = ?`, nullableString(company.Website), company.Name, company.OnboardingStatus,
-			company.ControlStatus, company.Version, companyState, businessAt.UTC(), company.CompanyID, expectedCompanyVersion)
+			company.ControlStatus, company.ConfigurationVersion, company.ControlEpoch, company.ExecutionFence,
+			company.Version, companyState, businessAt.UTC(), company.CompanyID, expectedCompanyVersion)
 		if updateErr != nil {
 			return CommandResult{}, updateErr
 		}

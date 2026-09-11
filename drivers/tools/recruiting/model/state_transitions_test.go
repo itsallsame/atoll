@@ -354,6 +354,21 @@ func TestWorkAndAttemptTerminalStatesNeverReopen(t *testing.T) {
 	}
 }
 
+func TestWorkPauseResumeRestoresPriorWaitingState(t *testing.T) {
+	work, _ := NewWork("paused-waiting-work", "source", "source-1", "listing_sync", "timer")
+	running, _ := work.Start(work.Version)
+	waiting, _ := running.WaitHuman(running.Version, "operator_required")
+	paused, err := waiting.Pause(waiting.Version)
+	if err != nil || paused.PausedFromStatus != WorkWaitingHuman || paused.PausedWaitingReason != "operator_required" {
+		t.Fatalf("paused waiting Work=%+v err=%v", paused, err)
+	}
+	resumed, err := paused.Resume(paused.Version)
+	if err != nil || resumed.Status != WorkWaitingHuman || resumed.WaitingReason != "operator_required" ||
+		resumed.PausedFromStatus != "" || resumed.PausedWaitingReason != "" {
+		t.Fatalf("resumed waiting Work=%+v err=%v", resumed, err)
+	}
+}
+
 func TestInvalidSourceCandidateCanBeCorrectedAndRevalidated(t *testing.T) {
 	source, _ := NewRecruitmentSource("source-1", "company-1", "https://jobs.example.com", "all", 1)
 	source, _ = source.BeginValidation(source.Version)

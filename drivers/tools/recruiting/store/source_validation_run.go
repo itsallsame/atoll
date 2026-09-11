@@ -34,9 +34,11 @@ func updateSourceInTx(ctx context.Context, tx *sql.Tx, expectedVersion uint64, s
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE recruiting_sources
 SET canonical_source_key = ?, origin = ?, readiness_status = ?, control_status = ?, health_status = ?,
+    configuration_version = ?, control_epoch = ?, execution_fence = ?,
     discovery_generation = ?, version = ?, state_json = ?, updated_at = ?
 WHERE source_id = ? AND version = ?`, endpoint.CanonicalKey, origin, source.ReadinessStatus, source.ControlStatus,
-		source.HealthStatus, source.DiscoveryGeneration, source.Version, state, at.UTC(), source.SourceID, expectedVersion)
+		source.HealthStatus, source.ConfigurationVersion, source.ControlEpoch, source.ExecutionFence,
+		source.DiscoveryGeneration, source.Version, state, at.UTC(), source.SourceID, expectedVersion)
 	if err != nil {
 		return fmt.Errorf("update Source in transaction: %w", err)
 	}
@@ -203,9 +205,11 @@ func (r *Repository) ApplySourceValidationCommand(ctx context.Context, expectedS
 	sourceState, _ := json.Marshal(nextSource)
 	result, err := tx.ExecContext(ctx, `UPDATE recruiting_sources
 SET canonical_source_key = ?, origin = ?, readiness_status = ?, control_status = ?, health_status = ?,
+    configuration_version = ?, control_epoch = ?, execution_fence = ?,
     discovery_generation = ?, version = ?, state_json = ?, updated_at = ?
 WHERE source_id = ? AND version = ?`, endpoint.CanonicalKey, origin, nextSource.ReadinessStatus, nextSource.ControlStatus,
-		nextSource.HealthStatus, nextSource.DiscoveryGeneration, nextSource.Version, sourceState, businessAt.UTC(),
+		nextSource.HealthStatus, nextSource.ConfigurationVersion, nextSource.ControlEpoch, nextSource.ExecutionFence,
+		nextSource.DiscoveryGeneration, nextSource.Version, sourceState, businessAt.UTC(),
 		nextSource.SourceID, expectedSourceVersion)
 	if err != nil {
 		return CommandResult{}, fmt.Errorf("start source validation: %w", err)

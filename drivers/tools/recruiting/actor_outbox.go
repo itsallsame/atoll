@@ -30,40 +30,47 @@ type outboxReconcilePayload struct {
 }
 
 type outboxReconcileResponse struct {
-	ContractVersion         string `json:"contract_version"`
-	Scanned                 int    `json:"scanned"`
-	Delivered               int    `json:"delivered"`
-	RetryScheduled          int    `json:"retry_scheduled"`
-	Exhausted               int    `json:"exhausted"`
-	Conflicts               int    `json:"conflicts"`
-	CheckpointError         int    `json:"checkpoint_error"`
-	AttemptsScanned         int    `json:"attempts_scanned"`
-	AttemptsExpired         int    `json:"attempts_expired"`
-	WorksRetryQueued        int    `json:"works_retry_queued"`
-	AttemptConflicts        int    `json:"attempt_conflicts"`
-	ProfileSessionsScanned  int    `json:"profile_sessions_scanned"`
-	ProfileSessionsExpired  int    `json:"profile_sessions_expired"`
-	ProfileSessionConflicts int    `json:"profile_session_conflicts"`
-	DispatchScanned         int    `json:"dispatch_scanned"`
-	DispatchPosted          int    `json:"dispatch_posted"`
-	DispatchRetries         int    `json:"dispatch_retries"`
-	DispatchExhausted       int    `json:"dispatch_exhausted"`
-	BaselineSourceID        string `json:"baseline_source_id,omitempty"`
-	BaselineGeneration      uint64 `json:"baseline_generation,omitempty"`
-	BaselineMaterialized    int    `json:"baseline_materialized"`
-	BaselineDispatches      int    `json:"baseline_dispatches"`
-	BaselinePageCompleted   bool   `json:"baseline_page_completed"`
-	CompanyReadyID          string `json:"company_ready_id,omitempty"`
-	RepairCandidatesScanned int    `json:"repair_candidates_scanned"`
-	RepairBatchesRecovered  int    `json:"repair_batches_recovered"`
-	RepairWorksRecovered    int    `json:"repair_works_recovered"`
-	RepairRecoveryConflicts int    `json:"repair_recovery_conflicts"`
-	BackfillPreviews        int    `json:"backfill_previews"`
-	BackfillID              string `json:"backfill_id,omitempty"`
-	BackfillMaterialized    int    `json:"backfill_materialized"`
-	BackfillDispatches      int    `json:"backfill_dispatches"`
-	BackfillCanceled        int    `json:"backfill_canceled"`
-	BackfillCancelCompleted bool   `json:"backfill_cancel_completed"`
+	ContractVersion             string `json:"contract_version"`
+	Scanned                     int    `json:"scanned"`
+	Delivered                   int    `json:"delivered"`
+	RetryScheduled              int    `json:"retry_scheduled"`
+	Exhausted                   int    `json:"exhausted"`
+	Conflicts                   int    `json:"conflicts"`
+	CheckpointError             int    `json:"checkpoint_error"`
+	AttemptsScanned             int    `json:"attempts_scanned"`
+	AttemptsExpired             int    `json:"attempts_expired"`
+	WorksRetryQueued            int    `json:"works_retry_queued"`
+	AttemptConflicts            int    `json:"attempt_conflicts"`
+	ProfileSessionsScanned      int    `json:"profile_sessions_scanned"`
+	ProfileSessionsExpired      int    `json:"profile_sessions_expired"`
+	ProfileSessionConflicts     int    `json:"profile_session_conflicts"`
+	DispatchScanned             int    `json:"dispatch_scanned"`
+	DispatchPosted              int    `json:"dispatch_posted"`
+	DispatchRetries             int    `json:"dispatch_retries"`
+	DispatchExhausted           int    `json:"dispatch_exhausted"`
+	BaselineSourceID            string `json:"baseline_source_id,omitempty"`
+	BaselineGeneration          uint64 `json:"baseline_generation,omitempty"`
+	BaselineMaterialized        int    `json:"baseline_materialized"`
+	BaselineDispatches          int    `json:"baseline_dispatches"`
+	BaselinePageCompleted       bool   `json:"baseline_page_completed"`
+	CompanyReadyID              string `json:"company_ready_id,omitempty"`
+	RepairCandidatesScanned     int    `json:"repair_candidates_scanned"`
+	RepairBatchesRecovered      int    `json:"repair_batches_recovered"`
+	RepairWorksRecovered        int    `json:"repair_works_recovered"`
+	RepairRecoveryConflicts     int    `json:"repair_recovery_conflicts"`
+	BackfillPreviews            int    `json:"backfill_previews"`
+	BackfillID                  string `json:"backfill_id,omitempty"`
+	BackfillMaterialized        int    `json:"backfill_materialized"`
+	BackfillDispatches          int    `json:"backfill_dispatches"`
+	BackfillCanceled            int    `json:"backfill_canceled"`
+	BackfillCancelCompleted     bool   `json:"backfill_cancel_completed"`
+	ScopeControlOperationID     string `json:"scope_control_operation_id,omitempty"`
+	ScopeControlWorksScanned    int    `json:"scope_control_works_scanned"`
+	ScopeControlWorksPaused     int    `json:"scope_control_works_paused"`
+	ScopeControlWorksCanceled   int    `json:"scope_control_works_canceled"`
+	ScopeControlAttemptsExpired int    `json:"scope_control_attempts_expired"`
+	ScopeControlCompleted       bool   `json:"scope_control_completed"`
+	ScopeControlConflict        bool   `json:"scope_control_conflict"`
 }
 
 type outboxReconcileDuePayload struct {
@@ -104,6 +111,15 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 	}
 	response.AttemptsScanned, response.AttemptsExpired = recovery.Scanned, recovery.Expired
 	response.WorksRetryQueued, response.AttemptConflicts = recovery.RetryQueued, recovery.Conflicts
+	scopeControl, err := reconcileScopeControl(msg.Ctx(), repository, payload.Limit, now)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response.ScopeControlOperationID = scopeControl.OperationID
+	response.ScopeControlWorksScanned, response.ScopeControlWorksPaused = scopeControl.WorksScanned, scopeControl.WorksPaused
+	response.ScopeControlWorksCanceled, response.ScopeControlAttemptsExpired = scopeControl.WorksCanceled, scopeControl.AttemptsExpired
+	response.ScopeControlCompleted, response.ScopeControlConflict = scopeControl.Completed, scopeControl.Conflict
 	profileExpiry, err := repository.ExpireProfileRepairSessions(msg.Ctx(), now, payload.Limit)
 	if err != nil {
 		failStoreError(sys, msg, err)
@@ -303,6 +319,7 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 			cfg.executionDispatchTargets())
 		_, _ = repository.PromoteNextReadyCompany(msg.Ctx(), now)
 		_, _ = reconcileRepairRecoveryBatch(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
+		_, _ = reconcileScopeControl(msg.Ctx(), repository, maxReconcileLimit, now)
 		_, _ = reconcileRecipeRolloutBatches(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
 		_, _ = reconcileBackfillPreviews(msg.Ctx(), repository, defaultReconcileLimit, now)
 		_, _ = repository.CancelNextBackfillPage(msg.Ctx(), cfg.BackfillMaterializeLimit, now)

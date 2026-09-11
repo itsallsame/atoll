@@ -214,8 +214,10 @@ WHERE company_id = ? AND control_status <> 'archived'`, company.CompanyID).Scan(
 	}
 	blockedState, _ := json.Marshal(blocked)
 	result, err := tx.ExecContext(ctx, `UPDATE recruiting_companies
-SET onboarding_status = ?, version = ?, state_json = ?, updated_at = ?
-WHERE company_id = ? AND version = ?`, blocked.OnboardingStatus, blocked.Version, blockedState,
+SET onboarding_status = ?, configuration_version = ?, control_epoch = ?, execution_fence = ?,
+    version = ?, state_json = ?, updated_at = ?
+WHERE company_id = ? AND version = ?`, blocked.OnboardingStatus, blocked.ConfigurationVersion, blocked.ControlEpoch,
+		blocked.ExecutionFence, blocked.Version, blockedState,
 		at.UTC(), blocked.CompanyID, company.Version)
 	if err != nil {
 		return nil, fmt.Errorf("mark zero-source Company: %w", err)

@@ -153,16 +153,10 @@ INSERT INTO recruiting_listing_observations(
 		}
 		work.ParentWorkID = input.ParentWorkID
 		businessKey, _ := model.DetailWorkKey(job.SourceID, job.SourceJobKey, job.RefreshGeneration, work.Purpose)
-		state, _ := json.Marshal(work)
-		_, err = tx.ExecContext(ctx, `
-INSERT INTO recruiting_works(
-  work_id, parent_work_id, business_key, target_type, target_id, purpose,
-  trigger_kind, status, resolution, priority, capability, origin, profile_id,
-  not_before, deadline_at, acceptance_version, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
-			work.WorkID, nullableString(work.ParentWorkID), businessKey, work.TargetType, work.TargetID, work.Purpose, work.Trigger, work.Status,
-			input.Priority, input.Capability, input.Origin, nullableString(input.ProfileID), input.NotBefore.UTC(), work.AcceptanceVersion,
-			work.Version, state, input.ObservedAt.UTC(), input.ObservedAt.UTC())
+		err = insertWork(ctx, tx, work, WorkPlacement{
+			BusinessKey: businessKey, Priority: input.Priority, Capability: input.Capability,
+			Origin: input.Origin, ProfileID: input.ProfileID, NotBefore: input.NotBefore,
+		}, input.ObservedAt)
 		if err != nil {
 			return ListingIngestResult{}, fmt.Errorf("create detail work intent: %w", err)
 		}

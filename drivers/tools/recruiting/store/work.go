@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	mysql "github.com/go-sql-driver/mysql"
@@ -14,6 +15,9 @@ import (
 
 type WorkPlacement struct {
 	BusinessKey string     `json:"business_key,omitempty"`
+	CompanyID   string     `json:"company_id,omitempty"`
+	SourceID    string     `json:"source_id,omitempty"`
+	RootWorkID  string     `json:"root_work_id,omitempty"`
 	Priority    int        `json:"priority"`
 	Capability  string     `json:"capability,omitempty"`
 	Origin      string     `json:"origin,omitempty"`
@@ -28,6 +32,7 @@ func (r *Repository) CreateWork(ctx context.Context, work model.Work, placement 
 
 func insertWork(ctx context.Context, executor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, work model.Work, placement WorkPlacement, businessAt time.Time) error {
 	if work.WorkID == "" || work.Version != 1 || work.Status != model.WorkOpen || placement.NotBefore.IsZero() {
 		return fmt.Errorf("new open work at version 1 and not_before are required")
@@ -36,14 +41,21 @@ func insertWork(ctx context.Context, executor interface {
 	if err != nil {
 		return fmt.Errorf("encode work: %w", err)
 	}
+	companyID, sourceID, rootWorkID, err := resolveWorkScope(ctx, executor, work, placement)
+	if err != nil {
+		return err
+	}
 	_, err = executor.ExecContext(ctx, `
 INSERT INTO recruiting_works(
 	  work_id, parent_work_id, initiator_actor_id, cause_message_id, cause_work_id,
+	  company_id, source_id, root_work_id,
 	  business_key, target_type, target_id, purpose,
 	  trigger_kind, status, resolution, priority, capability, origin, profile_id,
 	  blocked_by_repair_work_id, not_before, deadline_at, acceptance_version, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+	  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		work.WorkID, nullableString(work.ParentWorkID), nullableString(work.InitiatorActorID), nullableString(work.CauseMessageID), nullableString(work.CauseWorkID),
+		nullableString(companyID), nullableString(sourceID), rootWorkID,
 		nullableString(placement.BusinessKey), work.TargetType, work.TargetID,
 		work.Purpose, work.Trigger, work.Status, nullableString(string(work.Resolution)), placement.Priority,
 		nullableString(placement.Capability), nullableString(placement.Origin), nullableString(placement.ProfileID),
@@ -59,6 +71,79 @@ INSERT INTO recruiting_works(
 	return fmt.Errorf("create work: %w", err)
 }
 
+func resolveWorkScope(ctx context.Context, executor interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, work model.Work, placement WorkPlacement) (string, string, string, error) {
+	companyID, sourceID := strings.TrimSpace(placement.CompanyID), strings.TrimSpace(placement.SourceID)
+	rootWorkID := strings.TrimSpace(placement.RootWorkID)
+	if work.TargetType == "company" && companyID == "" {
+		companyID = work.TargetID
+	}
+	if work.TargetType == "source" && (companyID == "" || sourceID == "") {
+		var targetCompany string
+		err := executor.QueryRowContext(ctx, `SELECT company_id FROM recruiting_sources WHERE source_id = ?`, work.TargetID).Scan(&targetCompany)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", "", "", fmt.Errorf("resolve source Work scope: %w", err)
+		}
+		if err == nil {
+			if companyID == "" {
+				companyID = targetCompany
+			}
+			if sourceID == "" {
+				sourceID = work.TargetID
+			}
+		}
+	}
+	if work.TargetType == "job" && (companyID == "" || sourceID == "") {
+		var targetCompany, targetSource string
+		err := executor.QueryRowContext(ctx, `
+SELECT source.company_id, job.source_id
+FROM recruiting_source_jobs job
+JOIN recruiting_sources source ON source.source_id = job.source_id
+WHERE job.job_id = ?`, work.TargetID).Scan(&targetCompany, &targetSource)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", "", "", fmt.Errorf("resolve job Work scope: %w", err)
+		}
+		if err == nil {
+			if companyID == "" {
+				companyID = targetCompany
+			}
+			if sourceID == "" {
+				sourceID = targetSource
+			}
+		}
+	}
+	causeWorkID := strings.TrimSpace(work.CauseWorkID)
+	if causeWorkID == "" {
+		causeWorkID = strings.TrimSpace(work.ParentWorkID)
+	}
+	if causeWorkID != "" && (companyID == "" || sourceID == "" || rootWorkID == "") {
+		var parentCompany, parentSource sql.NullString
+		var parentRoot string
+		err := executor.QueryRowContext(ctx, `
+SELECT company_id, source_id, root_work_id FROM recruiting_works WHERE work_id = ?`, causeWorkID).
+			Scan(&parentCompany, &parentSource, &parentRoot)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", "", "", fmt.Errorf("resolve causal Work scope: %w", err)
+		}
+		if err == nil {
+			if companyID == "" {
+				companyID = parentCompany.String
+			}
+			if sourceID == "" {
+				sourceID = parentSource.String
+			}
+			if rootWorkID == "" {
+				rootWorkID = parentRoot
+			}
+		}
+	}
+	if rootWorkID == "" {
+		rootWorkID = work.WorkID
+	}
+	return companyID, sourceID, rootWorkID, nil
+}
+
 type WorkRecord struct {
 	Work      model.Work    `json:"work"`
 	Placement WorkPlacement `json:"placement"`
@@ -66,13 +151,15 @@ type WorkRecord struct {
 
 func (r *Repository) GetWorkRecord(ctx context.Context, workID string) (WorkRecord, error) {
 	var state []byte
-	var businessKey, capability, origin, profileID sql.NullString
+	var businessKey, companyID, sourceID, rootWorkID, capability, origin, profileID sql.NullString
 	var deadline sql.NullTime
 	var record WorkRecord
 	err := r.db.QueryRowContext(ctx, `
-SELECT state_json, business_key, priority, capability, origin, profile_id, not_before, deadline_at
+SELECT state_json, business_key, company_id, source_id, root_work_id,
+       priority, capability, origin, profile_id, not_before, deadline_at
 FROM recruiting_works WHERE work_id = ?`, workID).Scan(
-		&state, &businessKey, &record.Placement.Priority, &capability, &origin, &profileID,
+		&state, &businessKey, &companyID, &sourceID, &rootWorkID,
+		&record.Placement.Priority, &capability, &origin, &profileID,
 		&record.Placement.NotBefore, &deadline)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkRecord{}, ErrNotFound
@@ -84,6 +171,7 @@ FROM recruiting_works WHERE work_id = ?`, workID).Scan(
 		return WorkRecord{}, fmt.Errorf("decode work record: %w", err)
 	}
 	record.Placement.BusinessKey, record.Placement.Capability = businessKey.String, capability.String
+	record.Placement.CompanyID, record.Placement.SourceID, record.Placement.RootWorkID = companyID.String, sourceID.String, rootWorkID.String
 	record.Placement.Origin, record.Placement.ProfileID = origin.String, profileID.String
 	if deadline.Valid {
 		value := deadline.Time.UTC()

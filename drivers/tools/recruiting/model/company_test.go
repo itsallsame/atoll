@@ -91,3 +91,26 @@ func TestCompanyUpdateKeepsIdentityAndReportsWebsiteImpact(t *testing.T) {
 		t.Fatalf("no-op update=%+v, %v", noChange, err)
 	}
 }
+
+func TestCompanySeparatesConfigurationControlAndCancellationFences(t *testing.T) {
+	company, _ := NewCompany("company-fences", "Fences", "https://fences.example")
+	name := "Renamed"
+	renamed, err := company.Update(company.Version, CompanyUpdate{Name: &name})
+	if err != nil || renamed.Company.ConfigurationVersion != company.ConfigurationVersion {
+		t.Fatalf("display-only rename changed configuration fence: %+v err=%v", renamed, err)
+	}
+	website := "https://jobs.fences.example"
+	configured, err := renamed.Company.Update(renamed.Company.Version, CompanyUpdate{Website: &website})
+	if err != nil || configured.Company.ConfigurationVersion != company.ConfigurationVersion+1 {
+		t.Fatalf("website update did not advance configuration fence: %+v err=%v", configured, err)
+	}
+	drained, err := configured.Company.Pause(configured.Company.Version, PauseDrain)
+	if err != nil || drained.ControlEpoch != company.ControlEpoch+1 || drained.ExecutionFence != company.ExecutionFence {
+		t.Fatalf("drain mixed control and execution fences: %+v err=%v", drained, err)
+	}
+	resumed, _ := drained.Resume(drained.Version)
+	canceled, err := resumed.Pause(resumed.Version, PauseCancel)
+	if err != nil || canceled.ControlEpoch != company.ControlEpoch+3 || canceled.ExecutionFence != company.ExecutionFence+1 {
+		t.Fatalf("cancel fences=%+v err=%v", canceled, err)
+	}
+}

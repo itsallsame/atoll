@@ -44,9 +44,11 @@ func insertCompany(ctx context.Context, executor interface {
 	_, err = executor.ExecContext(ctx, `
 INSERT INTO recruiting_companies(
   company_id, normalized_website, name, onboarding_status, control_status,
+  configuration_version, control_epoch, execution_fence,
   version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		company.CompanyID, nullableString(company.Website), company.Name, company.OnboardingStatus, company.ControlStatus,
+		company.ConfigurationVersion, company.ControlEpoch, company.ExecutionFence,
 		company.Version, state, businessAt.UTC(), businessAt.UTC())
 	if err == nil {
 		return nil
@@ -95,9 +97,11 @@ func (r *Repository) UpdateCompanyCAS(ctx context.Context, expectedVersion uint6
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_companies
 SET normalized_website = ?, name = ?, onboarding_status = ?, control_status = ?,
+    configuration_version = ?, control_epoch = ?, execution_fence = ?,
     version = ?, state_json = ?, updated_at = ?
 WHERE company_id = ? AND version = ?`,
 		nullableString(company.Website), company.Name, company.OnboardingStatus, company.ControlStatus,
+		company.ConfigurationVersion, company.ControlEpoch, company.ExecutionFence,
 		company.Version, state, businessAt.UTC(), company.CompanyID, expectedVersion)
 	if err != nil {
 		var mysqlError *mysql.MySQLError

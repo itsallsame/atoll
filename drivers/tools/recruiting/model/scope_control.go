@@ -27,6 +27,7 @@ type ScopeControlOperation struct {
 	ControlEpoch         uint64             `json:"control_epoch"`
 	ExecutionFence       uint64             `json:"execution_fence"`
 	Status               ScopeControlStatus `json:"status"`
+	ProjectionCompleted  bool               `json:"projection_completed"`
 	WorkCursor           string             `json:"work_cursor,omitempty"`
 	WorksScanned         uint64             `json:"works_scanned"`
 	WorksPaused          uint64             `json:"works_paused"`
@@ -103,11 +104,34 @@ func (o ScopeControlOperation) RecordBatch(expected uint64, batch ScopeControlBa
 		o.WorkCursor = batch.Cursor
 	}
 	if !batch.HasMore {
-		o.Status = ScopeControlCompleted
-		o.CompletedAt = batch.AppliedAt.UTC().Format(time.RFC3339Nano)
+		o.ProjectionCompleted = true
+		if o.Mode != PauseFinishCausalChain || o.ActiveRoots == 0 {
+			o.Status = ScopeControlCompleted
+			o.CompletedAt = batch.AppliedAt.UTC().Format(time.RFC3339Nano)
+		}
 	}
 	o.Version++
 	return o, nil
+}
+
+func (o ScopeControlOperation) SettleRoot(expected uint64, at time.Time) (ScopeControlOperation, error) {
+	if err := requireVersion(expected, o.Version); err != nil {
+		return ScopeControlOperation{}, err
+	}
+	if o.Status != ScopeControlApplying || o.Mode != PauseFinishCausalChain || o.ActiveRoots == 0 || at.IsZero() {
+		return ScopeControlOperation{}, fmt.Errorf("active finish_causal_chain root is required")
+	}
+	o.ActiveRoots--
+	if o.ActiveRoots == 0 && o.ProjectionCompleted {
+		o.Status = ScopeControlCompleted
+		o.CompletedAt = at.UTC().Format(time.RFC3339Nano)
+	}
+	o.Version++
+	return o, nil
+}
+
+func (o ScopeControlOperation) NeedsProjection() bool {
+	return o.Status == ScopeControlApplying && !o.ProjectionCompleted
 }
 
 func (o ScopeControlOperation) AcceptsExistingAttempt() bool {

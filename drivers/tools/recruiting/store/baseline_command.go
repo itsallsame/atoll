@@ -76,8 +76,10 @@ func (r *Repository) ApplyCreateBaselineCommand(ctx context.Context, expectedCom
 		}
 		state, _ := json.Marshal(company)
 		result, updateErr := tx.ExecContext(ctx, `UPDATE recruiting_companies
-SET onboarding_status = ?, version = ?, state_json = ?, updated_at = ? WHERE company_id = ? AND version = ?`,
-			company.OnboardingStatus, company.Version, state, businessAt.UTC(), company.CompanyID, expectedCompanyVersion)
+SET onboarding_status = ?, configuration_version = ?, control_epoch = ?, execution_fence = ?,
+    version = ?, state_json = ?, updated_at = ? WHERE company_id = ? AND version = ?`,
+			company.OnboardingStatus, company.ConfigurationVersion, company.ControlEpoch, company.ExecutionFence,
+			company.Version, state, businessAt.UTC(), company.CompanyID, expectedCompanyVersion)
 		if updateErr != nil {
 			return CommandResult{}, updateErr
 		}

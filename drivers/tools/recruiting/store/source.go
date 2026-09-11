@@ -43,11 +43,13 @@ func insertSourceWith(ctx context.Context, executor interface {
 	_, err = executor.ExecContext(ctx, `
 INSERT INTO recruiting_sources(
   source_id, company_id, canonical_source_key, origin, readiness_status,
-  control_status, health_status, discovery_generation, version, state_json,
+  control_status, configuration_version, control_epoch, execution_fence,
+  health_status, discovery_generation, version, state_json,
   created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		source.SourceID, source.CompanyID, endpoint.CanonicalKey, origin, source.ReadinessStatus,
-		source.ControlStatus, source.HealthStatus, source.DiscoveryGeneration, source.Version, state,
+		source.ControlStatus, source.ConfigurationVersion, source.ControlEpoch, source.ExecutionFence,
+		source.HealthStatus, source.DiscoveryGeneration, source.Version, state,
 		businessAt.UTC(), businessAt.UTC())
 	if err == nil {
 		return nil
@@ -194,9 +196,11 @@ func (r *Repository) UpdateSourceCAS(ctx context.Context, expectedVersion uint64
 	result, err := r.db.ExecContext(ctx, `
 UPDATE recruiting_sources
 SET canonical_source_key = ?, origin = ?, readiness_status = ?, control_status = ?,
+    configuration_version = ?, control_epoch = ?, execution_fence = ?,
     health_status = ?, discovery_generation = ?, version = ?, state_json = ?, updated_at = ?
 WHERE source_id = ? AND version = ?`,
-		endpoint.CanonicalKey, origin, source.ReadinessStatus, source.ControlStatus, source.HealthStatus,
+		endpoint.CanonicalKey, origin, source.ReadinessStatus, source.ControlStatus,
+		source.ConfigurationVersion, source.ControlEpoch, source.ExecutionFence, source.HealthStatus,
 		source.DiscoveryGeneration, source.Version, state, businessAt.UTC(), source.SourceID, expectedVersion)
 	if err != nil {
 		return fmt.Errorf("update source: %w", err)

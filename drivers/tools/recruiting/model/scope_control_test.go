@@ -31,6 +31,18 @@ func TestScopeControlOperationKeepsPauseModesDistinctAndBounded(t *testing.T) {
 	if err != nil || !finish.AcceptsExistingAttempt() || !finish.AllowsCausalDescendant("root-work") {
 		t.Fatalf("finish operation=%+v err=%v", finish, err)
 	}
+	projected, err := finish.RecordBatch(finish.Version, ScopeControlBatch{AppliedAt: now.Add(time.Second)})
+	if err != nil || !projected.ProjectionCompleted || projected.Status != ScopeControlApplying || projected.ActiveRoots != 2 {
+		t.Fatalf("finish projection prematurely completed=%+v err=%v", projected, err)
+	}
+	settled, err := projected.SettleRoot(projected.Version, now.Add(2*time.Second))
+	if err != nil || settled.Status != ScopeControlApplying || settled.ActiveRoots != 1 {
+		t.Fatalf("first root settlement=%+v err=%v", settled, err)
+	}
+	settled, err = settled.SettleRoot(settled.Version, now.Add(3*time.Second))
+	if err != nil || settled.Status != ScopeControlCompleted || settled.ActiveRoots != 0 || settled.CompletedAt == "" {
+		t.Fatalf("final root settlement=%+v err=%v", settled, err)
+	}
 
 	cancel, err := NewScopeControlOperation("pause-cancel", "source", "source-1", PauseCancel, 5, 3, 3, 2, 0, now)
 	if err != nil || cancel.AcceptsExistingAttempt() || cancel.AllowsCausalDescendant("root-work") {

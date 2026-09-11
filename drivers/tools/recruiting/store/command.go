@@ -55,9 +55,11 @@ VALUES (?, ?, ?, ?, ?)`, receipt.CommandID, receipt.Word, receipt.RequestHash, [
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO recruiting_companies(
   company_id, normalized_website, name, onboarding_status, control_status,
+  configuration_version, control_epoch, execution_fence,
   version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, company.CompanyID, nullableString(company.Website), company.Name,
-		company.OnboardingStatus, company.ControlStatus, company.Version, state, businessAt.UTC(), businessAt.UTC()); err != nil {
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, company.CompanyID, nullableString(company.Website), company.Name,
+		company.OnboardingStatus, company.ControlStatus, company.ConfigurationVersion, company.ControlEpoch,
+		company.ExecutionFence, company.Version, state, businessAt.UTC(), businessAt.UTC()); err != nil {
 		var mysqlError *mysql.MySQLError
 		if errors.As(err, &mysqlError) && mysqlError.Number == 1062 {
 			return CommandResult{}, ErrBusinessKeyExists
@@ -77,6 +79,19 @@ INSERT INTO recruiting_companies(
 // response, and an outbox event intent. Publishing that intent to the Atoll
 // ledger happens after commit and is independently retryable.
 func (r *Repository) ApplyCompanyCommand(ctx context.Context, expectedVersion uint64, company model.Company, receipt model.CommandReceipt, event model.EventIntent, businessAt time.Time) (CommandResult, error) {
+	return r.applyCompanyCommand(ctx, expectedVersion, company, receipt, event, "", businessAt)
+}
+
+func (r *Repository) ApplyCompanyPauseCommand(ctx context.Context, expectedVersion uint64, company model.Company,
+	receipt model.CommandReceipt, event model.EventIntent, operationID string, businessAt time.Time) (CommandResult, error) {
+	if company.ControlStatus != model.ControlPaused || strings.TrimSpace(operationID) == "" {
+		return CommandResult{}, fmt.Errorf("paused Company and scope control operation identity are required")
+	}
+	return r.applyCompanyCommand(ctx, expectedVersion, company, receipt, event, strings.TrimSpace(operationID), businessAt)
+}
+
+func (r *Repository) applyCompanyCommand(ctx context.Context, expectedVersion uint64, company model.Company,
+	receipt model.CommandReceipt, event model.EventIntent, operationID string, businessAt time.Time) (CommandResult, error) {
 	if company.CompanyID == "" || company.Version != expectedVersion+1 || receipt.CommandID == "" ||
 		event.AggregateType != "company" || event.AggregateID != company.CompanyID || event.AggregateVersion != company.Version ||
 		event.CauseCommandID != receipt.CommandID {
@@ -118,9 +133,11 @@ VALUES (?, ?, ?, ?, ?)`, receipt.CommandID, receipt.Word, receipt.RequestHash, [
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_companies
 SET normalized_website = ?, name = ?, onboarding_status = ?, control_status = ?,
+    configuration_version = ?, control_epoch = ?, execution_fence = ?,
     version = ?, state_json = ?, updated_at = ?
 WHERE company_id = ? AND version = ?`,
 		nullableString(company.Website), company.Name, company.OnboardingStatus, company.ControlStatus,
+		company.ConfigurationVersion, company.ControlEpoch, company.ExecutionFence,
 		company.Version, state, businessAt.UTC(), company.CompanyID, expectedVersion)
 	if err != nil {
 		return CommandResult{}, fmt.Errorf("update company in command: %w", err)
@@ -139,6 +156,13 @@ WHERE company_id = ? AND version = ?`,
 			return CommandResult{}, fmt.Errorf("read company version after failed CAS: %w", readErr)
 		}
 		return CommandResult{}, &model.VersionConflictError{Expected: expectedVersion, Actual: actual}
+	}
+	if operationID != "" {
+		if err := createPauseScopeControlOperationTx(ctx, tx, operationID, "company", company.CompanyID,
+			company.LastPauseMode, company.Version, company.ConfigurationVersion, company.ControlEpoch,
+			company.ExecutionFence, businessAt); err != nil {
+			return CommandResult{}, err
+		}
 	}
 
 	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {

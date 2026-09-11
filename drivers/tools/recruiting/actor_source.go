@@ -59,14 +59,15 @@ type sourceValidationPublishPayload struct {
 }
 
 type sourceCommandResponse struct {
-	ContractVersion string                  `json:"contract_version"`
-	CorrelationID   string                  `json:"correlation_id"`
-	RequestedBy     string                  `json:"requested_by"`
-	Source          model.RecruitmentSource `json:"source"`
-	Target          Target                  `json:"target"`
-	NextAction      string                  `json:"next_action"`
-	ValidationWork  *model.Work             `json:"validation_work,omitempty"`
-	ValidationRun   *model.ListingRun       `json:"validation_run,omitempty"`
+	ContractVersion         string                  `json:"contract_version"`
+	CorrelationID           string                  `json:"correlation_id"`
+	RequestedBy             string                  `json:"requested_by"`
+	Source                  model.RecruitmentSource `json:"source"`
+	Target                  Target                  `json:"target"`
+	NextAction              string                  `json:"next_action"`
+	ValidationWork          *model.Work             `json:"validation_work,omitempty"`
+	ValidationRun           *model.ListingRun       `json:"validation_run,omitempty"`
+	ScopeControlOperationID string                  `json:"scope_control_operation_id,omitempty"`
 }
 
 func handleSourceMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -216,7 +217,7 @@ func handleSourceAdd(sys actorbase.Sys, repository *store.Repository, msg actorb
 		return
 	}
 	response := makeSourceResponse(msg, source)
-	result, err := applySourceCommandFacts(repository, msg, payload.CommandID, payload.Reason, response, source, 0)
+	result, err := applySourceCommandFacts(repository, msg, payload.CommandID, payload.Reason, response, source, 0, "")
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
@@ -386,7 +387,13 @@ func handleSourceMutation(sys actorbase.Sys, repository *store.Repository, msg a
 		return
 	}
 	response := makeSourceResponse(msg, next)
-	result, err := applySourceCommandFacts(repository, msg, command.CommandID, command.Reason, response, next, commandContext.Command.ExpectedVersion)
+	operationID := ""
+	if msg.Type == TypeSourcePause {
+		operationID = "scope-control-" + stableDigest(command.CommandID+"|source|"+next.SourceID)
+		response.ScopeControlOperationID = operationID
+	}
+	result, err := applySourceCommandFacts(repository, msg, command.CommandID, command.Reason, response, next,
+		commandContext.Command.ExpectedVersion, operationID)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
@@ -426,7 +433,8 @@ func applySourceEndpointUpdate(current model.RecruitmentSource, expected uint64,
 	return current.StageEndpoint(expected, canonical, category)
 }
 
-func applySourceCommandFacts(repository *store.Repository, msg actorbase.Msg, commandID, reason string, response sourceCommandResponse, source model.RecruitmentSource, expectedVersion uint64) (store.CommandResult, error) {
+func applySourceCommandFacts(repository *store.Repository, msg actorbase.Msg, commandID, reason string, response sourceCommandResponse,
+	source model.RecruitmentSource, expectedVersion uint64, operationID string) (store.CommandResult, error) {
 	businessAt := time.UnixMilli(msg.TS).UTC()
 	responseBytes, _ := json.Marshal(response)
 	receipt, err := model.NewCommandReceipt(commandID, msg.Type, commandRequestHash(msg), responseBytes)
@@ -442,6 +450,9 @@ func applySourceCommandFacts(repository *store.Repository, msg actorbase.Msg, co
 	}
 	if expectedVersion == 0 {
 		return repository.ApplyCreateSourceCommand(msg.Ctx(), source, receipt, event, businessAt)
+	}
+	if operationID != "" {
+		return repository.ApplySourcePauseCommand(msg.Ctx(), expectedVersion, source, receipt, event, operationID, businessAt)
 	}
 	return repository.ApplySourceCommand(msg.Ctx(), expectedVersion, source, receipt, event, businessAt)
 }
