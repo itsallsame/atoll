@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -392,9 +393,13 @@ func TestCancelScopeControlWaitsForBoundedUnmaterializedBackfillItems(t *testing
 	if err != nil || operation.Status != model.ScopeControlApplying || operation.BackfillItemsCanceled != 1 {
 		t.Fatalf("first bounded dependency page=%+v err=%v", operation, err)
 	}
+	general, err := repository.CancelNextBackfillPage(ctx, 1, pausedAt.Add(90*time.Second))
+	if err != nil || general.BackfillID != backfill.BackfillID || general.CanceledItems != 1 || !general.Completed {
+		t.Fatalf("general Backfill coordinator handoff=%+v err=%v", general, err)
+	}
 	operation, err = repository.ReconcileScopeControlOperation(ctx, operationID, operation.Version, 1, pausedAt.Add(2*time.Minute))
 	if err != nil || operation.Status != model.ScopeControlCompleted || !operation.CancellationCompleted ||
-		operation.BackfillItemsCanceled != 2 {
+		operation.BackfillItemsCanceled != 1 {
 		t.Fatalf("completed bounded dependencies=%+v err=%v", operation, err)
 	}
 	stored, _ := repository.GetBackfill(ctx, backfill.BackfillID)
@@ -407,6 +412,12 @@ func TestCancelScopeControlWaitsForBoundedUnmaterializedBackfillItems(t *testing
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_backfill_items
 WHERE backfill_id = ? AND work_id IS NOT NULL`, backfill.BackfillID).Scan(&activeChildren); err != nil || activeChildren != 0 {
 		t.Fatalf("unmaterialized child Work count=%d err=%v", activeChildren, err)
+	}
+	var canceledEvents int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_event_outbox
+WHERE aggregate_type = 'backfill' AND aggregate_id = ? AND event_kind = 'backfill.canceled'`,
+		backfill.BackfillID).Scan(&canceledEvents); err != nil || canceledEvents != 1 {
+		t.Fatalf("Backfill cancellation events=%d err=%v", canceledEvents, err)
 	}
 }
 
@@ -532,7 +543,72 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, JSON_OBJECT('job_id', ?))`,
 	}
 }
 
+func TestBackfillResultAndScopeCancelConvergeAtBothCommitCutpoints(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	repository, db, ctx, cleanup := detailContractRepository(t)
+	defer cleanup()
+	now := time.Date(2091, 9, 14, 0, 0, 0, 0, time.UTC)
+
+	t.Run("scope_fence_commits_first", func(t *testing.T) {
+		prefix := "scope-backfill-cutpoint-cancel-first"
+		fixture := createRunningLiveBackfillFixture(t, ctx, repository, prefix, now)
+		operation := startSourceCancelScope(t, ctx, repository, fixture.source.SourceID, prefix,
+			fixture.now.Add(5*time.Second))
+		if _, err := repository.AcceptBackfillResult(ctx, fixture.result); !errors.Is(err, ErrResultFenced) {
+			t.Fatalf("result crossed committed scope fence: %v", err)
+		}
+		operation = reconcileCompletedScopeOperation(t, ctx, repository, operation.OperationID,
+			fixture.now.Add(7*time.Second))
+		backfill, _ := repository.GetBackfill(ctx, fixture.backfill.BackfillID)
+		if operation.Status != model.ScopeControlCompleted || backfill.Status != model.BackfillCanceled {
+			t.Fatalf("cancel-first convergence operation=%+v Backfill=%+v", operation, backfill)
+		}
+		var rejected, outputs int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_artifacts
+WHERE artifact_id = ? AND rejected = TRUE`, fixture.result.Artifact.ArtifactID).Scan(&rejected); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_backfill_outputs
+WHERE backfill_id = ?`, fixture.backfill.BackfillID).Scan(&outputs); err != nil {
+			t.Fatal(err)
+		}
+		if rejected != 1 || outputs != 0 {
+			t.Fatalf("cancel-first evidence rejected=%d outputs=%d", rejected, outputs)
+		}
+	})
+
+	t.Run("result_commits_first", func(t *testing.T) {
+		prefix := "scope-backfill-cutpoint-result-first"
+		fixture := createRunningLiveBackfillFixture(t, ctx, repository, prefix, now.Add(time.Hour))
+		outcome, err := repository.AcceptBackfillResult(ctx, fixture.result)
+		if err != nil || outcome.Backfill.Status != model.BackfillCompleted || outcome.Output.OutputID == "" {
+			t.Fatalf("result-first outcome=%+v err=%v", outcome, err)
+		}
+		operation := cancelSourceScopeAndReconcile(t, ctx, repository, fixture.source.SourceID, prefix,
+			fixture.now.Add(7*time.Second))
+		backfill, _ := repository.GetBackfill(ctx, fixture.backfill.BackfillID)
+		work, _ := repository.GetWork(ctx, fixture.offer.Work.WorkID)
+		attempt, _ := repository.GetAttempt(ctx, fixture.offer.Attempt.AttemptID)
+		if operation.Status != model.ScopeControlCompleted || backfill.Status != model.BackfillCompleted ||
+			backfill.CanceledItems != 0 || work.Status != model.WorkCompleted ||
+			attempt.Status != model.AttemptSucceeded {
+			t.Fatalf("result-first convergence operation=%+v Backfill=%+v Work=%+v Attempt=%+v",
+				operation, backfill, work, attempt)
+		}
+	})
+}
+
 func cancelSourceScopeAndReconcile(t *testing.T, ctx context.Context, repository *Repository,
+	sourceID, prefix string, at time.Time) model.ScopeControlOperation {
+	t.Helper()
+	operation := startSourceCancelScope(t, ctx, repository, sourceID, prefix, at)
+	return reconcileCompletedScopeOperation(t, ctx, repository, operation.OperationID, at.Add(time.Second))
+}
+
+func startSourceCancelScope(t *testing.T, ctx context.Context, repository *Repository,
 	sourceID, prefix string, at time.Time) model.ScopeControlOperation {
 	t.Helper()
 	source, err := repository.GetSource(ctx, sourceID)
@@ -551,7 +627,11 @@ func cancelSourceScopeAndReconcile(t *testing.T, ctx context.Context, repository
 	if _, err := repository.ApplySourcePauseCommand(ctx, source.Version, paused, receipt, event, operationID, at); err != nil {
 		t.Fatal(err)
 	}
-	return reconcileCompletedScopeOperation(t, ctx, repository, operationID, at.Add(time.Second))
+	operation, err := repository.GetScopeControlOperation(ctx, operationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return operation
 }
 
 func cancelCompanyScopeAndReconcile(t *testing.T, ctx context.Context, repository *Repository,

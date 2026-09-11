@@ -191,15 +191,23 @@ WHERE backfill_id = ? AND item_status IN ('pending','queued','failed')`, backfil
 	if err != nil {
 		return false, err
 	}
-	nextParent, err := parent.Cancel(parent.Version)
-	if err != nil {
-		return false, err
+	nextParent := parent
+	if parent.Status != model.WorkCanceled {
+		if parent.Terminal() {
+			return false, fmt.Errorf("canceling Backfill parent has contradictory terminal Work status %s", parent.Status)
+		}
+		nextParent, err = parent.Cancel(parent.Version)
+		if err != nil {
+			return false, err
+		}
 	}
 	if err := updateBackfillCASTx(ctx, tx, backfill.Version, nextBackfill, at); err != nil {
 		return false, err
 	}
-	if err := updateWorkTx(ctx, tx, parent.Version, nextParent, at); err != nil {
-		return false, err
+	if nextParent != parent {
+		if err := updateWorkTx(ctx, tx, parent.Version, nextParent, at); err != nil {
+			return false, err
+		}
 	}
 	payload, _ := json.Marshal(map[string]any{"canceled_items": nextBackfill.CanceledItems})
 	event, err := model.NewEventIntent("backfill-canceled-"+backfillStoreDigest(backfillID), "backfill.canceled",
