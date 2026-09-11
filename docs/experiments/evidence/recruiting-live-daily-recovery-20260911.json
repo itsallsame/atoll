@@ -1,0 +1,35 @@
+{
+  "schema": "atoll.recruiting.live-daily-recovery.v1",
+  "observed_at": "2026-09-11",
+  "target": "https://boards-api.greenhouse.io/v1/boards/acuitymd/jobs",
+  "access": "public read-only GET",
+  "test": "TestRecruitingLiveDailyRecoveryThroughAtoll",
+  "duration_seconds": 16.03,
+  "execution": {
+    "atoll_server": true,
+    "daemon_executor": true,
+    "executor_class": "recruiting-executor",
+    "mysql_accounts": "non-root migration/runtime",
+    "checkpoint_strategy": "frontier_keys",
+    "active_detail_assignment_required": true,
+    "operator_command": "recruiting.run.production"
+  },
+  "observed_results": {
+    "work_status": "completed",
+    "work_resolution": "succeeded",
+    "attempt_status": "succeeded",
+    "original_daily_run_status": "completed_with_exceptions",
+    "original_occurrence_status": "exception",
+    "daily_run_changed": false,
+    "original_occurrence_changed": false,
+    "uncovered": 1,
+    "recovered": 1,
+    "recovery_lineage_count": 1,
+    "daily_occurrence_recovered_event_count": 1
+  },
+  "claim_limits": [
+    "The immutable historical exception remains uncovered; recovered is an appended compensation fact.",
+    "The live run proves the currently observed public sample only, not perpetual third-party availability.",
+    "The fixture uses a real frontier key and an active Detail Assignment because successful production listing publication requires both."
+  ]
+}
