@@ -105,7 +105,7 @@ INSERT INTO recruiting_sources(
 // receipt, and outbox event share one transaction, so an acknowledged command
 // can never exist without its domain state and recoverable event intent.
 func (r *Repository) ApplySourceCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource, receipt model.CommandReceipt, event model.EventIntent, businessAt time.Time) (CommandResult, error) {
-	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, "", businessAt)
+	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, "", "", businessAt)
 }
 
 func (r *Repository) ApplySourcePauseCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource,
@@ -113,11 +113,19 @@ func (r *Repository) ApplySourcePauseCommand(ctx context.Context, expectedVersio
 	if source.ControlStatus != model.ControlPaused || strings.TrimSpace(operationID) == "" {
 		return CommandResult{}, fmt.Errorf("paused Source and scope control operation identity are required")
 	}
-	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, strings.TrimSpace(operationID), businessAt)
+	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, strings.TrimSpace(operationID), "", businessAt)
+}
+
+func (r *Repository) ApplySourceResumeCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource,
+	receipt model.CommandReceipt, event model.EventIntent, operationID string, businessAt time.Time) (CommandResult, error) {
+	if source.ControlStatus != model.ControlActive || strings.TrimSpace(operationID) == "" {
+		return CommandResult{}, fmt.Errorf("active Source and scope control operation identity are required")
+	}
+	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, "", strings.TrimSpace(operationID), businessAt)
 }
 
 func (r *Repository) applySourceCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource,
-	receipt model.CommandReceipt, event model.EventIntent, operationID string, businessAt time.Time) (CommandResult, error) {
+	receipt model.CommandReceipt, event model.EventIntent, pauseOperationID, resumeOperationID string, businessAt time.Time) (CommandResult, error) {
 	if expectedVersion == 0 || source.SourceID == "" || source.Version != expectedVersion+1 || receipt.CommandID == "" ||
 		event.AggregateType != "source" || event.AggregateID != source.SourceID || event.AggregateVersion != source.Version ||
 		event.CauseCommandID != receipt.CommandID {
@@ -186,10 +194,19 @@ WHERE source_id = ? AND version = ?`,
 		}
 		return CommandResult{}, &model.VersionConflictError{Expected: expectedVersion, Actual: actual}
 	}
-	if operationID != "" {
-		if err := createPauseScopeControlOperationTx(ctx, tx, operationID, "source", source.SourceID,
+	if pauseOperationID != "" && resumeOperationID != "" {
+		return CommandResult{}, fmt.Errorf("source command cannot pause and resume the scope together")
+	}
+	if pauseOperationID != "" {
+		if err := createPauseScopeControlOperationTx(ctx, tx, pauseOperationID, "source", source.SourceID,
 			source.LastPauseMode, source.Version, source.ConfigurationVersion, source.ControlEpoch,
 			source.ExecutionFence, businessAt); err != nil {
+			return CommandResult{}, err
+		}
+	}
+	if resumeOperationID != "" {
+		if err := createResumeScopeControlOperationTx(ctx, tx, resumeOperationID, "source", source.SourceID,
+			source.Version, source.ConfigurationVersion, source.ControlEpoch, source.ExecutionFence, businessAt); err != nil {
 			return CommandResult{}, err
 		}
 	}

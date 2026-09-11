@@ -142,15 +142,15 @@ func TestListingExecutionOfferAndLifecycleAreFenced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	paused, err := source.Pause(source.Version, model.PauseDrain)
+	reconfigured, err := source.StageEndpoint(source.Version, "https://execution-life.example.com/jobs-v2", "")
 	if err == nil {
-		err = repository.UpdateSourceCAS(ctx, source.Version, paused, offerAt)
+		err = repository.UpdateSourceCAS(ctx, source.Version, reconfigured, offerAt)
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repository.AcceptListingExecution(ctx, retry.Attempt.AttemptID, "executor-b", "boot-b", offerAt); !errors.Is(err, ErrResultFenced) {
-		t.Fatalf("changed source fence accepted retry attempt: %v", err)
+		t.Fatalf("changed source configuration fence accepted retry attempt: %v", err)
 	}
 	expiredRetry, _ := retry.Attempt.Expire()
 	if err := repository.UpdateAttemptCAS(ctx, retry.Attempt.Status, expiredRetry, offerAt); err != nil {

@@ -79,7 +79,7 @@ INSERT INTO recruiting_companies(
 // response, and an outbox event intent. Publishing that intent to the Atoll
 // ledger happens after commit and is independently retryable.
 func (r *Repository) ApplyCompanyCommand(ctx context.Context, expectedVersion uint64, company model.Company, receipt model.CommandReceipt, event model.EventIntent, businessAt time.Time) (CommandResult, error) {
-	return r.applyCompanyCommand(ctx, expectedVersion, company, receipt, event, "", businessAt)
+	return r.applyCompanyCommand(ctx, expectedVersion, company, receipt, event, "", "", businessAt)
 }
 
 func (r *Repository) ApplyCompanyPauseCommand(ctx context.Context, expectedVersion uint64, company model.Company,
@@ -87,11 +87,19 @@ func (r *Repository) ApplyCompanyPauseCommand(ctx context.Context, expectedVersi
 	if company.ControlStatus != model.ControlPaused || strings.TrimSpace(operationID) == "" {
 		return CommandResult{}, fmt.Errorf("paused Company and scope control operation identity are required")
 	}
-	return r.applyCompanyCommand(ctx, expectedVersion, company, receipt, event, strings.TrimSpace(operationID), businessAt)
+	return r.applyCompanyCommand(ctx, expectedVersion, company, receipt, event, strings.TrimSpace(operationID), "", businessAt)
+}
+
+func (r *Repository) ApplyCompanyResumeCommand(ctx context.Context, expectedVersion uint64, company model.Company,
+	receipt model.CommandReceipt, event model.EventIntent, operationID string, businessAt time.Time) (CommandResult, error) {
+	if company.ControlStatus != model.ControlActive || strings.TrimSpace(operationID) == "" {
+		return CommandResult{}, fmt.Errorf("active Company and scope control operation identity are required")
+	}
+	return r.applyCompanyCommand(ctx, expectedVersion, company, receipt, event, "", strings.TrimSpace(operationID), businessAt)
 }
 
 func (r *Repository) applyCompanyCommand(ctx context.Context, expectedVersion uint64, company model.Company,
-	receipt model.CommandReceipt, event model.EventIntent, operationID string, businessAt time.Time) (CommandResult, error) {
+	receipt model.CommandReceipt, event model.EventIntent, pauseOperationID, resumeOperationID string, businessAt time.Time) (CommandResult, error) {
 	if company.CompanyID == "" || company.Version != expectedVersion+1 || receipt.CommandID == "" ||
 		event.AggregateType != "company" || event.AggregateID != company.CompanyID || event.AggregateVersion != company.Version ||
 		event.CauseCommandID != receipt.CommandID {
@@ -157,10 +165,19 @@ WHERE company_id = ? AND version = ?`,
 		}
 		return CommandResult{}, &model.VersionConflictError{Expected: expectedVersion, Actual: actual}
 	}
-	if operationID != "" {
-		if err := createPauseScopeControlOperationTx(ctx, tx, operationID, "company", company.CompanyID,
+	if pauseOperationID != "" && resumeOperationID != "" {
+		return CommandResult{}, fmt.Errorf("company command cannot pause and resume the scope together")
+	}
+	if pauseOperationID != "" {
+		if err := createPauseScopeControlOperationTx(ctx, tx, pauseOperationID, "company", company.CompanyID,
 			company.LastPauseMode, company.Version, company.ConfigurationVersion, company.ControlEpoch,
 			company.ExecutionFence, businessAt); err != nil {
+			return CommandResult{}, err
+		}
+	}
+	if resumeOperationID != "" {
+		if err := createResumeScopeControlOperationTx(ctx, tx, resumeOperationID, "company", company.CompanyID,
+			company.Version, company.ConfigurationVersion, company.ControlEpoch, company.ExecutionFence, businessAt); err != nil {
 			return CommandResult{}, err
 		}
 	}

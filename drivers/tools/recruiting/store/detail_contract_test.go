@@ -93,8 +93,8 @@ func TestStaleOrWrongSenderDetailResultOnlyKeepsRejectedArtifact(t *testing.T) {
 	stale := createDetailFixture(t, ctx, repository, "detail-stale-source", now.Add(time.Minute))
 	defer pauseExecutionSource(t, ctx, repository, stale.source.SourceID, now.Add(10*time.Minute))
 	currentSource, _ := repository.GetSource(ctx, stale.source.SourceID)
-	degraded, _ := currentSource.SetHealth(currentSource.Version, model.HealthDegraded)
-	if err := repository.UpdateSourceCAS(ctx, currentSource.Version, degraded, now.Add(2*time.Minute)); err != nil {
+	reconfigured, _ := currentSource.StageEndpoint(currentSource.Version, "https://detail-stale-source.example.com/jobs-v2", "")
+	if err := repository.UpdateSourceCAS(ctx, currentSource.Version, reconfigured, now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	staleResult := stale.result("detail-artifact-stale-source")

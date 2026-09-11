@@ -7,10 +7,13 @@ import (
 )
 
 type ScopeControlStatus string
+type ScopeControlAction string
 
 const (
 	ScopeControlApplying  ScopeControlStatus = "applying"
 	ScopeControlCompleted ScopeControlStatus = "completed"
+	ScopeControlPause     ScopeControlAction = "pause"
+	ScopeControlResume    ScopeControlAction = "resume"
 	scopeControlBatchMax                     = 500
 )
 
@@ -19,9 +22,11 @@ const (
 // extension, not a new Actor or Worker type.
 type ScopeControlOperation struct {
 	OperationID          string             `json:"operation_id"`
+	Action               ScopeControlAction `json:"action"`
 	ScopeType            string             `json:"scope_type"`
 	ScopeID              string             `json:"scope_id"`
 	Mode                 PauseMode          `json:"pause_mode"`
+	ReversesOperationID  string             `json:"reverses_operation_id,omitempty"`
 	PausedEntityVersion  uint64             `json:"paused_entity_version"`
 	ConfigurationVersion uint64             `json:"configuration_version"`
 	ControlEpoch         uint64             `json:"control_epoch"`
@@ -32,6 +37,7 @@ type ScopeControlOperation struct {
 	WorksScanned         uint64             `json:"works_scanned"`
 	WorksPaused          uint64             `json:"works_paused"`
 	WorksCanceled        uint64             `json:"works_canceled"`
+	WorksResumed         uint64             `json:"works_resumed"`
 	AttemptsExpired      uint64             `json:"attempts_expired"`
 	ActiveRoots          uint64             `json:"active_roots"`
 	StartedAt            string             `json:"started_at"`
@@ -44,6 +50,7 @@ type ScopeControlBatch struct {
 	Scanned         int
 	Paused          int
 	Canceled        int
+	Resumed         int
 	ExpiredAttempts int
 	HasMore         bool
 	AppliedAt       time.Time
@@ -65,10 +72,27 @@ func NewScopeControlOperation(id, scopeType, scopeID string, mode PauseMode, ent
 	if mode != PauseFinishCausalChain && activeRoots != 0 {
 		return ScopeControlOperation{}, fmt.Errorf("only finish_causal_chain may register active roots")
 	}
-	return ScopeControlOperation{OperationID: id, ScopeType: scopeType, ScopeID: scopeID, Mode: mode,
+	return ScopeControlOperation{OperationID: id, Action: ScopeControlPause, ScopeType: scopeType, ScopeID: scopeID, Mode: mode,
 		PausedEntityVersion: entityVersion, ConfigurationVersion: configurationVersion,
 		ControlEpoch: controlEpoch, ExecutionFence: executionFence, Status: ScopeControlApplying,
 		ActiveRoots: activeRoots, StartedAt: at.UTC().Format(time.RFC3339Nano), Version: 1}, nil
+}
+
+func NewScopeResumeOperation(id, scopeType, scopeID, reversesOperationID string, entityVersion,
+	configurationVersion, controlEpoch, executionFence uint64, at time.Time) (ScopeControlOperation, error) {
+	id, scopeType, scopeID = strings.TrimSpace(id), strings.TrimSpace(scopeType), strings.TrimSpace(scopeID)
+	reversesOperationID = strings.TrimSpace(reversesOperationID)
+	if id == "" || scopeID == "" || reversesOperationID == "" || at.IsZero() || entityVersion < 2 ||
+		configurationVersion == 0 || controlEpoch == 0 || executionFence == 0 {
+		return ScopeControlOperation{}, fmt.Errorf("scope resume identity, versions, fences, reverse operation, and time are required")
+	}
+	if scopeType != "company" && scopeType != "source" {
+		return ScopeControlOperation{}, fmt.Errorf("scope control type must be company or source")
+	}
+	return ScopeControlOperation{OperationID: id, Action: ScopeControlResume, ScopeType: scopeType, ScopeID: scopeID,
+		ReversesOperationID: reversesOperationID, PausedEntityVersion: entityVersion,
+		ConfigurationVersion: configurationVersion, ControlEpoch: controlEpoch, ExecutionFence: executionFence,
+		Status: ScopeControlApplying, StartedAt: at.UTC().Format(time.RFC3339Nano), Version: 1}, nil
 }
 
 func (o ScopeControlOperation) RecordBatch(expected uint64, batch ScopeControlBatch) (ScopeControlOperation, error) {
@@ -77,7 +101,7 @@ func (o ScopeControlOperation) RecordBatch(expected uint64, batch ScopeControlBa
 	}
 	if o.Status != ScopeControlApplying || batch.AppliedAt.IsZero() || batch.Scanned < 0 ||
 		batch.Scanned > scopeControlBatchMax || batch.Paused < 0 || batch.Canceled < 0 ||
-		batch.ExpiredAttempts < 0 || batch.Paused+batch.Canceled > batch.Scanned {
+		batch.ExpiredAttempts < 0 || batch.Resumed < 0 || batch.Paused+batch.Canceled+batch.Resumed > batch.Scanned {
 		return ScopeControlOperation{}, fmt.Errorf("scope control batch is invalid or operation is terminal")
 	}
 	batch.Cursor = strings.TrimSpace(batch.Cursor)
@@ -90,22 +114,32 @@ func (o ScopeControlOperation) RecordBatch(expected uint64, batch ScopeControlBa
 	if batch.HasMore && batch.Scanned == 0 {
 		return ScopeControlOperation{}, fmt.Errorf("scope control continuation requires progress")
 	}
-	if o.Mode == PauseCancel && batch.Paused != 0 {
-		return ScopeControlOperation{}, fmt.Errorf("cancel operation cannot report paused Work")
-	}
-	if o.Mode != PauseCancel && (batch.Canceled != 0 || batch.ExpiredAttempts != 0) {
-		return ScopeControlOperation{}, fmt.Errorf("non-cancel operation cannot cancel Work or expire Attempts")
+	if o.Action == ScopeControlResume {
+		if o.Mode != "" || o.ReversesOperationID == "" || batch.Paused != 0 || batch.Canceled != 0 || batch.ExpiredAttempts != 0 {
+			return ScopeControlOperation{}, fmt.Errorf("resume operation can only report resumed Work")
+		}
+	} else {
+		if o.Action != ScopeControlPause || batch.Resumed != 0 {
+			return ScopeControlOperation{}, fmt.Errorf("pause operation cannot report resumed Work")
+		}
+		if o.Mode == PauseCancel && batch.Paused != 0 {
+			return ScopeControlOperation{}, fmt.Errorf("cancel operation cannot report paused Work")
+		}
+		if o.Mode != PauseCancel && (batch.Canceled != 0 || batch.ExpiredAttempts != 0) {
+			return ScopeControlOperation{}, fmt.Errorf("non-cancel operation cannot cancel Work or expire Attempts")
+		}
 	}
 	o.WorksScanned += uint64(batch.Scanned)
 	o.WorksPaused += uint64(batch.Paused)
 	o.WorksCanceled += uint64(batch.Canceled)
+	o.WorksResumed += uint64(batch.Resumed)
 	o.AttemptsExpired += uint64(batch.ExpiredAttempts)
 	if batch.Scanned > 0 {
 		o.WorkCursor = batch.Cursor
 	}
 	if !batch.HasMore {
 		o.ProjectionCompleted = true
-		if o.Mode != PauseFinishCausalChain || o.ActiveRoots == 0 {
+		if o.Action == ScopeControlResume || o.Mode != PauseFinishCausalChain || o.ActiveRoots == 0 {
 			o.Status = ScopeControlCompleted
 			o.CompletedAt = batch.AppliedAt.UTC().Format(time.RFC3339Nano)
 		}
@@ -118,7 +152,7 @@ func (o ScopeControlOperation) SettleRoot(expected uint64, at time.Time) (ScopeC
 	if err := requireVersion(expected, o.Version); err != nil {
 		return ScopeControlOperation{}, err
 	}
-	if o.Status != ScopeControlApplying || o.Mode != PauseFinishCausalChain || o.ActiveRoots == 0 || at.IsZero() {
+	if o.Status != ScopeControlApplying || o.Action != ScopeControlPause || o.Mode != PauseFinishCausalChain || o.ActiveRoots == 0 || at.IsZero() {
 		return ScopeControlOperation{}, fmt.Errorf("active finish_causal_chain root is required")
 	}
 	o.ActiveRoots--
@@ -135,10 +169,10 @@ func (o ScopeControlOperation) NeedsProjection() bool {
 }
 
 func (o ScopeControlOperation) AcceptsExistingAttempt() bool {
-	return o.Mode == PauseDrain || o.Mode == PauseFinishCausalChain
+	return o.Action == ScopeControlPause && (o.Mode == PauseDrain || o.Mode == PauseFinishCausalChain)
 }
 
 func (o ScopeControlOperation) AllowsCausalDescendant(rootWorkID string) bool {
-	return o.Status == ScopeControlApplying && o.Mode == PauseFinishCausalChain &&
+	return o.Status == ScopeControlApplying && o.Action == ScopeControlPause && o.Mode == PauseFinishCausalChain &&
 		o.ActiveRoots > 0 && strings.TrimSpace(rootWorkID) != ""
 }

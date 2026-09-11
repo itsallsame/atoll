@@ -585,9 +585,10 @@ func updateRecoveredWorkTx(ctx context.Context, tx *sql.Tx, expected uint64, wor
 		return err
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE recruiting_works
-SET status = ?, resolution = ?, blocked_by_repair_work_id = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
+SET status = ?, resolution = ?, blocked_by_repair_work_id = ?, paused_by_scope_operation_id = ?,
+    acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
 WHERE work_id = ? AND version = ?`, work.Status, nullableString(string(work.Resolution)), nullableString(work.BlockedByRepairWorkID),
-		work.AcceptanceVersion, work.Version, state, at.UTC(), work.WorkID, expected)
+		nullableString(work.PausedByScopeOperationID), work.AcceptanceVersion, work.Version, state, at.UTC(), work.WorkID, expected)
 	if err != nil {
 		return err
 	}

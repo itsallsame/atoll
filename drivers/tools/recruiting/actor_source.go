@@ -388,7 +388,7 @@ func handleSourceMutation(sys actorbase.Sys, repository *store.Repository, msg a
 	}
 	response := makeSourceResponse(msg, next)
 	operationID := ""
-	if msg.Type == TypeSourcePause {
+	if msg.Type == TypeSourcePause || msg.Type == TypeSourceResume {
 		operationID = "scope-control-" + stableDigest(command.CommandID+"|source|"+next.SourceID)
 		response.ScopeControlOperationID = operationID
 	}
@@ -451,8 +451,11 @@ func applySourceCommandFacts(repository *store.Repository, msg actorbase.Msg, co
 	if expectedVersion == 0 {
 		return repository.ApplyCreateSourceCommand(msg.Ctx(), source, receipt, event, businessAt)
 	}
-	if operationID != "" {
+	if msg.Type == TypeSourcePause {
 		return repository.ApplySourcePauseCommand(msg.Ctx(), expectedVersion, source, receipt, event, operationID, businessAt)
+	}
+	if msg.Type == TypeSourceResume {
+		return repository.ApplySourceResumeCommand(msg.Ctx(), expectedVersion, source, receipt, event, operationID, businessAt)
 	}
 	return repository.ApplySourceCommand(msg.Ctx(), expectedVersion, source, receipt, event, businessAt)
 }

@@ -275,8 +275,8 @@ func updateCanceledWork(ctx context.Context, tx *sql.Tx, work model.Work, closed
 	}
 	state, _ := json.Marshal(canceled)
 	result, err := tx.ExecContext(ctx, `
-UPDATE recruiting_works SET status = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
-WHERE work_id = ? AND version = ?`, canceled.Status, canceled.AcceptanceVersion, canceled.Version, state,
+UPDATE recruiting_works SET status = ?, paused_by_scope_operation_id = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
+WHERE work_id = ? AND version = ?`, canceled.Status, nullableString(canceled.PausedByScopeOperationID), canceled.AcceptanceVersion, canceled.Version, state,
 		closedAt, canceled.WorkID, work.Version)
 	if err != nil {
 		return err

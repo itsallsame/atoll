@@ -21,12 +21,27 @@ const scopeControlBatchLimit = 500
 func (r *Repository) CreateScopeControlOperation(ctx context.Context, operation model.ScopeControlOperation,
 	rootWorkIDs []string, businessAt time.Time) error {
 	_, err := time.Parse(time.RFC3339Nano, operation.StartedAt)
-	if err != nil || operation.OperationID == "" || operation.ScopeID == "" || operation.Status != model.ScopeControlApplying ||
-		operation.Version != 1 || businessAt.IsZero() || uint64(len(rootWorkIDs)) != operation.ActiveRoots || len(rootWorkIDs) > scopeControlBatchLimit {
+	if err != nil || operation.OperationID == "" || operation.Action == "" || operation.ScopeID == "" || operation.Status != model.ScopeControlApplying ||
+		operation.Version != 1 || operation.ProjectionCompleted || operation.WorkCursor != "" || operation.CompletedAt != "" ||
+		operation.WorksScanned != 0 || operation.WorksPaused != 0 || operation.WorksCanceled != 0 || operation.WorksResumed != 0 ||
+		operation.AttemptsExpired != 0 || businessAt.IsZero() || uint64(len(rootWorkIDs)) != operation.ActiveRoots || len(rootWorkIDs) > scopeControlBatchLimit {
 		return fmt.Errorf("new applying scope control operation and its bounded roots are required")
 	}
 	if operation.ScopeType != "company" && operation.ScopeType != "source" {
 		return fmt.Errorf("scope control type must be company or source")
+	}
+	switch operation.Action {
+	case model.ScopeControlPause:
+		if operation.ReversesOperationID != "" || operation.Mode.Validate() != nil ||
+			(operation.Mode != model.PauseFinishCausalChain && operation.ActiveRoots != 0) {
+			return fmt.Errorf("new pause scope control operation is inconsistent")
+		}
+	case model.ScopeControlResume:
+		if operation.Mode != "" || strings.TrimSpace(operation.ReversesOperationID) == "" || operation.ActiveRoots != 0 {
+			return fmt.Errorf("new resume scope control operation is inconsistent")
+		}
+	default:
+		return fmt.Errorf("scope control action must be pause or resume")
 	}
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
@@ -55,15 +70,16 @@ func createScopeControlOperationTx(ctx context.Context, tx *sql.Tx, operation mo
 	activeKey := operation.ScopeType + ":" + operation.ScopeID
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO recruiting_scope_control_operations(
-  operation_id, scope_type, scope_id, pause_mode, paused_entity_version,
+  operation_id, operation_kind, scope_type, scope_id, pause_mode, reverses_operation_id, paused_entity_version,
   configuration_version, control_epoch, execution_fence, operation_status,
   projection_completed, active_scope_key, work_cursor, works_scanned, works_paused, works_canceled,
-  attempts_expired, active_roots, version, state_json, started_at, completed_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		operation.OperationID, operation.ScopeType, operation.ScopeID, operation.Mode, operation.PausedEntityVersion,
+  works_resumed, attempts_expired, active_roots, version, state_json, started_at, completed_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		operation.OperationID, operation.Action, operation.ScopeType, operation.ScopeID, operation.Mode,
+		nullableString(operation.ReversesOperationID), operation.PausedEntityVersion,
 		operation.ConfigurationVersion, operation.ControlEpoch, operation.ExecutionFence, operation.Status, operation.ProjectionCompleted,
 		activeKey, nullableString(operation.WorkCursor), operation.WorksScanned, operation.WorksPaused, operation.WorksCanceled,
-		operation.AttemptsExpired, operation.ActiveRoots, operation.Version, state, startedAt.UTC(), nil, businessAt.UTC())
+		operation.WorksResumed, operation.AttemptsExpired, operation.ActiveRoots, operation.Version, state, startedAt.UTC(), nil, businessAt.UTC())
 	if err != nil {
 		var mysqlError *mysql.MySQLError
 		if errors.As(err, &mysqlError) && mysqlError.Number == 1062 {
@@ -137,6 +153,32 @@ ORDER BY work.root_work_id LIMIT ?`, indexName, scopeColumn)
 	return createScopeControlOperationTx(ctx, tx, operation, rootWorkIDs, businessAt)
 }
 
+func createResumeScopeControlOperationTx(ctx context.Context, tx *sql.Tx, operationID, scopeType, scopeID string,
+	entityVersion, configurationVersion, controlEpoch, executionFence uint64, businessAt time.Time) error {
+	var pausedOperationID string
+	err := tx.QueryRowContext(ctx, `SELECT paused.operation_id
+FROM recruiting_scope_control_operations paused
+WHERE paused.scope_type = ? AND paused.scope_id = ? AND paused.operation_kind = 'pause'
+  AND paused.operation_status = 'completed'
+  AND NOT EXISTS (
+    SELECT 1 FROM recruiting_scope_control_operations resumed
+    WHERE resumed.reverses_operation_id = paused.operation_id AND resumed.operation_kind = 'resume'
+  )
+ORDER BY paused.started_at DESC, paused.operation_id DESC LIMIT 1 FOR UPDATE`, scopeType, scopeID).Scan(&pausedOperationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("completed unreversed scope pause operation is required before resume")
+	}
+	if err != nil {
+		return fmt.Errorf("load scope pause for resume: %w", err)
+	}
+	operation, err := model.NewScopeResumeOperation(operationID, scopeType, scopeID, pausedOperationID,
+		entityVersion, configurationVersion, controlEpoch, executionFence, businessAt)
+	if err != nil {
+		return err
+	}
+	return createScopeControlOperationTx(ctx, tx, operation, nil, businessAt)
+}
+
 func (r *Repository) GetScopeControlOperation(ctx context.Context, operationID string) (model.ScopeControlOperation, error) {
 	var state []byte
 	err := r.db.QueryRowContext(ctx, `
@@ -181,17 +223,26 @@ WHERE operation_id = ? FOR UPDATE`, strings.TrimSpace(operationID)).Scan(&state)
 	if !operation.NeedsProjection() {
 		return model.ScopeControlOperation{}, fmt.Errorf("scope control backlog projection is not runnable")
 	}
-	cutoff, err := time.Parse(time.RFC3339Nano, operation.StartedAt)
-	if err != nil {
-		return model.ScopeControlOperation{}, fmt.Errorf("scope control cutoff: %w", err)
-	}
-	scopeColumn, indexName := "company_id", "ix_recruiting_work_company_scope"
-	if operation.ScopeType == "source" {
-		scopeColumn, indexName = "source_id", "ix_recruiting_work_source_scope"
-	}
-	query := fmt.Sprintf(`SELECT work_id, root_work_id, state_json FROM recruiting_works FORCE INDEX (%s)
+	var query string
+	var queryArgs []any
+	if operation.Action == model.ScopeControlResume {
+		query = `SELECT work_id, root_work_id, state_json FROM recruiting_works FORCE INDEX (ix_recruiting_work_scope_resume)
+WHERE paused_by_scope_operation_id = ? AND work_id > ? ORDER BY work_id LIMIT ? FOR UPDATE`
+		queryArgs = []any{operation.ReversesOperationID, operation.WorkCursor, limit + 1}
+	} else {
+		cutoff, parseErr := time.Parse(time.RFC3339Nano, operation.StartedAt)
+		if parseErr != nil {
+			return model.ScopeControlOperation{}, fmt.Errorf("scope control cutoff: %w", parseErr)
+		}
+		scopeColumn, indexName := "company_id", "ix_recruiting_work_company_scope"
+		if operation.ScopeType == "source" {
+			scopeColumn, indexName = "source_id", "ix_recruiting_work_source_scope"
+		}
+		query = fmt.Sprintf(`SELECT work_id, root_work_id, state_json FROM recruiting_works FORCE INDEX (%s)
 WHERE %s = ? AND work_id > ? AND created_at <= ? ORDER BY work_id LIMIT ? FOR UPDATE`, indexName, scopeColumn)
-	rows, err := tx.QueryContext(ctx, query, operation.ScopeID, operation.WorkCursor, cutoff.UTC(), limit+1)
+		queryArgs = []any{operation.ScopeID, operation.WorkCursor, cutoff.UTC(), limit + 1}
+	}
+	rows, err := tx.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return model.ScopeControlOperation{}, fmt.Errorf("lock scope control Work page: %w", err)
 	}
@@ -208,9 +259,13 @@ WHERE %s = ? AND work_id > ? AND created_at <= ? ORDER BY work_id LIMIT ? FOR UP
 			_ = rows.Close()
 			return model.ScopeControlOperation{}, fmt.Errorf("scan scope control Work page: %w", err)
 		}
-		if err := json.Unmarshal(workState, &value.work); err != nil || value.work.WorkID != workID {
+		if err := json.Unmarshal(workState, &value.work); err != nil {
 			_ = rows.Close()
 			return model.ScopeControlOperation{}, fmt.Errorf("decode scope control Work %s: %w", workID, err)
+		}
+		if value.work.WorkID != workID {
+			_ = rows.Close()
+			return model.ScopeControlOperation{}, fmt.Errorf("scope control Work identity mismatch: row %s contains %s", workID, value.work.WorkID)
 		}
 		values = append(values, value)
 	}
@@ -226,7 +281,7 @@ WHERE %s = ? AND work_id > ? AND created_at <= ? ORDER BY work_id LIMIT ? FOR UP
 		values = values[:limit]
 	}
 	activeRoots := map[string]struct{}{}
-	if operation.Mode == model.PauseFinishCausalChain {
+	if operation.Action == model.ScopeControlPause && operation.Mode == model.PauseFinishCausalChain {
 		rootRows, err := tx.QueryContext(ctx, `SELECT root_work_id FROM recruiting_scope_control_roots
 WHERE operation_id = ? AND root_status = 'active'`, operation.OperationID)
 		if err != nil {
@@ -247,6 +302,31 @@ WHERE operation_id = ? AND root_status = 'active'`, operation.OperationID)
 	batch := model.ScopeControlBatch{Scanned: len(values), HasMore: hasMore, AppliedAt: businessAt}
 	for _, value := range values {
 		batch.Cursor = value.work.WorkID
+		if operation.Action == model.ScopeControlResume {
+			if value.work.Status != model.WorkPaused || value.work.PausedByScopeOperationID != operation.ReversesOperationID {
+				continue
+			}
+			previousVersion := value.work.Version
+			value.work, err = value.work.ResumeFromScope(value.work.Version, operation.ReversesOperationID)
+			if err != nil {
+				return model.ScopeControlOperation{}, err
+			}
+			batch.Resumed++
+			workState, _ := json.Marshal(value.work)
+			result, err := tx.ExecContext(ctx, `UPDATE recruiting_works
+SET status = ?, resolution = ?, paused_by_scope_operation_id = NULL,
+    acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
+WHERE work_id = ? AND version = ? AND paused_by_scope_operation_id = ?`, value.work.Status,
+				nullableString(string(value.work.Resolution)), value.work.AcceptanceVersion, value.work.Version,
+				workState, businessAt.UTC(), value.work.WorkID, previousVersion, operation.ReversesOperationID)
+			if err != nil {
+				return model.ScopeControlOperation{}, fmt.Errorf("resume scope control Work: %w", err)
+			}
+			if changed, _ := result.RowsAffected(); changed != 1 {
+				return model.ScopeControlOperation{}, ErrProgressConflict
+			}
+			continue
+		}
 		if value.work.Terminal() || value.work.Status == model.WorkPaused {
 			continue
 		}
@@ -268,7 +348,7 @@ WHERE operation_id = ? AND root_status = 'active'`, operation.OperationID)
 			}
 			batch.Canceled++
 		} else {
-			value.work, err = value.work.Pause(value.work.Version)
+			value.work, err = value.work.PauseByScope(value.work.Version, operation.OperationID)
 			batch.Paused++
 		}
 		if err != nil {
@@ -276,9 +356,10 @@ WHERE operation_id = ? AND root_status = 'active'`, operation.OperationID)
 		}
 		workState, _ := json.Marshal(value.work)
 		result, err := tx.ExecContext(ctx, `UPDATE recruiting_works
-SET status = ?, resolution = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
+SET status = ?, resolution = ?, paused_by_scope_operation_id = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
 WHERE work_id = ? AND version = ?`, value.work.Status, nullableString(string(value.work.Resolution)),
-			value.work.AcceptanceVersion, value.work.Version, workState, businessAt.UTC(), value.work.WorkID, previousVersion)
+			nullableString(value.work.PausedByScopeOperationID), value.work.AcceptanceVersion, value.work.Version,
+			workState, businessAt.UTC(), value.work.WorkID, previousVersion)
 		if err != nil {
 			return model.ScopeControlOperation{}, fmt.Errorf("project scope control Work: %w", err)
 		}
@@ -300,10 +381,10 @@ WHERE work_id = ? AND version = ?`, value.work.Status, nullableString(string(val
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE recruiting_scope_control_operations
 SET operation_status = ?, projection_completed = ?, active_scope_key = ?, work_cursor = ?,
-    works_scanned = ?, works_paused = ?, works_canceled = ?, attempts_expired = ?, active_roots = ?,
+    works_scanned = ?, works_paused = ?, works_canceled = ?, works_resumed = ?, attempts_expired = ?, active_roots = ?,
     version = ?, state_json = ?, completed_at = ?, updated_at = ?
 WHERE operation_id = ? AND version = ?`, next.Status, next.ProjectionCompleted, activeScopeKey,
-		nullableString(next.WorkCursor), next.WorksScanned, next.WorksPaused, next.WorksCanceled, next.AttemptsExpired,
+		nullableString(next.WorkCursor), next.WorksScanned, next.WorksPaused, next.WorksCanceled, next.WorksResumed, next.AttemptsExpired,
 		next.ActiveRoots, next.Version, nextState, completedAt, businessAt.UTC(), next.OperationID, operation.Version)
 	if err != nil {
 		return model.ScopeControlOperation{}, fmt.Errorf("advance scope control operation: %w", err)

@@ -78,3 +78,42 @@ func TestScopeControlOperationRejectsUnboundedOrContradictoryProgress(t *testing
 		})
 	}
 }
+
+func TestScopeResumeOperationOnlyReportsBoundedMatchingResumes(t *testing.T) {
+	now := time.Date(2026, 9, 12, 6, 0, 0, 0, time.UTC)
+	resume, err := NewScopeResumeOperation("resume-1", "source", "source-1", "pause-1", 3, 1, 3, 1, now)
+	if err != nil || resume.Action != ScopeControlResume || resume.ReversesOperationID != "pause-1" || !resume.NeedsProjection() {
+		t.Fatalf("resume operation=%+v err=%v", resume, err)
+	}
+	next, err := resume.RecordBatch(resume.Version, ScopeControlBatch{Cursor: "work-0500", Scanned: 500,
+		Resumed: 400, HasMore: true, AppliedAt: now.Add(time.Second)})
+	if err != nil || next.WorksResumed != 400 || next.Status != ScopeControlApplying {
+		t.Fatalf("resume batch=%+v err=%v", next, err)
+	}
+	completed, err := next.RecordBatch(next.Version, ScopeControlBatch{AppliedAt: now.Add(2 * time.Second)})
+	if err != nil || completed.Status != ScopeControlCompleted || !completed.ProjectionCompleted {
+		t.Fatalf("resume completion=%+v err=%v", completed, err)
+	}
+	if _, err := resume.RecordBatch(resume.Version, ScopeControlBatch{Cursor: "work-1", Scanned: 1,
+		Paused: 1, AppliedAt: now}); err == nil {
+		t.Fatal("resume operation accepted paused Work progress")
+	}
+}
+
+func TestScopePausedWorkCannotBypassItsOwningResumeOperation(t *testing.T) {
+	work, _ := NewWork("scope-work", "source", "source-1", "listing_sync", "timer")
+	paused, err := work.PauseByScope(work.Version, "pause-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := paused.Resume(paused.Version); err == nil {
+		t.Fatal("ordinary Work resume bypassed its owning scope operation")
+	}
+	if _, err := paused.ResumeFromScope(paused.Version, "pause-2"); err == nil {
+		t.Fatal("unrelated scope operation resumed Work")
+	}
+	resumed, err := paused.ResumeFromScope(paused.Version, "pause-1")
+	if err != nil || resumed.Status != WorkOpen || resumed.PausedByScopeOperationID != "" {
+		t.Fatalf("matching scope resume=%+v err=%v", resumed, err)
+	}
+}

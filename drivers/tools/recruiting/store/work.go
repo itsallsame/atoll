@@ -204,9 +204,11 @@ func (r *Repository) UpdateWorkCAS(ctx context.Context, expectedVersion uint64, 
 	state, _ := json.Marshal(work)
 	result, err := r.db.ExecContext(ctx, `
 UPDATE recruiting_works
-SET status = ?, resolution = ?, blocked_by_repair_work_id = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
+SET status = ?, resolution = ?, blocked_by_repair_work_id = ?, paused_by_scope_operation_id = ?,
+    acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
 WHERE work_id = ? AND version = ?`,
-		work.Status, nullableString(string(work.Resolution)), nullableString(work.BlockedByRepairWorkID), work.AcceptanceVersion, work.Version, state,
+		work.Status, nullableString(string(work.Resolution)), nullableString(work.BlockedByRepairWorkID), nullableString(work.PausedByScopeOperationID),
+		work.AcceptanceVersion, work.Version, state,
 		businessAt.UTC(), work.WorkID, expectedVersion)
 	if err != nil {
 		return fmt.Errorf("update work: %w", err)

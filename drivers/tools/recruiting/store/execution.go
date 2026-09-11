@@ -1884,9 +1884,10 @@ func updateFailedWorkTx(ctx context.Context, tx *sql.Tx, expected uint64, work m
 	state, _ := json.Marshal(work)
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_works
-SET status = ?, resolution = ?, blocked_by_repair_work_id = ?, acceptance_version = ?, version = ?, state_json = ?, not_before = ?, updated_at = ?
+SET status = ?, resolution = ?, blocked_by_repair_work_id = ?, paused_by_scope_operation_id = ?,
+    acceptance_version = ?, version = ?, state_json = ?, not_before = ?, updated_at = ?
 WHERE work_id = ? AND version = ?`, work.Status, nullableString(string(work.Resolution)), nullableString(work.BlockedByRepairWorkID),
-		work.AcceptanceVersion, work.Version, state, notBefore.UTC(), businessAt.UTC(), work.WorkID, expected)
+		nullableString(work.PausedByScopeOperationID), work.AcceptanceVersion, work.Version, state, notBefore.UTC(), businessAt.UTC(), work.WorkID, expected)
 	if err != nil {
 		return err
 	}
@@ -1941,8 +1942,8 @@ func updateWorkTx(ctx context.Context, tx *sql.Tx, expected uint64, work model.W
 	state, _ := json.Marshal(work)
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_works
-SET status = ?, resolution = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
-WHERE work_id = ? AND version = ?`, work.Status, nullableString(string(work.Resolution)), work.AcceptanceVersion,
+SET status = ?, resolution = ?, paused_by_scope_operation_id = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
+WHERE work_id = ? AND version = ?`, work.Status, nullableString(string(work.Resolution)), nullableString(work.PausedByScopeOperationID), work.AcceptanceVersion,
 		work.Version, state, businessAt.UTC(), work.WorkID, expected)
 	if err != nil {
 		return err

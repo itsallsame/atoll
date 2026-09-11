@@ -109,8 +109,8 @@ func (r *Repository) ApplyWorkCommand(ctx context.Context, expectedVersion uint6
 	}
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_works
-SET status = ?, resolution = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
-WHERE work_id = ? AND version = ?`, work.Status, nullableString(string(work.Resolution)), work.AcceptanceVersion,
+SET status = ?, resolution = ?, paused_by_scope_operation_id = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
+WHERE work_id = ? AND version = ?`, work.Status, nullableString(string(work.Resolution)), nullableString(work.PausedByScopeOperationID), work.AcceptanceVersion,
 		work.Version, state, businessAt.UTC(), work.WorkID, expectedVersion)
 	if err != nil {
 		return CommandResult{}, fmt.Errorf("update work in command: %w", err)

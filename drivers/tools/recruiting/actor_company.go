@@ -197,7 +197,7 @@ func handleCompanyMutation(sys actorbase.Sys, repository *store.Repository, msg 
 	}
 	response := makeCompanyResponse(msg, next)
 	operationID := ""
-	if msg.Type == TypeCompanyPause {
+	if msg.Type == TypeCompanyPause || msg.Type == TypeCompanyResume {
 		operationID = "scope-control-" + stableDigest(command.CommandID+"|company|"+next.CompanyID)
 		response.ScopeControlOperationID = operationID
 	}
@@ -228,8 +228,11 @@ func applyCompanyCommandFacts(repository *store.Repository, msg actorbase.Msg, c
 	if expectedVersion == 0 {
 		return repository.ApplyCreateCompanyCommand(msg.Ctx(), company, receipt, event, businessAt)
 	}
-	if operationID != "" {
+	if msg.Type == TypeCompanyPause {
 		return repository.ApplyCompanyPauseCommand(msg.Ctx(), expectedVersion, company, receipt, event, operationID, businessAt)
+	}
+	if msg.Type == TypeCompanyResume {
+		return repository.ApplyCompanyResumeCommand(msg.Ctx(), expectedVersion, company, receipt, event, operationID, businessAt)
 	}
 	return repository.ApplyCompanyCommand(msg.Ctx(), expectedVersion, company, receipt, event, businessAt)
 }

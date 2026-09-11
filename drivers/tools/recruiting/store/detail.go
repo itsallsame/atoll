@@ -181,9 +181,9 @@ INSERT INTO recruiting_job_detail_versions(
 	workState, _ := json.Marshal(completedWork)
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_works
-SET status = ?, resolution = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
+SET status = ?, resolution = ?, paused_by_scope_operation_id = ?, acceptance_version = ?, version = ?, state_json = ?, updated_at = ?
 WHERE work_id = ? AND version = ?`,
-		completedWork.Status, completedWork.Resolution, completedWork.AcceptanceVersion,
+		completedWork.Status, completedWork.Resolution, nullableString(completedWork.PausedByScopeOperationID), completedWork.AcceptanceVersion,
 		completedWork.Version, workState, input.ObservedAt.UTC(), work.WorkID, work.Version)
 	if err != nil {
 		return DetailResultOutcome{}, nil, fmt.Errorf("complete detail work: %w", err)

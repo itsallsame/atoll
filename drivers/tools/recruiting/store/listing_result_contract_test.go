@@ -274,8 +274,8 @@ func TestStaleListingResultOnlyRetainsRejectedArtifact(t *testing.T) {
 	offerAt, _ := prepareListingExecutionWork(t, ctx, repository, "listing-stale", 1)
 	offer := startListingAttempt(t, ctx, repository, "listing-stale", offerAt)
 	source, _ := repository.GetSource(ctx, offer.Occurrence.SourceID)
-	paused, _ := source.Pause(source.Version, model.PauseDrain)
-	if err := repository.UpdateSourceCAS(ctx, source.Version, paused, offerAt); err != nil {
+	reconfigured, _ := source.StageEndpoint(source.Version, "https://listing-stale.example.com/jobs-v2", "")
+	if err := repository.UpdateSourceCAS(ctx, source.Version, reconfigured, offerAt); err != nil {
 		t.Fatal(err)
 	}
 	artifact := mustResultArtifact(t, "listing-stale-page", model.ArtifactPage, offer.Work.WorkID, offer.Attempt.AttemptID)
