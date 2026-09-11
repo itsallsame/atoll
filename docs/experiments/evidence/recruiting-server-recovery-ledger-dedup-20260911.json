@@ -1,0 +1,25 @@
+{
+  "evidence_version": "recruiting-evidence.v1",
+  "recorded_at": "2026-09-11T00:00:00Z",
+  "scope": "P3 server restart, duplicate ledger delivery, and daily recovery lineage",
+  "branch": "codex/atoll-recruiting",
+  "core_boundary_base": "a94d2b8d",
+  "fault_cut": "Atoll event append committed while the recruiting MySQL delivery checkpoint is reset to pending, followed by SIGKILL and server restart",
+  "claims": [
+    "reconciliation after restart reuses the stable event ID and client fingerprint",
+    "the real Atoll Channel SQLite ledger contains exactly one event row after duplicate delivery",
+    "the recruiting outbox converges back to delivered",
+    "ordinary-user Company and daily production recovery commands replay after restart",
+    "the closed DailyRun version, exception status, and uncovered count are not rewritten"
+  ],
+  "verification": [
+    {
+      "command": "go test ./e2e -run '^TestRecruitingRecoveryAcrossServerRestart$' -count=1",
+      "result": "pass",
+      "environment": "real Atoll Server restart, ordinary human operator, real Channel SQLite, ephemeral MySQL 8.4 with non-root runtime identity",
+      "observed_seconds": 20.792
+    }
+  ],
+  "third_party_writes": false,
+  "atoll_core_modified": false
+}

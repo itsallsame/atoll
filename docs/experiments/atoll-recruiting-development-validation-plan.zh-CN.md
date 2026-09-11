@@ -279,6 +279,8 @@ Work 查询现已分离面向人的 operational Work Center 与面向执行面�
 
 进展补充（2026-09-11，公司逻辑合并与撤销）：公开 `recruiting.company.merge.preview/confirm` 已接通普通运营员边界。预览接受 canonical、1—500 个 alias 和完整 expected versions，冻结规范成员、最新 mapping version、Source/Job/未终态 Work 影响计数并生成 hash；确认事务重新锁定全部 Company/mapping，只追加活动 alias 区间或关闭既有区间，不改写 Company/Source/Job 及历史运行。活动 alias 从未来每日截点排除，`company.get` 展示 canonical，Source 创建与确认使用相同 Company 行锁并明确拒绝 alias；撤销后恢复新增和次日调度。非 root MySQL 合同覆盖稳定重放、陈旧预览零 receipt、原始归属不变以及 merge→reverse 名单变化；普通用户真实 Server E2E 覆盖重启确认重放、阻断新增和撤销。完整复杂拆分与 Source 受控改归属仍是独立后续场景。
 
+进展补充（2026-09-11，Server 重启与 ledger 重复投递）：新增进程级 `TestRecruitingRecoveryAcrossServerRestart`，使用普通运营员、真实 Server、非 root MySQL 和真实 Channel SQLite。测试在领域事件首次交付后只回退应用 outbox checkpoint，模拟 crash 位于 ledger append 与 MySQL delivered 之间；强杀/重启后重复 reconcile 使用相同 event ID/fingerprint，MySQL 再次收口为 delivered，Atoll ledger 仍只有一行。相同 restart 同时验证 Company receipt 和 closed-report production recovery 唯一头重放，原 DailyRun/Occurrence 不变。该证据关闭 P3 点名的 `recruiting_recovery_test.go` 缺口，不替代仍待执行的 Executor 处理中退出、业务结果 response 丢失和 P9 依赖故障矩阵。
+
 进展补充（2026-09-11，DailyRun 人工控制）：设计审计确认 DailyRun 的 cutoff roster、window、expected count 和关闭 summary 都是不可变覆盖事实，因此不新增通用 `daily_run.update`。公开 `recruiting.daily_run.occurrence.exclude` 以 DailyRun/Occurrence 双 version 只排除窗口内仍为 planned 且没有 Work 的项，保留 occurrence 和当日分母；receipt、`source_occurrence.excluded` event 与状态转换在同一事务提交。窗口到期、日报已关闭、已 queued/running 或跨 DailyRun 的 occurrence 均拒绝。非 root MySQL 8.4 合同覆盖稳定重放、到期后零副作用、DailyRun 逐字段不变，并让人工排除与到期物化真实并发，证明最终只能得到 excluded/无 Work/有 receipt 或 queued/有 Work/无 receipt 两种一致结论。普通用户真实 Server 旅程完成 summary→exclude→server restart→replay→summary，显示 expected=1、excluded=1、uncovered=1、DailyRun version 不变，且没有创建 listing Work。
 
 ### 开发顺序
