@@ -501,7 +501,7 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。
 
-逐场景当前状态、权威测试映射和缺口统一维护在 `docs/experiments/atoll-recruiting-scenario-acceptance.zh-CN.md`。截至 2026-09-12，S15/S16 已关闭；S17 未完成，S12、S13、S18、S19、S25 部分完成，因此 P8/P9 与整体产品均不得宣称完成。
+逐场景当前状态、权威测试映射和缺口统一维护在 `docs/experiments/atoll-recruiting-scenario-acceptance.zh-CN.md`。截至 2026-09-12，S13、S15、S16 已关闭，25 个场景中 20 个完成；S17 未完成，S12、S18、S19、S25 部分完成，因此 P8/P9 与整体产品均不得宣称完成。
 
 S15/S16 实现契约已在产品设计冻结：使用 Company/Source 的配置版本、控制 epoch、cancel execution fence，以及扩展内部有界 `ScopeControlOperation`；Work 保存不可变调度归属，既有 Recruiting reconcile 每轮最多处理 500 项。`drain`、`finish_causal_chain`、`cancel` 分别表示当前 Work 结算后冻结、仅有限活动根的因果后代继续、立即拒绝旧结果并有界取消。恢复只产生一次当前 catch-up，不补造暂停期间的逐日日报。
 
@@ -520,6 +520,8 @@ S15/S16 实现契约已在产品设计冻结：使用 Company/Source 的配置�
 执行状态补充（2026-09-12，跨执行类型 cancel/result 提交顺序）：提交 `516d79dc` 把真实 `ScopeControlOperation(cancel)` 的 result-first/cancel-first 证据扩到 Source Discovery、Source Validation、Detail、独立 Diagnostic、Listing/Detail/Discovery Recipe validation，并覆盖 Baseline 的 cancel-first 晚到页面。结果先提交的七类终态执行保持 owner completed、Work completed/succeeded、Attempt succeeded，随后 scope operation 只能关闭其他仍未终态 Work；取消先提交时，owner/Work/Attempt/Permit 保持一致取消，晚到 Artifact 以 rejected 证据保存且不产生 Candidate、DetailVersion、Listing Observation 或验证成功事实。该矩阵发现 Diagnostic 与 Recipe sample 入口在 owner 已取消后先返回普通状态错误，绕过了统一拒绝审计；现改为先验证静态类型与归属，再验证 Attempt/Work/scope fence，最后判断 owner running。定向非 root MySQL 8.4 两组 15 个子场景通过；完整 Store race 回归 226.276 秒、Actor 3.094 秒，vet、diff check 与从 `a94d2b8d` 的核心冻结检查均通过。主要执行类型的 operation-driven 提交顺序正确性已闭合；S15/S16 仍需重复并发压力矩阵，因此继续保持部分完成。
 
 执行状态补充（2026-09-12，S15/S16 并发退出门）：提交 `4200ed14` 用真实 MySQL 行锁而非串行模拟建立两层重复压力。第一层让七类执行的 result transaction 与 Company/Source pause-cancel transaction 在同一屏障后并发，连续 35 组实际产生 3 次 result-first、32 次 cancel-first；每组最终只允许 `completed/succeeded/no rejected Artifact` 或 `canceled/expired/exact rejected Artifacts`，ScopeControlOperation 必须 completed 且 active Permit 为零。第二层连续 10 次让 scope dependency reconciler 与通用 Backfill cancel coordinator 同时争抢同一未物化 Item；Backfill、Item、父 Work 和 operation 全部收敛，`backfill.canceled` 终态事件恰好一条。定向测试均以 `-race`、临时 MySQL 8.4、非 root migration/runtime 账号通过；完整 Store race 回归 228.611 秒、Actor 3.063 秒，vet、diff check 和核心冻结检查通过。结合此前公开 pause/resume/catch-up 进程旅程、三种 pause mode、500 项有界恢复、跨 Source 隔离、全执行类型 fence/owner/cutpoint 合同，S15 Company 暂停/恢复与 S16 Source 暂停/恢复的当前验收项已关闭。
+
+执行状态补充（2026-09-12，S13 Company 官网复核与回滚）：提交 `fe003812` 增加不可变 `CompanyWebsiteRevision` 和单调 `CompanyWebsiteHead`，把官网更新、Company 配置围栏、人工 `source_relationship_review` Work、receipt 与审计事件放在同一事务；不修改现有 Source、Assignment、Checkpoint 或岗位事实。公开 `company.website.rollback` 只允许逆转当前 revision，并通过追加 revision 恢复旧 URL，不倒退 Company/configuration/head version。新的 Source Discovery 自动把当前 revision 写入 `website_revision_id`，并以对应复核 Work 为因果根；Repository 在创建事务重新验证当前 head，拒绝串版或错误因果关系。两个官网更新同时争抢同一 Company version 的真实 MySQL 竞争严格收敛为一个完整提交和一个版本冲突；公开 Server E2E 跨重启验证 update/replay/get/rollback/replay/rediscovery 及既有 Source 不变。定向 MySQL、全量 Store race 227.483 秒、Actor race 3.528 秒、vet、diff check 和核心冻结检查均通过，证据见 `evidence/recruiting-company-website-review-20260912.json`；S13 当前验收项关闭。
 
 | ID | 场景 | 必须自动化的核心断言 |
 |---|---|---|

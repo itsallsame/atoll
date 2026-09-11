@@ -1,0 +1,45 @@
+{
+  "version": "recruiting.company-website-review-evidence.v1",
+  "observed_at": "2026-09-12T04:50:47+08:00",
+  "scope": "S13 Company identity update, website relationship review, rollback, and causal rediscovery",
+  "implementation": {
+    "commit": "fe003812",
+    "core_modified": false,
+    "new_worker_types": 0,
+    "history": "CompanyWebsiteRevision is append-only; CompanyWebsiteHead advances monotonically",
+    "atomic_change": "Company version/configuration fence, immutable website revision, human review Work, head, receipt, and two audit events commit together",
+    "production_source_policy": "existing Sources, Assignments, Checkpoints, Jobs, and observations are not rewritten or automatically disabled",
+    "rollback": "company.website.rollback references only the current revision, restores its immutable previous URL, and appends a new revision and review Work",
+    "rediscovery": "new Source Discovery records the current website revision and uses its review Work as cause_work_id; the Repository revalidates the current head transactionally",
+    "old_attempt_policy": "website changes advance Company configuration_version, so old discovery results are fenced and their bounded Artifacts are retained as rejected evidence"
+  },
+  "contract_observation": {
+    "website_update_replay": "one stable Company, revision, review Work, head, receipt, and response",
+    "rollback_replay": "versions remain monotonic and repeated delivery returns the original response",
+    "stale_rollback": "a non-current revision is rejected without Company, revision, Work, receipt, or event residue",
+    "concurrent_update": "two simultaneous commands against Company version 1 converge to one success and one version conflict, with exactly one complete website fact set",
+    "rediscovery_lineage": "a superseded review Work is rejected; the current revision and review Work are durably linked to the accepted discovery",
+    "server_restart": "public update/get/rollback/rediscovery journey survives Atoll Server restart and preserves the pre-existing Source unchanged"
+  },
+  "verification": {
+    "database": "ephemeral MySQL 8.4",
+    "migration_identity": "staircase_migrator (non-root)",
+    "runtime_identity": "staircase_runtime (non-root, DML only)",
+    "targeted_store_tests": [
+      "TestCompanyWebsiteChangeCreatesReviewAndRollbackAppendsHistory",
+      "TestConcurrentCompanyWebsiteChangesCommitOneCompleteRevision",
+      "TestSourceDiscoveryResultUsesSeparatedCompanyFences"
+    ],
+    "process_e2e": "TestRecruitingCompanyWebsiteReviewRollbackAndRediscoveryThroughServer passed in 13.80s",
+    "full_store_suite": "pass with race in 227.483s",
+    "actor_suite": "pass with race in 3.528s",
+    "unit_and_vet": "pass for ./drivers/tools/recruiting/... and ./e2e",
+    "diff_check": "pass",
+    "core_boundary": "pass from a94d2b8d; no protocol/runtime/lib/platform/registry changes"
+  },
+  "acceptance": {
+    "scenario": "S13",
+    "status": "complete",
+    "remaining_production_gate": "none specific to S13; global S12/S25/P9 deployment gates remain"
+  }
+}

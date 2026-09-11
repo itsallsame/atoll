@@ -277,6 +277,10 @@ DailyRun 本身不提供修改窗口、名单、期望数或终态摘要的通�
 ### 5.9 公司、Source 与岗位数据规则
 
 - 公司或 Source 更新采用版本化修改；正在运行的 Attempt 固定其接受时配置。Company 的名称或普通元数据更新不使采集结果失效；官网变更只派生 Source 关系复核，不能自动替换仍然有效的生产入口。
+
+Company 官网变更使用独立的不可变 `CompanyWebsiteRevision`，并以小型 `CompanyWebsiteHead` 投影指出当前 revision。`company.update` 修改官网时，在同一事务推进 Company 的 `version/configuration_version`、追加 revision、移动 head、创建 `source_relationship_review` 人工 Work、保存 command receipt 和两条审计事件；现有 Source、Endpoint、Assignment、Checkpoint、Job 与历史观测一律不改写，也不因官网不同而自动停掉仍有效的生产入口。名称单独变化仍走普通 Company CAS，不制造官网 revision 或采集配置漂移。
+
+官网回滚不是把 Company 或 head 的版本倒退，而是通过 `company.website.rollback` 精确引用当前 revision，恢复该 revision 的不可变 `previous_website`，同时继续追加新的 revision 和新的复核 Work；引用非当前 revision、其他 Company revision 或陈旧 Company version 均拒绝。官网变化推进 `configuration_version`，因此变化前已接受的 Discovery Attempt 结果按既有 Company 配置围栏拒绝并保留 rejected Artifact。后续显式 Source Discovery 自动绑定当前 `website_revision_id`，其 Work 以当前 revision 的复核 Work 为 `cause_work_id`；创建事务重新锁定 Company、website head、revision 与 Recipe，只有全部仍匹配时才允许形成新 discovery generation。人工可继续逐个接受/拒绝候选，并用通用 Work 结案流程完成关系复核。
 - Company/Source 分别维护正交的 `control_status`、`readiness_status` 和健康/熔断事实。用户暂停、配置未验证和站点故障不能共用一个状态。
 - 暂停命令必须给出 `pause_mode=drain|finish_causal_chain|cancel`。默认 `drain`：不创建新的自动 Work、冻结未开始 Work、允许已发出的外部请求结束；是否接受结果按命令产生的版本栅栏决定。恢复默认只创建一次 catch-up，不按暂停天数补造每日 Work；超过扫描预算时转校准或人工处理。
 

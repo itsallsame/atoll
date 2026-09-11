@@ -22,7 +22,7 @@
 | S10 Listing 修复 | 完成 | `TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer`、Listing rollout/rollback 合同 | — |
 | S11 Detail 修复 | 完成 | `TestRecruitingLiveDetailRecipeRepairThroughAtoll`、共享 RepairIncident 和有界恢复合同 | — |
 | S12 Profile 修复 | 部分完成 | `TestRecruitingOperatorStartsDeviceBoundProfileRepairThroughServer`、真实 Chrome Profile 复用、Extension bundle | 第三方真实授权登录 canary、生产 OS/container 出站隔离 |
-| S13 Company 更新 | 部分完成 | `TestCompanyUpdateKeepsIdentityAndReportsWebsiteImpact`、公开 `company.update` E2E | 官网变化后的自动失效/重 discovery、显式回滚旅程 |
+| S13 Company 更新 | 完成 | `TestCompanyWebsiteChangeCreatesReviewAndRollbackAppendsHistory`、`TestConcurrentCompanyWebsiteChangesCommitOneCompleteRevision`、`TestSourceDiscoveryResultUsesSeparatedCompanyFences`、`TestRecruitingCompanyWebsiteReviewRollbackAndRediscoveryThroughServer`、`recruiting-company-website-review-20260912.json` | — |
 | S14 Company 合并/拆分 | 完成 | `TestRecruitingOperatorLogicallyMergesAndReversesCompanies`、`recruiting-company-logical-merge-20260911.json` | — |
 | S15 Company 暂停/恢复 | 完成 | 三种 pause mode、原子 `ScopeControlOperation`、500-Work seek 暂停/恢复、冻结 Source 上界、逐 Source catch-up、公开 operation 查询、跨执行类型 fence/owner/cutpoint；35 组 scope/result 并发与 10 组 scope/general Backfill 协调器并发；`TestCompletedExecutionOwnersSurviveLaterScopeCancel`、`TestScopeCancelRejectsLateExecutionOwnerResults`、`TestScopeCancelAndResultsConvergeUnderConcurrentStress`、`TestScopeAndGeneralBackfillCancelCoordinatorsConvergeUnderConcurrentStress` | — |
 | S16 Source 暂停/恢复 | 完成 | 活动因果根、一次当前 production catch-up、Checkpoint 不前移、其他 Source 隔离、验证取消可重试、Company Backfill Source-only cancel、全执行类型 drain/cancel/config/result 和并发协调器合同；`TestSourceCancelIsolatesCompanyBackfillMembers`、`TestBackfillResultAndScopeCancelConvergeAtBothCommitCutpoints`、`recruiting-scope-execution-fences-20260912.json` | — |
@@ -38,9 +38,8 @@
 
 ## 当前实施顺序
 
-1. S13：Company 官网变化必须使旧 discovery 依据失效，形成新 discovery/人工确认路径；补回滚。
-2. S17/S19：补 Source redirect/归属迁移和“相同 URL 应恢复而非新建”的公开交互。
-3. S18：按独立 M5 合规流程设计保留、擦除、Resource 删除和证明，绝不把普通 archive 伪装成硬删除。
-4. S12/S25/P9：在授权部署环境完成真实登录、出站隔离、执行吞吐、联合恢复和长期监控。
+1. S17/S19：补 Source redirect/归属迁移和“相同 URL 应恢复而非新建”的公开交互。
+2. S18：按独立 M5 合规流程设计保留、擦除、Resource 删除和证明，绝不把普通 archive 伪装成硬删除。
+3. S12/S25/P9：在授权部署环境完成真实登录、出站隔离、执行吞吐、联合恢复和长期监控。
 
 每关闭一项，必须同时更新本账本、开发验证计划和对应机读证据。账本状态为 `部分完成` 或 `未完成` 时，不得宣称 P8/P9 或整体产品开发完成。
