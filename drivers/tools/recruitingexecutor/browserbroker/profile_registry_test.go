@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -60,6 +61,9 @@ func TestFileProfileResolverFencesVersionDomainAndConcurrentLease(t *testing.T) 
 
 func TestFileProfileResolverAuthenticatesBindingAndAtomicallyAdvancesVersion(t *testing.T) {
 	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	profileDir := filepath.Join(root, "chrome-profile")
 	if err := os.Mkdir(profileDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -156,5 +160,95 @@ func writeProfileRegistryForTest(t *testing.T, path string, entries ...ProfileRe
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestProvisionProfileCreatesAndAppendsRegistryAtomically(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	registryPath := filepath.Join(root, "profiles.json")
+	firstDir, secondDir := filepath.Join(root, "profile-b"), filepath.Join(root, "profile-a")
+	if err := os.Mkdir(firstDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(secondDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	token := strings.Repeat("binding-token-", 3)
+	digest := sha256.Sum256([]byte(token))
+	hash := fmt.Sprintf("sha256:%x", digest[:])
+	first := ProfileRegistryEntry{ProfileID: "profile-b", ProfileVersion: 1, SecurityDomain: "B.EXAMPLE.TEST",
+		UserDataDir: firstDir, BindingTokenHash: hash}
+	second := ProfileRegistryEntry{ProfileID: "profile-a", ProfileVersion: 1, SecurityDomain: "a.example.test",
+		UserDataDir: secondDir, ProfileDirectory: "Default", BindingTokenHash: hash}
+	if err := ProvisionProfile(registryPath, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := ProvisionProfile(registryPath, second); err != nil {
+		t.Fatal(err)
+	}
+	document, err := readProfileRegistryDocument(registryPath)
+	if err != nil || len(document.Profiles) != 2 || document.Profiles[0].ProfileID != "profile-a" ||
+		document.Profiles[1].ProfileID != "profile-b" || document.Profiles[1].SecurityDomain != "b.example.test" {
+		t.Fatalf("provisioned document=%+v err=%v", document, err)
+	}
+	if err := ProvisionProfile(registryPath, document.Profiles[1]); err != nil {
+		t.Fatalf("exact provisioning replay failed: %v", err)
+	}
+	changed := document.Profiles[1]
+	changed.SecurityDomain = "other.example.test"
+	if err := ProvisionProfile(registryPath, changed); err == nil {
+		t.Fatal("Profile provisioning replaced existing local facts")
+	}
+	resolver, err := NewFileProfileResolver(registryPath)
+	if err != nil || resolver.AuthenticateBinding("profile-a", token) != nil {
+		t.Fatalf("provisioned binding cannot authenticate: %v", err)
+	}
+	info, err := os.Stat(registryPath)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("registry mode=%v err=%v", info, err)
+	}
+}
+
+func TestProvisionProfileSerializesConcurrentProcessesWithoutLostEntries(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	registryPath := filepath.Join(root, "profiles.json")
+	const count = 16
+	var wait sync.WaitGroup
+	errorsByProfile := make(chan error, count)
+	for index := 0; index < count; index++ {
+		profileID := fmt.Sprintf("profile-%02d", index)
+		profileDir := filepath.Join(root, profileID)
+		if err := os.Mkdir(profileDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			errorsByProfile <- ProvisionProfile(registryPath, ProfileRegistryEntry{ProfileID: profileID, ProfileVersion: 1,
+				SecurityDomain: "jobs.example.test", UserDataDir: profileDir,
+				BindingTokenHash: "sha256:" + strings.Repeat("a", 64)})
+		}()
+	}
+	wait.Wait()
+	close(errorsByProfile)
+	for err := range errorsByProfile {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	document, err := readProfileRegistryDocument(registryPath)
+	if err != nil || len(document.Profiles) != count {
+		t.Fatalf("concurrent provisioning retained %d/%d Profiles: %v", len(document.Profiles), count, err)
+	}
+	for index, entry := range document.Profiles {
+		if entry.ProfileID != fmt.Sprintf("profile-%02d", index) {
+			t.Fatalf("registry order at %d=%q", index, entry.ProfileID)
+		}
 	}
 }

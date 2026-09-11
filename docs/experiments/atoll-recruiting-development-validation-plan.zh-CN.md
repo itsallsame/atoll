@@ -493,6 +493,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 执行状态补充（2026-09-11，Profile 首次登记）：新增公开 `recruiting.profile.register`，补上此前只能预置数据库事实的运营缺口。普通运营员提交 Profile ID、安全域、授权 Tool Actor 和 canary Recipe Resource；Actor 重新读取 Resource、执行严格 ABI 解码、重算 content/contract hash，并限定 exact HTTPS 域、`browser.profile.repair` 和 Listing/Detail kind。SecretRef 由控制面按本地槽位约定生成，客户端不能提交 Cookie、密码、OTP 或 SecretRef。单一 MySQL 事务把新 Profile 保存为不可调度的 `repairing@v2`，创建零 affected production Work 的 `profile_unprovisioned` Incident、唯一人工 Repair Work、稳定 receipt 和两条 outbox 事件；任何冲突全部回滚。公开 Server E2E 已改为真实 Resource→register→repair.begin→重启查询，不再直写 Profile/Incident 种子；非 root MySQL 合同验证原子重放、秘密/设备不进入响应和事件、且没有伪造受影响抓取任务。设备 registry 初始 `v1` 仍是 owner-only 本地部署步骤；真实第三方授权账号和生产出站隔离仍是外部准入门。
 
+执行状态补充（2026-09-11，Profile 本地槽位初始化）：`atoll-recruiting-extension-bridge` 新增只执行一次即退出的 `--provision-profile` 模式，把设备侧手工拼 registry 收敛为正式部署动作。命令创建/收紧 owner-only Chrome user-data-dir，产生 256-bit 随机绑定令牌到一个全新的 `0600` 文件，registry 只持久化 SHA-256；标准输出只返回 Profile/version 和两个文件路径，不打印令牌。初始版本固定为 `v1`，同 ID 相同事实可重放，不同事实或已存在 token 文件 fail closed。Provision 与修复/验证的 `AdvanceVersion` 共用 registry sidecar `flock`，再以临时文件、fsync、原子 rename 和目录 fsync 发布，避免独立 Bridge/Executor 进程丢更新。单元与 race 测试覆盖认证、确定性排序、精确重放、冲突拒绝及现有 repair bundle 兼容。
+
 ## 13. P8：25 场景验收矩阵
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。

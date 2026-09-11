@@ -318,7 +318,11 @@ func TestProfileTasksAreQueuedAndDeliveredOneAtATime(t *testing.T) {
 
 func testProfileRegistry(t *testing.T, version uint64) (*browserbroker.FileProfileResolver, string, string) {
 	t.Helper()
-	directory := filepath.Join(t.TempDir(), "chrome-profile")
+	directoryRoot := t.TempDir()
+	if err := os.Chmod(directoryRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(directoryRoot, "chrome-profile")
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +333,11 @@ func testProfileRegistry(t *testing.T, version uint64) (*browserbroker.FileProfi
 		"user_data_dir": directory, "profile_directory": "Default", "binding_token_hash": fmt.Sprintf("sha256:%x", digest[:]),
 	}}}
 	raw, _ := json.Marshal(document)
-	path := filepath.Join(t.TempDir(), "profiles.json")
+	registryRoot := t.TempDir()
+	if err := os.Chmod(registryRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(registryRoot, "profiles.json")
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}

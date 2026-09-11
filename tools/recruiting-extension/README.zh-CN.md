@@ -45,7 +45,20 @@ install -m 0600 /dev/null /tmp/atoll-recruiting-executor-token
 
 写入随机令牌后，先通过公开 `recruiting.profile.register` 登记 Profile。命令只接受 Profile ID、安全域、授权 Tool Actor 和 immutable canary Recipe Resource；控制面自行生成 opaque SecretRef，并把 Profile 原子保存为 `repairing@v2`，同时创建唯一的 `profile_unprovisioned` RepairIncident/Repair Work。新 Profile 在设备登录、canary 和人工结案全部成功前不会参与每日调度。Cookie、密码、OTP、绑定令牌和 SecretRef 都不是该命令的输入。
 
-设备侧为同一个 Profile ID 建立初始 `v1` 本地槽位：为每个受管浏览器目录生成独立的 Profile 绑定令牌，并只把 SHA-256 放进 `0600` registry。`user_data_dir` 必须是绝对、规范、非符号链接且仅当前用户可访问的目录；明文绑定令牌只保存在该受管 Chrome Profile 的插件本地存储中：
+设备侧为同一个 Profile ID 建立初始 `v1` 本地槽位。不要手工拼 registry 或在 shell 参数中传明文令牌；provisioning 模式生成独立随机令牌到一个尚不存在的 `0600` 文件，只把 SHA-256 原子写入 registry，然后立即退出：
+
+```bash
+install -d -m 0700 /srv/atoll/browser-profiles/company-a
+bin/atoll-recruiting-extension-bridge \
+  --provision-profile profile-company-a \
+  --security-domain jobs.example.com \
+  --user-data-dir /srv/atoll/browser-profiles/company-a \
+  --profile-directory Default \
+  --profile-registry /srv/atoll/browser-profiles/profiles.json \
+  --profile-binding-token-file /srv/atoll/browser-profiles/company-a.binding-token
+```
+
+命令拒绝覆盖现有 token 文件或用不同本地事实替换同一 Profile；registry 更新与运行时版本轮换共用跨进程锁，并使用 `fsync + rename` 发布。`user_data_dir` 必须是绝对、规范、非符号链接且仅当前用户可访问的目录。将 token 文件内容一次性填入该受管 Chrome Profile 的插件本地存储后，应按部署的秘密文件生命周期保管或销毁。registry 形状如下，明文令牌不在其中：
 
 ```json
 {

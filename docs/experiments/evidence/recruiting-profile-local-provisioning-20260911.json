@@ -1,0 +1,26 @@
+{
+  "evidence_version": "recruiting-evidence.v1",
+  "recorded_at": "2026-09-11T00:00:00Z",
+  "scope": "owner-only local browser Profile slot provisioning",
+  "branch": "codex/atoll-recruiting",
+  "core_boundary_base": "a94d2b8d",
+  "claims": [
+    "the deployment command generates a 256-bit binding token into a new 0600 file and never accepts it as a command-line value",
+    "the registry stores only the binding token SHA-256 and fixes every initial local slot at version 1",
+    "provisioning and runtime version rotation share a cross-process no-follow file lock and atomic fsync/rename publication",
+    "concurrent provisioning of 16 Profiles retains all entries in deterministic order",
+    "an existing token file or conflicting Profile identity is never overwritten"
+  ],
+  "verification": [
+    {
+      "command": "go test -race ./drivers/tools/recruitingexecutor/browserbroker ./cmd/recruiting-extension-bridge ./tools/recruiting-extension/bridge",
+      "result": "pass"
+    },
+    {
+      "command": "./scripts/recruiting-boundary-check.sh a94d2b8d",
+      "result": "pass"
+    }
+  ],
+  "credential_material_recorded": false,
+  "atoll_core_modified": false
+}

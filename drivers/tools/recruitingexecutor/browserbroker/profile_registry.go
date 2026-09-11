@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -197,6 +198,11 @@ func (r *FileProfileResolver) AdvanceVersion(profileID, securityDomain string, a
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	mutationLock, err := acquireRegistryMutationLock(r.path)
+	if err != nil {
+		return err
+	}
+	defer releaseRegistryMutationLock(mutationLock)
 	document, err := readProfileRegistryDocument(r.path)
 	if err != nil {
 		return err
@@ -228,6 +234,49 @@ func (r *FileProfileResolver) AdvanceVersion(profileID, securityDomain string, a
 		return errors.New("browser Profile registry rotation target is absent")
 	}
 	return writeProfileRegistryDocument(r.path, document)
+}
+
+// ProvisionProfile atomically adds one initial local browser slot. The raw
+// binding token is deliberately absent: callers provide only its SHA-256 and
+// keep the token in a separate owner-only file until the extension imports it.
+func ProvisionProfile(path string, entry ProfileRegistryEntry) error {
+	path = strings.TrimSpace(path)
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || entry.ProfileVersion != 1 || entry.BindingTokenHash == "" {
+		return errors.New("initial browser Profile provisioning requires an absolute registry path, version 1, and binding token hash")
+	}
+	normalized, err := normalizeProfileRegistryEntry(entry, 0)
+	if err != nil {
+		return err
+	}
+	mutationLock, err := acquireRegistryMutationLock(path)
+	if err != nil {
+		return err
+	}
+	defer releaseRegistryMutationLock(mutationLock)
+	document := profileRegistryDocument{Version: ProfileRegistryVersion}
+	if _, statErr := os.Lstat(path); statErr == nil {
+		document, err = readProfileRegistryDocument(path)
+		if err != nil {
+			return err
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("stat browser Profile registry: %w", statErr)
+	}
+	for _, current := range document.Profiles {
+		if current.ProfileID != normalized.ProfileID {
+			continue
+		}
+		if current == normalized {
+			return nil
+		}
+		return errors.New("browser Profile is already provisioned with different local facts")
+	}
+	if len(document.Profiles) >= 10_000 {
+		return errors.New("browser Profile registry reached its bounded profile limit")
+	}
+	document.Profiles = append(document.Profiles, normalized)
+	sort.Slice(document.Profiles, func(i, j int) bool { return document.Profiles[i].ProfileID < document.Profiles[j].ProfileID })
+	return writeProfileRegistryDocument(path, document)
 }
 
 func (r *FileProfileResolver) profileLock(profileID string) chan struct{} {
@@ -280,31 +329,10 @@ func readProfileRegistryDocument(path string) (profileRegistryDocument, error) {
 		return profileRegistryDocument{}, errors.New("browser Profile registry version or bounded profile list is invalid")
 	}
 	result := make(map[string]ProfileRegistryEntry, len(document.Profiles))
-	for index, entry := range document.Profiles {
-		entry.ProfileID = strings.TrimSpace(entry.ProfileID)
-		entry.SecurityDomain = strings.ToLower(strings.TrimSpace(entry.SecurityDomain))
-		entry.UserDataDir = filepath.Clean(strings.TrimSpace(entry.UserDataDir))
-		entry.ProfileDirectory = strings.TrimSpace(entry.ProfileDirectory)
-		entry.BindingTokenHash = strings.TrimSpace(entry.BindingTokenHash)
-		if entry.ProfileDirectory == "" {
-			entry.ProfileDirectory = "Default"
-		}
-		if entry.ProfileID == "" || entry.ProfileVersion == 0 || entry.SecurityDomain == "" ||
-			strings.ContainsAny(entry.SecurityDomain, "/:@?# \t\r\n") || !filepath.IsAbs(entry.UserDataDir) ||
-			entry.UserDataDir == string(filepath.Separator) || entry.ProfileDirectory == "." || entry.ProfileDirectory == ".." ||
-			len(entry.ProfileDirectory) > 128 || strings.ContainsAny(entry.ProfileDirectory, "/\\\\\x00\r\n") {
-			return profileRegistryDocument{}, fmt.Errorf("browser Profile registry entry %d is invalid", index)
-		}
-		if entry.BindingTokenHash != "" && !validSHA256(entry.BindingTokenHash) {
-			return profileRegistryDocument{}, fmt.Errorf("browser Profile registry entry %d has an invalid binding token hash", index)
-		}
-		directoryInfo, err := os.Stat(entry.UserDataDir)
-		if err != nil || !directoryInfo.IsDir() || directoryInfo.Mode().Perm()&0o077 != 0 {
-			return profileRegistryDocument{}, fmt.Errorf("browser Profile directory %d must exist and be owner-only", index)
-		}
-		resolved, err := filepath.EvalSymlinks(entry.UserDataDir)
-		if err != nil || resolved != entry.UserDataDir {
-			return profileRegistryDocument{}, fmt.Errorf("browser Profile directory %d must be a canonical non-symlink path", index)
+	for index, rawEntry := range document.Profiles {
+		entry, err := normalizeProfileRegistryEntry(rawEntry, index)
+		if err != nil {
+			return profileRegistryDocument{}, err
 		}
 		if _, duplicate := result[entry.ProfileID]; duplicate {
 			return profileRegistryDocument{}, fmt.Errorf("browser Profile registry repeats profile_id %q", entry.ProfileID)
@@ -313,6 +341,72 @@ func readProfileRegistryDocument(path string) (profileRegistryDocument, error) {
 		document.Profiles[index] = entry
 	}
 	return document, nil
+}
+
+func normalizeProfileRegistryEntry(entry ProfileRegistryEntry, index int) (ProfileRegistryEntry, error) {
+	entry.ProfileID = strings.TrimSpace(entry.ProfileID)
+	entry.SecurityDomain = strings.ToLower(strings.TrimSpace(entry.SecurityDomain))
+	entry.UserDataDir = filepath.Clean(strings.TrimSpace(entry.UserDataDir))
+	entry.ProfileDirectory = strings.TrimSpace(entry.ProfileDirectory)
+	entry.BindingTokenHash = strings.TrimSpace(entry.BindingTokenHash)
+	if entry.ProfileDirectory == "" {
+		entry.ProfileDirectory = "Default"
+	}
+	if entry.ProfileID == "" || len(entry.ProfileID) > 191 || strings.ContainsAny(entry.ProfileID, "\x00\r\n\t") ||
+		entry.ProfileVersion == 0 || entry.SecurityDomain == "" || strings.ContainsAny(entry.SecurityDomain, "/:@?# \t\r\n") ||
+		!filepath.IsAbs(entry.UserDataDir) || entry.UserDataDir == string(filepath.Separator) ||
+		entry.ProfileDirectory == "." || entry.ProfileDirectory == ".." || len(entry.ProfileDirectory) > 128 ||
+		strings.ContainsAny(entry.ProfileDirectory, "/\\\\\x00\r\n") ||
+		(entry.BindingTokenHash != "" && !validSHA256(entry.BindingTokenHash)) {
+		return ProfileRegistryEntry{}, fmt.Errorf("browser Profile registry entry %d is invalid", index)
+	}
+	directoryInfo, err := os.Stat(entry.UserDataDir)
+	if err != nil || !directoryInfo.IsDir() || directoryInfo.Mode().Perm()&0o077 != 0 {
+		return ProfileRegistryEntry{}, fmt.Errorf("browser Profile directory %d must exist and be owner-only", index)
+	}
+	resolved, err := filepath.EvalSymlinks(entry.UserDataDir)
+	if err != nil || resolved != entry.UserDataDir {
+		return ProfileRegistryEntry{}, fmt.Errorf("browser Profile directory %d must be a canonical non-symlink path", index)
+	}
+	return entry, nil
+}
+
+func acquireRegistryMutationLock(path string) (*os.File, error) {
+	directory := filepath.Dir(path)
+	info, err := os.Stat(directory)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0o022 != 0 {
+		return nil, fmt.Errorf("browser Profile registry directory must exist and not be group/world writable: path=%q mode=%v err=%v",
+			directory, func() os.FileMode {
+				if info == nil {
+					return 0
+				}
+				return info.Mode().Perm()
+			}(), err)
+	}
+	resolved, err := filepath.EvalSymlinks(directory)
+	if err != nil || resolved != directory {
+		return nil, errors.New("browser Profile registry directory must be canonical and non-symlink")
+	}
+	lockFile, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open browser Profile registry mutation lock: %w", err)
+	}
+	if err := lockFile.Chmod(0o600); err != nil {
+		_ = lockFile.Close()
+		return nil, err
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		_ = lockFile.Close()
+		return nil, fmt.Errorf("lock browser Profile registry mutation: %w", err)
+	}
+	return lockFile, nil
+}
+
+func releaseRegistryMutationLock(lockFile *os.File) {
+	if lockFile != nil {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	}
 }
 
 func writeProfileRegistryDocument(path string, document profileRegistryDocument) error {

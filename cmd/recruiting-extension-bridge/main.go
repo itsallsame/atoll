@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -33,6 +35,7 @@ func main() {
 func run() error {
 	var config bridge.AtollConfig
 	var passwordFile, executorTokenFile, profileRegistryPath, listenAddress string
+	var provisionProfileID, securityDomain, userDataDir, profileDirectory, profileBindingTokenFile string
 	flag.StringVar(&config.BaseURL, "atoll", "http://127.0.0.1:8080", "Atoll HTTPS or loopback HTTP base URL")
 	flag.StringVar(&config.Email, "email", "", "ordinary Atoll operator email")
 	flag.StringVar(&passwordFile, "password-file", "", "0600 file containing the operator password")
@@ -41,7 +44,16 @@ func run() error {
 	flag.StringVar(&listenAddress, "listen", "127.0.0.1:0", "loopback listen address")
 	flag.StringVar(&executorTokenFile, "executor-token-file", "", "optional 0400/0600 token file enabling the local Profile executor endpoint")
 	flag.StringVar(&profileRegistryPath, "profile-registry", "", "owner-only local browser Profile registry used by repair and daily execution")
+	flag.StringVar(&provisionProfileID, "provision-profile", "", "initialize one local version-1 browser Profile slot, then exit")
+	flag.StringVar(&securityDomain, "security-domain", "", "exact Profile security domain used with --provision-profile")
+	flag.StringVar(&userDataDir, "user-data-dir", "", "absolute owner-only Chrome user-data-dir used with --provision-profile")
+	flag.StringVar(&profileDirectory, "profile-directory", "Default", "Chrome profile directory name used with --provision-profile")
+	flag.StringVar(&profileBindingTokenFile, "profile-binding-token-file", "", "new owner-only file receiving the generated Profile binding token")
 	flag.Parse()
+	if strings.TrimSpace(provisionProfileID) != "" {
+		return provisionLocalProfile(profileRegistryPath, provisionProfileID, securityDomain, userDataDir,
+			profileDirectory, profileBindingTokenFile)
+	}
 	if err := validateListenAddress(listenAddress); err != nil {
 		return err
 	}
@@ -113,6 +125,56 @@ func run() error {
 		}
 		return err
 	}
+}
+
+func provisionLocalProfile(registryPath, profileID, securityDomain, userDataDir, profileDirectory, tokenFile string) error {
+	registryPath, userDataDir, tokenFile = strings.TrimSpace(registryPath), strings.TrimSpace(userDataDir), strings.TrimSpace(tokenFile)
+	if !filepath.IsAbs(registryPath) || !filepath.IsAbs(userDataDir) || !filepath.IsAbs(tokenFile) {
+		return errors.New("Profile registry, user-data-dir, and binding token file must be absolute paths")
+	}
+	if err := os.MkdirAll(userDataDir, 0o700); err != nil {
+		return fmt.Errorf("create browser Profile directory: %w", err)
+	}
+	if err := os.Chmod(userDataDir, 0o700); err != nil {
+		return fmt.Errorf("secure browser Profile directory: %w", err)
+	}
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return fmt.Errorf("generate Profile binding token: %w", err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
+	tokenHandle, err := os.OpenFile(tokenFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("create Profile binding token file without overwrite: %w", err)
+	}
+	written := false
+	defer func() {
+		_ = tokenHandle.Close()
+		if !written {
+			_ = os.Remove(tokenFile)
+		}
+	}()
+	if _, err := tokenHandle.WriteString(token + "\n"); err != nil {
+		return fmt.Errorf("write Profile binding token: %w", err)
+	}
+	if err := tokenHandle.Sync(); err != nil {
+		return fmt.Errorf("sync Profile binding token: %w", err)
+	}
+	if err := tokenHandle.Close(); err != nil {
+		return fmt.Errorf("close Profile binding token: %w", err)
+	}
+	digest := sha256.Sum256([]byte(token))
+	entry := browserbroker.ProfileRegistryEntry{ProfileID: strings.TrimSpace(profileID), ProfileVersion: 1,
+		SecurityDomain: strings.TrimSpace(securityDomain), UserDataDir: filepath.Clean(userDataDir),
+		ProfileDirectory: strings.TrimSpace(profileDirectory), BindingTokenHash: fmt.Sprintf("sha256:%x", digest[:])}
+	if err := browserbroker.ProvisionProfile(filepath.Clean(registryPath), entry); err != nil {
+		return err
+	}
+	written = true
+	result, _ := json.Marshal(map[string]any{"profile_id": entry.ProfileID, "profile_version": entry.ProfileVersion,
+		"profile_registry": filepath.Clean(registryPath), "binding_token_file": filepath.Clean(tokenFile)})
+	fmt.Println(string(result))
+	return nil
 }
 
 func readPasswordFile(path string) (string, error) {
