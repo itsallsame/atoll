@@ -1,0 +1,67 @@
+{
+  "schema": "recruiting.process-capacity-evidence.v1",
+  "captured_at": "2026-09-12",
+  "command": "RECRUITING_PROCESS_CAPACITY_LEVEL=P1 make recruiting-process-capacity",
+  "revision_before_commit": "5c8a5f42",
+  "workload_manifest": "docs/experiments/workloads/recruiting-process-capacity-v1.json",
+  "environment": {
+    "cpu_logical": 4,
+    "memory_bytes": 16237535232,
+    "kernel": "Linux 6.8.0-71-generic x86_64",
+    "go": "go1.25.7 linux/amd64",
+    "docker_server": "29.5.2",
+    "mysql_server": "mysql:8.4",
+    "mysql_client": "8.0.46",
+    "database_identity": "staircase_runtime (non-root DML)",
+    "network": "local Atoll websocket/HTTP and daemon File Resource only; no third-party website"
+  },
+  "workload": {
+    "level": "P1",
+    "imports": 50,
+    "rows_per_import": 20,
+    "companies": 1000,
+    "executor_actors": 4,
+    "input_resource_count": 50,
+    "input_resource_bytes": 113200
+  },
+  "result": {
+    "status": "pass",
+    "test": "TestRecruitingProcessCapacityThroughRealDataPlanes",
+    "resource_stage_ms": 427,
+    "all_previews_ms": 11238,
+    "all_imports_completed_ms": 39101,
+    "all_outboxes_drained_ms": 39618,
+    "server_restart_login_replay_resource_ms": 3214,
+    "test_total_ms": 57080,
+    "completed_companies_per_second": 25.57,
+    "successful_attempts": 100,
+    "delivered_dispatches": 200,
+    "work_materialization_dispatches": 100,
+    "capacity_release_dispatches": 100,
+    "works": 1100,
+    "executors_used": 4,
+    "ledger_messages": 3775,
+    "ledger_payload_bytes": 2169705,
+    "ledger_events": 1241,
+    "recruiting_actor_events": 1236
+  },
+  "correctness": [
+    "all 50 immutable File Resources retained their exact SHA-256 after execution",
+    "all 50 imports reached previewed before public confirmation and completed after bounded apply",
+    "exactly 1000 Companies and 1000 succeeded import items were materialized",
+    "all 1100 Work business rows were unique and all 100 Attempts succeeded",
+    "all four configured Executor actors accepted successful Attempts",
+    "each successful Attempt produced one work wake and one capacity-release wake, and all 200 dispatches were delivered",
+    "every delivered Recruiting MySQL domain event ID was found in the Atoll Channel ledger",
+    "after Server restart the user logged in, the first create command returned its original previewing receipt, and its File Resource remained readable"
+  ],
+  "scope": {
+    "proved": "real local Server, daemon, four same-class Executors, File Resource, MySQL, dispatch outbox, and Channel ledger can complete and recover a deterministic 1000-row control/data-plane workload",
+    "not_proved": "HTTP/Browser website execution throughput, response Artifact write throughput, remote Resource providers, 20K daily Listing plus 400K Detail completion, long-window saturation, or production SLO"
+  },
+  "acceptance": {
+    "scenario": "S25",
+    "status": "partial",
+    "reason": "the first real-process ledger/Resource/Executor baseline is reproducible, but it deliberately does not stand in for external fetch and response Artifact throughput"
+  }
+}

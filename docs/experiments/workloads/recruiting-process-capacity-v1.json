@@ -1,0 +1,23 @@
+{
+  "version": "recruiting.process-capacity-workload.v1",
+  "description": "Local-only real Server/daemon/Executor/Resource/ledger/MySQL process workload. It performs no third-party network access.",
+  "levels": {
+    "P0": {"imports": 10, "rows_per_import": 10, "executors": 2, "timeout_seconds": 120},
+    "P1": {"imports": 50, "rows_per_import": 20, "executors": 4, "timeout_seconds": 300},
+    "P2": {"imports": 200, "rows_per_import": 50, "executors": 8, "timeout_seconds": 900}
+  },
+  "correctness_gates": [
+    "every immutable input File Resource is read by a real daemon-hosted Executor",
+    "every import reaches previewed before a public confirm and completed after bounded apply",
+    "Company, item, Work, Attempt, and delivered dispatch counts exactly match the workload",
+    "all domain event intents reach the Atoll Channel ledger before measurement",
+    "at least two configured Executors receive successful Attempts when the workload has multiple Executors",
+    "Server restart preserves the ledger, Resource bytes, and byte-stable command replay",
+    "no third-party website is contacted"
+  ],
+  "non_claims": [
+    "this does not measure website latency or origin throttling",
+    "input File Resources do not substitute for response Artifact write-throughput",
+    "P0/P1/P2 are process-path baselines and are not the L0-L4 daily scheduling workloads"
+  ]
+}
