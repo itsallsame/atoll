@@ -513,6 +513,8 @@ S15/S16 实现契约已在产品设计冻结：使用 Company/Source 的配置�
 
 执行状态补充（2026-09-12，取消验证后的可恢复上层状态）：提交 `0fdead09` 关闭了执行 run 已取消但 Source/Recipe 永久停在 `validating` 的缺口。Source Validation 仅在当前候选 Endpoint 仍与被冻结 run 一致时撤销 in-progress claim：初始候选回到 `candidate`，已有生产入口的修复回到 `repairing`，保留 Endpoint 与 configuration version，恢复 scope 后可以重新验证且不伪造 `invalid` 结论。Listing、Detail、Discovery 三类候选 Recipe 在对应 run 关闭时以精确 immutable hash 和状态 CAS 回到 `draft`；rollout sample 的 active Recipe 不回退。状态、审计事件、Work/Attempt/Permit/run 仍在同一取消事务内提交。真实 MySQL 联合矩阵增加 Listing 与 Discovery Recipe 两类并验证 retry transition；完整非 root MySQL 8.4 Store 回归 221.730 秒、Actor 3.698 秒，race/vet 与核心冻结检查通过。剩余主要缺口收敛为跨 Source Backfill 的 Source-only cancel 隔离策略，以及 cancel/result/通用协调器的全截点并发矩阵。
 
+执行状态补充（2026-09-12，Company Backfill 的 Source cancel 隔离）：提交 `ee8bafce` 使 Backfill 成员 Work 从冻结 Item 得到的 Source scope 真正参与聚合语义。Source-only cancel 遇到 Source-targeted Backfill 时仍取消整批；遇到包含多个 Source 的 Company-targeted Backfill 时只终结匹配成员，其他 Source 的 Work 和父批次不变。`canceled_items` 纳入所有成功、失败、人工 resolution 与物化前失败路径的数据库事实重聚合且只能单调增加；最后一个成员终态后，存在 scope-canceled 成员的父 Work 以系统可审计的 `terminated` 结案，不冒充 succeeded 或 accepted gap。真实 MySQL `TestSourceCancelIsolatesCompanyBackfillMembers` 证明先取消 Source A 后 A canceled、B open、Backfill/父 Work running，再取消 B 后 Backfill completed、父 Work terminated。完整非 root MySQL 8.4 Store 回归 219.563 秒、Actor 3.026 秒，race/vet 与核心冻结检查通过。S16 剩余正确性缺口为 cancel、结果提交和通用 Backfill coordinator 的全截点竞态矩阵。
+
 | ID | 场景 | 必须自动化的核心断言 |
 |---|---|---|
 | S01 | 单个公司新增 | command replay、业务去重、0/1/N Source |
