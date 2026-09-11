@@ -65,6 +65,18 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 		!reflect.DeepEqual(replayedPage.Progress, acceptedPage.Progress) || !reflect.DeepEqual(replayedPage.Items, acceptedPage.Items) {
 		t.Fatalf("accepted/replayed listing page = %+v %+v", acceptedPage, replayedPage)
 	}
+	// Page progress is deliberately the high-frequency audit layer: its
+	// immutable Artifact, progress row, observations and command receipt stay
+	// queryable in MySQL, but it must not amplify every page into the Channel
+	// ledger. The terminal completion below is the collaborative event.
+	var pageEvents int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_event_outbox
+WHERE cause_command_id = ?`, page.CommandID).Scan(&pageEvents); err != nil {
+		t.Fatal(err)
+	}
+	if pageEvents != 0 {
+		t.Fatalf("high-frequency listing page created %d ledger event intents", pageEvents)
+	}
 	conflictingPage := page
 	conflictingPage.RequestHash = "sha256:listing-result-page-conflict"
 	if _, err := repository.AcceptListingPage(ctx, conflictingPage); !errors.Is(err, ErrCommandConflict) {
@@ -134,7 +146,7 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 	if _, err := repository.AcceptListingCompletion(ctx, conflictingCompletion); !errors.Is(err, ErrCommandConflict) {
 		t.Fatalf("listing completion command reuse = %v", err)
 	}
-	var acceptedArtifacts, rejectedArtifacts, observations, details, events, receipts, dispatches int
+	var acceptedArtifacts, rejectedArtifacts, observations, details, events, completionEvents, receipts, dispatches int
 	queries := []struct {
 		query string
 		args  []any
@@ -145,6 +157,7 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 		{"SELECT COUNT(*) FROM recruiting_listing_observations WHERE occurrence_id = ?", []any{offer.Occurrence.OccurrenceID}, &observations},
 		{"SELECT COUNT(*) FROM recruiting_works WHERE parent_work_id = ? AND purpose = 'detail_sync' AND target_id = ?", []any{offer.Work.WorkID, acceptedPage.Items[0].Job.JobID}, &details},
 		{"SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = ?", []any{"listing-completed-" + offer.Attempt.AttemptID}, &events},
+		{"SELECT COUNT(*) FROM recruiting_event_outbox WHERE cause_command_id = ?", []any{completion.CauseCommandID}, &completionEvents},
 		{"SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id IN (?, ?)", []any{page.CommandID, completion.CauseCommandID}, &receipts},
 		{"SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE target_actor_id = ? AND cause_id = ?", []any{offer.Attempt.ExecutorActorID, completion.CauseCommandID}, &dispatches},
 	}
@@ -153,9 +166,10 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	if acceptedArtifacts != 2 || rejectedArtifacts != 1 || observations != 1 || details != 1 || events != 1 || receipts != 2 || dispatches != 1 {
-		t.Fatalf("accepted facts artifacts=%d rejected=%d observations=%d detail_works=%d events=%d receipts=%d dispatches=%d",
-			acceptedArtifacts, rejectedArtifacts, observations, details, events, receipts, dispatches)
+	if acceptedArtifacts != 2 || rejectedArtifacts != 1 || observations != 1 || details != 1 || events != 1 ||
+		completionEvents != 1 || receipts != 2 || dispatches != 1 {
+		t.Fatalf("accepted facts artifacts=%d rejected=%d observations=%d detail_works=%d events=%d completion_events=%d receipts=%d dispatches=%d",
+			acceptedArtifacts, rejectedArtifacts, observations, details, events, completionEvents, receipts, dispatches)
 	}
 }
 

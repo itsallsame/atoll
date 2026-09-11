@@ -867,7 +867,7 @@ Recruiting Actor 只做短时、确定性的校验与领域事务，不在 Actor
 
 这里的 Execution Batch 与用户发起的“公司批量导入”不是同一个概念：后者是必须可审阅、确认、取消和逐项追踪的业务聚合，因此可以有持久 `CompanyImport`/父 Work；前者只是把多个既有执行单元合包传输的性能优化，仍不预设实体或 Worker 类型。
 
-用户级命令、决策和终态逐条进入 ledger；高频 offer、进度和结果可以使用引用 Resource 的紧凑 batch envelope，同时保留每个 Work/Attempt 的身份、幂等和可恢复性。
+用户级命令、人工决策、分类失败、Work/Attempt 终态和 DailyRun/修复/批次等聚合摘要逐条进入 ledger。高频 execution offer、accept、started 和 listing page 不逐条生成领域 event：它们分别由 MySQL 中的不可变 Attempt、command receipt、page progress、Observation 与 Artifact 构成可查询的执行审计层，终态 completion/failure 再生成协作事件并携带这些事实的稳定引用。这个分层不是省略身份或恢复能力；每个高频动作仍绑定 authenticated Executor、incarnation、Attempt、command ID、请求哈希和领域 fence。它避免每日 Source 数乘分页数、再乘执行状态转换数直接放大 Channel ledger；若以后需要跨系统逐页流分析，应从这些事实构建有界投影，而不是把原始页面正文或每次内部状态转换补写进 ledger。
 
 ### 10.5 公平与预算
 

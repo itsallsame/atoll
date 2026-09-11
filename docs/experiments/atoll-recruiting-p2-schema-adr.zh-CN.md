@@ -52,9 +52,15 @@ WHERE id = ? AND version = ?
 
 可执行 Work 的创建与对应 execution dispatch intent 必须在同一事务提交；Attempt 成功、分类失败及未来重试到期同样在关闭执行权的事务内写入后续 dispatch。Recruiting Actor 使用已有 reconcile timer 按 `(delivery_status, next_attempt_at, dispatch_id)` 有界扫描并发送一次 wake，发送后等待目标 Executor completion acknowledgement；进程在发送与确认之间退出时允许重新投递。dispatch identity 稳定，但不同 delivery attempt 的消息和 offer command identity 必须不同；Attempt 唯一约束与结果 receipt 保证已经执行的业务不重复生效，新 offer 则能观察到当前已无 Work 并用 idle completion 收口。该 outbox 是招聘应用的可恢复流程事实，不修改 Atoll ledger、timer 或 Message 语义。
 
+### 执行审计分层
+
+Atoll ledger 保存需要协作消费的领域变化：用户命令与人工决定、Work 创建/修正、分类失败、Attempt/Work 终态，以及 DailyRun、Repair、Import、Rollout 等聚合摘要。高频 offer、accept、started 和 listing page 不创建逐动作 event intent；它们在招聘 MySQL 内分别以 Attempt 快照、原子 command receipt、Artifact、Attempt 级 page progress、Observation 和派生 Work 留下完整身份与因果。completion/failure 事务创建一个终态领域 event，把高频证据收束到可协作的生命周期结果。
+
+这是容量边界而不是弱化审计：result receipt 与页面事实同事务，response 丢失可精确重放；Artifact 保留原始证据；所有结果仍按 Executor/incarnation/Attempt/version fence 验证。合同测试明确断言 listing page command 的 `cause_command_id` 在 event outbox 中为零，而 completion 的同一查询恰为一。禁止以后为了“看起来更可审计”把每页正文、每次 offer/accept/start 或内部轮询复制到 Channel ledger。
+
 ### 每日列表页
 
-每页最多 500 项，使用小事务：验证当前 Work version/acceptance fence → 插入 Observation → 按来源岗位键收敛 SourceJob → 仅为新岗位或真正更新提升 generation → 插入唯一 Detail Work 意图 → 追加该页 Progress。页内事实、派生意图和 resume cursor 原子提交；同一页响应丢失可精确重放，进程退出则从最后一条 append-only Progress 继续。Checkpoint 不在普通分页事务中推进。
+每页最多 500 项，使用小事务：验证当前 Work version/acceptance fence → 插入 Observation → 按来源岗位键收敛 SourceJob → 仅为新岗位或真正更新提升 generation → 插入唯一 Detail Work 意图 → 追加该页 Progress。页内事实、派生意图和 resume cursor 原子提交；同一 Attempt 的页面响应丢失可精确重放，进程退出形成新 Attempt 时则从第 1 页重扫。Checkpoint 不在普通分页事务中推进。
 
 扫描到旧边界、完成重叠、排序契约成立且同时间组完整后，独立最终事务比较旧 Checkpoint version，写入新边界和 occurrence 结论并产生 outbox。失败或崩溃只会留下可重放 Observation/Work，不会产生虚假的新 Checkpoint。
 

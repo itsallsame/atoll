@@ -1,0 +1,35 @@
+{
+  "evidence_version": "recruiting-evidence.v1",
+  "recorded_at": "2026-09-11T00:00:00Z",
+  "scope": "P2/P3 high-frequency execution audit layering",
+  "branch": "codex/atoll-recruiting",
+  "core_boundary_base": "a94d2b8d",
+  "decision": {
+    "mysql_execution_layer": [
+      "execution offer and immutable Attempt snapshot",
+      "accept and started command receipts",
+      "listing page result receipt, Artifact, page progress, Observation, and derived Work"
+    ],
+    "atoll_ledger_layer": [
+      "user commands and human decisions",
+      "classified execution failure",
+      "Work and Attempt terminal domain result",
+      "DailyRun, repair, import, rollout, and other aggregate summaries"
+    ]
+  },
+  "claims": [
+    "a listing page command creates zero event outbox intents while retaining its atomic MySQL evidence",
+    "the corresponding terminal listing completion creates exactly one event outbox intent",
+    "the split preserves authenticated Executor, incarnation, Attempt, command hash, and domain fences",
+    "high-frequency page bodies are not copied into the Atoll Channel ledger"
+  ],
+  "verification": [
+    {
+      "command": "RECRUITING_MYSQL_TEST_RUN='^TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable$' scripts/recruiting-mysql-test.sh",
+      "result": "pass",
+      "environment": "ephemeral MySQL 8.4 with separate non-root migration and runtime accounts"
+    }
+  ],
+  "third_party_writes": false,
+  "atoll_core_modified": false
+}
