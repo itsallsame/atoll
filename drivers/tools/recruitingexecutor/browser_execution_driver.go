@@ -220,7 +220,7 @@ func browserFailureClass(err error) (string, bool) {
 	switch runErr.Class {
 	case "browser_transport":
 		return "transport_timeout", true
-	case "endpoint_rejected", "robots_disallowed", "response_too_large", "redirect_rejected", "parse_error", "quality_rejected":
+	case "endpoint_rejected", "robots_disallowed", "response_too_large", "redirect_rejected", "auth_expired", "captcha", "parse_error", "quality_rejected":
 		return runErr.Class, false
 	case "effect_policy_violated":
 		return "contract_violated", false

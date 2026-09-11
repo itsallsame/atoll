@@ -85,6 +85,40 @@ func TestProfileRunnerUsesLocalLeaseAndReturnsSanitizedDOM(t *testing.T) {
 	}
 }
 
+func TestRunnerClassifiesRecipeDeclaredProfileFailureSignals(t *testing.T) {
+	chrome := chromeForTest(t)
+	for _, test := range []struct {
+		name   string
+		class  string
+		marker string
+		body   string
+		plan   func(*browserdriver.Plan)
+	}{
+		{name: "authentication expired", class: "auth_expired", marker: "login", body: `<main><form class="login">Sign in</form></main>`,
+			plan: func(plan *browserdriver.Plan) { plan.AuthExpiredSelectors = []string{"form.login"} }},
+		{name: "captcha", class: "captcha", marker: "captcha", body: `<main><iframe class="captcha"></iframe></main>`,
+			plan: func(plan *browserdriver.Plan) { plan.CaptchaSelectors = []string{"iframe.captcha"} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				response.Header().Set("Content-Type", "text/html")
+				_, _ = response.Write([]byte(`<!doctype html><html><body>` + test.body + `</body></html>`))
+			}))
+			defer server.Close()
+			runner := &Runner{chromePath: chrome, allowPrivate: true}
+			request := browserRequest(server.URL)
+			test.plan(&request.Plan)
+			request.PlanHash, _ = request.Plan.ContentHash()
+			result, err := runner.Run(context.Background(), request)
+			var classified browserdriver.ClassifiedBrokerError
+			if !errors.As(err, &classified) || classified.BrowserFailureClass() != test.class ||
+				!strings.Contains(string(result.DOM), test.marker) {
+				t.Fatalf("declared signal result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestRunnerBlocksBrowserWriteBeforeItReachesOrigin(t *testing.T) {
 	chrome := chromeForTest(t)
 	var writes atomic.Int64

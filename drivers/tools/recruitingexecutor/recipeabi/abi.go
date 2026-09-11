@@ -206,16 +206,36 @@ type BrowserAction struct {
 }
 
 type BrowserPlan struct {
-	Version        string          `json:"version"`
-	Actions        []BrowserAction `json:"actions"`
-	MaxNavigations int             `json:"max_navigations"`
-	MaxDOMBytes    int64           `json:"max_dom_bytes"`
+	Version              string          `json:"version"`
+	Actions              []BrowserAction `json:"actions"`
+	AuthExpiredSelectors []string        `json:"auth_expired_selectors,omitempty"`
+	CaptchaSelectors     []string        `json:"captcha_selectors,omitempty"`
+	MaxNavigations       int             `json:"max_navigations"`
+	MaxDOMBytes          int64           `json:"max_dom_bytes"`
 }
 
 func (p BrowserPlan) Validate() error {
 	if p.Version != BrowserPlanVersion || len(p.Actions) > 100 || p.MaxNavigations < 1 || p.MaxNavigations > 100 ||
-		p.MaxDOMBytes < 1 || p.MaxDOMBytes > 20<<20 {
+		p.MaxDOMBytes < 1 || p.MaxDOMBytes > 20<<20 || len(p.AuthExpiredSelectors) > 10 || len(p.CaptchaSelectors) > 10 {
 		return fmt.Errorf("browser plan requires supported version and bounded actions/navigation/DOM")
+	}
+	failureSelectors := make(map[string]string, len(p.AuthExpiredSelectors)+len(p.CaptchaSelectors))
+	for class, selectors := range map[string][]string{
+		"auth_expired": p.AuthExpiredSelectors,
+		"captcha":      p.CaptchaSelectors,
+	} {
+		for index, selector := range selectors {
+			if selector == "" || selector != strings.TrimSpace(selector) {
+				return fmt.Errorf("browser %s selector %d must be non-empty and trimmed", class, index)
+			}
+			if _, err := cascadia.Parse(selector); err != nil {
+				return fmt.Errorf("browser %s selector %d: %w", class, index, err)
+			}
+			if previous, duplicate := failureSelectors[selector]; duplicate {
+				return fmt.Errorf("browser failure selector %q is ambiguous between %s and %s", selector, previous, class)
+			}
+			failureSelectors[selector] = class
+		}
 	}
 	navigations := 1
 	for index, action := range p.Actions {

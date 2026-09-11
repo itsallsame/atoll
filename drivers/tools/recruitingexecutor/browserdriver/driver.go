@@ -224,7 +224,7 @@ func (d *Driver) ExecutePage(ctx context.Context, spec recipeabi.Spec, input rec
 		var classified ClassifiedBrokerError
 		if errors.As(brokerErr, &classified) {
 			switch class := classified.BrowserFailureClass(); class {
-			case "effect_policy_violated", "endpoint_rejected", "robots_disallowed", "parse_error":
+			case "effect_policy_violated", "endpoint_rejected", "robots_disallowed", "auth_expired", "captcha", "parse_error":
 				return result, &RunError{Class: class, Cause: brokerErr}
 			}
 		}

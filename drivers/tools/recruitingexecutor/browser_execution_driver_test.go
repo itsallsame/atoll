@@ -17,6 +17,13 @@ type publicBrowserBrokerStub struct {
 	err    error
 }
 
+type classifiedBrowserBrokerStubError struct {
+	error
+	class string
+}
+
+func (e classifiedBrowserBrokerStubError) BrowserFailureClass() string { return e.class }
+
 func (b publicBrowserBrokerStub) Run(context.Context, browserdriver.SessionRequest) (browserdriver.SessionResult, error) {
 	return b.result, b.err
 }
@@ -65,6 +72,24 @@ func TestBrowserExecutionDriverPersistsFailureThroughExistingVocabulary(t *testi
 	if err != nil || run.Output.Failure == nil || run.Output.Failure.Class != "transport_timeout" ||
 		!run.Output.Failure.Retryable || len(sink.writes) != 3 {
 		t.Fatalf("browser failure result=%+v writes=%+v err=%v", run, sink.writes, err)
+	}
+}
+
+func TestBrowserExecutionDriverPreservesProfileFailureClasses(t *testing.T) {
+	for _, class := range []string{"auth_expired", "captcha"} {
+		t.Run(class, func(t *testing.T) {
+			spec := browserListingSpecForExecutionTest()
+			brokerErr := classifiedBrowserBrokerStubError{error: errors.New(class), class: class}
+			driver, _ := browserdriver.New(publicBrowserBrokerStub{err: brokerErr})
+			sink := &browserArtifactSinkStub{}
+			run, err := (&browserExecutionDriver{driver: driver}).RunListing(context.Background(), spec,
+				browserRunInputForExecutionTest(), httpdriver.ComplianceEvidence{TermsPolicyVersion: 1,
+					TermsReviewedAt: "2026-09-11T00:00:00Z"}, sink)
+			if err != nil || run.Output.Failure == nil || run.Output.Failure.Class != class ||
+				run.Output.Failure.Retryable || run.Output.Failure.Signature != "browser."+class || len(sink.writes) != 3 {
+				t.Fatalf("profile failure result=%+v writes=%+v err=%v", run, sink.writes, err)
+			}
+		})
 	}
 }
 

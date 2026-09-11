@@ -229,12 +229,19 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	}
 	navigationErr := chromedp.Run(tabCtx, chromedp.Navigate(endpoint.String()))
 	if navigationErr == nil {
+		navigationErr = detectFailureSignal(tabCtx, request.Plan)
+	}
+	if navigationErr == nil {
 		for _, action := range request.Plan.Actions {
 			if err := runAction(tabCtx, state, r, endpoint, action); err != nil {
 				var classified browserdriver.ClassifiedBrokerError
 				if action.Kind == browserdriver.ActionWaitSelector && !errors.As(err, &classified) {
 					err = &brokerFailure{class: "parse_error", cause: err}
 				}
+				navigationErr = err
+				break
+			}
+			if err := detectFailureSignal(tabCtx, request.Plan); err != nil {
 				navigationErr = err
 				break
 			}
@@ -275,6 +282,30 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 		return result, fmt.Errorf("capture browser DOM: %w", captureErr)
 	}
 	return result, nil
+}
+
+func detectFailureSignal(ctx context.Context, plan browserdriver.Plan) error {
+	// Captcha wins if a page exposes both signals: it describes the immediate
+	// intervention required more precisely than a generic signed-out marker.
+	for _, group := range []struct {
+		class     string
+		selectors []string
+	}{
+		{class: "captcha", selectors: plan.CaptchaSelectors},
+		{class: "auth_expired", selectors: plan.AuthExpiredSelectors},
+	} {
+		for _, selector := range group.selectors {
+			var found bool
+			expression := `document.querySelector(` + strconv.Quote(selector) + `)!==null`
+			if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &found)); err != nil {
+				return fmt.Errorf("inspect browser %s signal: %w", group.class, err)
+			}
+			if found {
+				return &brokerFailure{class: group.class, cause: fmt.Errorf("browser page matched declared %s signal", group.class)}
+			}
+		}
+	}
+	return nil
 }
 
 const profileSanitizedDOM = `(()=>{

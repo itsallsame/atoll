@@ -31,6 +31,13 @@ type policyBrokerError struct{ error }
 
 func (policyBrokerError) BrowserFailureClass() string { return "effect_policy_violated" }
 
+type profileBrokerError struct {
+	error
+	class string
+}
+
+func (e profileBrokerError) BrowserFailureClass() string { return e.class }
+
 func (s *memorySink) Put(_ context.Context, write ArtifactWrite) (recipeabi.ArtifactRef, error) {
 	write.Body = append([]byte(nil), write.Body...)
 	s.writes = append(s.writes, write)
@@ -193,6 +200,25 @@ func TestExecutePageClassifiesBrokerPolicyViolationWithoutRetry(t *testing.T) {
 	var runErr *RunError
 	if !errors.As(err, &runErr) || runErr.Class != "effect_policy_violated" {
 		t.Fatalf("broker policy error class=%v, want effect_policy_violated", err)
+	}
+}
+
+func TestExecutePagePreservesProfileFailureClassificationAndEvidence(t *testing.T) {
+	for _, class := range []string{"auth_expired", "captcha"} {
+		t.Run(class, func(t *testing.T) {
+			dom := []byte(`<main class="` + class + `">profile intervention required</main>`)
+			session := SessionResult{FinalURL: "https://jobs.example.com/openings", ContentType: "text/html", DOM: dom,
+				Attestation: Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET"}, PublicEndpoint: true,
+					RobotsAllowed: true, TermsPolicyVersion: 1, ProfileLeaseAuthorized: true}}
+			sink := &memorySink{}
+			driver, _ := New(&fakeBroker{result: session, err: profileBrokerError{error: errors.New(class), class: class}})
+			result, err := driver.ExecutePage(context.Background(), browserSpec(), browserInput(), browserPlan(), browserPolicy, sink)
+			var runErr *RunError
+			if !errors.As(err, &runErr) || runErr.Class != class || result.Artifact.ArtifactID == "" ||
+				len(sink.writes) != 1 || string(sink.writes[0].Body) != string(dom) {
+				t.Fatalf("profile failure result=%+v writes=%+v err=%v", result, sink.writes, err)
+			}
+		})
 	}
 }
 

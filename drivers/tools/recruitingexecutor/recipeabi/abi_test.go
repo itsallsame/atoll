@@ -89,6 +89,25 @@ func TestBrowserPlanIsRequiredAndCompatibilityHashBound(t *testing.T) {
 	if err != nil || first == second {
 		t.Fatalf("browser plan was not compatibility hash-bound: first=%s second=%s err=%v", first, second, err)
 	}
+	signaled := spec
+	signaledPlan := plan
+	signaledPlan.AuthExpiredSelectors = []string{"form.login"}
+	signaledPlan.CaptchaSelectors = []string{"iframe.captcha"}
+	signaled.BrowserPlan = &signaledPlan
+	signaledHash, err := signaled.ContractHash()
+	if err != nil || signaledHash == first {
+		t.Fatalf("browser failure selectors were not compatibility hash-bound: first=%s signaled=%s err=%v", first, signaledHash, err)
+	}
+	ambiguous := signaledPlan
+	ambiguous.CaptchaSelectors = []string{"form.login"}
+	if err := ambiguous.Validate(); err == nil {
+		t.Fatal("ambiguous browser failure selector was accepted")
+	}
+	invalid := plan
+	invalid.AuthExpiredSelectors = []string{"["}
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("invalid browser failure selector was accepted")
+	}
 	nonBrowser := validListingSpec()
 	nonBrowser.BrowserPlan = &plan
 	if err := nonBrowser.Validate(); err == nil {
