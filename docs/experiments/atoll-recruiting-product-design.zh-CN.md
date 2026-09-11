@@ -286,7 +286,7 @@ DailyRun 本身不提供修改窗口、名单、期望数或终态摘要的通�
 
 - `drain`：立即禁止新 Attempt；pause 前已经开始的 Attempt 可按原配置/Work fence 结算当前 Work，结算产生的后续 Work 保留但冻结，直到恢复或人工处置；
 - `finish_causal_chain`：pause 事务只登记当时活动 Attempt 对应的有限根 Work，后续 Work 必须继承相同 operation/root 身份；只有这些根及其因果后代可在 paused scope 内继续领取，不能把 pause 前所有 backlog 当作“当前链”；
-- `cancel`：scope execution fence 立即拒绝所有旧结果；reconcile 再有界地取消未终态 Work、过期活动 Attempt、释放 Permit，并为已固化的 SourceOccurrence 写明确异常结论，全部收口后 operation 才完成。
+- `cancel`：scope execution fence 立即拒绝所有旧结果；reconcile 先按 Work 游标有界取消未终态 Work、过期活动 Attempt、释放 Permit，并为已固化的 SourceOccurrence 写明确异常结论，再进入独立的业务依赖结算阶段。已经预览但尚未物化 Work 的 BackfillItem 不能因 Work 扫描结束而遗漏，必须按每轮最多 500 项继续结算；`projection_completed` 与 `cancellation_completed` 是两个不同的持久事实，只有二者均完成且关联业务执行对象已有明确终态后 operation 才完成。Backfill 子 Work 的 Company/Source 归属必须从冻结 Item 派生，不能只继承父批次的粗粒度 Target。
 
 恢复必须先确认对应 pause operation 已达到可恢复终态。被冻结的历史 DailyRun/Occurrence 不逐日重开：旧日报保持 excluded/exception，系统只按当前配置和当前时间创建至多一个显式 catch-up occurrence；已有仍可安全继续的 manual/repair Work 按原因果身份恢复。Company 恢复时按 Source 游标分别判定，不能用一个大事务扇出全部 Source；Source 恢复不得影响同 Company 的其他 Source，且任何 pause/resume 都不移动 Incremental Checkpoint。
 - 产品不判断岗位下架，不因岗位从列表中消失而更新或删除已有岗位。
