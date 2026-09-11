@@ -66,41 +66,41 @@ func TestDailyIncrementalD0ThroughD6PreservesBoundaryAndRefreshInvariants(t *tes
 	// D1: unchanged overlap advances only the checkpoint/coverage facts; it
 	// must not create another effective detail generation.
 	d1 := startContinuousDaily(t, ctx, repository, source, "d1", d0.Add(24*time.Hour))
-	checkpoint = acceptContinuousDailyScan(t, ctx, repository, d1, [][]continuousListingItem{
+	checkpoint = acceptContinuousDailyScanAfterExecutorExit(t, ctx, repository, d1, [][]continuousListingItem{
 		{{key: "a", activity: d0, fingerprint: "fp-a-v1"}, {key: "b", activity: d0.Add(-time.Hour), fingerprint: "fp-b-v1"}},
 		{{key: "c", activity: d0.Add(-2 * time.Hour), fingerprint: "fp-c-v1"}},
 	})
 	if checkpoint.Version != 2 || checkpoint.FrontierActivityAt != d0.Format(time.RFC3339) {
 		t.Fatalf("D1 checkpoint = %+v", checkpoint)
 	}
-	assertContinuousCounts(t, ctx, db, sourceID, 3, 3, 6)
+	assertContinuousCounts(t, ctx, db, sourceID, 3, 3, 8)
 
 	// D2: one new job appears at the top; overlap rows are observations but do
 	// not create detail refreshes.
 	d2Time := d0.Add(48 * time.Hour)
 	d2 := startContinuousDaily(t, ctx, repository, source, "d2", d2Time)
-	checkpoint = acceptContinuousDailyScan(t, ctx, repository, d2, [][]continuousListingItem{
+	checkpoint = acceptContinuousDailyScanAfterExecutorExit(t, ctx, repository, d2, [][]continuousListingItem{
 		{{key: "d", activity: d2Time, fingerprint: "fp-d-v1"}, {key: "a", activity: d0, fingerprint: "fp-a-v1"}, {key: "b", activity: d0.Add(-time.Hour), fingerprint: "fp-b-v1"}},
 		{{key: "c", activity: d0.Add(-2 * time.Hour), fingerprint: "fp-c-v1"}},
 	})
 	if checkpoint.Version != 3 || checkpoint.FrontierActivityAt != d2Time.Format(time.RFC3339) {
 		t.Fatalf("D2 checkpoint = %+v", checkpoint)
 	}
-	assertContinuousCounts(t, ctx, db, sourceID, 4, 4, 10)
+	assertContinuousCounts(t, ctx, db, sourceID, 4, 4, 15)
 	completeContinuousIncrementalDetail(t, ctx, repository, "d", d2.at.Add(10*time.Second))
 
 	// D3: historical job C changes and is re-topped. It remains one Job but
 	// advances refresh_generation and creates exactly one new Detail Work.
 	d3Time := d0.Add(72 * time.Hour)
 	d3 := startContinuousDaily(t, ctx, repository, source, "d3", d3Time)
-	checkpoint = acceptContinuousDailyScan(t, ctx, repository, d3, [][]continuousListingItem{
+	checkpoint = acceptContinuousDailyScanAfterExecutorExit(t, ctx, repository, d3, [][]continuousListingItem{
 		{{key: "c", activity: d3Time, fingerprint: "fp-c-v2"}, {key: "d", activity: d2Time, fingerprint: "fp-d-v1"}, {key: "a", activity: d0, fingerprint: "fp-a-v1"}},
 		{{key: "b", activity: d0.Add(-time.Hour), fingerprint: "fp-b-v1"}},
 	})
 	if checkpoint.Version != 4 || checkpoint.FrontierActivityAt != d3Time.Format(time.RFC3339) {
 		t.Fatalf("D3 checkpoint = %+v", checkpoint)
 	}
-	assertContinuousCounts(t, ctx, db, sourceID, 4, 5, 14)
+	assertContinuousCounts(t, ctx, db, sourceID, 4, 5, 22)
 	var cJobID string
 	if err := db.QueryRowContext(ctx, `SELECT job_id FROM recruiting_source_jobs
 WHERE source_id = ? AND source_job_key = 'c'`, sourceID).Scan(&cJobID); err != nil {
@@ -128,13 +128,14 @@ WHERE source_id = ? AND source_job_key = 'c'`, sourceID).Scan(&cJobID); err != n
 		!slices.Contains(checkpoint.FrontierJobKeys, "e") || !slices.Contains(checkpoint.FrontierJobKeys, "f") {
 		t.Fatalf("D4 split-time checkpoint = %+v", checkpoint)
 	}
-	assertContinuousCounts(t, ctx, db, sourceID, 6, 7, 20)
+	assertContinuousCounts(t, ctx, db, sourceID, 6, 7, 28)
 
 	// D5: two full pages never reach the old boundary. The production Driver
 	// rejects the scan before page submission, so only failure evidence and a
 	// waiting-human Work are committed; jobs/observations/checkpoint stay put.
 	d5Time := d0.Add(120 * time.Hour)
 	d5 := startContinuousDaily(t, ctx, repository, source, "d5", d5Time)
+	d5 = restartContinuousExecutionBeforeResult(t, ctx, repository, d5)
 	assertContinuousUnsafeScan(t, d5.offer.Checkpoint, [][]continuousListingItem{
 		{{key: "g", activity: d5Time, fingerprint: "fp-g-v1"}},
 		{{key: "h", activity: d5Time.Add(-time.Hour), fingerprint: "fp-h-v1"}},
@@ -144,16 +145,24 @@ WHERE source_id = ? AND source_job_key = 'c'`, sourceID).Scan(&cJobID); err != n
 	report := executioncontract.FailureReport{Class: "quality_rejected", NeedsRepair: true, Artifact: failureArtifact}
 	policy := ExecutionFailurePolicy{Version: 1, MaxAutomaticAttempts: 3, BaseDelay: time.Second,
 		MaxDelay: time.Minute, ThrottledDelay: time.Minute}
-	if _, err := repository.FailExecutionWithReport(ctx, d5.offer.Attempt.AttemptID, d5.offer.Attempt.ExecutorActorID,
-		d5.offer.Attempt.ExecutorIncarnation, report.Class, report, policy, d5.at.Add(time.Second)); err != nil {
-		t.Fatal(err)
+	failureCommand := ExecutionTransitionCommand{CommandID: "continuous-d5-failed-command",
+		Word: executioncontract.TypeFailed, RequestHash: "sha256:continuous-d5-failed-command",
+		CorrelationID: "continuous-d5-failed-correlation", RequestedBy: d5.offer.Attempt.ExecutorActorID,
+		AttemptID: d5.offer.Attempt.AttemptID, ExecutorIncarnation: d5.offer.Attempt.ExecutorIncarnation,
+		Action: "fail", Reason: report.Class, Failure: &report, FailurePolicy: policy}
+	failed, err := repository.ApplyExecutionTransitionCommand(ctx, failureCommand, d5.at.Add(time.Second))
+	if err != nil || failed.Replayed {
+		t.Fatalf("D5 failure command = %+v err=%v", failed, err)
+	}
+	if replay, err := repository.ApplyExecutionTransitionCommand(ctx, failureCommand, d5.at.Add(2*time.Second)); err != nil || !replay.Replayed || string(replay.Response) != string(failed.Response) {
+		t.Fatalf("D5 failure lost-reply replay = %+v err=%v", replay, err)
 	}
 	failedWork, _ := repository.GetWork(ctx, d5.offer.Work.WorkID)
 	checkpointAfterD5, _ := repository.GetCheckpoint(ctx, sourceID)
 	if failedWork.Status != model.WorkWaitingHuman || checkpointAfterD5.Version != 5 {
 		t.Fatalf("D5 work=%+v checkpoint=%+v", failedWork, checkpointAfterD5)
 	}
-	assertContinuousCounts(t, ctx, db, sourceID, 6, 7, 20)
+	assertContinuousCounts(t, ctx, db, sourceID, 6, 7, 28)
 	var d5Pages, d5Observations int
 	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_listing_page_progress WHERE attempt_id = ?", d5.offer.Attempt.AttemptID).Scan(&d5Pages)
 	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_listing_observations WHERE occurrence_id = ?", d5.occurrence.OccurrenceID).Scan(&d5Observations)
@@ -165,10 +174,14 @@ WHERE source_id = ? AND source_job_key = 'c'`, sourceID).Scan(&cJobID); err != n
 	// The occurrence is rebound atomically; a new executor incarnation starts
 	// at page one, reaches the old D4 boundary including its equal-time group,
 	// and advances the same checkpoint lineage exactly once.
+	repository, err = NewRepository(db)
+	if err != nil {
+		t.Fatal(err)
+	}
 	retry := repairContinuousDailyWork(t, ctx, repository, failedWork, d5.at.Add(2*time.Second))
 	d6 := startContinuousRetry(t, ctx, repository, retry, d5.occurrence, d5.at.Add(3*time.Second))
 	d6Time := d0.Add(144 * time.Hour)
-	checkpoint = acceptContinuousDailyScan(t, ctx, repository, d6, [][]continuousListingItem{
+	checkpoint = acceptContinuousDailyScanAfterExecutorExit(t, ctx, repository, d6, [][]continuousListingItem{
 		{{key: "g", activity: d6Time, fingerprint: "fp-g-v1"}, {key: "h", activity: d5Time, fingerprint: "fp-h-v1"}, {key: "e", activity: d4Time, fingerprint: "fp-e-v1"}},
 		{{key: "f", activity: d4Time, fingerprint: "fp-f-v1"}, {key: "c", activity: d3Time, fingerprint: "fp-c-v2"}},
 		{{key: "d", activity: d2Time, fingerprint: "fp-d-v1"}},
@@ -177,7 +190,7 @@ WHERE source_id = ? AND source_job_key = 'c'`, sourceID).Scan(&cJobID); err != n
 		checkpoint.LastOccurrenceID != d5.occurrence.OccurrenceID {
 		t.Fatalf("D6 recovered checkpoint = %+v", checkpoint)
 	}
-	assertContinuousCounts(t, ctx, db, sourceID, 8, 9, 26)
+	assertContinuousCounts(t, ctx, db, sourceID, 8, 9, 37)
 	assertContinuousJourneyFinal(t, ctx, db, sourceID, d5.occurrence.OccurrenceID, failedWork.WorkID, retry.WorkID)
 }
 
@@ -493,6 +506,13 @@ func startContinuousDaily(t *testing.T, ctx context.Context, repository *Reposit
 	if err != nil || !replay.Replayed || replay.Run.DailyRunID != plan.Run.DailyRunID {
 		t.Fatalf("%s plan replay = %+v err=%v", day, replay, err)
 	}
+	// Recruiting Actor state is durable rather than process-local. Rebuild the
+	// Repository after every cutoff so the rest of each day is driven only by
+	// committed MySQL state, as it would be after an Actor process replacement.
+	repository, err = NewRepository(repository.db)
+	if err != nil {
+		t.Fatal(err)
+	}
 	page, err := repository.ListOccurrences(ctx, plan.Run.DailyRunID, "", 10)
 	if err != nil || len(page.Items) != 1 || page.Items[0].SourceID != source.SourceID {
 		t.Fatalf("%s occurrence = %+v err=%v", day, page, err)
@@ -552,6 +572,43 @@ func startContinuousRetry(t *testing.T, ctx context.Context, repository *Reposit
 		t.Fatal(err)
 	}
 	return continuousDailyExecution{offer: offer, occurrence: *offer.Occurrence, at: at}
+}
+
+func restartContinuousExecutionBeforeResult(t *testing.T, ctx context.Context, repository *Repository,
+	execution continuousDailyExecution) continuousDailyExecution {
+	t.Helper()
+	staleBefore := execution.at.Add(time.Microsecond)
+	recoveredAt := staleBefore.Add(time.Second)
+	recovery, err := repository.RecoverStaleAttempts(ctx, staleBefore, 500, recoveredAt)
+	if err != nil || recovery.Expired != 1 || recovery.RetryQueued != 1 {
+		t.Fatalf("pre-result executor recovery = %+v err=%v", recovery, err)
+	}
+	expired, _ := repository.GetAttempt(ctx, execution.offer.Attempt.AttemptID)
+	waiting, _ := repository.GetWork(ctx, execution.offer.Work.WorkID)
+	if expired.Status != model.AttemptExpired || waiting.Status != model.WorkWaitingRetry {
+		t.Fatalf("pre-result recovery attempt=%+v work=%+v", expired, waiting)
+	}
+
+	retryAt := recoveredAt.Add(time.Second)
+	offer, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
+		AttemptID:           execution.occurrence.OccurrenceID + "-pre-result-retry-attempt",
+		ExecutorActorID:     "tool:continuous-listing:pre-result-retry",
+		ExecutorIncarnation: execution.occurrence.OccurrenceID + "-pre-result-retry-boot",
+		Capability:          "http.fetch", Origin: "https://continuous.example.com", OfferedAt: retryAt,
+		BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil || offer.Work.WorkID != execution.offer.Work.WorkID || offer.Occurrence == nil ||
+		offer.Occurrence.OccurrenceID != execution.occurrence.OccurrenceID {
+		t.Fatalf("pre-result retry offer = %+v err=%v", offer, err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+		offer.Attempt.ExecutorIncarnation, retryAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+		offer.Attempt.ExecutorIncarnation, retryAt); err != nil {
+		t.Fatal(err)
+	}
+	return continuousDailyExecution{offer: offer, occurrence: *offer.Occurrence, at: retryAt}
 }
 
 func acceptContinuousDailyScan(t *testing.T, ctx context.Context, repository *Repository,
@@ -774,7 +831,15 @@ WHERE job.source_id = ? AND job.source_job_key = 'e' AND work.purpose = 'detail_
 			t.Fatal(err)
 		}
 	}
-	if abandonedPages != 1 || retryPages != len(pages) || rejectedLate != 1 || eJobs != 1 || eDetails != 1 {
+	wantE := 0
+	for _, page := range pages {
+		for _, item := range page {
+			if item.key == "e" {
+				wantE = 1
+			}
+		}
+	}
+	if abandonedPages != 1 || retryPages != len(pages) || rejectedLate != 1 || eJobs != wantE || eDetails != wantE {
 		t.Fatalf("executor-exit facts abandoned_pages=%d retry_pages=%d rejected_late=%d e_jobs=%d e_details=%d",
 			abandonedPages, retryPages, rejectedLate, eJobs, eDetails)
 	}
@@ -960,7 +1025,7 @@ func assertContinuousJourneyFinal(t *testing.T, ctx context.Context, db *sql.DB,
 	if err != nil {
 		t.Fatal(err)
 	}
-	if checkpointVersion != 6 || occurrenceCount != 5 || completedOccurrences != 5 || pageProgress != 14 ||
+	if checkpointVersion != 6 || occurrenceCount != 5 || completedOccurrences != 5 || pageProgress != 18 ||
 		failedStatus != string(model.WorkCompleted) || failedResolution != string(model.ResolutionTerminated) ||
 		retryStatus != string(model.WorkCompleted) || retryResolution != string(model.ResolutionSucceeded) ||
 		occurrenceWorkID != retryWorkID || grantedPermits != 0 {

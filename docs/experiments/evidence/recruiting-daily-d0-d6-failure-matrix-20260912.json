@@ -1,0 +1,37 @@
+{
+  "observed_at": "2026-09-12T00:25:00+08:00",
+  "test": "TestDailyIncrementalD0ThroughD6PreservesBoundaryAndRefreshInvariants",
+  "command": "RECRUITING_MYSQL_TEST_RUN='^TestDailyIncrementalD0ThroughD6PreservesBoundaryAndRefreshInvariants$' RECRUITING_MYSQL_ACTOR_TEST_RUN='^$' ./scripts/recruiting-mysql-test.sh",
+  "database": {
+    "engine": "MySQL 8.4",
+    "migration_account": "staircase_migrator (non-root)",
+    "runtime_account": "staircase_runtime (non-root)",
+    "result": "passed"
+  },
+  "days": {
+    "D0": "executable baseline, staging/finalize/materialization/all details/company ready",
+    "D1": "unchanged overlap; executor expiry after page one; full retry from page one",
+    "D2": "new job; executor expiry after page one; business-key dedup on retry",
+    "D3": "historical update re-top; executor expiry after page one; detail refresh failure preserves prior detail",
+    "D4": "same-time group split across pages; executor expiry after page one; complete group before checkpoint",
+    "D5": "executor expiry before result; retry then missing-boundary quality rejection; failure receipt replay",
+    "D6": "human termination and causal retry; second executor expiry; recovery from page one"
+  },
+  "durability": {
+    "repository_recreated_after_each_new_cutoff": true,
+    "plan_page_and_completion_commands_replayed": true,
+    "late_pages_preserved_as_rejected_artifacts": true,
+    "expired_attempt_permits_released": true
+  },
+  "final_facts": {
+    "source_occurrences": 5,
+    "completed_occurrences": 5,
+    "checkpoint_version": 6,
+    "jobs": 8,
+    "detail_works": 9,
+    "accepted_attempt_observations": 37,
+    "attempt_page_progress_rows": 18,
+    "active_budget_permits": 0
+  },
+  "scope_limit": "This is a real non-root MySQL state/transaction contract. D0 process exit is covered by the separate live baseline recovery E2E; an OS-process Cartesian matrix for every D1-D6 cut remains a production gate."
+}
