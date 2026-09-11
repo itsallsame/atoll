@@ -11,6 +11,8 @@ import (
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 	"github.com/wanpengxie/atoll/lib/actorbase"
+	"github.com/wanpengxie/atoll/protocol/resource"
+	"github.com/wanpengxie/atoll/runtime/accessdoor"
 )
 
 func reconcileCompanyErasurePreview(ctx context.Context, repository *store.Repository, limit int,
@@ -63,6 +65,20 @@ type companyErasureApprovePayload struct {
 	Reason          string `json:"reason"`
 }
 
+type companyErasureResourcesPayload struct {
+	ErasureID string `json:"erasure_id"`
+	Cursor    string `json:"cursor,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+type companyErasureVerifyAbsentPayload struct {
+	CommandID       string `json:"command_id"`
+	ErasureID       string `json:"erasure_id"`
+	ArtifactID      string `json:"artifact_id"`
+	ExpectedVersion uint64 `json:"expected_version"`
+	Reason          string `json:"reason"`
+}
+
 type companyErasureResponse struct {
 	ContractVersion string               `json:"contract_version"`
 	CorrelationID   string               `json:"correlation_id"`
@@ -84,7 +100,91 @@ func handleCompanyErasure(sys actorbase.Sys, repository *store.Repository, msg a
 		handleCompanyErasureGet(sys, repository, msg)
 	case TypeCompanyErasureApprove:
 		handleCompanyErasureApprove(sys, repository, msg)
+	case TypeCompanyErasureResources:
+		handleCompanyErasureResources(sys, repository, msg)
+	case TypeCompanyErasureVerifyAbsent:
+		handleCompanyErasureVerifyAbsent(sys, repository, msg)
 	}
+}
+
+func handleCompanyErasureResources(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload companyErasureResourcesPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.ErasureID, payload.Cursor = strings.TrimSpace(payload.ErasureID), strings.TrimSpace(payload.Cursor)
+	if payload.Limit == 0 {
+		payload.Limit = 50
+	}
+	if payload.ErasureID == "" || payload.Limit < 1 || payload.Limit > 500 {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "erasure_id and limit in [1,500] are required")
+		return
+	}
+	page, err := repository.ListCompanyErasureResources(msg.Ctx(), payload.ErasureID, payload.Cursor, payload.Limit)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "resources": page.Items,
+		"page": PageInfo{NextCursor: page.NextCursor, HasMore: page.HasMore}})
+}
+
+func handleCompanyErasureVerifyAbsent(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload companyErasureVerifyAbsentPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.CommandID, payload.ErasureID = strings.TrimSpace(payload.CommandID), strings.TrimSpace(payload.ErasureID)
+	payload.ArtifactID, payload.Reason = strings.TrimSpace(payload.ArtifactID), strings.TrimSpace(payload.Reason)
+	actorID := strings.TrimSpace(string(msg.Sender.ID))
+	if payload.CommandID == "" || payload.ErasureID == "" || payload.ArtifactID == "" ||
+		payload.ExpectedVersion == 0 || payload.Reason == "" || actorID == "" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "command_id, erasure_id, artifact_id, expected_version, reason, and authenticated sender are required")
+		return
+	}
+	if replay, found, err := repository.LookupCommand(msg.Ctx(), payload.CommandID, commandRequestHash(msg)); err != nil {
+		failStoreError(sys, msg, err)
+		return
+	} else if found {
+		_, _ = sys.Reply(msg, json.RawMessage(replay.Response))
+		return
+	}
+	current, err := repository.GetCompanyErasureResource(msg.Ctx(), payload.ErasureID, payload.ArtifactID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	stat, err := sys.Resource().Stat(resource.ResourceID(current.ObjectRef))
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorInternalUnavailable, fmt.Sprintf("stat erasure Resource: %v", err))
+		return
+	}
+	if stat.Reject != accessdoor.QueryNotFound {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, "Artifact Resource still exists; an authorized creator or channel owner must delete it first")
+		return
+	}
+	businessAt := time.UnixMilli(msg.TS).UTC()
+	next, err := current.VerifyAbsent(payload.ExpectedVersion, actorID, payload.Reason, businessAt)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := map[string]any{"contract_version": ContractVersion, "correlation_id": string(msg.CorrelationID),
+		"requested_by": actorID, "resource": next, "next_action": "continue_resource_cleanup"}
+	responseBytes, _ := json.Marshal(response)
+	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, commandRequestHash(msg), responseBytes)
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	result, err := repository.ApplyVerifyCompanyErasureResourceAbsentCommand(msg.Ctx(), payload.ErasureID,
+		payload.ArtifactID, payload.ExpectedVersion, actorID, payload.Reason, receipt,
+		"event-"+stableDigest(payload.CommandID+"|company.erasure.resource_absence_verified"), businessAt)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
 }
 
 func handleCompanyErasurePreview(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

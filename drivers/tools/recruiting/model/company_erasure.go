@@ -76,6 +76,23 @@ func NewCompanyErasureResource(erasureID string, artifact ArtifactMetadata) (Com
 		Status: CompanyErasureResourcePending, Version: 1}, nil
 }
 
+func (r CompanyErasureResource) VerifyAbsent(expected uint64, actorID, reason string,
+	at time.Time) (CompanyErasureResource, error) {
+	if err := requireVersion(expected, r.Version); err != nil {
+		return CompanyErasureResource{}, err
+	}
+	actorID, reason = strings.TrimSpace(actorID), strings.TrimSpace(reason)
+	if r.Status != CompanyErasureResourcePending || humanPrincipal(actorID) == "" || reason == "" ||
+		len(reason) > 2048 || at.IsZero() {
+		return CompanyErasureResource{}, &InvalidTransitionError{Entity: "company erasure Resource",
+			From: string(r.Status), Action: "verify absent by authenticated human"}
+	}
+	r.Status, r.ResolutionBy, r.ResolutionReason = CompanyErasureResourceDeleted, actorID, reason
+	r.ResolvedAt = at.UTC().Format(time.RFC3339Nano)
+	r.Version++
+	return r, nil
+}
+
 func NewCompanyErasureMember(erasureID string, source RecruitmentSource) (CompanyErasureMember, error) {
 	erasureID = strings.TrimSpace(erasureID)
 	if erasureID == "" || source.SourceID == "" || source.Version == 0 || source.ExecutionFence == 0 ||

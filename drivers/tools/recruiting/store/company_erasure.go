@@ -24,6 +24,12 @@ type CompanyErasureExecutionProgress struct {
 	Completed bool                 `json:"completed"`
 }
 
+type CompanyErasureResourcePage struct {
+	Items      []model.CompanyErasureResource `json:"items"`
+	NextCursor string                         `json:"next_cursor,omitempty"`
+	HasMore    bool                           `json:"has_more"`
+}
+
 func (r *Repository) ApplyCreateCompanyErasureCommand(ctx context.Context, erasure model.CompanyErasure,
 	parent model.Work, placement WorkPlacement, receipt model.CommandReceipt, event model.EventIntent,
 	businessAt time.Time) (CommandResult, error) {
@@ -398,6 +404,141 @@ ORDER BY artifact.artifact_id LIMIT ?`, current.CompanyID, current.WorkID, curre
 		return CompanyErasureExecutionProgress{}, fmt.Errorf("commit Company erasure Resource manifest: %w", err)
 	}
 	return CompanyErasureExecutionProgress{Erasure: next, Processed: len(resources), Completed: !hasMore}, nil
+}
+
+func (r *Repository) ListCompanyErasureResources(ctx context.Context, erasureID, afterArtifactID string,
+	limit int) (CompanyErasureResourcePage, error) {
+	erasureID, afterArtifactID = strings.TrimSpace(erasureID), strings.TrimSpace(afterArtifactID)
+	if erasureID == "" || limit < 1 || limit > 500 {
+		return CompanyErasureResourcePage{}, fmt.Errorf("Company erasure, cursor, and limit in [1,500] are required")
+	}
+	if _, err := r.GetCompanyErasure(ctx, erasureID); err != nil {
+		return CompanyErasureResourcePage{}, err
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT state_json FROM recruiting_company_erasure_resources
+WHERE erasure_id = ? AND artifact_id > ? ORDER BY artifact_id LIMIT ?`, erasureID, afterArtifactID, limit+1)
+	if err != nil {
+		return CompanyErasureResourcePage{}, fmt.Errorf("list Company erasure Resources: %w", err)
+	}
+	defer rows.Close()
+	items := make([]model.CompanyErasureResource, 0, limit+1)
+	for rows.Next() {
+		var state []byte
+		if err := rows.Scan(&state); err != nil {
+			return CompanyErasureResourcePage{}, err
+		}
+		var item model.CompanyErasureResource
+		if err := json.Unmarshal(state, &item); err != nil {
+			return CompanyErasureResourcePage{}, fmt.Errorf("decode Company erasure Resource: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return CompanyErasureResourcePage{}, err
+	}
+	page := CompanyErasureResourcePage{Items: items}
+	if len(page.Items) > limit {
+		page.Items, page.HasMore = page.Items[:limit], true
+		page.NextCursor = page.Items[len(page.Items)-1].ArtifactID
+	}
+	return page, nil
+}
+
+func (r *Repository) GetCompanyErasureResource(ctx context.Context, erasureID,
+	artifactID string) (model.CompanyErasureResource, error) {
+	var state []byte
+	err := r.db.QueryRowContext(ctx, `SELECT state_json FROM recruiting_company_erasure_resources
+WHERE erasure_id = ? AND artifact_id = ?`, strings.TrimSpace(erasureID), strings.TrimSpace(artifactID)).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.CompanyErasureResource{}, ErrNotFound
+	}
+	if err != nil {
+		return model.CompanyErasureResource{}, fmt.Errorf("get Company erasure Resource: %w", err)
+	}
+	var item model.CompanyErasureResource
+	if err := json.Unmarshal(state, &item); err != nil {
+		return model.CompanyErasureResource{}, fmt.Errorf("decode Company erasure Resource: %w", err)
+	}
+	return item, nil
+}
+
+func (r *Repository) ApplyVerifyCompanyErasureResourceAbsentCommand(ctx context.Context, erasureID,
+	artifactID string, expectedVersion uint64, actorID, reason string, receipt model.CommandReceipt,
+	eventID string, businessAt time.Time) (CommandResult, error) {
+	if strings.TrimSpace(erasureID) == "" || strings.TrimSpace(artifactID) == "" || expectedVersion == 0 ||
+		strings.TrimSpace(actorID) == "" || strings.TrimSpace(reason) == "" || receipt.CommandID == "" ||
+		strings.TrimSpace(eventID) == "" || businessAt.IsZero() {
+		return CommandResult{}, fmt.Errorf("complete Company erasure Resource verification is required")
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("begin Company erasure Resource verification: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if replay, found, err := readCommandReceipt(ctx, tx, receipt.CommandID, receipt.RequestHash); err != nil {
+		return CommandResult{}, err
+	} else if found {
+		return CommandResult{Response: replay, Replayed: true}, nil
+	}
+	erasure, err := getCompanyErasureWith(ctx, tx, erasureID, true)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	if erasure.Status != model.CompanyErasureErasing && erasure.Status != model.CompanyErasureResourceCleanup {
+		return CommandResult{}, &model.InvalidTransitionError{Entity: "company erasure", From: string(erasure.Status),
+			Action: "verify Resource absence"}
+	}
+	var state []byte
+	err = tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_company_erasure_resources
+WHERE erasure_id = ? AND artifact_id = ? FOR UPDATE`, erasureID, artifactID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return CommandResult{}, ErrNotFound
+	}
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("lock Company erasure Resource: %w", err)
+	}
+	var current model.CompanyErasureResource
+	if err := json.Unmarshal(state, &current); err != nil {
+		return CommandResult{}, err
+	}
+	next, err := current.VerifyAbsent(expectedVersion, actorID, reason, businessAt)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {
+		if errors.Is(err, ErrCommandConflict) {
+			_ = tx.Rollback()
+			return r.replayCommittedCommand(ctx, receipt.CommandID, receipt.RequestHash)
+		}
+		return CommandResult{}, err
+	}
+	nextState, _ := json.Marshal(next)
+	result, err := tx.ExecContext(ctx, `UPDATE recruiting_company_erasure_resources
+SET cleanup_status = ?, resolution_actor_id = ?, resolution_reason = ?, resolved_at = ?, version = ?,
+    state_json = ?, updated_at = ? WHERE erasure_id = ? AND artifact_id = ? AND version = ?`,
+		next.Status, next.ResolutionBy, next.ResolutionReason, businessAt.UTC(), next.Version, nextState,
+		businessAt.UTC(), erasureID, artifactID, expectedVersion)
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("verify Company erasure Resource: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return CommandResult{}, &model.VersionConflictError{Expected: expectedVersion, Actual: current.Version}
+	}
+	audit, _ := json.Marshal(map[string]any{"verified_absent_by": actorID, "reason": reason,
+		"artifact_id": artifactID, "object_ref": current.ObjectRef, "content_hash": current.ContentHash})
+	event, err := model.NewEventIntent(eventID, "company.erasure.resource_absence_verified",
+		"company_erasure", erasure.ErasureID, erasure.Version,
+		businessAt.Format(time.RFC3339Nano), receipt.CommandID, audit)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	if err := appendEventIntent(ctx, tx, event, businessAt, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CommandResult{}, fmt.Errorf("commit Company erasure Resource verification: %w", err)
+	}
+	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
 }
 
 func validateCompanyErasureFrozenScope(ctx context.Context, tx *sql.Tx, current model.CompanyErasure,

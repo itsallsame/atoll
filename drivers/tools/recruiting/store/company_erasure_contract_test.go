@@ -224,4 +224,29 @@ WHERE erasure_id = ? AND cleanup_status = 'pending'`, erasure.ErasureID).Scan(&m
 		manifestedResources != 1 {
 		t.Fatalf("manifested Resource count=%d err=%v", manifestedResources, err)
 	}
+	resourcePage, err := repository.ListCompanyErasureResources(ctx, erasure.ErasureID, "", 1)
+	if err != nil || len(resourcePage.Items) != 1 || resourcePage.Items[0].ObjectRef != artifact.ObjectRef {
+		t.Fatalf("Resource cleanup page=%+v err=%v", resourcePage, err)
+	}
+	verifiedAt := now.Add(25*time.Hour + 2*time.Minute)
+	verifiedResource, err := resourcePage.Items[0].VerifyAbsent(resourcePage.Items[0].Version,
+		"human:resource-owner", "Resource data plane reports explicit absence", verifiedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifyResponse, _ := json.Marshal(map[string]any{"resource": verifiedResource})
+	verifyReceipt, _ := model.NewCommandReceipt("erasure-resource-verify",
+		"recruiting.company.erasure.resource.verify_absent", "hash-resource-verify", verifyResponse)
+	verified, err := repository.ApplyVerifyCompanyErasureResourceAbsentCommand(ctx, erasure.ErasureID,
+		artifact.ArtifactID, resourcePage.Items[0].Version, "human:resource-owner",
+		"Resource data plane reports explicit absence", verifyReceipt, "event-erasure-resource-verified", verifiedAt)
+	if err != nil || verified.Replayed {
+		t.Fatalf("verify Resource absence=%+v err=%v", verified, err)
+	}
+	replayedVerification, err := repository.ApplyVerifyCompanyErasureResourceAbsentCommand(ctx, erasure.ErasureID,
+		artifact.ArtifactID, resourcePage.Items[0].Version, "human:resource-owner",
+		"Resource data plane reports explicit absence", verifyReceipt, "event-erasure-resource-verified", verifiedAt)
+	if err != nil || !replayedVerification.Replayed || string(replayedVerification.Response) != string(verified.Response) {
+		t.Fatalf("verify Resource replay=%+v err=%v", replayedVerification, err)
+	}
 }

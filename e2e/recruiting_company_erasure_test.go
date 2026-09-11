@@ -1,9 +1,15 @@
 package e2e
 
 import (
+	"context"
+	"database/sql"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 )
 
 func TestRecruitingTwoOperatorsApproveFrozenCompanyErasureAcrossRestart(t *testing.T) {
@@ -48,6 +54,25 @@ func TestRecruitingTwoOperatorsApproveFrozenCompanyErasureAcrossRestart(t *testi
 		"command_id": "e2e-erasure-company-add", "company_id": "e2e-erasure-company",
 		"name": "Erasure Company", "website": "https://erasure.e2e.example", "reason": "prepare compliance fixture",
 	})
+	const artifactRef = "artifact://e2e-company-erasure-object"
+	requesterWS.resource(map[string]any{"channel_id": sharedID, "op": "create", "resource_id": artifactRef,
+		"args": json.RawMessage(`{"sensitive":"historical recruiting evidence"}`)})
+	db, err := store.Open(runtimeDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	historicalWork, _ := model.NewWork("e2e-erasure-historical-work", "company", "e2e-erasure-company",
+		"diagnostic", "manual")
+	if err := storeWorkForErasureE2E(db, historicalWork, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO recruiting_artifacts(artifact_id, artifact_kind, content_hash, object_ref,
+work_id, attempt_id, access_scope, retention_policy, redacted, rejected, created_at)
+VALUES (?, 'response', 'sha256:e2e-erasure-artifact', ?, ?, NULL, 'company', 'compliance', FALSE, FALSE, ?)`,
+		"e2e-erasure-artifact", artifactRef, historicalWork.WorkID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
 	for _, suffix := range []string{"a", "b"} {
 		source := requesterWS.request(sharedID, "recruiting.source.add", controlID, map[string]any{
 			"command_id": "e2e-erasure-source-add-" + suffix, "source_id": "e2e-erasure-source-" + suffix,
@@ -68,7 +93,7 @@ func TestRecruitingTwoOperatorsApproveFrozenCompanyErasureAcrossRestart(t *testi
 	previewPayload := map[string]any{
 		"command_id": "e2e-erasure-preview", "erasure_id": "e2e-erasure-request",
 		"company_id": "e2e-erasure-company", "expected_version": nestedNumberField(t, archived, "company", "version"),
-		"policy_version": "policy-2026-09", "execute_after": time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
+		"policy_version": "policy-2026-09", "execute_after": time.Now().UTC().Add(time.Second).Format(time.RFC3339Nano),
 		"reason": "verified data-subject compliance request",
 	}
 	started := requesterWS.request(sharedID, "recruiting.company.erasure.preview", controlID, previewPayload)
@@ -125,4 +150,53 @@ func TestRecruitingTwoOperatorsApproveFrozenCompanyErasureAcrossRestart(t *testi
 	if nestedNumberField(t, replayed, "erasure", "version") != nestedNumberField(t, approved, "erasure", "version") {
 		t.Fatalf("erasure approval did not replay=%v", replayed)
 	}
+	execution := approverWS.request(sharedID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 1})
+	if numberField(t, execution, "company_erasure_resources") != 1 ||
+		execution["company_erasure_manifest_done"] != true ||
+		stringField(t, execution, "company_erasure_purge_phase") != "purge_database" {
+		t.Fatalf("erasure Resource manifest=%v", execution)
+	}
+	resources := approverWS.request(sharedID, "recruiting.company.erasure.resources", controlID,
+		map[string]any{"erasure_id": "e2e-erasure-request", "limit": 1})
+	items := sliceField(t, resources, "resources")
+	if len(items) != 1 || stringField(t, items[0].(map[string]any), "object_ref") != artifactRef {
+		t.Fatalf("erasure Resource page=%v", resources)
+	}
+	verifyPayload := map[string]any{"command_id": "e2e-erasure-resource-verify",
+		"erasure_id": "e2e-erasure-request", "artifact_id": "e2e-erasure-artifact",
+		"expected_version": numberField(t, items[0].(map[string]any), "version"),
+		"reason":           "verified Resource tombstone after owner deletion"}
+	if _, terminal, err := approverWS.tryRequest(sharedID, "recruiting.company.erasure.resource.verify_absent",
+		controlID, verifyPayload); err == nil || terminal["error_code"] != "quality_rejected" {
+		t.Fatalf("existing Resource was reported absent terminal=%v err=%v", terminal, err)
+	}
+	requesterWS.resource(map[string]any{"channel_id": sharedID, "op": "delete", "resource_id": artifactRef})
+	verified := approverWS.request(sharedID, "recruiting.company.erasure.resource.verify_absent", controlID, verifyPayload)
+	if nestedStringField(t, verified, "resource", "status") != "deleted" ||
+		!strings.HasPrefix(nestedStringField(t, verified, "resource", "resolution_by"), "human:erasure-approver:") {
+		t.Fatalf("Resource absence verification=%v", verified)
+	}
+}
+
+func storeWorkForErasureE2E(db *sql.DB, work model.Work, at time.Time) error {
+	repository, err := store.NewRepository(db)
+	if err != nil {
+		return err
+	}
+	if err := repository.CreateWork(context.Background(), work,
+		store.WorkPlacement{CompanyID: "e2e-erasure-company", NotBefore: at}, at); err != nil {
+		return err
+	}
+	running, err := work.Start(work.Version)
+	if err != nil {
+		return err
+	}
+	if err := repository.UpdateWorkCAS(context.Background(), work.Version, running, at); err != nil {
+		return err
+	}
+	completed, err := running.Complete(running.Version, model.ResolutionSucceeded, "", "")
+	if err != nil {
+		return err
+	}
+	return repository.UpdateWorkCAS(context.Background(), running.Version, completed, at)
 }

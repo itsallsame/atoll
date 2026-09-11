@@ -37,6 +37,8 @@ func manifest() introspect.Manifest {
 			TypeCompanyErasurePreview:          {Description: "start a bounded immutable compliance-erasure impact preview for an archived Company"},
 			TypeCompanyErasureGet:              {Description: "get one durable Company compliance-erasure request and its control Work"},
 			TypeCompanyErasureApprove:          {Description: "approve an exact frozen compliance-erasure preview as a distinct authenticated operator"},
+			TypeCompanyErasureResources:        {Description: "seek-page the immutable Artifact Resource cleanup manifest for a Company erasure"},
+			TypeCompanyErasureVerifyAbsent:     {Description: "verify through the Resource plane that an Artifact object is explicitly absent and record the cleanup fact"},
 			TypeSourceAdd:                      {Description: "add a recruitment source owned by one company"},
 			TypeSourceUpdate:                   {Description: "stage a corrected source endpoint with version fencing"},
 			TypeSourceValidate:                 {Description: "atomically start a staged source validation Work with a frozen listing Recipe execution"},
