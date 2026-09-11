@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -166,5 +167,56 @@ func TestArchivedCompanyCannotGainSourceInsideCommandTransaction(t *testing.T) {
 	}
 	if _, found, err := repository.LookupCommand(ctx, receipt.CommandID, receipt.RequestHash); err != nil || found {
 		t.Fatalf("rejected source left a command receipt: found=%v err=%v", found, err)
+	}
+}
+
+func TestCreateSourceReturnsActionableRestoreForArchivedCanonicalIdentity(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	now := time.Date(2090, 9, 8, 11, 0, 0, 0, time.UTC)
+	company, _ := model.NewCompany("restore-hint-company", "Restore Hint", "https://restore-hint.example")
+	if err := repository.CreateCompany(ctx, company, now); err != nil {
+		t.Fatal(err)
+	}
+	existing, _ := model.NewRecruitmentSource("restore-existing-source", company.CompanyID,
+		"HTTPS://JOBS.EXAMPLE:443/roles/?utm_source=old", "engineering", 1)
+	if err := repository.CreateSource(ctx, existing, now); err != nil {
+		t.Fatal(err)
+	}
+	archived, _ := existing.Archive(existing.Version)
+	if err := repository.UpdateSourceCAS(ctx, existing.Version, archived, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	candidate, _ := model.NewRecruitmentSource("restore-duplicate-source", company.CompanyID,
+		"https://jobs.example/roles?utm_campaign=new", "engineering", 2)
+	receipt, _ := model.NewCommandReceipt("restore-hint-command", "recruiting.source.add", "sha256:restore-hint", json.RawMessage(`{}`))
+	event, _ := model.NewEventIntent("restore-hint-event", "source.added", "source", candidate.SourceID, candidate.Version,
+		now.Add(2*time.Second).Format(time.RFC3339Nano), receipt.CommandID, json.RawMessage(`{}`))
+	_, applyErr := repository.ApplyCreateSourceCommand(ctx, candidate, receipt, event, now.Add(2*time.Second))
+	var restoreRequired *SourceRestoreRequiredError
+	if !errors.As(applyErr, &restoreRequired) || restoreRequired.SourceID != archived.SourceID ||
+		restoreRequired.Version != archived.Version {
+		t.Fatalf("archived canonical collision=%T/%v hint=%+v", applyErr, applyErr, restoreRequired)
+	}
+	if _, err := repository.GetSource(ctx, candidate.SourceID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("restore hint created duplicate Source: %v", err)
+	}
+	if _, found, err := repository.LookupCommand(ctx, receipt.CommandID, receipt.RequestHash); err != nil || found {
+		t.Fatalf("restore hint retained mutation receipt: found=%v err=%v", found, err)
+	}
+	stored, err := repository.GetSource(ctx, archived.SourceID)
+	if err != nil || !reflect.DeepEqual(stored, archived) {
+		t.Fatalf("restore hint changed retained Source: stored=%+v err=%v", stored, err)
 	}
 }

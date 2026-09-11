@@ -415,9 +415,12 @@ func failStoreError(sys actorbase.Sys, msg actorbase.Msg, err error) {
 	case errors.Is(err, store.ErrWebsiteRevisionConflict):
 		code = ErrorVersionConflict
 	default:
+		var restoreRequired *store.SourceRestoreRequiredError
 		var conflict *model.VersionConflictError
 		var transition *model.InvalidTransitionError
-		if errors.As(err, &conflict) {
+		if errors.As(err, &restoreRequired) {
+			code = ErrorSourceRestoreRequired
+		} else if errors.As(err, &conflict) {
 			code = ErrorVersionConflict
 		} else if errors.As(err, &transition) {
 			code = ErrorQualityRejected

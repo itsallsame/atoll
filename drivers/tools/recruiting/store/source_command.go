@@ -88,7 +88,7 @@ INSERT INTO recruiting_sources(
 		businessAt.UTC(), businessAt.UTC()); err != nil {
 		var mysqlError *mysql.MySQLError
 		if errors.As(err, &mysqlError) && mysqlError.Number == 1062 {
-			return CommandResult{}, ErrBusinessKeyExists
+			return CommandResult{}, sourceCreateIdentityConflict(ctx, tx, source.CompanyID, endpoint.CanonicalKey)
 		}
 		return CommandResult{}, fmt.Errorf("create source in command: %w", err)
 	}
@@ -101,11 +101,31 @@ INSERT INTO recruiting_sources(
 	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
 }
 
+func sourceCreateIdentityConflict(ctx context.Context, tx *sql.Tx, companyID, canonicalKey string) error {
+	var state []byte
+	err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_sources
+WHERE company_id = ? AND canonical_source_key = ? FOR SHARE`, companyID, canonicalKey).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrBusinessKeyExists
+	}
+	if err != nil {
+		return fmt.Errorf("inspect conflicting Source identity: %w", err)
+	}
+	var existing model.RecruitmentSource
+	if err := json.Unmarshal(state, &existing); err != nil {
+		return fmt.Errorf("decode conflicting Source identity: %w", err)
+	}
+	if existing.ControlStatus == model.ControlArchived {
+		return &SourceRestoreRequiredError{SourceID: existing.SourceID, Version: existing.Version}
+	}
+	return fmt.Errorf("%w: active Source %s already owns this canonical endpoint", ErrBusinessKeyExists, existing.SourceID)
+}
+
 // ApplySourceCommand is the Source equivalent of ApplyCompanyCommand. The CAS,
 // receipt, and outbox event share one transaction, so an acknowledged command
 // can never exist without its domain state and recoverable event intent.
 func (r *Repository) ApplySourceCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource, receipt model.CommandReceipt, event model.EventIntent, businessAt time.Time) (CommandResult, error) {
-	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, "", "", businessAt)
+	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, "", "", "", businessAt)
 }
 
 func (r *Repository) ApplySourcePauseCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource,
@@ -113,7 +133,21 @@ func (r *Repository) ApplySourcePauseCommand(ctx context.Context, expectedVersio
 	if source.ControlStatus != model.ControlPaused || strings.TrimSpace(operationID) == "" {
 		return CommandResult{}, fmt.Errorf("paused Source and scope control operation identity are required")
 	}
-	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, strings.TrimSpace(operationID), "", businessAt)
+	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, strings.TrimSpace(operationID), "",
+		source.LastPauseMode, businessAt)
+}
+
+// ApplySourceRestoreCommand creates a cancel-mode pause projection for the
+// restored Source. Archive already raised the execution fence; this durable
+// operation finishes old Work/dependency cleanup before a later resume can
+// reverse it and open repair execution.
+func (r *Repository) ApplySourceRestoreCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource,
+	receipt model.CommandReceipt, event model.EventIntent, operationID string, businessAt time.Time) (CommandResult, error) {
+	if source.ControlStatus != model.ControlPaused || strings.TrimSpace(operationID) == "" {
+		return CommandResult{}, fmt.Errorf("restored paused Source and scope control operation identity are required")
+	}
+	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, strings.TrimSpace(operationID), "",
+		model.PauseCancel, businessAt)
 }
 
 func (r *Repository) ApplySourceResumeCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource,
@@ -121,11 +155,12 @@ func (r *Repository) ApplySourceResumeCommand(ctx context.Context, expectedVersi
 	if source.ControlStatus != model.ControlActive || strings.TrimSpace(operationID) == "" {
 		return CommandResult{}, fmt.Errorf("active Source and scope control operation identity are required")
 	}
-	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, "", strings.TrimSpace(operationID), businessAt)
+	return r.applySourceCommand(ctx, expectedVersion, source, receipt, event, "", strings.TrimSpace(operationID), "", businessAt)
 }
 
 func (r *Repository) applySourceCommand(ctx context.Context, expectedVersion uint64, source model.RecruitmentSource,
-	receipt model.CommandReceipt, event model.EventIntent, pauseOperationID, resumeOperationID string, businessAt time.Time) (CommandResult, error) {
+	receipt model.CommandReceipt, event model.EventIntent, pauseOperationID, resumeOperationID string,
+	pauseOperationMode model.PauseMode, businessAt time.Time) (CommandResult, error) {
 	if expectedVersion == 0 || source.SourceID == "" || source.Version != expectedVersion+1 || receipt.CommandID == "" ||
 		event.AggregateType != "source" || event.AggregateID != source.SourceID || event.AggregateVersion != source.Version ||
 		event.CauseCommandID != receipt.CommandID {
@@ -198,8 +233,11 @@ WHERE source_id = ? AND version = ?`,
 		return CommandResult{}, fmt.Errorf("source command cannot pause and resume the scope together")
 	}
 	if pauseOperationID != "" {
+		if err := pauseOperationMode.Validate(); err != nil {
+			return CommandResult{}, err
+		}
 		if err := createPauseScopeControlOperationTx(ctx, tx, pauseOperationID, "source", source.SourceID,
-			source.LastPauseMode, source.Version, source.ConfigurationVersion, source.ControlEpoch,
+			pauseOperationMode, source.Version, source.ConfigurationVersion, source.ControlEpoch,
 			source.ExecutionFence, businessAt); err != nil {
 			return CommandResult{}, err
 		}

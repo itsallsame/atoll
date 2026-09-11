@@ -1,6 +1,9 @@
 package store
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	ErrNotFound                   = errors.New("recruiting entity not found")
@@ -21,3 +24,16 @@ var (
 	ErrWorkCorrectionInProgress   = errors.New("Work correction blocked by an active Attempt")
 	ErrWebsiteRevisionConflict    = errors.New("Company website revision changed")
 )
+
+// SourceRestoreRequiredError turns a canonical-key collision with an archived
+// Source into an actionable public outcome without creating a duplicate or
+// mutating the retained Source history.
+type SourceRestoreRequiredError struct {
+	SourceID string
+	Version  uint64
+}
+
+func (e *SourceRestoreRequiredError) Error() string {
+	return fmt.Sprintf("archived Source %s at version %d already owns this canonical endpoint; use recruiting.source.restore",
+		e.SourceID, e.Version)
+}
