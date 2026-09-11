@@ -18,7 +18,7 @@ import (
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
 
-const browserBrokerProtocolVersion = "recruiting.browser-broker.v1"
+const browserBrokerProtocolVersion = "recruiting.browser-broker.v2"
 
 type browserProfileTask struct {
 	Version             string         `json:"version"`
@@ -26,6 +26,7 @@ type browserProfileTask struct {
 	Kind                string         `json:"kind"`
 	SessionID           string         `json:"session_id"`
 	ProfileID           string         `json:"profile_id"`
+	ProfileVersion      uint64         `json:"profile_version"`
 	SecurityDomain      string         `json:"security_domain"`
 	ExpiresAt           string         `json:"expires_at"`
 	CanaryURL           string         `json:"canary_url"`

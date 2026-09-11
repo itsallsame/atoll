@@ -11,32 +11,36 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/browserbroker"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
 
 const BridgeProtocolVersion = "recruiting.extension-bridge.v1"
 
 type Service struct {
-	Client        atollSubmissionClient
-	Token         string
-	ExecutorToken string
-	Now           func() time.Time
-	submissionMu  sync.Mutex
-	profileMu     sync.Mutex
-	profileConn   *profileConnection
-	profileTasks  map[string]*pendingProfileTask
-	profileOrder  []string
-	profileActive string
+	Client          atollSubmissionClient
+	Token           string
+	ExecutorToken   string
+	ProfileRegistry *browserbroker.FileProfileResolver
+	Now             func() time.Time
+	submissionMu    sync.Mutex
+	profileMu       sync.Mutex
+	profileConns    map[string]*profileConnection
+	profileTasks    map[string]*pendingProfileTask
+	profileOrder    []string
+	profileActive   string
 }
 
 type profileConnection struct {
-	conn    *websocket.Conn
-	writeMu sync.Mutex
+	conn      *websocket.Conn
+	profileID string
+	writeMu   sync.Mutex
 }
 
 type profileTask struct {
@@ -45,6 +49,7 @@ type profileTask struct {
 	Kind                string          `json:"kind"`
 	SessionID           string          `json:"session_id"`
 	ProfileID           string          `json:"profile_id"`
+	ProfileVersion      uint64          `json:"profile_version"`
 	SecurityDomain      string          `json:"security_domain"`
 	ExpiresAt           string          `json:"expires_at"`
 	CanaryURL           string          `json:"canary_url"`
@@ -114,7 +119,7 @@ type bridgeResponse struct {
 func (s *Service) Handler() (http.Handler, error) {
 	if s == nil || s.Client == nil || len(s.Token) < 32 || s.Now == nil ||
 		(s.ExecutorToken != "" && (len(s.ExecutorToken) < 32 ||
-			subtle.ConstantTimeCompare([]byte(s.ExecutorToken), []byte(s.Token)) == 1)) {
+			subtle.ConstantTimeCompare([]byte(s.ExecutorToken), []byte(s.Token)) == 1 || s.ProfileRegistry == nil)) {
 		return nil, fmt.Errorf("bridge service requires Atoll client, strong pairing token, and clock")
 	}
 	mux := http.NewServeMux()
@@ -135,12 +140,37 @@ func (s *Service) Handler() (http.Handler, error) {
 			http.Error(writer, "not found", http.StatusNotFound)
 			return
 		}
+		profileID, profileToken := request.URL.Query().Get("profile_id"), request.URL.Query().Get("profile_token")
+		if (profileID == "") != (profileToken == "") {
+			http.Error(writer, "not found", http.StatusNotFound)
+			return
+		}
+		var profileLease *browserbroker.ProfileLease
+		if profileID != "" {
+			if err := s.ProfileRegistry.AuthenticateBinding(profileID, profileToken); err != nil {
+				http.Error(writer, "not found", http.StatusNotFound)
+				return
+			}
+			s.profileMu.Lock()
+			previous := s.profileConns[profileID]
+			s.profileMu.Unlock()
+			if previous != nil {
+				_ = previous.conn.Close()
+			}
+			var err error
+			profileLease, err = s.ProfileRegistry.AcquireBoundProfile(request.Context(), profileID, profileToken)
+			if err != nil {
+				http.Error(writer, "not found", http.StatusNotFound)
+				return
+			}
+			defer profileLease.Release()
+		}
 		conn, err := upgrader.Upgrade(writer, request, nil)
 		if err != nil {
 			return
 		}
 		defer conn.Close()
-		connection := &profileConnection{conn: conn}
+		connection := &profileConnection{conn: conn, profileID: profileID}
 		s.attachProfileConnection(connection)
 		defer s.detachProfileConnection(connection)
 		conn.SetReadLimit(extensionDraftWireLimit)
@@ -149,7 +179,7 @@ func (s *Service) Handler() (http.Handler, error) {
 			if readErr != nil {
 				return
 			}
-			if s.handleExtensionProfileResult(raw) {
+			if s.handleExtensionProfileResult(connection, raw) {
 				continue
 			}
 			response := s.handle(request.Context(), raw)
@@ -200,32 +230,43 @@ func (c *profileConnection) writeJSON(value any) error {
 
 func (s *Service) attachProfileConnection(connection *profileConnection) {
 	s.profileMu.Lock()
-	previous := s.profileConn
-	s.profileConn = connection
+	if s.profileConns == nil {
+		s.profileConns = make(map[string]*profileConnection)
+	}
+	previous := s.profileConns[connection.profileID]
+	if connection.profileID != "" {
+		s.profileConns[connection.profileID] = connection
+	}
 	if s.profileTasks == nil {
 		s.profileTasks = make(map[string]*pendingProfileTask)
 	}
 	var task profileTask
+	var deliveryConnection *profileConnection
 	deliver := false
-	if pending := s.profileTasks[s.profileActive]; s.profileActive != "" && pending != nil {
+	if pending := s.profileTasks[s.profileActive]; s.profileActive != "" && pending != nil &&
+		pending.task.ProfileID == connection.profileID {
 		task, deliver = pending.task, true
 	} else {
-		s.profileActive = ""
-		task, deliver = s.nextProfileDeliveryLocked()
+		if s.profileActive == "" {
+			task, deliver = s.nextProfileDeliveryLocked()
+		}
+	}
+	if deliver {
+		deliveryConnection = s.profileConns[task.ProfileID]
 	}
 	s.profileMu.Unlock()
 	if previous != nil && previous != connection {
 		_ = previous.conn.Close()
 	}
-	if deliver {
-		s.deliverProfileTask(connection, task)
+	if deliveryConnection != nil && deliver {
+		s.deliverProfileTask(deliveryConnection, task)
 	}
 }
 
 func (s *Service) detachProfileConnection(connection *profileConnection) {
 	s.profileMu.Lock()
-	if s.profileConn == connection {
-		s.profileConn = nil
+	if s.profileConns[connection.profileID] == connection {
+		delete(s.profileConns, connection.profileID)
 	}
 	s.profileMu.Unlock()
 }
@@ -266,7 +307,7 @@ func (s *Service) handleProfileTaskHTTP(writer http.ResponseWriter, request *htt
 	s.profileTasks[task.RequestID] = pending
 	s.profileOrder = append(s.profileOrder, task.RequestID)
 	delivery, deliver := s.nextProfileDeliveryLocked()
-	connection := s.profileConn
+	connection := s.profileConns[delivery.ProfileID]
 	s.profileMu.Unlock()
 	defer func() {
 		s.finishProfileTask(task.RequestID, pending)
@@ -289,7 +330,7 @@ func (s *Service) handleProfileTaskHTTP(writer http.ResponseWriter, request *htt
 	_ = json.NewEncoder(writer).Encode(result)
 }
 
-func (s *Service) handleExtensionProfileResult(raw []byte) bool {
+func (s *Service) handleExtensionProfileResult(connection *profileConnection, raw []byte) bool {
 	var header struct {
 		Kind string `json:"kind"`
 	}
@@ -309,13 +350,26 @@ func (s *Service) handleExtensionProfileResult(raw []byte) bool {
 	s.profileMu.Lock()
 	pending := s.profileTasks[result.RequestID]
 	s.profileMu.Unlock()
-	if pending == nil || !validExtensionProfileResult(pending.task, result) {
+	if pending == nil || connection == nil || connection.profileID != pending.task.ProfileID ||
+		!validExtensionProfileResult(pending.task, result) {
 		return true
 	}
 	response := profileResult{Version: browserBrokerProtocolVersion, RequestID: result.RequestID,
 		Status: result.Status, Authenticated: result.Authenticated, Evidence: result.Evidence, FailureCode: result.FailureCode}
 	if pending.task.Kind == "profile_repair" && result.Status == "completed" {
-		response.NextSecretRef = "secret://chrome-profile/" + url.PathEscape(pending.task.ProfileID) + "/" + url.PathEscape(pending.task.SessionID)
+		nextVersion := pending.task.ProfileVersion + 1
+		allowed := []uint64{pending.task.ProfileVersion - 1}
+		if err := s.ProfileRegistry.AdvanceVersion(pending.task.ProfileID, pending.task.SecurityDomain, allowed, nextVersion); err != nil {
+			response = failedProfileResult(pending.task, "profile_registry_rotation_failed", s.Now())
+		} else {
+			response.NextSecretRef = "secret://local-browser-profile/" + url.PathEscape(pending.task.ProfileID) + "/v" + strconv.FormatUint(nextVersion, 10)
+		}
+	} else if pending.task.Kind == "profile_verification" && result.Status == "completed" {
+		nextVersion := pending.task.ProfileVersion + 1
+		if err := s.ProfileRegistry.AdvanceVersion(pending.task.ProfileID, pending.task.SecurityDomain,
+			[]uint64{pending.task.ProfileVersion}, nextVersion); err != nil {
+			response = failedProfileResult(pending.task, "profile_registry_rotation_failed", s.Now())
+		}
 	}
 	select {
 	case pending.result <- response:
@@ -328,17 +382,21 @@ func (s *Service) handleExtensionProfileResult(raw []byte) bool {
 // nextProfileDeliveryLocked reserves the oldest queued task for the single
 // interactive browser surface. Caller must hold profileMu.
 func (s *Service) nextProfileDeliveryLocked() (profileTask, bool) {
-	if s.profileActive != "" || s.profileConn == nil {
+	if s.profileActive != "" {
 		return profileTask{}, false
 	}
-	for len(s.profileOrder) != 0 {
-		requestID := s.profileOrder[0]
+	for index := 0; index < len(s.profileOrder); {
+		requestID := s.profileOrder[index]
 		pending := s.profileTasks[requestID]
-		if pending != nil {
+		if pending != nil && s.profileConns[pending.task.ProfileID] != nil {
 			s.profileActive = requestID
 			return pending.task, true
 		}
-		s.profileOrder = s.profileOrder[1:]
+		if pending == nil {
+			s.profileOrder = append(s.profileOrder[:index], s.profileOrder[index+1:]...)
+			continue
+		}
+		index++
 	}
 	return profileTask{}, false
 }
@@ -360,7 +418,7 @@ func (s *Service) finishProfileTask(requestID string, pending *pendingProfileTas
 		s.profileActive = ""
 	}
 	next, deliver := s.nextProfileDeliveryLocked()
-	connection := s.profileConn
+	connection := s.profileConns[next.ProfileID]
 	s.profileMu.Unlock()
 	if connection != nil && deliver {
 		s.deliverProfileTask(connection, next)
@@ -373,12 +431,13 @@ func (s *Service) deliverProfileTask(connection *profileConnection, task profile
 	}
 }
 
-const browserBrokerProtocolVersion = "recruiting.browser-broker.v1"
+const browserBrokerProtocolVersion = "recruiting.browser-broker.v2"
 
 func validateProfileTask(task profileTask, now time.Time) error {
 	expiresAt, err := time.Parse(time.RFC3339Nano, task.ExpiresAt)
 	if err != nil || task.Version != browserBrokerProtocolVersion || strings.TrimSpace(task.RequestID) == "" ||
 		len(task.RequestID) > 191 || strings.TrimSpace(task.SessionID) == "" || strings.TrimSpace(task.ProfileID) == "" ||
+		task.ProfileVersion < 2 ||
 		(task.Kind != "profile_repair" && task.Kind != "profile_verification") || !now.Before(expiresAt) ||
 		task.CanaryMinimum < 1 || task.CanaryMinimum > 100 || len(task.CanaryRecipe) == 0 ||
 		len(task.CanaryRecipe) > 256<<10 || !json.Valid(task.CanaryRecipe) || strings.TrimSpace(task.CanaryRecipeID) == "" ||

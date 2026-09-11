@@ -2,10 +2,13 @@ package browserbroker
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -53,6 +56,70 @@ func TestFileProfileResolverFencesVersionDomainAndConcurrentLease(t *testing.T) 
 		t.Fatalf("rotated Profile lease=%+v err=%v", rotated, err)
 	}
 	rotated.Release()
+}
+
+func TestFileProfileResolverAuthenticatesBindingAndAtomicallyAdvancesVersion(t *testing.T) {
+	root := t.TempDir()
+	profileDir := filepath.Join(root, "chrome-profile")
+	if err := os.Mkdir(profileDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	token := strings.Repeat("profile-binding-secret-", 2)
+	digest := sha256.Sum256([]byte(token))
+	registryPath := filepath.Join(root, "profiles.json")
+	writeProfileRegistryForTest(t, registryPath, ProfileRegistryEntry{ProfileID: "profile-1", ProfileVersion: 1,
+		SecurityDomain: "jobs.example.test", UserDataDir: profileDir, BindingTokenHash: "sha256:" + fmt.Sprintf("%x", digest[:])})
+	resolver, err := NewFileProfileResolver(registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolver.AuthenticateBinding("profile-1", token); err != nil {
+		t.Fatal(err)
+	}
+	if err := resolver.AuthenticateBinding("profile-1", strings.Repeat("wrong-binding-secret-", 2)); err == nil {
+		t.Fatal("wrong Profile binding token was accepted")
+	}
+	bound, err := resolver.AcquireBoundProfile(context.Background(), "profile-1", token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherProcess, err := NewFileProfileResolver(registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	if lease, err := otherProcess.Resolve(blockedCtx, "profile://recruiting/profile-1", 1,
+		"https://jobs.example.test/private"); !errors.Is(err, context.DeadlineExceeded) {
+		if lease != nil {
+			lease.Release()
+		}
+		t.Fatalf("cross-process Profile lease was not serialized: %v", err)
+	}
+	cancel()
+	bound.Release()
+	if err := resolver.AdvanceVersion("profile-1", "jobs.example.test", []uint64{1}, 3); err != nil {
+		t.Fatal(err)
+	}
+	// Result retries are idempotent, while a stale or cross-domain writer is fenced.
+	if err := resolver.AdvanceVersion("profile-1", "jobs.example.test", []uint64{1}, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := resolver.AdvanceVersion("profile-1", "other.example.test", []uint64{3}, 4); err == nil {
+		t.Fatal("cross-domain Profile registry rotation was accepted")
+	}
+	lease, err := resolver.Resolve(context.Background(), "profile://recruiting/profile-1", 3,
+		"https://jobs.example.test/private")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.Release()
+	info, err := os.Stat(registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("rotated registry mode=%v", info.Mode().Perm())
+	}
 }
 
 func TestFileProfileResolverRejectsInsecureRegistryAndProfileDirectory(t *testing.T) {

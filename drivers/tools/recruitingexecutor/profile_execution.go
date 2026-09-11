@@ -57,6 +57,7 @@ func executeProfileOffer(ctx context.Context, control executionControl, resource
 	}
 	task := browserProfileTask{Version: browserBrokerProtocolVersion, RequestID: offer.Attempt.AttemptID,
 		Kind: offer.Kind, SessionID: offer.ProfileRepair.SessionID, ProfileID: offer.ProfileRepair.ProfileID,
+		ProfileVersion: offer.Attempt.ProfileVersion,
 		SecurityDomain: offer.ProfileSecurityDomain, ExpiresAt: offer.ProfileTaskExpiresAt,
 		CanaryURL: canary.EndpointURL, CanaryMinimum: canary.MinimumRecordCount, CanaryRecipe: spec,
 		CanaryRecipeID: canary.RecipeID, CanaryRecipeVersion: canary.RecipeVersion,

@@ -51,7 +51,8 @@ async function act(action) {
 }
 
 $('#pair').addEventListener('click', () => act(() => request({type: 'capture.configure',
-  endpoint: $('#endpoint').value.trim(), token: $('#token').value.trim()})));
+  endpoint: $('#endpoint').value.trim(), token: $('#token').value.trim(),
+  profileId: $('#profile-id').value.trim(), profileToken: $('#profile-token').value.trim()})));
 
 $('#begin').addEventListener('click', () => act(() => request({type: 'capture.begin.request', config: {
   sourceId: $('#source').value.trim(), recipeId: $('#recipe').value.trim(), recipeVersion: Number($('#version').value),

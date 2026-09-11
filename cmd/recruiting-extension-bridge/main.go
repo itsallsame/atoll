@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/browserbroker"
 	"github.com/wanpengxie/atoll/tools/recruiting-extension/bridge"
 )
 
@@ -31,7 +32,7 @@ func main() {
 
 func run() error {
 	var config bridge.AtollConfig
-	var passwordFile, executorTokenFile, listenAddress string
+	var passwordFile, executorTokenFile, profileRegistryPath, listenAddress string
 	flag.StringVar(&config.BaseURL, "atoll", "http://127.0.0.1:8080", "Atoll HTTPS or loopback HTTP base URL")
 	flag.StringVar(&config.Email, "email", "", "ordinary Atoll operator email")
 	flag.StringVar(&passwordFile, "password-file", "", "0600 file containing the operator password")
@@ -39,6 +40,7 @@ func run() error {
 	flag.StringVar(&config.ControlActorID, "control-actor", "", "Recruiting Actor ID in the selected channel")
 	flag.StringVar(&listenAddress, "listen", "127.0.0.1:0", "loopback listen address")
 	flag.StringVar(&executorTokenFile, "executor-token-file", "", "optional 0400/0600 token file enabling the local Profile executor endpoint")
+	flag.StringVar(&profileRegistryPath, "profile-registry", "", "owner-only local browser Profile registry used by repair and daily execution")
 	flag.Parse()
 	if err := validateListenAddress(listenAddress); err != nil {
 		return err
@@ -62,6 +64,7 @@ func run() error {
 	}
 	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
 	var executorToken string
+	var profileRegistry *browserbroker.FileProfileResolver
 	if executorTokenFile != "" {
 		executorToken, err = readPasswordFile(executorTokenFile)
 		if err != nil {
@@ -70,8 +73,15 @@ func run() error {
 		if len(executorToken) < 32 {
 			return fmt.Errorf("executor token must contain at least 32 characters")
 		}
+		profileRegistry, err = browserbroker.NewFileProfileResolver(profileRegistryPath)
+		if err != nil {
+			return fmt.Errorf("open browser Profile registry: %w", err)
+		}
+	} else if strings.TrimSpace(profileRegistryPath) != "" {
+		return fmt.Errorf("profile-registry requires executor-token-file")
 	}
-	service := &bridge.Service{Client: client, Token: token, ExecutorToken: executorToken, Now: time.Now}
+	service := &bridge.Service{Client: client, Token: token, ExecutorToken: executorToken,
+		ProfileRegistry: profileRegistry, Now: time.Now}
 	handler, err := service.Handler()
 	if err != nil {
 		return err

@@ -26,9 +26,10 @@ function fail(error) {
 }
 
 async function savedConfig() {
-  const saved = await chrome.storage.local.get(['bridgeEndpoint', 'bridgeToken']);
+  const saved = await chrome.storage.local.get(['bridgeEndpoint', 'bridgeToken', 'profileId', 'profileBindingToken']);
   if (!saved.bridgeEndpoint || !saved.bridgeToken) throw new Error('bridge_not_configured');
-  return {endpoint: logic.bridgeEndpoint(saved.bridgeEndpoint), token: String(saved.bridgeToken)};
+  return {endpoint: logic.bridgeEndpoint(saved.bridgeEndpoint), token: String(saved.bridgeToken),
+    profileId: String(saved.profileId || ''), profileToken: String(saved.profileBindingToken || '')};
 }
 
 async function connect() {
@@ -42,7 +43,13 @@ async function connect() {
   }
   const config = await savedConfig();
   if (config.token.length < 32 || config.token.length > 256) throw new Error('bridge_token_invalid');
-  const current = new WebSocket(`${config.endpoint}?token=${encodeURIComponent(config.token)}`);
+  if ((config.profileId === '') !== (config.profileToken === '')) throw new Error('profile_binding_incomplete');
+  if (config.profileToken && (config.profileToken.length < 32 || config.profileToken.length > 256)) {
+    throw new Error('profile_binding_token_invalid');
+  }
+  const binding = config.profileId
+    ? `&profile_id=${encodeURIComponent(config.profileId)}&profile_token=${encodeURIComponent(config.profileToken)}` : '';
+  const current = new WebSocket(`${config.endpoint}?token=${encodeURIComponent(config.token)}${binding}`);
   socket = current;
   current.addEventListener('message', event => {
     let response;
@@ -80,10 +87,11 @@ function validProfileTask(task) {
     const canary = new URL(String(task?.canary_url || ''));
     const minimum = Number(task?.canary_minimum_records);
     const hash = /^sha256:[0-9a-f]{64}$/;
-    return task?.version === 'recruiting.browser-broker.v1' &&
+    return task?.version === 'recruiting.browser-broker.v2' &&
       (task.kind === 'profile_repair' || task.kind === 'profile_verification') &&
       String(task.request_id || '').length > 0 && String(task.request_id).length <= 191 &&
       String(task.session_id || '').length > 0 && String(task.profile_id || '').length > 0 &&
+	  Number.isSafeInteger(Number(task.profile_version)) && Number(task.profile_version) >= 2 &&
       canary.protocol === 'https:' && canary.hostname === task.security_domain && !canary.port &&
       !canary.username && !canary.password && !canary.hash && Number.isInteger(minimum) && minimum >= 1 && minimum <= 100 &&
       task.canary_recipe?.abi_version === 'recruiting.recipe.v1' && task.canary_recipe.transport === 'browser' &&
@@ -131,7 +139,7 @@ async function receiveProfileTask(task) {
 function profileFailureResult(task, failureCode, recordCount = 0) {
   return {version: 'recruiting.extension-bridge.v1', kind: 'profile.result', request_id: task.request_id,
     status: 'failed', failure_code: failureCode,
-    evidence: {version: 'recruiting.browser-broker.v1', task_kind: task.kind,
+    evidence: {version: 'recruiting.browser-broker.v2', task_kind: task.kind,
       security_domain: task.security_domain, observed_at: new Date().toISOString(), probe: 'failed',
       canary_recipe_id: task.canary_recipe_id, canary_recipe_version: task.canary_recipe_version,
       canary_content_hash: task.canary_content_hash, canary_contract_hash: task.canary_contract_hash,
@@ -164,7 +172,7 @@ async function executeProfileProbe(task, userConfirmed) {
   const result = authenticated
     ? {version: 'recruiting.extension-bridge.v1', kind: 'profile.result', request_id: task.request_id,
       status: 'completed', ...(isRepair ? {} : {authenticated: true}),
-      evidence: {version: 'recruiting.browser-broker.v1', task_kind: task.kind,
+      evidence: {version: 'recruiting.browser-broker.v2', task_kind: task.kind,
         security_domain: task.security_domain, observed_at: new Date().toISOString(),
         probe: isRepair ? 'interactive_login_completed' : 'authenticated_canary',
         canary_recipe_id: task.canary_recipe_id, canary_recipe_version: task.canary_recipe_version,
@@ -272,10 +280,16 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     case 'capture.configure': {
       const endpoint = logic.bridgeEndpoint(message.endpoint);
       const token = String(message.token || '').trim();
+      const profileId = String(message.profileId || '').trim();
+      const profileBindingToken = String(message.profileToken || '').trim();
       if (token.length < 32 || token.length > 256) throw new Error('bridge_token_invalid');
+      if ((profileId === '') !== (profileBindingToken === '') ||
+        (profileBindingToken && (profileBindingToken.length < 32 || profileBindingToken.length > 256))) {
+        throw new Error('profile_binding_invalid');
+      }
       socket?.close();
       socket = null;
-      await chrome.storage.local.set({bridgeEndpoint: endpoint, bridgeToken: token});
+      await chrome.storage.local.set({bridgeEndpoint: endpoint, bridgeToken: token, profileId, profileBindingToken});
       state.phase = 'ready'; state.lastError = ''; state.connected = false;
       await connect();
       return publicState();

@@ -2,16 +2,22 @@ package bridge
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/browserbroker"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
 
@@ -56,9 +62,10 @@ func TestBridgeAcceptsOnlyPairedChromeExtensionAndReturnsBoundedResult(t *testin
 
 func TestProfileTaskUsesSeparateExecutorTokenAndRelaysOnlyThroughPairedExtension(t *testing.T) {
 	now := time.Date(2026, 9, 10, 15, 0, 0, 0, time.UTC)
+	registry, profileToken := testProfileRegistry(t, 1)
 	service := &Service{Client: &submissionFake{source: readyBridgeSource(), sender: "human:operator:7"},
 		Token: strings.Repeat("extension-token-", 3), ExecutorToken: strings.Repeat("executor-token-", 3),
-		Now: func() time.Time { return now }}
+		ProfileRegistry: registry, Now: func() time.Time { return now }}
 	handler, err := service.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +74,7 @@ func TestProfileTaskUsesSeparateExecutorTokenAndRelaysOnlyThroughPairedExtension
 	defer server.Close()
 	canaryRecipe, canaryContentHash, canaryContractHash := testProfileCanaryRecipe(t)
 	task := profileTask{Version: browserBrokerProtocolVersion, RequestID: "profile-attempt-1", Kind: "profile_repair",
-		SessionID: "session-1", ProfileID: "profile-1", SecurityDomain: "jobs.example.test",
+		SessionID: "session-1", ProfileID: "profile-1", ProfileVersion: 2, SecurityDomain: "jobs.example.test",
 		ExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano), CanaryURL: "https://jobs.example.test/private/canary",
 		CanaryMinimum: 1, CanaryRecipe: canaryRecipe, CanaryRecipeID: "canary-1", CanaryRecipeVersion: 2,
 		CanaryContentHash: canaryContentHash, CanaryContractHash: canaryContractHash}
@@ -107,7 +114,15 @@ func TestProfileTaskUsesSeparateExecutorTokenAndRelaysOnlyThroughPairedExtension
 		resultChannel <- result
 	}()
 
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/capture?token=" + service.Token
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/capture?token=" + service.Token +
+		"&profile_id=profile-1&profile_token=" + profileToken
+	if conn, response, err := websocket.DefaultDialer.Dial(wsURL+"-wrong",
+		http.Header{"Origin": []string{"chrome-extension://abcdefghijklmnop"}}); err == nil {
+		_ = conn.Close()
+		t.Fatal("bridge accepted the wrong managed Profile binding token")
+	} else if response == nil || response.StatusCode != http.StatusNotFound {
+		t.Fatalf("wrong Profile binding status=%v err=%v", response, err)
+	}
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL,
 		http.Header{"Origin": []string{"chrome-extension://abcdefghijklmnop"}})
 	if err != nil {
@@ -139,9 +154,27 @@ func TestProfileTaskUsesSeparateExecutorTokenAndRelaysOnlyThroughPairedExtension
 	select {
 	case result := <-resultChannel:
 		if result.Status != "completed" || result.RequestID != task.RequestID ||
-			result.NextSecretRef != "secret://chrome-profile/profile-1/session-1" || result.Authenticated {
+			result.NextSecretRef != "secret://local-browser-profile/profile-1/v3" || result.Authenticated {
 			t.Fatalf("Profile broker result=%+v", result)
 		}
+		blockedCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		if lease, resolveErr := registry.Resolve(blockedCtx, "profile://recruiting/profile-1", 3,
+			"https://jobs.example.test/private/canary"); !errors.Is(resolveErr, context.DeadlineExceeded) {
+			if lease != nil {
+				lease.Release()
+			}
+			t.Fatalf("daily Profile was not excluded while repair browser remained connected: %v", resolveErr)
+		}
+		cancel()
+		_ = conn.Close()
+		resolveCtx, resolveCancel := context.WithTimeout(context.Background(), time.Second)
+		defer resolveCancel()
+		lease, resolveErr := registry.Resolve(resolveCtx, "profile://recruiting/profile-1", 3,
+			"https://jobs.example.test/private/canary")
+		if resolveErr != nil {
+			t.Fatalf("repair did not publish daily Profile version: %v", resolveErr)
+		}
+		lease.Release()
 	case err := <-errorChannel:
 		t.Fatal(err)
 	case <-time.After(5 * time.Second):
@@ -181,9 +214,10 @@ func TestFailedProfileProbeMayReportFewerThanMinimumRecords(t *testing.T) {
 
 func TestProfileTasksAreQueuedAndDeliveredOneAtATime(t *testing.T) {
 	now := time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC)
+	registry, profileToken := testProfileRegistry(t, 3)
 	service := &Service{Client: &submissionFake{source: readyBridgeSource(), sender: "human:operator:7"},
 		Token: strings.Repeat("extension-queue-token-", 2), ExecutorToken: strings.Repeat("executor-queue-token-", 2),
-		Now: func() time.Time { return now }}
+		ProfileRegistry: registry, Now: func() time.Time { return now }}
 	handler, err := service.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +226,7 @@ func TestProfileTasksAreQueuedAndDeliveredOneAtATime(t *testing.T) {
 	defer server.Close()
 	canaryRecipe, canaryContentHash, canaryContractHash := testProfileCanaryRecipe(t)
 	base := profileTask{Version: browserBrokerProtocolVersion, Kind: "profile_verification", ProfileID: "profile-1",
-		SecurityDomain: "jobs.example.test", ExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano),
+		ProfileVersion: 3, SecurityDomain: "jobs.example.test", ExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano),
 		CanaryURL: "https://jobs.example.test/private/canary", CanaryMinimum: 1,
 		CanaryRecipe: canaryRecipe, CanaryRecipeID: "canary-1", CanaryRecipeVersion: 1,
 		CanaryContentHash: canaryContentHash, CanaryContractHash: canaryContractHash}
@@ -228,7 +262,8 @@ func TestProfileTasksAreQueuedAndDeliveredOneAtATime(t *testing.T) {
 	go post(second)
 	waitForPendingProfileTasks(t, service, 2)
 
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/capture?token=" + service.Token
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/capture?token=" + service.Token +
+		"&profile_id=profile-1&profile_token=" + profileToken
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL,
 		http.Header{"Origin": []string{"chrome-extension://abcdefghijklmnop"}})
 	if err != nil {
@@ -270,6 +305,39 @@ func TestProfileTasksAreQueuedAndDeliveredOneAtATime(t *testing.T) {
 			t.Fatal("timed out waiting for queued Profile result")
 		}
 	}
+	_ = conn.Close()
+	resolveCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	lease, err := registry.Resolve(resolveCtx, "profile://recruiting/profile-1", 4,
+		"https://jobs.example.test/private/canary")
+	if err != nil {
+		t.Fatalf("verification did not pre-publish the next ready Profile version: %v", err)
+	}
+	lease.Release()
+}
+
+func testProfileRegistry(t *testing.T, version uint64) (*browserbroker.FileProfileResolver, string) {
+	t.Helper()
+	directory := filepath.Join(t.TempDir(), "chrome-profile")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	token := strings.Repeat("managed-profile-token-", 2)
+	digest := sha256.Sum256([]byte(token))
+	document := map[string]any{"version": browserbroker.ProfileRegistryVersion, "profiles": []map[string]any{{
+		"profile_id": "profile-1", "profile_version": version, "security_domain": "jobs.example.test",
+		"user_data_dir": directory, "profile_directory": "Default", "binding_token_hash": fmt.Sprintf("sha256:%x", digest[:]),
+	}}}
+	raw, _ := json.Marshal(document)
+	path := filepath.Join(t.TempDir(), "profiles.json")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolver, err := browserbroker.NewFileProfileResolver(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolver, token
 }
 
 func waitForPendingProfileTasks(t *testing.T, service *Service, count int) {

@@ -46,7 +46,8 @@ func TestExecuteProfileRepairUsesBrokerAndToolControlLifecycle(t *testing.T) {
 		submission.Artifact.Kind != model.ArtifactValidation || !submission.Artifact.Redacted {
 		t.Fatalf("Profile repair submission=%#v", control.submissions)
 	}
-	if broker.task.ProfileID != offer.ProfileRepair.ProfileID || broker.task.SecurityDomain != offer.ProfileSecurityDomain {
+	if broker.task.ProfileID != offer.ProfileRepair.ProfileID || broker.task.ProfileVersion != offer.Attempt.ProfileVersion ||
+		broker.task.SecurityDomain != offer.ProfileSecurityDomain {
 		t.Fatalf("browser task=%+v", broker.task)
 	}
 }
