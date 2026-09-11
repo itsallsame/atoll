@@ -1,0 +1,52 @@
+{
+  "schema": "recruiting.live-weekly-evidence.v1",
+  "revision": "ab2292bc",
+  "started_at": "2026-09-11T10:45:47Z",
+  "finished_at": "2026-09-11T10:46:35Z",
+  "manifest": "docs/experiments/workloads/recruiting-live-sites-v1.json",
+  "manifest_sha256": "75c2d8c8ea350b37a270b3dbc400ce7ba63fad56de161dde096138fa405f70c2",
+  "command": "RECRUITING_LIVE_RUN_DIR=<private-directory> make recruiting-live-weekly",
+  "summary": {
+    "target_count": 20,
+    "diagnostic_passed": 20,
+    "transport_failed": 0,
+    "observed_items": 3967,
+    "ordering_contract_held": 1,
+    "ordering_contract_rejected": 19,
+    "production_incremental_eligible": 0
+  },
+  "targets": [
+    {"id":"greenhouse-acuitymd","items":9,"result":"quality_rejected","page_hash":"sha256:99a2cfc9493cc69a0bb29589423b5ab909be99f7ece9c61868582d82afa386ee"},
+    {"id":"greenhouse-affirm","items":203,"result":"quality_rejected","page_hash":"sha256:1c1f76542971ecb8632fe8522f2307b5b110bf5ebd8bfc1ceba252047da73323"},
+    {"id":"greenhouse-airbnb","items":168,"result":"quality_rejected","page_hash":"sha256:6ec090d527b72619cc69ac07ecdd449248a84a5b0b39ae59553429fd29233174"},
+    {"id":"greenhouse-cloudflare","items":353,"result":"quality_rejected","page_hash":"sha256:6e2fe00525040335b0bb6c04cf7dd443c65eeae1613f9d2785190e1556964d67"},
+    {"id":"greenhouse-datadog","items":450,"result":"quality_rejected","page_hash":"sha256:fcf73b4fc790cfe9223c93942957477c0489b0a058a0ef0d87133bb0a3b8d219"},
+    {"id":"greenhouse-discord","items":44,"result":"quality_rejected","page_hash":"sha256:a4fb5e9cc33409aabc3e5e650d258a6f63c46e7885ba80c1dd32b7bad6bc23a1"},
+    {"id":"greenhouse-doordashusa","items":450,"result":"quality_rejected","page_hash":"sha256:20ae422bb077aa28b8a7e77422a3fabc509ff216d95555bfbc7fad22703d4c80"},
+    {"id":"greenhouse-duolingo","items":85,"result":"quality_rejected","page_hash":"sha256:5e0a4e63611114f5cf7331c4b149424c6fb580ab8cb884310d98eef29e9a4189"},
+    {"id":"greenhouse-figma","items":156,"result":"quality_rejected","page_hash":"sha256:02a354c8038c19df65f95c24e40770f2968c54706ef4b4d19dfb882d558a4cc6"},
+    {"id":"greenhouse-lyft","items":162,"result":"quality_rejected","page_hash":"sha256:eb68e535b98dcfb202110581c2fbccb7670e396f6c98c8b154785b5d0b7ca773"},
+    {"id":"greenhouse-mongodb","items":403,"result":"quality_rejected","page_hash":"sha256:8ff271d883700a9841e02ff0ecaee44e0ab301138d21287b88111c120bffa8e9"},
+    {"id":"greenhouse-okta","items":324,"result":"quality_rejected","page_hash":"sha256:b2a15ab5a2c2f523720ebcc195197297eb0701cd347ef4b0064c43adbfb40fd1"},
+    {"id":"greenhouse-reddit","items":146,"result":"quality_rejected","page_hash":"sha256:e43f02fdfbd9dd9fafcc8d60ff4630f78741805f5cc873058a244a174b0cdc23"},
+    {"id":"greenhouse-ripple","items":126,"result":"quality_rejected","page_hash":"sha256:b0a748c98cb38a3a2d2fa97634476c7a65f59e4dc813078098a28ce780d2a2c4"},
+    {"id":"greenhouse-robinhood","items":129,"result":"quality_rejected","page_hash":"sha256:7e511156c60bce3901039b08129b16a04e91ecf14ed81ce5815a1ab788b33dbc"},
+    {"id":"greenhouse-samsara","items":261,"result":"quality_rejected","page_hash":"sha256:73ad6a521c1bc1e10f34c2d54ef541d74cff16f9358d4898b53e42f710f1eab3"},
+    {"id":"greenhouse-scaleai","items":222,"result":"quality_rejected","page_hash":"sha256:883c4b47ba637036058f203d449044f660a2cabb3a5e0ed772f0a09ddef1091a"},
+    {"id":"greenhouse-twilio","items":151,"result":"quality_rejected","page_hash":"sha256:55f4e35a8bb6c49185f750bc43884240ac2ea97cdabcba98c229f28bbebc7e99"},
+    {"id":"greenhouse-webflow","items":25,"result":"quality_rejected","page_hash":"sha256:7b96481eab7a7e80f26f5eea65bcea6e10c314445d3c900b9a897cab308d5c04"},
+    {"id":"lever-palantir","items":100,"result":"diagnostic_pass","page_hash":"sha256:ef1ad9386b0389dbdb48fdabf3c4d3ad70c4bd4a248b0e0e9d947abded7e2450"}
+  ],
+  "repair_history": {
+    "initial_failed_targets": ["greenhouse-highspot", "greenhouse-plaid"],
+    "initial_failure": "HTTP 404 unexpected_status",
+    "replacement_targets": ["greenhouse-reddit", "greenhouse-duolingo"],
+    "final_run_result": "20/20 diagnostic paths completed"
+  },
+  "interpretation": [
+    "weekly coverage proved target isolation, continue-on-failure reporting, stale endpoint detection, manifest repair, and a clean rerun",
+    "nineteen Greenhouse snapshots were correctly rejected because activity order did not match the declared contract",
+    "the one snapshot-quality pass still lacks update-retop history, so no target is production incremental eligible",
+    "raw third-party response bodies were held only in private temporary directories, reduced to hashes, and removed without being committed"
+  ]
+}
