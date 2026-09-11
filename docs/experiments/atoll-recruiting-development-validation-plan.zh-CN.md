@@ -461,6 +461,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 执行状态补充（2026-09-11，20,000 Source 与多 wave 容量）：新增非 root MySQL 容量合同真实写入 20,000 个 ready Source、当前 Assignment 和不可变历史，以 40 个各 500 项的生产 Repository 短事务建立完整预览，随后确认只开放 10 个 canary。数据库事实模拟 canary 成功后只开放 500 项 wave；前 499 项成功时不推进，第 500 项成功后才开放下一固定 500 项。测试首次真实跨第二 wave 时发现 reconcile 事件错误归属到版本不变的父 Work，触发唯一键冲突；现改为归属版本单调的 `recipe_rollout_batch`，父 Work 只表达运行控制。成员查询也排除仍在执行/退避的 validation Work，终态后重新纳入；20K 合同明确验证第 511 项运行时第 512 项仍能取得配额、第 511 项转人工后会被优先收口。Actor 对本轮活动 Batch 使用确定性预算均分，总处理数仍不超过 tick limit。增强合同 67.034 秒通过并以正式 cancel 释放测试 scope。真实 Server/Executor 进程 E2E 仍待完成，S22 继续保持未完成。
 
+执行状态补充（2026-09-11，S22 真实进程闭环）：新增 opt-in `TestRecruitingLiveDetailRecipeRolloutBatchThroughAtoll`，由普通运营员经公开消息上传固定 Source Resource、审阅并确认批次；真实 Atoll Server、durable reconcile timer、daemon 和唯一 `recruiting-executor` class 动态读取 MongoDB Greenhouse 当前公开岗位详情。两个 Source 严格先运行 1 个 canary，再开放 1 个 wave 并完成；随后对单 Source 发布故意缺字段的 active Recipe，真实 Executor 失败后 Batch/父 Work 停在 `paused/waiting_human`，未向未来成员扩散。运营员公开终结失败 validation Work 并执行整批 rollback，控制面恢复冻结的旧 Assignment，再由同一 Executor 对同一公开详情页生成新的 evidence-only 成功证据，Batch 最终为 `rolled_back`。测试逐字段比较执行前后 Job，并核对 DetailVersion 数量不变、Assignment 历史分别为 current→target 和 current→target→bad→restored；2026-09-11 实测 25.20 秒通过。此旅程与 20K MySQL 容量合同共同关闭 S22 自动化退出门；真实站点长期契约仍按 Live Smoke/Nightly/Weekly 分层持续观察。紧凑证据见 `evidence/recruiting-live-recipe-rollout-batch-20260911.json`。
+
 ## 13. P8：25 场景验收矩阵
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。

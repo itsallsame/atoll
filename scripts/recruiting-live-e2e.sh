@@ -5,4 +5,4 @@ repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_dir"
 
 ATOLL_RECRUITING_LIVE_E2E=1 go test -count=1 ./e2e \
-  -run '^TestRecruitingLive(Execution|BaselineCancellation|BaselinePageRecovery|DetailRecipeRepair|ZeroSourceDiscovery)ThroughAtoll$' -v -timeout 480s
+  -run '^TestRecruitingLive(Execution|BaselineCancellation|BaselinePageRecovery|DetailRecipeRepair|DetailRecipeRolloutBatch|ZeroSourceDiscovery)ThroughAtoll$' -v -timeout 600s

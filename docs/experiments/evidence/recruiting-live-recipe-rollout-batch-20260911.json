@@ -1,0 +1,53 @@
+{
+  "schema": "atoll.recruiting.live-recipe-rollout-batch.v1",
+  "observed_at": "2026-09-11",
+  "target": "https://boards-api.greenhouse.io/v1/boards/mongodb/jobs/{current_job_id}",
+  "access": "public read-only GET",
+  "test": "TestRecruitingLiveDetailRecipeRolloutBatchThroughAtoll",
+  "duration_seconds": 25.20,
+  "execution": {
+    "atoll_server": true,
+    "durable_reconcile_timer": true,
+    "daemon_executor": true,
+    "executor_class": "recruiting-executor",
+    "mysql_accounts": "non-root migration/runtime",
+    "operator_commands": [
+      "recruiting.recipe.rollout.batch",
+      "recruiting.recipe.rollout.batch.get",
+      "recruiting.recipe.rollout.batch.confirm",
+      "recruiting.work.resolve",
+      "recruiting.recipe.rollout.batch.rollback"
+    ]
+  },
+  "observed_results": {
+    "successful_batch": {
+      "source_count": 2,
+      "canary_size": 1,
+      "wave_size": 1,
+      "succeeded_count": 2,
+      "status": "completed"
+    },
+    "failed_batch": {
+      "source_count": 1,
+      "bad_recipe_attempt": "failed",
+      "status_before_human_action": "paused",
+      "failed_work_resolution": "terminated",
+      "rollback_validation_attempt": "succeeded",
+      "final_status": "rolled_back"
+    },
+    "business_facts": {
+      "jobs_changed": false,
+      "detail_version_count_changed": false,
+      "restored_recipe_is_frozen_previous_assignment": true,
+      "assignment_history_counts": {
+        "rolled_back_source": 4,
+        "successful_source": 2
+      }
+    }
+  },
+  "claim_limits": [
+    "The live sample proves this execution only, not perpetual third-party availability.",
+    "Detail rollout validation is evidence-only and does not publish a new Job detail version.",
+    "Large-batch cardinality and 500-member wave bounds are proved separately by the isolated 20,000-Source MySQL contract."
+  ]
+}
