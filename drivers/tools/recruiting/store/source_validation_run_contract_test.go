@@ -89,13 +89,14 @@ func TestSourceValidationCreatesFencedExecutionAndEvidenceForPublish(t *testing.
 		t.Fatal(err)
 	}
 	page := mustResultArtifact(t, "source-validation-page", model.ArtifactPage, work.WorkID, offer.Attempt.AttemptID)
+	pageTwo := mustResultArtifact(t, "source-validation-page-two", model.ArtifactPage, work.WorkID, offer.Attempt.AttemptID)
 	trace := mustResultArtifact(t, "source-validation-trace", model.ArtifactTrace, work.WorkID, offer.Attempt.AttemptID)
 	quality := executioncontract.ListingQuality{IdentityComplete: true, OrderingContractHeld: true,
 		PaginationStable: true, ItemCount: 12}
 	outcome, err := repository.AcceptDiagnosticResult(ctx, DiagnosticResult{CommandID: "source-validation-result", ResultKind: "source_validation",
 		RequestHash: "sha256:source-validation-result", AttemptID: offer.Attempt.AttemptID,
 		ExecutorActorID: offer.Attempt.ExecutorActorID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation,
-		Artifacts: []model.ArtifactMetadata{page, trace}, Quality: quality, CompletedAt: now.Add(time.Second)})
+		Artifacts: []model.ArtifactMetadata{page, pageTwo, trace}, Quality: quality, CompletedAt: now.Add(time.Second)})
 	if err != nil || outcome.Work.Status != model.WorkCompleted || outcome.Run.Status != model.ListingRunCompleted {
 		t.Fatalf("source validation evidence = %+v err=%v", outcome, err)
 	}
@@ -112,10 +113,20 @@ func TestSourceValidationCreatesFencedExecutionAndEvidenceForPublish(t *testing.
 	if jobs != 0 || observations != 0 || checkpoints != 0 {
 		t.Fatalf("validation leaked business data jobs=%d observations=%d checkpoints=%d", jobs, observations, checkpoints)
 	}
+	completed, err := repository.GetCompletedSourceValidation(ctx, work.WorkID)
+	if err != nil || len(completed.ArtifactIDs) != 3 || completed.ArtifactIDs[0] != page.ArtifactID ||
+		completed.ArtifactIDs[1] != pageTwo.ArtifactID || completed.ArtifactIDs[2] != trace.ArtifactID {
+		t.Fatalf("validation Artifact page order=%v err=%v", completed.ArtifactIDs, err)
+	}
+	var orderedPages int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_validation_artifact_pages
+WHERE work_id = ? AND attempt_id = ? AND page_sequence IN (1, 2)`, work.WorkID, offer.Attempt.AttemptID).Scan(&orderedPages); err != nil || orderedPages != 2 {
+		t.Fatalf("validation Artifact page sequence count=%d err=%v", orderedPages, err)
+	}
 
 	assignment := run.ListingExecution.Assignment
 	assessment := verifiedStoreAssessment(validating, assignment, now.Add(2*time.Second))
-	assessment.EvidenceArtifactIDs = []string{page.ArtifactID, trace.ArtifactID}
+	assessment.EvidenceArtifactIDs = []string{page.ArtifactID, pageTwo.ArtifactID, trace.ArtifactID}
 	ready, err := validating.PublishValidated(validating.Version, assignment, assessment)
 	if err != nil {
 		t.Fatal(err)

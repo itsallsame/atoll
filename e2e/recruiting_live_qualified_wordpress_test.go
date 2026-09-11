@@ -198,11 +198,11 @@ func TestRecruitingLiveQualifiedWordPressSourceThroughAtoll(t *testing.T) {
 		"reason": "operator assigns the validated same-origin detail Recipe before baseline",
 	})
 
-	company := ws.request(homeID, "recruiting.company.get", controlID, map[string]any{"id": qualifiedWordPressCompanyID})
+	company := ws.request(homeID, "recruiting.company.get", controlID, map[string]any{"company_id": qualifiedWordPressCompanyID})
 	baselineCommand := map[string]any{
 		"command_id": "e2e-live-qualified-wordpress-baseline", "work_id": "e2e-live-qualified-wordpress-baseline-work",
 		"baseline_generation": 1, "target": map[string]any{"target_type": "source", "target_id": qualifiedWordPressSourceID},
-		"expected_company_version": nestedNumberField(t, company, "entity", "version"),
+		"expected_company_version": nestedNumberField(t, company, "company", "version"),
 		"expected_version":         nestedNumberField(t, assigned, "source", "version"),
 		"reason":                   "run the first complete listing and detail baseline",
 	}
@@ -379,8 +379,11 @@ func assertQualifiedWordPressRetopEvidence(t *testing.T, client *apiClient, base
 		t.Fatal(err)
 	}
 	defer db.Close()
-	rows, err := db.Query(`SELECT object_ref FROM recruiting_artifacts
-WHERE work_id = ? AND artifact_kind = 'page' AND rejected = FALSE ORDER BY created_at, artifact_id`, workID)
+	rows, err := db.Query(`SELECT artifact.object_ref
+FROM recruiting_validation_artifact_pages page
+JOIN recruiting_artifacts artifact ON artifact.artifact_id = page.artifact_id
+WHERE page.work_id = ? AND artifact.artifact_kind = 'page' AND artifact.rejected = FALSE
+ORDER BY page.page_sequence`, workID)
 	if err != nil {
 		t.Fatal(err)
 	}

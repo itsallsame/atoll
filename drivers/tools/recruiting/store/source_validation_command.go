@@ -49,9 +49,11 @@ ORDER BY a.updated_at DESC, a.attempt_id DESC LIMIT 1`, workID).Scan(
 	if err := json.Unmarshal(resultState, &value.Outcome); err != nil {
 		return CompletedSourceValidation{}, err
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT artifact_id FROM recruiting_artifacts
-WHERE work_id = ? AND attempt_id = ? AND rejected = FALSE AND artifact_kind <> ?
-ORDER BY artifact_id`, workID, attemptID, model.ArtifactFailure)
+	rows, err := r.db.QueryContext(ctx, `SELECT artifact.artifact_id
+FROM recruiting_artifacts artifact
+LEFT JOIN recruiting_validation_artifact_pages page ON page.artifact_id = artifact.artifact_id
+WHERE artifact.work_id = ? AND artifact.attempt_id = ? AND artifact.rejected = FALSE AND artifact.artifact_kind <> ?
+ORDER BY page.page_sequence IS NULL, page.page_sequence, artifact.artifact_id`, workID, attemptID, model.ArtifactFailure)
 	if err != nil {
 		return CompletedSourceValidation{}, err
 	}

@@ -140,9 +140,20 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 	outcome := DiagnosticResultOutcome{Work: completedWork, Run: completedRun, Source: invalidSource,
 		Artifacts: len(input.Artifacts), Quality: input.Quality}
 	outcomeState, _ := json.Marshal(outcome)
-	for _, artifact := range input.Artifacts {
+	for index, artifact := range input.Artifacts {
 		if err := insertArtifact(ctx, tx, artifact, false, input.CompletedAt); err != nil {
 			return DiagnosticResultOutcome{}, err
+		}
+		// DiagnosticResult carries page Artifacts in execution order followed by
+		// one terminal trace. Persist that order explicitly: Artifact IDs and a
+		// shared completion timestamp cannot reconstruct a paginated contract
+		// proof after the process exits.
+		if index < len(input.Artifacts)-1 {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO recruiting_validation_artifact_pages(
+  work_id, attempt_id, page_sequence, artifact_id, created_at
+) VALUES (?, ?, ?, ?, ?)`, work.WorkID, attempt.AttemptID, index+1, artifact.ArtifactID, input.CompletedAt.UTC()); err != nil {
+				return DiagnosticResultOutcome{}, fmt.Errorf("insert validation Artifact page order: %w", err)
+			}
 		}
 	}
 	if err := updateAttemptStatusTx(ctx, tx, attempt.Status, succeededAttempt, outcomeState, input.CompletedAt); err != nil {
