@@ -113,7 +113,7 @@ func (r *Repository) acceptBackfillResultTransaction(ctx context.Context,
 	if err != nil {
 		return BackfillResultOutcome{}, err, nil
 	}
-	if err := attempt.CanAcceptResult(work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
+	if err := canAcceptResultTx(ctx, tx, attempt, work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
 		return BackfillResultOutcome{}, err, nil
 	}
 	expectedKind := model.ArtifactResponse

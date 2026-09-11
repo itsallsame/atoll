@@ -111,11 +111,11 @@ func (e listingResultExecution) acceptsResults() bool {
 
 func (e listingResultExecution) currentFence(ctx context.Context, tx *sql.Tx, profileID string) (model.AttemptFence, error) {
 	if e.Occurrence != nil {
-		_, fence, err := loadListingOfferFence(ctx, tx, *e.Occurrence, profileID)
+		_, fence, err := loadListingOfferFence(ctx, tx, *e.Occurrence, profileID, true)
 		return fence, err
 	}
 	if e.ListingRun != nil {
-		_, fence, err := loadStandaloneListingOfferFence(ctx, tx, *e.ListingRun, profileID)
+		_, fence, err := loadStandaloneListingOfferFence(ctx, tx, *e.ListingRun, profileID, true)
 		return fence, err
 	}
 	if e.Baseline != nil {
@@ -214,7 +214,7 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 	if err != nil {
 		return ListingPageOutcome{}, err, nil
 	}
-	if err := attempt.CanAcceptResult(work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
+	if err := canAcceptResultTx(ctx, tx, attempt, work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
 		return ListingPageOutcome{}, err, nil
 	}
 	latest, found, err := getLatestListingProgressTx(ctx, tx, work.WorkID, attempt.AttemptID)
@@ -415,7 +415,7 @@ func (r *Repository) acceptListingCompletionOnce(ctx context.Context, input List
 	if err != nil {
 		return ListingCompletionOutcome{}, err, nil
 	}
-	if err := attempt.CanAcceptResult(work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
+	if err := canAcceptResultTx(ctx, tx, attempt, work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
 		return ListingCompletionOutcome{}, err, nil
 	}
 	latest, found, err := getLatestListingProgressTx(ctx, tx, work.WorkID, attempt.AttemptID)

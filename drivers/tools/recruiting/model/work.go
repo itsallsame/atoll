@@ -326,40 +326,48 @@ const (
 )
 
 type Attempt struct {
-	AttemptID           string        `json:"attempt_id"`
-	WorkID              string        `json:"work_id"`
-	Status              AttemptStatus `json:"attempt_status"`
-	AcceptanceVersion   uint64        `json:"acceptance_version"`
-	ExecutorActorID     string        `json:"executor_actor_id,omitempty"`
-	ExecutorIncarnation string        `json:"executor_incarnation,omitempty"`
-	Capability          string        `json:"capability,omitempty"`
-	CompanyVersion      uint64        `json:"company_version,omitempty"`
-	SourceVersion       uint64        `json:"source_version,omitempty"`
-	AssignmentVersion   uint64        `json:"assignment_version,omitempty"`
-	RecipeID            string        `json:"recipe_id,omitempty"`
-	RecipeVersion       uint64        `json:"recipe_version,omitempty"`
-	CheckpointVersion   uint64        `json:"checkpoint_version,omitempty"`
-	RefreshGeneration   uint64        `json:"refresh_generation,omitempty"`
-	SampleVersion       uint64        `json:"sample_version,omitempty"`
-	ProfileID           string        `json:"profile_id,omitempty"`
-	ProfileVersion      uint64        `json:"profile_version,omitempty"`
-	BatchVersion        uint64        `json:"batch_version,omitempty"`
-	DiscoveryGeneration uint64        `json:"discovery_generation,omitempty"`
+	AttemptID                   string        `json:"attempt_id"`
+	WorkID                      string        `json:"work_id"`
+	Status                      AttemptStatus `json:"attempt_status"`
+	AcceptanceVersion           uint64        `json:"acceptance_version"`
+	ExecutorActorID             string        `json:"executor_actor_id,omitempty"`
+	ExecutorIncarnation         string        `json:"executor_incarnation,omitempty"`
+	Capability                  string        `json:"capability,omitempty"`
+	CompanyVersion              uint64        `json:"company_version,omitempty"`
+	CompanyConfigurationVersion uint64        `json:"company_configuration_version,omitempty"`
+	CompanyExecutionFence       uint64        `json:"company_execution_fence,omitempty"`
+	SourceVersion               uint64        `json:"source_version,omitempty"`
+	SourceConfigurationVersion  uint64        `json:"source_configuration_version,omitempty"`
+	SourceExecutionFence        uint64        `json:"source_execution_fence,omitempty"`
+	AssignmentVersion           uint64        `json:"assignment_version,omitempty"`
+	RecipeID                    string        `json:"recipe_id,omitempty"`
+	RecipeVersion               uint64        `json:"recipe_version,omitempty"`
+	CheckpointVersion           uint64        `json:"checkpoint_version,omitempty"`
+	RefreshGeneration           uint64        `json:"refresh_generation,omitempty"`
+	SampleVersion               uint64        `json:"sample_version,omitempty"`
+	ProfileID                   string        `json:"profile_id,omitempty"`
+	ProfileVersion              uint64        `json:"profile_version,omitempty"`
+	BatchVersion                uint64        `json:"batch_version,omitempty"`
+	DiscoveryGeneration         uint64        `json:"discovery_generation,omitempty"`
 }
 
 type AttemptFence struct {
-	CompanyVersion      uint64
-	SourceVersion       uint64
-	AssignmentVersion   uint64
-	RecipeID            string
-	RecipeVersion       uint64
-	CheckpointVersion   uint64
-	RefreshGeneration   uint64
-	SampleVersion       uint64
-	ProfileID           string
-	ProfileVersion      uint64
-	BatchVersion        uint64
-	DiscoveryGeneration uint64
+	CompanyVersion              uint64
+	CompanyConfigurationVersion uint64
+	CompanyExecutionFence       uint64
+	SourceVersion               uint64
+	SourceConfigurationVersion  uint64
+	SourceExecutionFence        uint64
+	AssignmentVersion           uint64
+	RecipeID                    string
+	RecipeVersion               uint64
+	CheckpointVersion           uint64
+	RefreshGeneration           uint64
+	SampleVersion               uint64
+	ProfileID                   string
+	ProfileVersion              uint64
+	BatchVersion                uint64
+	DiscoveryGeneration         uint64
 }
 
 // WithBatchFence binds an Attempt to a version of an extension-owned batch
@@ -402,6 +410,7 @@ func (a Attempt) WithDiscoveryFence(f AttemptFence) (Attempt, error) {
 		return Attempt{}, fmt.Errorf("profile identity and version must be supplied together")
 	}
 	a.CompanyVersion, a.DiscoveryGeneration = f.CompanyVersion, f.DiscoveryGeneration
+	a.CompanyConfigurationVersion, a.CompanyExecutionFence = f.CompanyConfigurationVersion, f.CompanyExecutionFence
 	a.RecipeID, a.RecipeVersion = f.RecipeID, f.RecipeVersion
 	a.ProfileID, a.ProfileVersion = f.ProfileID, f.ProfileVersion
 	return a, nil
@@ -420,6 +429,7 @@ func (a Attempt) WithCompanyRecipeFence(f AttemptFence) (Attempt, error) {
 		return Attempt{}, fmt.Errorf("profile identity and version must be supplied together")
 	}
 	a.CompanyVersion, a.RecipeID, a.RecipeVersion = f.CompanyVersion, f.RecipeID, f.RecipeVersion
+	a.CompanyConfigurationVersion, a.CompanyExecutionFence = f.CompanyConfigurationVersion, f.CompanyExecutionFence
 	a.ProfileID, a.ProfileVersion = f.ProfileID, f.ProfileVersion
 	return a, nil
 }
@@ -448,6 +458,8 @@ func (a Attempt) WithFence(f AttemptFence) (Attempt, error) {
 		return Attempt{}, fmt.Errorf("profile identity and version must be supplied together")
 	}
 	a.CompanyVersion, a.SourceVersion, a.AssignmentVersion = f.CompanyVersion, f.SourceVersion, f.AssignmentVersion
+	a.CompanyConfigurationVersion, a.CompanyExecutionFence = f.CompanyConfigurationVersion, f.CompanyExecutionFence
+	a.SourceConfigurationVersion, a.SourceExecutionFence = f.SourceConfigurationVersion, f.SourceExecutionFence
 	a.RecipeID, a.RecipeVersion = f.RecipeID, f.RecipeVersion
 	a.CheckpointVersion, a.RefreshGeneration, a.SampleVersion = f.CheckpointVersion, f.RefreshGeneration, f.SampleVersion
 	a.ProfileID, a.ProfileVersion = f.ProfileID, f.ProfileVersion
@@ -465,6 +477,8 @@ func (a Attempt) WithBackfillFence(f AttemptFence) (Attempt, error) {
 		return Attempt{}, fmt.Errorf("profile identity and version must be supplied together")
 	}
 	a.CompanyVersion, a.SourceVersion = f.CompanyVersion, f.SourceVersion
+	a.CompanyConfigurationVersion, a.CompanyExecutionFence = f.CompanyConfigurationVersion, f.CompanyExecutionFence
+	a.SourceConfigurationVersion, a.SourceExecutionFence = f.SourceConfigurationVersion, f.SourceExecutionFence
 	a.RecipeID, a.RecipeVersion = f.RecipeID, f.RecipeVersion
 	a.RefreshGeneration, a.SampleVersion, a.BatchVersion = f.RefreshGeneration, f.SampleVersion, f.BatchVersion
 	a.ProfileID, a.ProfileVersion = f.ProfileID, f.ProfileVersion
@@ -488,7 +502,17 @@ func (a Attempt) CanAcceptResult(work Work, current AttemptFence, executorActorI
 	if a.Status != AttemptRunning || executorActorID != a.ExecutorActorID || executorIncarnation != a.ExecutorIncarnation {
 		return fmt.Errorf("attempt result sender or lifecycle is not accepted")
 	}
-	if current.CompanyVersion != a.CompanyVersion || current.SourceVersion != a.SourceVersion ||
+	companyVersionChanged := current.CompanyVersion != a.CompanyVersion
+	if a.CompanyConfigurationVersion != 0 {
+		companyVersionChanged = current.CompanyConfigurationVersion != a.CompanyConfigurationVersion ||
+			current.CompanyExecutionFence != a.CompanyExecutionFence
+	}
+	sourceVersionChanged := current.SourceVersion != a.SourceVersion
+	if a.SourceConfigurationVersion != 0 {
+		sourceVersionChanged = current.SourceConfigurationVersion != a.SourceConfigurationVersion ||
+			current.SourceExecutionFence != a.SourceExecutionFence
+	}
+	if companyVersionChanged || sourceVersionChanged ||
 		current.AssignmentVersion != a.AssignmentVersion || current.RecipeID != a.RecipeID || current.RecipeVersion != a.RecipeVersion ||
 		current.CheckpointVersion != a.CheckpointVersion || current.RefreshGeneration != a.RefreshGeneration ||
 		current.SampleVersion != a.SampleVersion ||

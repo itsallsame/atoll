@@ -130,12 +130,12 @@ func (r *Repository) acceptDetailResultTransaction(ctx context.Context, input De
 	if err != nil {
 		return DetailResultOutcome{}, nil, err
 	}
-	detail, currentFence, err := loadDetailOfferFence(ctx, tx, work, placement)
+	detail, currentFence, err := loadDetailOfferFence(ctx, tx, work, placement, true)
 	if err != nil {
 		return DetailResultOutcome{}, err, nil
 	}
 	job := detail.Job
-	if err := attempt.CanAcceptResult(work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
+	if err := canAcceptResultTx(ctx, tx, attempt, work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
 		return DetailResultOutcome{}, err, nil
 	}
 

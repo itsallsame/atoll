@@ -113,7 +113,7 @@ WHERE session_id = ? AND validation_work_id = ? FOR UPDATE`, input.SessionID, wo
 		profile.SecurityDomain != input.SecurityDomain || profile.DeviceID != session.DeviceActorID {
 		return ProfileVerificationOutcome{}, fmt.Errorf("%w: Profile changed before verification", ErrResultFenced)
 	}
-	if err := attempt.CanAcceptResult(work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
+	if err := canAcceptResultTx(ctx, tx, attempt, work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
 		return ProfileVerificationOutcome{}, fmt.Errorf("%w: %v", ErrResultFenced, err)
 	}
 	nextSession, err := session.Verify(session.Version, work.WorkID, session.DeviceActorID)

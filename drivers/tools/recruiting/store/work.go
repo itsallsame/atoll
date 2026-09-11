@@ -281,13 +281,15 @@ func insertAttempt(ctx context.Context, executor interface {
 	_, err := executor.ExecContext(ctx, `
 INSERT INTO recruiting_attempts(
   attempt_id, work_id, attempt_status, executor_actor_id, executor_incarnation,
-  capability, acceptance_version, company_version, source_version, assignment_version,
+  capability, acceptance_version, company_version, company_configuration_version, company_execution_fence,
+  source_version, source_configuration_version, source_execution_fence, assignment_version,
   recipe_id, recipe_version, checkpoint_version, refresh_generation, profile_id,
   profile_version, batch_version, state_json, execution_offer_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		attempt.AttemptID, attempt.WorkID, attempt.Status, nullableString(attempt.ExecutorActorID),
 		nullableString(attempt.ExecutorIncarnation), nullableString(attempt.Capability), attempt.AcceptanceVersion,
-		nullableUint(attempt.CompanyVersion), nullableUint(attempt.SourceVersion), nullableUint(attempt.AssignmentVersion),
+		nullableUint(attempt.CompanyVersion), nullableUint(attempt.CompanyConfigurationVersion), nullableUint(attempt.CompanyExecutionFence),
+		nullableUint(attempt.SourceVersion), nullableUint(attempt.SourceConfigurationVersion), nullableUint(attempt.SourceExecutionFence), nullableUint(attempt.AssignmentVersion),
 		nullableString(attempt.RecipeID), nullableUint(attempt.RecipeVersion), nullableUint(attempt.CheckpointVersion),
 		nullableUint(attempt.RefreshGeneration), nullableString(attempt.ProfileID), nullableUint(attempt.ProfileVersion), nullableUint(attempt.BatchVersion),
 		state, nullableJSON(executionOffer), businessAt.UTC(), businessAt.UTC())

@@ -69,6 +69,7 @@ type outboxReconcileResponse struct {
 	ScopeControlWorksPaused     int    `json:"scope_control_works_paused"`
 	ScopeControlWorksCanceled   int    `json:"scope_control_works_canceled"`
 	ScopeControlAttemptsExpired int    `json:"scope_control_attempts_expired"`
+	ScopeControlRootsSettled    int    `json:"scope_control_roots_settled"`
 	ScopeControlCompleted       bool   `json:"scope_control_completed"`
 	ScopeControlConflict        bool   `json:"scope_control_conflict"`
 }
@@ -119,6 +120,7 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 	response.ScopeControlOperationID = scopeControl.OperationID
 	response.ScopeControlWorksScanned, response.ScopeControlWorksPaused = scopeControl.WorksScanned, scopeControl.WorksPaused
 	response.ScopeControlWorksCanceled, response.ScopeControlAttemptsExpired = scopeControl.WorksCanceled, scopeControl.AttemptsExpired
+	response.ScopeControlRootsSettled = scopeControl.RootsSettled
 	response.ScopeControlCompleted, response.ScopeControlConflict = scopeControl.Completed, scopeControl.Conflict
 	profileExpiry, err := repository.ExpireProfileRepairSessions(msg.Ctx(), now, payload.Limit)
 	if err != nil {

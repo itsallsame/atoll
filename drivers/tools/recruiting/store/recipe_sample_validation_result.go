@@ -100,7 +100,7 @@ func (r *Repository) AcceptRecipeSampleValidationResult(ctx context.Context,
 	if err != nil {
 		return RecipeSampleValidationOutcome{}, err
 	}
-	if err := attempt.CanAcceptResult(work, fence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
+	if err := canAcceptResultTx(ctx, tx, attempt, work, fence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
 		return RecipeSampleValidationOutcome{}, err
 	}
 	succeededAttempt, err := attempt.Succeed()

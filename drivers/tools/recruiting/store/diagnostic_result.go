@@ -102,12 +102,12 @@ func (r *Repository) AcceptDiagnosticResult(ctx context.Context, input Diagnosti
 	} else if recipeValidation {
 		currentFence, err = loadRecipeValidationOfferFence(ctx, tx, run, attempt.ProfileID)
 	} else {
-		_, currentFence, err = loadStandaloneListingOfferFence(ctx, tx, run, attempt.ProfileID)
+		_, currentFence, err = loadStandaloneListingOfferFence(ctx, tx, run, attempt.ProfileID, true)
 	}
 	if err != nil {
 		return DiagnosticResultOutcome{}, err
 	}
-	if err := attempt.CanAcceptResult(work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
+	if err := canAcceptResultTx(ctx, tx, attempt, work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
 		return DiagnosticResultOutcome{}, err
 	}
 	succeededAttempt, err := attempt.Succeed()

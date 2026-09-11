@@ -119,7 +119,7 @@ WHERE session_id = ? AND work_id = ? FOR UPDATE`, input.SessionID, work.WorkID).
 		profile.DeviceID != session.DeviceActorID || input.NextSecretRef == profile.SecretRef {
 		return ProfileRepairSubmissionOutcome{}, fmt.Errorf("%w: Profile changed before repair submission", ErrResultFenced)
 	}
-	if err := attempt.CanAcceptResult(work, fence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
+	if err := canAcceptResultTx(ctx, tx, attempt, work, fence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
 		return ProfileRepairSubmissionOutcome{}, fmt.Errorf("%w: %v", ErrResultFenced, err)
 	}
 	nextProfile, err := profile.BeginVerification(profile.Version, input.NextSecretRef)

@@ -8,6 +8,12 @@ ALTER TABLE recruiting_sources
   ADD COLUMN control_epoch BIGINT UNSIGNED NOT NULL DEFAULT 1 AFTER configuration_version,
   ADD COLUMN execution_fence BIGINT UNSIGNED NOT NULL DEFAULT 1 AFTER control_epoch;
 
+ALTER TABLE recruiting_attempts
+  ADD COLUMN company_configuration_version BIGINT UNSIGNED NULL AFTER company_version,
+  ADD COLUMN company_execution_fence BIGINT UNSIGNED NULL AFTER company_configuration_version,
+  ADD COLUMN source_configuration_version BIGINT UNSIGNED NULL AFTER source_version,
+  ADD COLUMN source_execution_fence BIGINT UNSIGNED NULL AFTER source_configuration_version;
+
 UPDATE recruiting_companies
 SET state_json = JSON_SET(state_json,
   '$.configuration_version', configuration_version,

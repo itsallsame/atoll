@@ -103,6 +103,26 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	       (w.purpose = 'profile_verify' AND eligible_profile.auth_status = 'verifying') OR
 	       (w.purpose NOT IN ('profile_repair', 'profile_verify') AND eligible_profile.auth_status = 'ready'))
 	  ))
+	  AND (w.company_id IS NULL OR EXISTS (
+	    SELECT 1 FROM recruiting_companies eligible_company
+	    WHERE eligible_company.company_id = w.company_id AND eligible_company.control_status = 'active'
+	  ) OR EXISTS (
+	    SELECT 1 FROM recruiting_scope_control_operations company_control
+	    JOIN recruiting_scope_control_roots company_root ON company_root.operation_id = company_control.operation_id
+	    WHERE company_control.scope_type = 'company' AND company_control.scope_id = w.company_id
+	      AND company_control.operation_status = 'applying' AND company_control.pause_mode = 'finish_causal_chain'
+	      AND company_root.root_work_id = w.root_work_id AND company_root.root_status = 'active'
+	  ))
+	  AND (w.source_id IS NULL OR EXISTS (
+	    SELECT 1 FROM recruiting_sources eligible_source
+	    WHERE eligible_source.source_id = w.source_id AND eligible_source.control_status = 'active'
+	  ) OR EXISTS (
+	    SELECT 1 FROM recruiting_scope_control_operations source_control
+	    JOIN recruiting_scope_control_roots source_root ON source_root.operation_id = source_control.operation_id
+	    WHERE source_control.scope_type = 'source' AND source_control.scope_id = w.source_id
+	      AND source_control.operation_status = 'applying' AND source_control.pause_mode = 'finish_causal_chain'
+	      AND source_root.root_work_id = w.root_work_id AND source_root.root_status = 'active'
+	  ))
 	  AND ((w.purpose = 'listing_sync' AND (EXISTS (
 	    SELECT 1 FROM recruiting_source_occurrences o
 	    WHERE o.listing_work_id = w.work_id AND o.status IN ('queued', 'running')
@@ -213,6 +233,7 @@ LIMIT 100`, request.Capability, requiredPurpose, requiredPurpose, request.Offere
 		return ExecutionOffer{}, err
 	}
 	claimed := false
+	allowPausedCausal := false
 	for _, candidateID := range candidateIDs {
 		err = tx.QueryRowContext(ctx, `
 SELECT state_json, business_key, priority, capability, origin, profile_id, not_before, deadline_at
@@ -237,6 +258,14 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		if active != 0 {
 			continue
 		}
+		allowed, pausedCausal, scopeErr := workScopeExecutionAllowedTx(ctx, tx, candidateID)
+		if scopeErr != nil {
+			return ExecutionOffer{}, scopeErr
+		}
+		if !allowed {
+			continue
+		}
+		allowPausedCausal = pausedCausal
 		claimed = true
 		break
 	}
@@ -274,10 +303,10 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		if errors.Is(err, ErrNotFound) {
 			listingRun, err = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
 			if err == nil {
-				checkpoint, fence, err = loadStandaloneListingOfferFence(ctx, tx, listingRun, placement.ProfileID)
+				checkpoint, fence, err = loadStandaloneListingOfferFence(ctx, tx, listingRun, placement.ProfileID, allowPausedCausal)
 			}
 		} else if err == nil {
-			checkpoint, fence, err = loadListingOfferFence(ctx, tx, occurrence, placement.ProfileID)
+			checkpoint, fence, err = loadListingOfferFence(ctx, tx, occurrence, placement.ProfileID, allowPausedCausal)
 		}
 	case "source_validation":
 		listingRun, err = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
@@ -295,7 +324,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 			fence, err = loadRecipeValidationOfferFence(ctx, tx, listingRun, placement.ProfileID)
 		}
 	case "detail_sync":
-		detail, fence, err = loadDetailOfferFence(ctx, tx, work, placement)
+		detail, fence, err = loadDetailOfferFence(ctx, tx, work, placement, allowPausedCausal)
 	case "historical_backfill_item":
 		backfillInput, fence, err = loadBackfillOfferFence(ctx, tx, work, placement)
 	case "company_import":
@@ -314,7 +343,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 			fence.BatchVersion = companyImport.Version
 		}
 	case "source_discovery":
-		discovery, discoveryRecipe, fence, err = loadSourceDiscoveryOfferFence(ctx, tx, work, placement)
+		discovery, discoveryRecipe, fence, err = loadSourceDiscoveryOfferFence(ctx, tx, work, placement, allowPausedCausal)
 	case "baseline_listing":
 		baseline, fence, err = loadBaselineOfferFence(ctx, tx, work, placement)
 	case "profile_repair":
@@ -327,6 +356,9 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		err = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)
 	}
 	if err != nil {
+		return ExecutionOffer{}, err
+	}
+	if err := attachCurrentScopeFencesTx(ctx, tx, work.WorkID, &fence); err != nil {
 		return ExecutionOffer{}, err
 	}
 	// A directed wake is only a scheduling hint. Re-authorize every ordinary
@@ -488,6 +520,89 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	return offer, nil
 }
 
+func attachCurrentScopeFencesTx(ctx context.Context, tx *sql.Tx, workID string, fence *model.AttemptFence) error {
+	if fence == nil {
+		return fmt.Errorf("execution fence is required")
+	}
+	var companyID, sourceID sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT company_id, source_id FROM recruiting_works WHERE work_id = ?`, workID).
+		Scan(&companyID, &sourceID); err != nil {
+		return fmt.Errorf("load Work control scope: %w", err)
+	}
+	if companyID.Valid {
+		if err := tx.QueryRowContext(ctx, `SELECT configuration_version, execution_fence
+FROM recruiting_companies WHERE company_id = ?`, companyID.String).
+			Scan(&fence.CompanyConfigurationVersion, &fence.CompanyExecutionFence); err != nil {
+			return fmt.Errorf("load Company execution fence: %w", err)
+		}
+	}
+	if sourceID.Valid {
+		if err := tx.QueryRowContext(ctx, `SELECT configuration_version, execution_fence
+FROM recruiting_sources WHERE source_id = ?`, sourceID.String).
+			Scan(&fence.SourceConfigurationVersion, &fence.SourceExecutionFence); err != nil {
+			return fmt.Errorf("load Source execution fence: %w", err)
+		}
+	}
+	return nil
+}
+
+func workScopeExecutionAllowedTx(ctx context.Context, tx *sql.Tx, workID string) (bool, bool, error) {
+	var companyID, sourceID sql.NullString
+	var rootWorkID string
+	if err := tx.QueryRowContext(ctx, `SELECT company_id, source_id, root_work_id
+FROM recruiting_works WHERE work_id = ?`, workID).Scan(&companyID, &sourceID, &rootWorkID); err != nil {
+		return false, false, fmt.Errorf("load Work execution scope: %w", err)
+	}
+	pausedCausal := false
+	for _, scope := range []struct {
+		typeName string
+		id       sql.NullString
+		table    string
+		idColumn string
+	}{
+		{typeName: "company", id: companyID, table: "recruiting_companies", idColumn: "company_id"},
+		{typeName: "source", id: sourceID, table: "recruiting_sources", idColumn: "source_id"},
+	} {
+		if !scope.id.Valid || scope.id.String == "" {
+			continue
+		}
+		var status model.ControlStatus
+		query := fmt.Sprintf("SELECT control_status FROM %s WHERE %s = ?", scope.table, scope.idColumn)
+		if err := tx.QueryRowContext(ctx, query, scope.id.String).Scan(&status); err != nil {
+			return false, false, fmt.Errorf("load %s Work control status: %w", scope.typeName, err)
+		}
+		if status == model.ControlActive {
+			continue
+		}
+		if status != model.ControlPaused {
+			return false, false, nil
+		}
+		var allowed bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+  SELECT 1 FROM recruiting_scope_control_operations operation
+  JOIN recruiting_scope_control_roots root ON root.operation_id = operation.operation_id
+  WHERE operation.scope_type = ? AND operation.scope_id = ?
+    AND operation.operation_status = 'applying' AND operation.pause_mode = 'finish_causal_chain'
+    AND root.root_work_id = ? AND root.root_status = 'active'
+)`, scope.typeName, scope.id.String, rootWorkID).Scan(&allowed); err != nil {
+			return false, false, fmt.Errorf("authorize paused causal Work: %w", err)
+		}
+		if !allowed {
+			return false, false, nil
+		}
+		pausedCausal = true
+	}
+	return true, pausedCausal, nil
+}
+
+func canAcceptResultTx(ctx context.Context, tx *sql.Tx, attempt model.Attempt, work model.Work,
+	current model.AttemptFence, executorActorID, executorIncarnation string) error {
+	if err := attachCurrentScopeFencesTx(ctx, tx, work.WorkID, &current); err != nil {
+		return err
+	}
+	return attempt.CanAcceptResult(work, current, executorActorID, executorIncarnation)
+}
+
 func executionWorkloadClassTx(ctx context.Context, tx *sql.Tx, work model.Work) (string, error) {
 	switch work.Purpose {
 	case "baseline_listing":
@@ -569,7 +684,8 @@ func getOccurrenceByWorkWith(ctx context.Context, queryer interface {
 	return occurrence, nil
 }
 
-func loadListingOfferFence(ctx context.Context, tx *sql.Tx, occurrence model.SourceOccurrence, profileID string) (*model.IncrementalCheckpoint, model.AttemptFence, error) {
+func loadListingOfferFence(ctx context.Context, tx *sql.Tx, occurrence model.SourceOccurrence, profileID string,
+	acceptPausedResult bool) (*model.IncrementalCheckpoint, model.AttemptFence, error) {
 	if err := occurrence.ListingExecution.Validate(occurrence.SourceID); err != nil {
 		return nil, model.AttemptFence{}, err
 	}
@@ -601,8 +717,8 @@ WHERE s.source_id = ?`, occurrence.SourceID).Scan(&companyState, &sourceState, &
 		return nil, model.AttemptFence{}, err
 	}
 	snapshot := occurrence.ListingExecution
-	if company.Version != occurrence.CompanyVersion || company.OnboardingStatus != model.CompanyReady || company.ControlStatus != model.ControlActive ||
-		source.Version != occurrence.SourceVersion || source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy ||
+	if (!acceptPausedResult && (company.Version != occurrence.CompanyVersion || company.OnboardingStatus != model.CompanyReady || company.ControlStatus != model.ControlActive ||
+		source.Version != occurrence.SourceVersion || source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy)) ||
 		assignment != snapshot.Assignment || recipe.Status != model.RecipeActive || recipe.RecipeID != snapshot.RecipeID ||
 		recipe.Version != snapshot.RecipeVersion || recipe.ContentHash != snapshot.ContentHash || recipe.ContractHash != snapshot.ContractHash || recipe.Execution != snapshot.Execution {
 		return nil, model.AttemptFence{}, fmt.Errorf("listing work is fenced by changed or unavailable cutoff configuration")
@@ -643,7 +759,8 @@ WHERE s.source_id = ?`, occurrence.SourceID).Scan(&companyState, &sourceState, &
 	return checkpoint, fence, nil
 }
 
-func loadStandaloneListingOfferFence(ctx context.Context, tx *sql.Tx, run model.ListingRun, profileID string) (*model.IncrementalCheckpoint, model.AttemptFence, error) {
+func loadStandaloneListingOfferFence(ctx context.Context, tx *sql.Tx, run model.ListingRun, profileID string,
+	acceptPausedResult bool) (*model.IncrementalCheckpoint, model.AttemptFence, error) {
 	if err := run.ListingExecution.Validate(run.SourceID); err != nil ||
 		(run.Status != model.ListingRunQueued && run.Status != model.ListingRunRunning) {
 		return nil, model.AttemptFence{}, fmt.Errorf("standalone listing run is not executable")
@@ -660,7 +777,7 @@ func loadStandaloneListingOfferFence(ctx context.Context, tx *sql.Tx, run model.
 	// started it while a scheduled run advances the current checkpoint. All
 	// executable code and aggregate versions must still remain identical.
 	expected.Checkpoint, expected.CheckpointVersion = run.Checkpoint, run.CheckpointVersion
-	if expected.CompanyVersion != run.CompanyVersion || expected.SourceVersion != run.SourceVersion ||
+	if (!acceptPausedResult && (expected.CompanyVersion != run.CompanyVersion || expected.SourceVersion != run.SourceVersion)) ||
 		!reflect.DeepEqual(expected.ListingExecution, run.ListingExecution) {
 		return nil, model.AttemptFence{}, fmt.Errorf("standalone listing run is fenced by changed source or recipe")
 	}
@@ -937,7 +1054,8 @@ WHERE work_id = ? FOR UPDATE`, work.WorkID).Scan(&state); err != nil {
 	return baseline, fence, nil
 }
 
-func loadDetailOfferFence(ctx context.Context, tx *sql.Tx, work model.Work, placement WorkPlacement) (*DetailExecutionInput, model.AttemptFence, error) {
+func loadDetailOfferFence(ctx context.Context, tx *sql.Tx, work model.Work, placement WorkPlacement,
+	acceptPausedResult bool) (*DetailExecutionInput, model.AttemptFence, error) {
 	if work.TargetType != "job" || work.Purpose != "detail_sync" {
 		return nil, model.AttemptFence{}, fmt.Errorf("detail execution requires a detail job work")
 	}
@@ -985,8 +1103,8 @@ WHERE s.source_id = ?`, job.SourceID).Scan(&companyState, &sourceState, &assignm
 		}
 		companyAllowsDetail = baselineMember
 	}
-	if !companyAllowsDetail || company.ControlStatus != model.ControlActive ||
-		source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy ||
+	if (!acceptPausedResult && (!companyAllowsDetail || company.ControlStatus != model.ControlActive ||
+		source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy)) ||
 		source.DetailAssignment == nil || *source.DetailAssignment != assignment || assignment.Kind != model.RecipeDetail ||
 		recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDetail || recipe.RecipeID != assignment.RecipeID ||
 		recipe.Version != assignment.RecipeVersion || recipe.ContractHash != assignment.ContractHash ||
@@ -1160,7 +1278,8 @@ WHERE binding.source_id = ? AND binding.recipe_kind = 'detail' AND binding.profi
 	return input, fence, nil
 }
 
-func loadSourceDiscoveryOfferFence(ctx context.Context, tx *sql.Tx, work model.Work, placement WorkPlacement) (model.SourceDiscovery, model.Recipe, model.AttemptFence, error) {
+func loadSourceDiscoveryOfferFence(ctx context.Context, tx *sql.Tx, work model.Work, placement WorkPlacement,
+	acceptPausedResult bool) (model.SourceDiscovery, model.Recipe, model.AttemptFence, error) {
 	if work.TargetType != "company" || work.Purpose != "source_discovery" {
 		return model.SourceDiscovery{}, model.Recipe{}, model.AttemptFence{}, fmt.Errorf("source discovery requires company work")
 	}
@@ -1191,7 +1310,7 @@ WHERE c.company_id = ?`, discovery.RecipeID, discovery.RecipeVersion, discovery.
 	origin, err := canonicalOrigin(discovery.SeedURL)
 	if err != nil || discovery.WorkID != work.WorkID || discovery.CompanyID != work.TargetID ||
 		(discovery.Status != model.SourceDiscoveryQueued && discovery.Status != model.SourceDiscoveryRunning) ||
-		company.Version != discovery.CompanyVersion || company.ControlStatus == model.ControlArchived || company.Website != discovery.SeedURL ||
+		(!acceptPausedResult && (company.Version != discovery.CompanyVersion || company.ControlStatus != model.ControlActive)) || company.Website != discovery.SeedURL ||
 		recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDiscovery || recipe.RecipeID != discovery.RecipeID ||
 		recipe.Version != discovery.RecipeVersion || recipe.ContentHash != discovery.RecipeContentHash ||
 		recipe.ContractHash != discovery.ContractHash || recipe.Execution != discovery.Execution ||
@@ -1476,10 +1595,10 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			if errors.Is(fenceErr, ErrNotFound) {
 				listingRun, fenceErr = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
 				if fenceErr == nil {
-					_, currentFence, fenceErr = loadStandaloneListingOfferFence(ctx, tx, listingRun, attempt.ProfileID)
+					_, currentFence, fenceErr = loadStandaloneListingOfferFence(ctx, tx, listingRun, attempt.ProfileID, true)
 				}
 			} else if fenceErr == nil {
-				_, currentFence, fenceErr = loadListingOfferFence(ctx, tx, occurrence, attempt.ProfileID)
+				_, currentFence, fenceErr = loadListingOfferFence(ctx, tx, occurrence, attempt.ProfileID, true)
 			}
 		case "source_validation":
 			listingRun, fenceErr = getListingRunByWorkWith(ctx, tx, work.WorkID, true)
@@ -1501,7 +1620,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			if placementErr != nil {
 				fenceErr = placementErr
 			} else {
-				_, currentFence, fenceErr = loadDetailOfferFence(ctx, tx, work, placement)
+				_, currentFence, fenceErr = loadDetailOfferFence(ctx, tx, work, placement, true)
 			}
 		case "historical_backfill_item":
 			placement, placementErr := getWorkPlacementWith(ctx, tx, work.WorkID)
@@ -1527,7 +1646,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			if placementErr != nil {
 				fenceErr = placementErr
 			} else {
-				currentDiscovery, _, currentFence, fenceErr = loadSourceDiscoveryOfferFence(ctx, tx, work, placement)
+				currentDiscovery, _, currentFence, fenceErr = loadSourceDiscoveryOfferFence(ctx, tx, work, placement, true)
 			}
 		case "baseline_listing":
 			placement, placementErr := getWorkPlacementWith(ctx, tx, work.WorkID)
@@ -1557,6 +1676,9 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 			}
 		default:
 			fenceErr = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)
+		}
+		if fenceErr == nil {
+			fenceErr = attachCurrentScopeFencesTx(ctx, tx, work.WorkID, &currentFence)
 		}
 		if fenceErr != nil || !sameAttemptFence(attempt, currentFence) {
 			return model.Attempt{}, fmt.Errorf("%w: execution domain fence changed", ErrResultFenced)
@@ -1796,7 +1918,17 @@ FROM recruiting_works WHERE work_id = ?`, workID).Scan(&businessKey, &placement.
 }
 
 func sameAttemptFence(attempt model.Attempt, current model.AttemptFence) bool {
-	return attempt.CompanyVersion == current.CompanyVersion && attempt.SourceVersion == current.SourceVersion &&
+	companyMatches := attempt.CompanyVersion == current.CompanyVersion
+	if attempt.CompanyConfigurationVersion != 0 {
+		companyMatches = attempt.CompanyConfigurationVersion == current.CompanyConfigurationVersion &&
+			attempt.CompanyExecutionFence == current.CompanyExecutionFence
+	}
+	sourceMatches := attempt.SourceVersion == current.SourceVersion
+	if attempt.SourceConfigurationVersion != 0 {
+		sourceMatches = attempt.SourceConfigurationVersion == current.SourceConfigurationVersion &&
+			attempt.SourceExecutionFence == current.SourceExecutionFence
+	}
+	return companyMatches && sourceMatches &&
 		attempt.AssignmentVersion == current.AssignmentVersion && attempt.RecipeID == current.RecipeID &&
 		attempt.RecipeVersion == current.RecipeVersion && attempt.CheckpointVersion == current.CheckpointVersion &&
 		attempt.RefreshGeneration == current.RefreshGeneration && attempt.ProfileID == current.ProfileID &&

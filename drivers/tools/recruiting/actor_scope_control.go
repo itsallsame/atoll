@@ -15,6 +15,7 @@ type scopeControlReconcileResult struct {
 	WorksPaused     int
 	WorksCanceled   int
 	AttemptsExpired int
+	RootsSettled    int
 	Completed       bool
 	Conflict        bool
 }
@@ -24,8 +25,26 @@ type scopeControlReconcileResult struct {
 func reconcileScopeControl(ctx context.Context, repository *store.Repository, limit int,
 	now time.Time) (scopeControlReconcileResult, error) {
 	operations, err := repository.ListScopeControlOperationsForReconcile(ctx, 1)
-	if err != nil || len(operations) == 0 {
+	if err != nil {
 		return scopeControlReconcileResult{}, err
+	}
+	if len(operations) == 0 {
+		operations, err = repository.ListScopeControlOperationsForRootSettlement(ctx, 1)
+		if err != nil || len(operations) == 0 {
+			return scopeControlReconcileResult{}, err
+		}
+		operation := operations[0]
+		next, settled, settleErr := repository.SettleCompletedScopeControlRoots(ctx, operation.OperationID,
+			operation.Version, limit, now)
+		if settleErr != nil {
+			var conflict *model.VersionConflictError
+			if errors.As(settleErr, &conflict) || errors.Is(settleErr, store.ErrProgressConflict) {
+				return scopeControlReconcileResult{OperationID: operation.OperationID, Conflict: true}, nil
+			}
+			return scopeControlReconcileResult{}, settleErr
+		}
+		return scopeControlReconcileResult{OperationID: operation.OperationID, RootsSettled: settled,
+			Completed: next.Status == model.ScopeControlCompleted}, nil
 	}
 	operation := operations[0]
 	next, err := repository.ReconcileScopeControlOperation(ctx, operation.OperationID, operation.Version, limit, now)

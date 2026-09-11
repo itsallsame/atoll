@@ -86,6 +86,15 @@ WHERE operation_id = ?`, operationID).Scan(&operations); err != nil {
 	if err != nil || storedWork.Status != model.WorkRunning {
 		t.Fatalf("active causal root was frozen: %+v err=%v", storedWork, err)
 	}
+	completedWork, _ := storedWork.Complete(storedWork.Version, model.ResolutionSucceeded, "", "")
+	if err := repository.UpdateWorkCAS(ctx, storedWork.Version, completedWork, now.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	settled, count, err := repository.SettleCompletedScopeControlRoots(ctx, operationID, projected.Version, 500,
+		now.Add(5*time.Second))
+	if err != nil || count != 1 || settled.Status != model.ScopeControlCompleted || settled.ActiveRoots != 0 {
+		t.Fatalf("causal root settlement operation=%+v count=%d err=%v", settled, count, err)
+	}
 }
 
 func TestCancelScopeControlFencesWorkAndExpiresAttempt(t *testing.T) {

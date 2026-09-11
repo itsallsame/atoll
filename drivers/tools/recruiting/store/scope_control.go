@@ -343,6 +343,130 @@ ORDER BY updated_at, operation_id LIMIT ?`, limit)
 	return operations, rows.Err()
 }
 
+func (r *Repository) ListScopeControlOperationsForRootSettlement(ctx context.Context, limit int) ([]model.ScopeControlOperation, error) {
+	if limit <= 0 || limit > scopeControlBatchLimit {
+		return nil, fmt.Errorf("scope control root settlement limit must be in [1,500]")
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT state_json FROM recruiting_scope_control_operations
+WHERE operation_status = 'applying' AND projection_completed = TRUE AND active_roots > 0
+ORDER BY updated_at, operation_id LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list scope control roots for settlement: %w", err)
+	}
+	defer rows.Close()
+	operations := make([]model.ScopeControlOperation, 0, limit)
+	for rows.Next() {
+		var state []byte
+		if err := rows.Scan(&state); err != nil {
+			return nil, err
+		}
+		var operation model.ScopeControlOperation
+		if err := json.Unmarshal(state, &operation); err != nil {
+			return nil, err
+		}
+		operations = append(operations, operation)
+	}
+	return operations, rows.Err()
+}
+
+func (r *Repository) SettleCompletedScopeControlRoots(ctx context.Context, operationID string, expectedVersion uint64,
+	limit int, businessAt time.Time) (model.ScopeControlOperation, int, error) {
+	if strings.TrimSpace(operationID) == "" || expectedVersion == 0 || limit <= 0 || limit > scopeControlBatchLimit || businessAt.IsZero() {
+		return model.ScopeControlOperation{}, 0, fmt.Errorf("scope control root settlement input is invalid")
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return model.ScopeControlOperation{}, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var state []byte
+	if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_scope_control_operations
+WHERE operation_id = ? FOR UPDATE`, operationID).Scan(&state); errors.Is(err, sql.ErrNoRows) {
+		return model.ScopeControlOperation{}, 0, ErrNotFound
+	} else if err != nil {
+		return model.ScopeControlOperation{}, 0, err
+	}
+	var operation model.ScopeControlOperation
+	if err := json.Unmarshal(state, &operation); err != nil {
+		return model.ScopeControlOperation{}, 0, err
+	}
+	if operation.Version != expectedVersion {
+		return model.ScopeControlOperation{}, 0, &model.VersionConflictError{Expected: expectedVersion, Actual: operation.Version}
+	}
+	if operation.Status != model.ScopeControlApplying || !operation.ProjectionCompleted || operation.ActiveRoots == 0 {
+		return operation, 0, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT root.root_work_id
+FROM recruiting_scope_control_roots root
+WHERE root.operation_id = ? AND root.root_status = 'active'
+  AND NOT EXISTS (
+    SELECT 1 FROM recruiting_works work FORCE INDEX (ix_recruiting_work_root)
+    WHERE work.root_work_id = root.root_work_id
+      AND work.status IN ('open','waiting_retry','waiting_human','paused','running')
+  )
+ORDER BY root.root_work_id LIMIT ? FOR UPDATE`, operation.OperationID, limit)
+	if err != nil {
+		return model.ScopeControlOperation{}, 0, fmt.Errorf("find completed scope control roots: %w", err)
+	}
+	var roots []string
+	for rows.Next() {
+		var root string
+		if err := rows.Scan(&root); err != nil {
+			_ = rows.Close()
+			return model.ScopeControlOperation{}, 0, err
+		}
+		roots = append(roots, root)
+	}
+	if err := rows.Close(); err != nil {
+		return model.ScopeControlOperation{}, 0, err
+	}
+	if len(roots) == 0 {
+		if err := tx.Commit(); err != nil {
+			return model.ScopeControlOperation{}, 0, err
+		}
+		return operation, 0, nil
+	}
+	next := operation
+	for _, root := range roots {
+		result, err := tx.ExecContext(ctx, `UPDATE recruiting_scope_control_roots
+SET root_status = 'settled', settled_at = ?
+WHERE operation_id = ? AND root_work_id = ? AND root_status = 'active'`, businessAt.UTC(), operation.OperationID, root)
+		if err != nil {
+			return model.ScopeControlOperation{}, 0, err
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return model.ScopeControlOperation{}, 0, ErrProgressConflict
+		}
+		next, err = next.SettleRoot(next.Version, businessAt)
+		if err != nil {
+			return model.ScopeControlOperation{}, 0, err
+		}
+	}
+	nextState, _ := json.Marshal(next)
+	var activeScopeKey any = operation.ScopeType + ":" + operation.ScopeID
+	var completedAt any
+	if next.Status == model.ScopeControlCompleted {
+		activeScopeKey = nil
+		completed, _ := time.Parse(time.RFC3339Nano, next.CompletedAt)
+		completedAt = completed.UTC()
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE recruiting_scope_control_operations
+SET operation_status = ?, active_scope_key = ?, active_roots = ?, version = ?, state_json = ?,
+    completed_at = ?, updated_at = ?
+WHERE operation_id = ? AND version = ?`, next.Status, activeScopeKey, next.ActiveRoots, next.Version,
+		nextState, completedAt, businessAt.UTC(), next.OperationID, operation.Version)
+	if err != nil {
+		return model.ScopeControlOperation{}, 0, err
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return model.ScopeControlOperation{}, 0, ErrProgressConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return model.ScopeControlOperation{}, 0, err
+	}
+	return next, len(roots), nil
+}
+
 func expireActiveAttemptsForScopeControlTx(ctx context.Context, tx *sql.Tx, workID string, at time.Time) (int, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT attempt_id, state_json FROM recruiting_attempts
 WHERE work_id = ? AND attempt_status IN ('offered','accepted','running') FOR UPDATE`, workID)

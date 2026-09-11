@@ -96,14 +96,14 @@ func (r *Repository) acceptSourceDiscoveryResultTx(ctx context.Context, input So
 	if err != nil {
 		return SourceDiscoveryResultOutcome{}, nil, err
 	}
-	discovery, _, currentFence, err := loadSourceDiscoveryOfferFence(ctx, tx, work, placement)
+	discovery, _, currentFence, err := loadSourceDiscoveryOfferFence(ctx, tx, work, placement, true)
 	if err != nil {
 		return SourceDiscoveryResultOutcome{}, err, nil
 	}
 	if discovery.Status != model.SourceDiscoveryRunning || discovery.CandidateCount != 0 || discovery.NextChunkSequence != 0 {
 		return SourceDiscoveryResultOutcome{}, fmt.Errorf("source discovery is not accepting its one-shot result"), nil
 	}
-	if err := attempt.CanAcceptResult(work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
+	if err := canAcceptResultTx(ctx, tx, attempt, work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
 		return SourceDiscoveryResultOutcome{}, err, nil
 	}
 	if err := insertArtifact(ctx, tx, input.Artifact, false, input.ObservedAt); err != nil {
