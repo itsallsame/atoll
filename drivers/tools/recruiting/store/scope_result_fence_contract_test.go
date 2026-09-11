@@ -1239,3 +1239,135 @@ func createRunningLiveBackfillFixture(t *testing.T, ctx context.Context, reposit
 		CompletedAt: now.Add(6 * time.Second)}
 	return runningLiveBackfillFixture{source: detail.source, backfill: confirmed, offer: offer, result: result, now: now}
 }
+
+func TestDiagnosticResultUsesSeparatedSourceFences(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	now := time.Date(2095, 2, 20, 4, 0, 0, 0, time.UTC)
+
+	for index, test := range []struct {
+		name   string
+		change func(model.RecruitmentSource) (model.RecruitmentSource, error)
+		accept bool
+	}{
+		{name: "drain", accept: true, change: func(source model.RecruitmentSource) (model.RecruitmentSource, error) {
+			return source.Pause(source.Version, model.PauseDrain)
+		}},
+		{name: "cancel", change: func(source model.RecruitmentSource) (model.RecruitmentSource, error) {
+			return source.Pause(source.Version, model.PauseCancel)
+		}},
+		{name: "configuration_change", change: func(source model.RecruitmentSource) (model.RecruitmentSource, error) {
+			return source.StageEndpoint(source.Version, "https://"+source.SourceID+".example.com/jobs-v2", "all")
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			prefix := "diagnostic-scope-fence-" + test.name
+			fixture := createRunningDiagnosticFixture(t, ctx, repository, prefix,
+				now.Add(time.Duration(index)*time.Hour))
+			current, err := repository.GetSource(ctx, fixture.source.SourceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed, err := test.change(current)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repository.UpdateSourceCAS(ctx, current.Version, changed, fixture.now.Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			outcome, resultErr := repository.AcceptDiagnosticResult(ctx, fixture.result)
+			if test.accept {
+				if resultErr != nil || outcome.Work.Status != model.WorkCompleted || outcome.Run.Status != model.ListingRunCompleted {
+					t.Fatalf("drain rejected valid diagnostic evidence: %+v err=%v", outcome, resultErr)
+				}
+				return
+			}
+			if !errors.Is(resultErr, ErrResultFenced) {
+				t.Fatalf("stale diagnostic evidence was accepted: %+v err=%v", outcome, resultErr)
+			}
+			var rejected, jobs int
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_artifacts
+WHERE attempt_id = ? AND rejected = TRUE`, fixture.offer.Attempt.AttemptID).Scan(&rejected); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_source_jobs
+WHERE source_id = ?`, fixture.source.SourceID).Scan(&jobs); err != nil {
+				t.Fatal(err)
+			}
+			if rejected != 2 || jobs != 0 {
+				t.Fatalf("fenced diagnostic evidence rejected=%d jobs=%d", rejected, jobs)
+			}
+		})
+	}
+}
+
+type runningDiagnosticFixture struct {
+	source model.RecruitmentSource
+	offer  ExecutionOffer
+	result DiagnosticResult
+	now    time.Time
+}
+
+func createRunningDiagnosticFixture(t *testing.T, ctx context.Context, repository *Repository,
+	prefix string, now time.Time) runningDiagnosticFixture {
+	t.Helper()
+	company := persistExecutionReadyCompany(t, ctx, repository, prefix, now)
+	source := persistExecutionReadySource(t, ctx, repository, company, prefix, prefix+"-source", now)
+	if _, err := repository.db.ExecContext(ctx, `DELETE FROM recruiting_checkpoints WHERE source_id = ?`, source.SourceID); err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := repository.PrepareListingRun(ctx, source.SourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := preparation.NewRun(prefix+"-run", prefix+"-work", model.ListingRunDiagnostic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, _ := model.NewWork(run.WorkID, "source", source.SourceID, "listing_sync", "manual")
+	work, _ = work.WithCausality("human:scope-fence", prefix+"-message", "")
+	placement := WorkPlacement{BusinessKey: "manual-listing|" + run.ListingRunID, Priority: 200,
+		Capability: run.ListingExecution.Execution.RequiredCapability, Origin: run.ListingExecution.Origin, NotBefore: now}
+	receipt, _ := model.NewCommandReceipt(prefix+"-create", "recruiting.run.diagnostic",
+		"sha256:"+prefix+"-create", json.RawMessage(`{}`))
+	event, _ := model.NewEventIntent(prefix+"-event", "work.created", "work", work.WorkID, work.Version,
+		now.Format(time.RFC3339Nano), receipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyListingRunCommand(ctx, source.Version, run, work, placement, receipt, event, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: prefix + "-attempt",
+		ExecutorActorID: "executor-" + prefix, ExecutorIncarnation: "boot-" + prefix,
+		Capability: placement.Capability, Origin: placement.Origin, OfferedAt: now,
+		BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+		offer.Attempt.ExecutorIncarnation, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, offer.Attempt.AttemptID, offer.Attempt.ExecutorActorID,
+		offer.Attempt.ExecutorIncarnation, now); err != nil {
+		t.Fatal(err)
+	}
+	page := mustResultArtifact(t, prefix+"-page", model.ArtifactPage, work.WorkID, offer.Attempt.AttemptID)
+	trace := mustResultArtifact(t, prefix+"-trace", model.ArtifactTrace, work.WorkID, offer.Attempt.AttemptID)
+	result := DiagnosticResult{CommandID: prefix + "-result", RequestHash: "sha256:" + prefix + "-result",
+		AttemptID: offer.Attempt.AttemptID, ExecutorActorID: offer.Attempt.ExecutorActorID,
+		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, ResultKind: "diagnostic",
+		Artifacts: []model.ArtifactMetadata{page, trace}, Quality: executioncontract.ListingQuality{
+			IdentityComplete: true, OrderingContractHeld: true, PaginationStable: true, ItemCount: 3},
+		CompletedAt: now.Add(2 * time.Second)}
+	return runningDiagnosticFixture{source: source, offer: offer, result: result, now: now}
+}
