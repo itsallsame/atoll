@@ -26,6 +26,21 @@ type WorkPlacement struct {
 	DeadlineAt  *time.Time `json:"deadline_at,omitempty"`
 }
 
+func bindWorkPlacementScope(placement WorkPlacement, companyID, sourceID string) (WorkPlacement, error) {
+	companyID, sourceID = strings.TrimSpace(companyID), strings.TrimSpace(sourceID)
+	if companyID == "" {
+		return WorkPlacement{}, fmt.Errorf("Work Company scope is required")
+	}
+	if placement.CompanyID != "" && strings.TrimSpace(placement.CompanyID) != companyID {
+		return WorkPlacement{}, fmt.Errorf("Work placement Company scope conflicts with its business input")
+	}
+	if placement.SourceID != "" && strings.TrimSpace(placement.SourceID) != sourceID {
+		return WorkPlacement{}, fmt.Errorf("Work placement Source scope conflicts with its business input")
+	}
+	placement.CompanyID, placement.SourceID = companyID, sourceID
+	return placement, nil
+}
+
 func (r *Repository) CreateWork(ctx context.Context, work model.Work, placement WorkPlacement, businessAt time.Time) error {
 	return insertWork(ctx, r.db, work, placement, businessAt)
 }

@@ -126,6 +126,10 @@ func (r *Repository) ApplyRecipeValidationCommand(ctx context.Context, expectedR
 		!placement.NotBefore.Equal(businessAt.UTC()) {
 		return CommandResult{}, fmt.Errorf("Recipe validation input changed before commit")
 	}
+	placement, err = bindWorkPlacementScope(placement, current.Company.CompanyID, current.Source.SourceID)
+	if err != nil {
+		return CommandResult{}, err
+	}
 	if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {
 		if errors.Is(err, ErrCommandConflict) {
 			_ = tx.Rollback()
