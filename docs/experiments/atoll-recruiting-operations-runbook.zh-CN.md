@@ -143,7 +143,7 @@ Company 合规物理擦除不得使用普通 archive 或直接执行 SQL：
 4. 在隔离环境重放稳定 command ID，证明 receipt 返回原 outcome；运行 reconcile，证明 ledger/event 与 dispatch 不重复产生有效结果。
 5. 先 diagnostic，再单 Source production，然后按 10、100、1,000、10,000 Company 分级恢复。
 
-机制演练入口为 `make recruiting-backup-restore`。它不替代生产规模 RTO/RPO、加密异地保留、binlog 时间点恢复和三存储联合演练。
+数据库逻辑恢复入口为 `make recruiting-backup-restore`；停止写入后的 MySQL + Atoll ledger + daemon File Resource 联合恢复入口为 `make recruiting-joint-restore`。后者必须恢复到不同数据库名和不同 Server/daemon 目录，禁止用原地重启冒充恢复。两个机制演练均不替代生产规模 RTO/RPO、在线一致性点、加密异地保留、binlog 时间点恢复、远程 Artifact provider 和地域灾难演练。
 
 ## 10. 发布与回滚门
 
@@ -160,7 +160,7 @@ Company 合规物理擦除不得使用普通 archive 或直接执行 SQL：
 - 已通过的 Women’s Aid 活动倒序/更新置顶真实纵向样本仍需纳入 Nightly/Weekly 持续监测；单次通过不代表第三方契约永久不变；
 - 生产 OS/container 级出站隔离和真实授权登录站点 canary；
 - 外部执行吞吐、Artifact/ledger 容量与全部故障注入矩阵；
-- 生产数据量的 RTO/RPO、binlog PITR、加密异地保留和 MySQL/ledger/Artifact 联合恢复；
+- 生产数据量的 RTO/RPO、binlog PITR、加密异地保留，以及远程 MySQL/ledger/Artifact 联合恢复；
 - 仓库级非 Recruiting 核心 E2E blocker 的上游修复。
 
 上述项目存在时，系统可以继续开发和受控验收，但不得宣称 P9 或生产准入完成。

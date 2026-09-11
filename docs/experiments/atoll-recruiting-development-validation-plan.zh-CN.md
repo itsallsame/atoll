@@ -573,6 +573,8 @@ S01—S24 至少有 model/Repository/actor 测试中的一种自动化覆盖，�
 
 备份恢复进展（2026-09-11）：新增 `make recruiting-backup-restore`，在一次性 MySQL 8.4 上以 migration/runtime 分离的非 root 身份建立源库和全新恢复库。源库通过正式 Repository 原子写入 Company、Work、两个稳定 receipt、两个领域 event intent 和一个 execution dispatch；脚本用一致性快照逻辑备份，恢复后在另一个测试进程中只以 runtime 身份核对领域状态 JSON、两类 outbox、完整 migration ledger 和命令重放，且再次证明 runtime 无 DDL 权限。正式演练的 90,553 字节 dump 在 394 ms 内恢复，端到端 9.634 秒；凭证未进入 dump。该合同关闭“能否从干净库恢复控制面因果”的机制缺口，但不替代生产数据量 RTO/RPO、加密异地保留、binlog 时间点恢复、Atoll ledger 和 Artifact provider 的联合恢复演练。证据见 `evidence/recruiting-backup-restore-20260911.json`。
 
+三数据面联合恢复进展（2026-09-12）：新增 `make recruiting-joint-restore` 和真实进程用例 `TestRecruitingJointColdRestoreAcrossDataPlanes`。普通注册用户通过 Server/Recruiting Actor 创建 Company 与稳定 command receipt，领域 event 经 outbox 进入 Atoll Channel ledger；独立 daemon 承载 1,728 字节 File Resource，Recruiting MySQL 保存指向其精确 SHA-256 的 Artifact metadata。Server 与 daemon 全部停止后，演练分别复制 Atoll server home、daemon Artifact home，并用 `staircase_migrator` 生成一致性 MySQL dump；恢复验证只使用不同数据库名、不同 Server 目录和不同 daemon 目录，排除原地重启误判。恢复后普通用户可登录，原命令返回 version 1 的既有 outcome，ledger 中 event 仍恰好一条，Company/Work/Artifact/outbox/53 条 migration 均在，File Resource 原字节与哈希一致，且恢复库的 `staircase_runtime` 仍无 DDL 权限。正式入口复跑的 dump 为 130,758 字节，快照前阶段 13.561 秒、恢复与验证 2.237 秒、用例总计 16.03 秒。该结果关闭有界冷备场景中“数据库、ledger 和 Artifact 能否联合恢复”的机制缺口，但不代表生产数据量 RTO/RPO、在线一致性点、binlog PITR、加密异地保留、远程 Artifact provider 或地域灾难已经通过。证据见 `evidence/recruiting-joint-cold-restore-20260912.json`。
+
 MySQL 故障注入进展（2026-09-11）：除既有行锁超时、真实 InnoDB deadlock 单赢家以及子进程在事务提交前/后的 `SIGKILL` 合同外，新增两个非 root runtime 合同。连接池唯一连接被占用时，Repository 必须服从调用方 deadline 且不留下 Company 事实；会话被切到 `TRANSACTION READ ONLY` 时，业务写明确失败、读取仍可核对且不产生半条事实。两项在真实 MySQL 8.4 通过。它们关闭连接耗尽和只读切片，不代表连接抖动、主从切换、全矩阵切点或生产恢复已经验收。
 
 Browser 故障注入进展（2026-09-12）：受控 Broker 在导航后、DOM 完成前异常退出时，Driver 把错误稳定分类为 `browser_transport`，并在返回失败前保存绑定原 Attempt 的部分 DOM Artifact；不会把残缺页面送入离线 Recipe 或形成业务结果。Browser Plan 又增加哈希绑定、数量和 CSS 语法受限的 `auth_expired|captcha` selector，真实 Chrome 在动作前后识别并经两层 Driver 保留精确分类。组合合同进一步让 Broker 返回部分 DOM 后崩溃，同时令 Artifact Resource 拒绝 DOM 与 failure evidence；统一 Executor 只完成 `accept/start`，不提交无证据终态，Attempt 留给 TTL/reconcile。应用层语义已闭合；仍需把最后的组合提升为真实 Chrome/File provider 进程 kill，而不能以组件故障注入冒充 OS 级验收。
@@ -678,6 +680,7 @@ make recruiting-live-nightly
 make recruiting-live-weekly
 make recruiting-capacity
 make recruiting-backup-restore
+make recruiting-joint-restore
 make recruiting-security-audit
 ```
 

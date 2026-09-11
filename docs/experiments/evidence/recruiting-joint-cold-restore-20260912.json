@@ -1,0 +1,48 @@
+{
+  "schema": "recruiting.joint-cold-restore-evidence.v1",
+  "captured_at": "2026-09-12",
+  "command": "make recruiting-joint-restore",
+  "environment": {
+    "mysql": "mysql:8.4",
+    "database_backup": "mysqldump consistent logical snapshot",
+    "database_identities": ["staircase_migrator", "staircase_runtime"],
+    "atoll_processes": ["atoll-server", "atoll-daemon"],
+    "atoll_server_storage": "copied stopped server home including Channel ledger state",
+    "artifact_storage": "copied stopped daemon home containing the File Resource"
+  },
+  "isolation": {
+    "source_and_restore_database_names_differ": true,
+    "source_and_restore_server_directories_differ": true,
+    "source_and_restore_daemon_directories_differ": true,
+    "core_modified": false
+  },
+  "result": {
+    "status": "pass",
+    "test": "TestRecruitingJointColdRestoreAcrossDataPlanes",
+    "elapsed_seconds": 16.03,
+    "dump_bytes": 130758,
+    "snapshot_ms": 13561,
+    "restore_and_verify_ms": 2237,
+    "artifact_bytes": 1728,
+    "migration_count": 53
+  },
+  "verified_facts": [
+    "a normal registered user can log in from the restored Atoll identity and ledger home",
+    "the restored Recruiting actor reads the clean restored MySQL database",
+    "the original Company command returns the byte-stable stored outcome instead of creating a second Company",
+    "the Company, historical Work, Artifact metadata, migration ledger, and delivered event intent survive",
+    "the restored runtime identity can serve the product but still cannot create a table",
+    "the domain event remains exactly once in the restored Atoll Channel ledger",
+    "the daemon-hosted Artifact returns the original 1728 bytes with the exact SHA-256 digest",
+    "database credentials are absent from the logical dump"
+  ],
+  "scope": {
+    "proved": "a stopped, bounded three-plane fixture can be restored into clean MySQL and filesystem targets without breaking identity, command idempotency, ledger uniqueness, or Artifact referential integrity",
+    "not_proved": "production-volume RTO/RPO, online distributed snapshot coordination, encrypted off-site retention, binlog point-in-time recovery, remote Artifact providers, or region loss"
+  },
+  "acceptance_effect": {
+    "scenario": "S25/P9",
+    "status": "progress only",
+    "reason": "the three-plane mechanism gap is closed for a cold bounded fixture, while production scale, PITR, external executor throughput, and long-window SLO evidence remain"
+  }
+}

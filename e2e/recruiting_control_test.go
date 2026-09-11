@@ -211,6 +211,23 @@ func TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart(t *te
 	if got := nestedStringField(t, restoredSource, "source", "control_status"); got != "paused" {
 		t.Fatalf("restored source status=%q: %v", got, restoredSource)
 	}
+	// Restore creates its own cancel-mode scope projection so stale pre-archive
+	// execution is settled before reopening the Source. Do not rely on the
+	// background timer winning a race with the immediate resume request.
+	restoreOperationID := stringField(t, restoredSource, "scope_control_operation_id")
+	restoreCompleted := false
+	for range 5 {
+		scope := recovered.request(homeID, "recruiting.scope_control.get", controlID,
+			map[string]any{"operation_id": restoreOperationID})
+		if nestedStringField(t, scope, "operation", "status") == "completed" {
+			restoreCompleted = true
+			break
+		}
+		recovered.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 10})
+	}
+	if !restoreCompleted {
+		t.Fatalf("source restore operation %s did not settle before resume", restoreOperationID)
+	}
 	resumedSource := recovered.request(homeID, "recruiting.source.resume", controlID, map[string]any{
 		"command_id": "e2e-source-resume", "target": map[string]any{"target_type": "source", "target_id": "e2e-source-a"},
 		"expected_version": 6, "reason": "verify controlled resume",
@@ -662,11 +679,23 @@ func seedPublishedRecruitingRecipe(t *testing.T, dsn, recipeID, origin string, n
 	return recipe
 }
 
+type recruitingMySQLInstance struct {
+	RuntimeDSN          string
+	MigrationDSN        string
+	RestoreRuntimeDSN   string
+	RestoreMigrationDSN string
+}
+
 func startRecruitingMySQL(t *testing.T) string {
+	return startRecruitingMySQLInstance(t).RuntimeDSN
+}
+
+func startRecruitingMySQLInstance(t *testing.T) recruitingMySQLInstance {
 	t.Helper()
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 10)
 	containerName := "atoll-recruiting-e2e-" + suffix
 	databaseName := "atoll_recruiting_e2e_" + suffix
+	restoreDatabaseName := "atoll_recruiting_e2e_restore_" + suffix
 	migrationPassword := "e2e_migration_" + suffix
 	runtimePassword := "e2e_runtime_" + suffix
 	initDirectory := t.TempDir()
@@ -674,7 +703,8 @@ func startRecruitingMySQL(t *testing.T) string {
 		t.Fatal(err)
 	}
 	initSQL := filepath.Join(initDirectory, "10-runtime.sql")
-	sql := fmt.Sprintf("CREATE USER 'staircase_runtime'@'%%' IDENTIFIED BY '%s';\nGRANT SELECT, INSERT, UPDATE, DELETE ON `%s`.* TO 'staircase_runtime'@'%%';\n", runtimePassword, databaseName)
+	sql := fmt.Sprintf("CREATE DATABASE `%s`;\nCREATE USER 'staircase_runtime'@'%%' IDENTIFIED BY '%s';\nGRANT SELECT, INSERT, UPDATE, DELETE ON `%s`.* TO 'staircase_runtime'@'%%';\nGRANT SELECT, INSERT, UPDATE, DELETE ON `%s`.* TO 'staircase_runtime'@'%%';\nGRANT ALL PRIVILEGES ON `%s`.* TO 'staircase_migrator'@'%%';\n",
+		restoreDatabaseName, runtimePassword, databaseName, restoreDatabaseName, restoreDatabaseName)
 	if err := os.WriteFile(initSQL, []byte(sql), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +747,12 @@ func startRecruitingMySQL(t *testing.T) string {
 	if output, err := migrate.CombinedOutput(); err != nil {
 		t.Fatalf("migrate recruiting MySQL: %v\n%s", err, output)
 	}
-	return fmt.Sprintf("staircase_runtime:%s@tcp(127.0.0.1:%s)/%s", runtimePassword, port, databaseName)
+	return recruitingMySQLInstance{
+		RuntimeDSN:          fmt.Sprintf("staircase_runtime:%s@tcp(127.0.0.1:%s)/%s", runtimePassword, port, databaseName),
+		MigrationDSN:        migrationDSN,
+		RestoreRuntimeDSN:   fmt.Sprintf("staircase_runtime:%s@tcp(127.0.0.1:%s)/%s", runtimePassword, port, restoreDatabaseName),
+		RestoreMigrationDSN: fmt.Sprintf("staircase_migrator:%s@tcp(127.0.0.1:%s)/%s", migrationPassword, port, restoreDatabaseName),
+	}
 }
 
 func nestedStringField(t *testing.T, value map[string]any, object, field string) string {
