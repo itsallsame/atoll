@@ -1,0 +1,77 @@
+{
+  "schema": "recruiting.http-capacity-evidence.v1",
+  "captured_at": "2026-09-12",
+  "command": "RECRUITING_HTTP_CAPACITY_LEVEL=H1 make recruiting-http-capacity",
+  "revision_before_commit": "c3390220",
+  "workload_manifest": "docs/experiments/workloads/recruiting-http-capacity-v1.json",
+  "environment": {
+    "cpu_logical": 4,
+    "memory_bytes": 16237535232,
+    "mysql": "8.4 isolated container, separate non-root migration/runtime users",
+    "artifact_provider": "one local Atoll daemon File Resource provider",
+    "controlled_origin": "ephemeral container on a Docker --internal network",
+    "origin_address_class": "public-shaped 11.254.x.x routed only inside the ephemeral internal network",
+    "production_private_network_bypass": false,
+    "third_party_network": false
+  },
+  "workload": {
+    "items": 200,
+    "response_payload_bytes_each": 4096,
+    "origin_latency_ms": 5,
+    "executors": 4,
+    "backfill_mode": "live_refetch",
+    "recipe_transport": "http_json",
+    "selected_fields": ["id", "title", "url"]
+  },
+  "results": {
+    "used_executors": 4,
+    "origin_job_requests": 200,
+    "origin_robots_requests": 4,
+    "response_artifacts": 200,
+    "response_bytes": 819200,
+    "backfill_items_succeeded": 200,
+    "backfill_outputs": 200,
+    "attempts_succeeded": 200,
+    "active_budget_after_completion": 0,
+    "work_materialized_dispatches_delivered": 4,
+    "capacity_released_dispatches_delivered": 200,
+    "dispatches_delivered": 204,
+    "preview_ms": 286,
+    "completion_ms": 37351,
+    "outbox_drain_ms": 37725,
+    "response_artifacts_per_second_during_completion": 5.35,
+    "restart_recovery_ms": 3726,
+    "ledger_messages": 3400,
+    "ledger_payload_bytes": 2377017,
+    "ledger_events": 310,
+    "recruiting_ledger_events": 305,
+    "test_total_ms": 56569,
+    "go_test_seconds": 61.418
+  },
+  "correctness": {
+    "normal_user_preview_and_confirm": true,
+    "production_http_address_policy_exercised": true,
+    "robots_requests_bounded_per_executor": true,
+    "origin_job_request_count_exact": true,
+    "all_response_resource_hashes_verified": true,
+    "exact_business_counts": true,
+    "compact_initial_dispatch_count_exact": true,
+    "all_dispatches_delivered": true,
+    "every_delivered_domain_event_present_once_in_ledger": true,
+    "restart_state_and_command_replay_verified": true,
+    "core_architecture_modified": false
+  },
+  "non_claims": [
+    "third-party latency, throttling, CDN, or availability behavior",
+    "Browser response capture",
+    "remote Artifact provider throughput",
+    "H2 or five-times execution peak",
+    "20K Listing plus 400K Detail execution completion",
+    "long-window saturation or production SLO"
+  ],
+  "acceptance": {
+    "scenario": "S25",
+    "status": "partial",
+    "reason": "controlled HTTP response capture is reproducible without a production safety bypass; Browser, external distributions, peak scale, full daily completion, and long-window gates remain"
+  }
+}

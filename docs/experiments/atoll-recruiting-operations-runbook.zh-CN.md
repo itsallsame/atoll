@@ -25,6 +25,7 @@ make recruiting-model-test
 make recruiting-mysql-test
 make recruiting-process-capacity
 make recruiting-artifact-capacity
+make recruiting-http-capacity
 make recruiting-live-smoke
 ```
 
@@ -161,7 +162,7 @@ Company 合规物理擦除不得使用普通 archive 或直接执行 SQL：
 
 - 已通过的 Women’s Aid 活动倒序/更新置顶真实纵向样本仍需纳入 Nightly/Weekly 持续监测；单次通过不代表第三方契约永久不变；
 - 生产 OS/container 级出站隔离和真实授权登录站点 canary；
-- HTTP/Browser 外部执行与 response capture、20K Listing + 400K Detail 完成吞吐与全部故障注入矩阵；本地 derived Artifact 基线已经通过，不得外推为远程对象存储吞吐；
+- Browser response capture、第三方 HTTP/Browser 延迟与限流分布、H2/5 倍执行峰值、20K Listing + 400K Detail 完成吞吐与全部故障注入矩阵；本地 derived 与受控 HTTP response 基线已经通过，不得外推为远程对象存储或第三方吞吐；
 - 生产数据量的 RTO/RPO、binlog PITR、加密异地保留，以及远程 MySQL/ledger/Artifact 联合恢复；
 - 仓库级非 Recruiting 核心 E2E blocker 的上游修复。
 
