@@ -1021,7 +1021,7 @@ Review Queue 是 `status=waiting_human` 的 Work Center 视图，可再按结构
 
 业务指标包括 Target 健康、职位变化、Recipe 覆盖与修复率；调度指标包括可运行量、等待原因、最老年龄、deadline、Attempt 结果、站点预算和能力利用率；可靠性指标包括跨 ledger/Resource 未完成意图、状态差异、陈旧结果拒绝和恢复时间。
 
-`recruiting.system.status` 从一个只读一致性快照返回 Work/Attempt/DailyRun/Repair 状态计数、Repair 自动恢复队列长度、当前 runnable 与最老等待、deadline miss、领域事件和 execution dispatch 的 pending/due/exhausted；`recruiting.capacity.status` 返回全局、capability、origin、company、Profile 的活动 BudgetPermit 用量，以及按 capability/origin/Profile 有界聚合的 runnable 数和最老等待，同时展示配置的预算上限与 Executor fleet 数。容量分组不能用“限制返回行数”的无界 `GROUP BY` 扫描全部积压；首版分别从 `open`/`waiting_retry` 的 runnable 索引最老端最多读取 5,000 条，并显式返回 scan limit、实际扫描数和 `runnable_counts_exact`，截断结果只是容量压力下界。二者是现有事实的投影，不领取 Work、不创建容量 Actor，也不能把配置实例数冒充在线心跳。
+`recruiting.system.status` 从一个只读一致性快照返回 Work/Attempt/DailyRun/Repair 状态计数、Repair 自动恢复队列长度、当前 runnable 与最老等待、deadline miss、领域事件和 execution dispatch 的 pending/due/exhausted；同一快照还从最近一小时按索引最多读取 1,000 个 Attempt 和 1,000 个 rejected Artifact，返回 Attempt 结果、端到端 P50/P95/P99、过期后同 Work 成功恢复数与恢复时延。每类样本分别返回 scan limit 和 truncated，截断值只能解释为近期样本下界，不能冒充全量计数或 SLO。`recruiting.capacity.status` 返回全局、capability、origin、company、Profile 的活动 BudgetPermit 用量，以及按 capability/origin/Profile 有界聚合的 runnable 数和最老等待，同时展示配置的预算上限与 Executor fleet 数。容量分组不能用“限制返回行数”的无界 `GROUP BY` 扫描全部积压；首版分别从 `open`/`waiting_retry` 的 runnable 索引最老端最多读取 5,000 条，并显式返回 scan limit、实际扫描数和 `runnable_counts_exact`，截断结果只是容量压力下界。二者是现有事实的投影，不领取 Work、不创建容量 Actor，也不能把配置实例数冒充在线心跳。长期时序、Executor 利用率和外部依赖指标仍应进入独立 metrics Resource/监控系统，不能反向把高频样本写入 Channel。
 
 必须贯穿 `command_id`、`correlation_id`、`target_id`、`work_id`、`attempt_id`、Recipe 版本和 `artifact_id`。只有真正引入 Batch 等实体后才增加对应 ID。
 

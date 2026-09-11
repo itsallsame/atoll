@@ -551,6 +551,8 @@ Browser 故障注入进展（2026-09-12）：受控 Broker 在导航后、DOM �
 
 Artifact provider 故障进展（2026-09-11）：若 Executor 已 accept/start，但网站执行失败后连本地 failure Artifact 都无法持久化，Executor 明确返回 provider 错误，不发送没有证据的 `execution.failed`，也不伪造业务终态；持久 Attempt 保持可由既有 TTL/reconcile 过期恢复的状态。该合同与 Permit/Attempt expiry 合同共同给出可解释结果。仍需真实 File provider 断连、恢复后新 Attempt 成功以及与 Chrome kill 的组合进程验收。
 
+近期执行健康投影进展（2026-09-12）：`recruiting.system.status` 的同一只读一致性快照新增最近一小时有界执行健康视图。migration `000044` 为 Attempt 的全局近期顺序和 rejected Artifact 的近期顺序增加专用索引；查询各最多读取 1,001 行、只公布前 1,000 条并显式返回 truncated。投影给出 Attempt 结果、从 offer 创建到终态的 P50/P95/P99/max、过期 Attempt 数、同 Work 后续成功恢复数及恢复时延，以及被栅栏拒绝后留下的 Artifact 证据数。非 root MySQL 8.4 合同验证了 10 分钟终态时延、20 分钟恢复时延、rejected Artifact 和两条生产查询的索引命中。它解决 Work Center 即时诊断的有界读模型，不替代长期时序 metrics、Executor 利用率、Artifact 字节/上传失败或生产 SLO 采集；这些仍是 P9 退出项。机读证据见 `evidence/recruiting-execution-health-20260912.json`。
+
 ### 14.1 负载模型
 
 至少运行以下可复现档位：

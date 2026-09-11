@@ -27,6 +27,32 @@ type OperationalStatus struct {
 	RepairRecoveryQueue uint64            `json:"repair_recovery_queue"`
 	EventOutbox         DeliveryBacklog   `json:"event_outbox"`
 	ExecutionDispatches DeliveryBacklog   `json:"execution_dispatches"`
+	ExecutionHealth     ExecutionHealth   `json:"execution_health"`
+}
+
+type LatencySummary struct {
+	Samples uint64 `json:"samples"`
+	P50MS   uint64 `json:"p50_ms"`
+	P95MS   uint64 `json:"p95_ms"`
+	P99MS   uint64 `json:"p99_ms"`
+	MaxMS   uint64 `json:"max_ms"`
+}
+
+// ExecutionHealth is a bounded recent-window projection. Counts are exact only
+// when their corresponding truncated flag is false; callers must not promote a
+// bounded lower bound into an all-history metric.
+type ExecutionHealth struct {
+	WindowStartAt              string            `json:"window_start_at"`
+	SampleLimit                uint64            `json:"sample_limit"`
+	AttemptResults             map[string]uint64 `json:"attempt_results"`
+	AttemptsScanned            uint64            `json:"attempts_scanned"`
+	AttemptsTruncated          bool              `json:"attempts_truncated"`
+	TerminalLatency            LatencySummary    `json:"terminal_latency"`
+	ExpiredAttempts            uint64            `json:"expired_attempts"`
+	RecoveredExpiredAttempts   uint64            `json:"recovered_expired_attempts"`
+	RecoveryLatency            LatencySummary    `json:"recovery_latency"`
+	RejectedArtifactsScanned   uint64            `json:"rejected_artifacts_scanned"`
+	RejectedArtifactsTruncated bool              `json:"rejected_artifacts_truncated"`
 }
 
 type CapacityDimension struct {
@@ -46,6 +72,12 @@ type CapacitySnapshot struct {
 }
 
 const capacityRunnableScanPerStatus = 5_000
+
+const (
+	defaultExecutionHealthWindow = time.Hour
+	defaultExecutionHealthLimit  = 1_000
+	maxExecutionHealthLimit      = 5_000
+)
 
 func (r *Repository) GetOperationalStatus(ctx context.Context, asOf time.Time) (OperationalStatus, error) {
 	if asOf.IsZero() {
@@ -93,10 +125,129 @@ WHERE recovery_pending = 1`).Scan(&status.RepairRecoveryQueue); err != nil {
 	if status.ExecutionDispatches, err = deliveryBacklog(ctx, tx, "recruiting_execution_dispatch_outbox", asOf); err != nil {
 		return OperationalStatus{}, fmt.Errorf("read execution dispatch status: %w", err)
 	}
+	if status.ExecutionHealth, err = executionHealth(ctx, tx, asOf, defaultExecutionHealthWindow, defaultExecutionHealthLimit); err != nil {
+		return OperationalStatus{}, fmt.Errorf("read execution health: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return OperationalStatus{}, fmt.Errorf("commit operational status snapshot: %w", err)
 	}
 	return status, nil
+}
+
+type recentAttempt struct {
+	workID    string
+	status    string
+	createdAt time.Time
+	updatedAt time.Time
+}
+
+func executionHealth(ctx context.Context, tx *sql.Tx, asOf time.Time, window time.Duration, limit int) (ExecutionHealth, error) {
+	if window <= 0 || limit < 1 || limit > maxExecutionHealthLimit {
+		return ExecutionHealth{}, fmt.Errorf("execution health requires a positive window and limit in [1,%d]", maxExecutionHealthLimit)
+	}
+	start := asOf.Add(-window)
+	health := ExecutionHealth{
+		WindowStartAt: start.Format(time.RFC3339Nano), SampleLimit: uint64(limit),
+		AttemptResults: map[string]uint64{},
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT work_id, attempt_status, created_at, updated_at
+FROM recruiting_attempts FORCE INDEX (ix_recruiting_attempt_recent)
+WHERE updated_at >= ? AND updated_at <= ?
+ORDER BY updated_at DESC, attempt_id DESC
+LIMIT ?`, start, asOf, limit+1)
+	if err != nil {
+		return ExecutionHealth{}, err
+	}
+	attempts := make([]recentAttempt, 0, limit)
+	for rows.Next() {
+		var item recentAttempt
+		if err := rows.Scan(&item.workID, &item.status, &item.createdAt, &item.updatedAt); err != nil {
+			_ = rows.Close()
+			return ExecutionHealth{}, err
+		}
+		if len(attempts) == limit {
+			health.AttemptsTruncated = true
+			continue
+		}
+		attempts = append(attempts, item)
+		health.AttemptResults[item.status]++
+	}
+	if err := rows.Close(); err != nil {
+		return ExecutionHealth{}, err
+	}
+	if err := rows.Err(); err != nil {
+		return ExecutionHealth{}, err
+	}
+	health.AttemptsScanned = uint64(len(attempts))
+	terminalLatencies := make([]uint64, 0, len(attempts))
+	recoveryLatencies := make([]uint64, 0)
+	latestSuccess := map[string]time.Time{}
+	for _, item := range attempts {
+		switch item.status {
+		case "succeeded", "failed", "expired", "rejected":
+			terminalLatencies = append(terminalLatencies, elapsedMilliseconds(item.createdAt, item.updatedAt))
+		}
+		if item.status == "succeeded" {
+			latestSuccess[item.workID] = item.updatedAt
+		}
+		if item.status == "expired" {
+			health.ExpiredAttempts++
+			if recoveredAt, ok := latestSuccess[item.workID]; ok && recoveredAt.After(item.updatedAt) {
+				health.RecoveredExpiredAttempts++
+				recoveryLatencies = append(recoveryLatencies, elapsedMilliseconds(item.updatedAt, recoveredAt))
+			}
+		}
+	}
+	health.TerminalLatency = summarizeLatencies(terminalLatencies)
+	health.RecoveryLatency = summarizeLatencies(recoveryLatencies)
+	rows, err = tx.QueryContext(ctx, `
+SELECT artifact_id
+FROM recruiting_artifacts FORCE INDEX (ix_recruiting_artifact_rejected_recent)
+WHERE rejected = 1 AND created_at >= ? AND created_at <= ?
+ORDER BY created_at DESC, artifact_id DESC
+LIMIT ?`, start, asOf, limit+1)
+	if err != nil {
+		return ExecutionHealth{}, err
+	}
+	for rows.Next() {
+		var artifactID string
+		if err := rows.Scan(&artifactID); err != nil {
+			_ = rows.Close()
+			return ExecutionHealth{}, err
+		}
+		if health.RejectedArtifactsScanned == uint64(limit) {
+			health.RejectedArtifactsTruncated = true
+			continue
+		}
+		health.RejectedArtifactsScanned++
+	}
+	if err := rows.Close(); err != nil {
+		return ExecutionHealth{}, err
+	}
+	return health, rows.Err()
+}
+
+func elapsedMilliseconds(start, end time.Time) uint64 {
+	if !end.After(start) {
+		return 0
+	}
+	return uint64(end.Sub(start).Milliseconds())
+}
+
+func summarizeLatencies(values []uint64) LatencySummary {
+	if len(values) == 0 {
+		return LatencySummary{}
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	pick := func(percentile int) uint64 {
+		index := (percentile*len(values) + 99) / 100
+		if index < 1 {
+			index = 1
+		}
+		return values[index-1]
+	}
+	return LatencySummary{Samples: uint64(len(values)), P50MS: pick(50), P95MS: pick(95), P99MS: pick(99), MaxMS: values[len(values)-1]}
 }
 
 func (r *Repository) GetCapacitySnapshot(ctx context.Context, asOf time.Time, limit int) (CapacitySnapshot, error) {

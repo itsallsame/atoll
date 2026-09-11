@@ -45,11 +45,58 @@ INSERT INTO recruiting_budget_usage(dimension_type, dimension_key, active_count,
 VALUES ('capability', 'status.http.fetch', 3, 1, ?)`, now); err != nil {
 		t.Fatal(err)
 	}
+	for _, attempt := range []struct {
+		id, workID, status   string
+		createdAt, updatedAt time.Time
+	}{
+		{"status-expired-attempt", expired.WorkID, "expired", now.Add(-40 * time.Minute), now.Add(-30 * time.Minute)},
+		{"status-recovery-attempt", expired.WorkID, "succeeded", now.Add(-20 * time.Minute), now.Add(-10 * time.Minute)},
+		{"status-failed-attempt", work.WorkID, "failed", now.Add(-8 * time.Minute), now.Add(-7 * time.Minute)},
+	} {
+		if _, err := db.ExecContext(ctx, `
+INSERT INTO recruiting_attempts(
+  attempt_id, work_id, attempt_status, acceptance_version, state_json, created_at, updated_at
+) VALUES (?, ?, ?, 1, JSON_OBJECT('attempt_id', ?, 'work_id', ?, 'attempt_status', ?), ?, ?)`,
+			attempt.id, attempt.workID, attempt.status, attempt.id, attempt.workID, attempt.status, attempt.createdAt, attempt.updatedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO recruiting_artifacts(
+  artifact_id, artifact_kind, content_hash, object_ref, work_id, access_scope,
+  retention_policy, redacted, rejected, created_at
+) VALUES
+  ('status-rejected-artifact', 'failure', 'sha256:status-rejected', 'resource://status-rejected', ?,
+   'operator', 'failure', 1, 1, ?),
+  ('status-rejected-artifact-2', 'failure', 'sha256:status-rejected-2', 'resource://status-rejected-2', ?,
+   'operator', 'failure', 1, 1, ?)`, work.WorkID, now.Add(-5*time.Minute), work.WorkID, now.Add(-4*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 
 	status, err := repository.GetOperationalStatus(ctx, now)
 	if err != nil || status.AsOf != now.Format(time.RFC3339Nano) || status.WorkCounts[string(model.WorkOpen)] < 2 ||
 		status.RunnableWorks < 1 || status.DeadlineMisses < 1 || status.OldestRunnableAt == "" {
 		t.Fatalf("operational status = %+v err=%v", status, err)
+	}
+	health := status.ExecutionHealth
+	if health.WindowStartAt != now.Add(-time.Hour).Format(time.RFC3339Nano) || health.SampleLimit != 1_000 ||
+		health.AttemptsScanned != 3 || health.AttemptsTruncated || health.AttemptResults["expired"] != 1 ||
+		health.AttemptResults["succeeded"] != 1 || health.AttemptResults["failed"] != 1 ||
+		health.TerminalLatency.Samples != 3 || health.TerminalLatency.P50MS != uint64((10*time.Minute).Milliseconds()) ||
+		health.ExpiredAttempts != 1 || health.RecoveredExpiredAttempts != 1 ||
+		health.RecoveryLatency.P50MS != uint64((20*time.Minute).Milliseconds()) ||
+		health.RejectedArtifactsScanned != 2 || health.RejectedArtifactsTruncated {
+		t.Fatalf("execution health = %+v", health)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bounded, err := executionHealth(ctx, tx, now, time.Hour, 1)
+	_ = tx.Rollback()
+	if err != nil || bounded.AttemptsScanned != 1 || !bounded.AttemptsTruncated ||
+		bounded.RejectedArtifactsScanned != 1 || !bounded.RejectedArtifactsTruncated {
+		t.Fatalf("bounded execution health = %+v err=%v", bounded, err)
 	}
 	capacity, err := repository.GetCapacitySnapshot(ctx, now, 100)
 	if err != nil {
@@ -95,5 +142,24 @@ ORDER BY not_before, priority DESC, deadline_at, work_id LIMIT 5001`, now, now).
 	}
 	if !strings.Contains(explain, "ix_recruiting_work_runnable") {
 		t.Fatalf("capacity scan missed its runnable index: %s", explain)
+	}
+	if err := db.QueryRowContext(ctx, `EXPLAIN FORMAT=JSON
+SELECT work_id, attempt_status, created_at, updated_at
+FROM recruiting_attempts FORCE INDEX (ix_recruiting_attempt_recent)
+WHERE updated_at >= ? AND updated_at <= ?
+ORDER BY updated_at DESC, attempt_id DESC LIMIT 1001`, now.Add(-time.Hour), now).Scan(&explain); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(explain, "ix_recruiting_attempt_recent") {
+		t.Fatalf("execution health query missed its attempt index: %s", explain)
+	}
+	if err := db.QueryRowContext(ctx, `EXPLAIN FORMAT=JSON
+SELECT artifact_id FROM recruiting_artifacts FORCE INDEX (ix_recruiting_artifact_rejected_recent)
+WHERE rejected = 1 AND created_at >= ? AND created_at <= ?
+ORDER BY created_at DESC, artifact_id DESC LIMIT 1001`, now.Add(-time.Hour), now).Scan(&explain); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(explain, "ix_recruiting_artifact_rejected_recent") {
+		t.Fatalf("execution health query missed its rejected Artifact index: %s", explain)
 	}
 }

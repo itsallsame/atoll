@@ -60,7 +60,7 @@ durable timer 到达 cutoff 时冻结当日 eligible Source roster，形成不�
 
 值班检查顺序：
 
-1. `recruiting.system.status`：检查数据库、运行批次、Attempt、RepairIncident 和两个 outbox。
+1. `recruiting.system.status`：检查数据库、运行批次、Attempt、RepairIncident 和两个 outbox；同时查看最近一小时 `execution_health` 的结果分布、终态/恢复时延和 rejected Artifact。若 `attempts_truncated` 或 `rejected_artifacts_truncated` 为真，该数值只是最近 1,000 条的下界，必须转到外部 metrics 查询完整时序。
 2. `recruiting.daily_run.list/get/summary`：比较 expected、planned、listing success、exception、excluded、uncovered 和 recovered。
 3. `recruiting.capacity.status`：检查 oldest runnable age、deadline miss、capability/origin/Profile backlog 与活动预算。
 4. `recruiting.work.list`：按 status、purpose、trigger、waiting reason、Target、initiator 和时间游标下钻。
@@ -145,7 +145,7 @@ repair.get
 
 ## 11. 当前尚未关闭的生产门
 
-- 满足活动倒序并能以正式契约或授权实验验证“历史更新后重新置顶”的真实站点完整纵向链路；
+- 已通过的 Women’s Aid 活动倒序/更新置顶真实纵向样本仍需纳入 Nightly/Weekly 持续监测；单次通过不代表第三方契约永久不变；
 - 生产 OS/container 级出站隔离和真实授权登录站点 canary；
 - 外部执行吞吐、Artifact/ledger 容量与全部故障注入矩阵；
 - 生产数据量的 RTO/RPO、binlog PITR、加密异地保留和 MySQL/ledger/Artifact 联合恢复；

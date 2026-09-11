@@ -1,0 +1,35 @@
+{
+  "version": "recruiting.execution-health-evidence.v1",
+  "observed_at": "2026-09-12T00:30:45+08:00",
+  "scope": "bounded recent execution health projection through the recruiting MySQL Resource",
+  "implementation": {
+    "window": "1h",
+    "attempt_sample_limit": 1000,
+    "rejected_artifact_sample_limit": 1000,
+    "attempt_index": "ix_recruiting_attempt_recent(updated_at, attempt_id)",
+    "rejected_artifact_index": "ix_recruiting_artifact_rejected_recent(rejected, created_at, artifact_id)",
+    "consistency": "same read-only repeatable-read transaction as recruiting.system.status"
+  },
+  "contract_observation": {
+    "attempts_scanned": 3,
+    "attempt_results": {"expired": 1, "succeeded": 1, "failed": 1},
+    "terminal_latency_p50_ms": 600000,
+    "expired_attempts": 1,
+    "recovered_expired_attempts": 1,
+    "recovery_latency_p50_ms": 1200000,
+    "rejected_artifacts_scanned": 2,
+    "truncated": false
+  },
+  "verification": {
+    "database": "ephemeral MySQL 8.4",
+    "migration_identity": "staircase_migrator (non-root)",
+    "runtime_identity": "staircase_runtime (non-root, no DDL)",
+    "test": "TestOperationalAndCapacityStatusUseCoherentBoundedFacts",
+    "result": "pass",
+    "index_contract": "EXPLAIN FORMAT=JSON contains both dedicated index names; a limit=1 read over three Attempts and two rejected Artifacts reports both truncated flags"
+  },
+  "limits": [
+    "The snapshot is a bounded recent diagnostic view, not an all-history time series or a production SLO report.",
+    "External executor utilization, Artifact byte/upload metrics, ledger throughput, and alert delivery remain P9 gates."
+  ]
+}
