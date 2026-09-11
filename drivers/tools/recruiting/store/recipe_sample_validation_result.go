@@ -84,7 +84,8 @@ func (r *Repository) AcceptRecipeSampleValidationResult(ctx context.Context,
 	}
 	if work.Purpose != "recipe_validation" || work.TargetType != "recipe" ||
 		run.Status != model.RecipeSampleValidationRunning || run.RecipeKind != input.RecipeKind ||
-		input.ExtractedFieldCount != run.ExpectedFieldCount {
+		(run.Mode != model.RecipeSampleValidationRollout && input.ExtractedFieldCount != run.ExpectedFieldCount) ||
+		(run.Mode == model.RecipeSampleValidationRollout && input.ExtractedFieldCount < run.ExpectedFieldCount) {
 		return RecipeSampleValidationOutcome{}, fmt.Errorf("result is not for a running Recipe sample validation")
 	}
 	for _, artifact := range input.Artifacts {

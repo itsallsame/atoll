@@ -143,7 +143,9 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	    WHERE rv.work_id = w.work_id AND rv.recipe_kind = 'detail' AND rv.run_status IN ('queued', 'running')
 	      AND sample_company.onboarding_status = 'ready' AND sample_company.control_status = 'active'
 	      AND sample_source.readiness_status = 'ready' AND sample_source.control_status = 'active'
-	      AND sample_source.health_status = 'healthy' AND candidate_recipe.status = 'validating'
+	      AND sample_source.health_status = 'healthy'
+	      AND ((candidate_recipe.status = 'validating' AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.validation_mode')), 'candidate') = 'candidate')
+	        OR (candidate_recipe.status = 'active' AND JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.validation_mode')) = 'rollout'))
 	      AND CAST(JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.company_version')) AS UNSIGNED) = sample_company.version
 	      AND CAST(JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.source_version')) AS UNSIGNED) = sample_source.version
 	      AND CAST(JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.sample_job_version')) AS UNSIGNED) = sample_job.version
@@ -753,18 +755,27 @@ WHERE s.source_id = ? FOR UPDATE`, run.Candidate.RecipeID, run.Candidate.Version
 			return model.AttemptFence{}, err
 		}
 	}
+	mode := run.Mode
+	if mode == "" {
+		mode = model.RecipeSampleValidationCandidate
+	}
 	if company.Version != run.CompanyVersion || company.OnboardingStatus != model.CompanyReady ||
 		company.ControlStatus != model.ControlActive || source.Version != run.SourceVersion ||
 		source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive ||
 		source.HealthStatus != model.HealthHealthy || source.DetailAssignment == nil ||
 		!reflect.DeepEqual(*source.DetailAssignment, assignment) || recipe != run.Candidate ||
-		recipe.Status != model.RecipeValidating || job.SourceID != run.SourceID ||
+		(mode == model.RecipeSampleValidationCandidate && recipe.Status != model.RecipeValidating) ||
+		(mode == model.RecipeSampleValidationRollout && recipe.Status != model.RecipeActive) ||
+		job.SourceID != run.SourceID ||
 		job.JobID != run.SampleJobID || job.Version != run.SampleJobVersion ||
-		job.DetailURL != run.EndpointURL {
+		job.DetailURL != run.EndpointURL || (mode == model.RecipeSampleValidationRollout && job.Status != model.JobAvailable) {
 		return model.AttemptFence{}, fmt.Errorf("Recipe sample validation run is fenced by changed candidate or Job")
 	}
-	proposed, err := assignment.Replace(assignment.AssignmentVersion, recipe.RecipeID, recipe.Version,
-		recipe.ContractHash, run.ProposedAssignment.EffectiveAt)
+	proposed := assignment
+	if mode == model.RecipeSampleValidationCandidate {
+		proposed, err = assignment.Replace(assignment.AssignmentVersion, recipe.RecipeID, recipe.Version,
+			recipe.ContractHash, run.ProposedAssignment.EffectiveAt)
+	}
 	if err != nil || proposed != run.ProposedAssignment {
 		return model.AttemptFence{}, fmt.Errorf("Recipe sample validation proposed Assignment changed")
 	}

@@ -87,16 +87,30 @@ func reconcileRecipeRolloutBatches(ctx context.Context, cfg Config, repository *
 					result.AssignmentsApplied++
 				}
 			case model.RecipeRolloutItemAwaitingValidation:
-				if item.ValidationWorkID == "" && batch.Kind == model.RecipeListing {
-					started, startErr := reconcileListingRolloutValidation(ctx, cfg, repository, batch, item, now)
+				if item.ValidationWorkID == "" {
+					var started bool
+					var startErr error
+					switch batch.Kind {
+					case model.RecipeListing:
+						started, startErr = reconcileListingRolloutValidation(ctx, cfg, repository, batch, item, now)
+					case model.RecipeDetail:
+						started, startErr = reconcileDetailRolloutValidation(ctx, cfg, repository, batch, item, now)
+					}
 					if startErr != nil && !isRolloutReconcileRace(startErr) {
 						return result, startErr
 					}
 					if started {
 						result.ValidationsStarted++
 					}
-				} else if item.ValidationWorkID != "" && batch.Kind == model.RecipeListing {
-					if _, observeErr := reconcileListingRolloutValidationOutcome(ctx, repository, batch, item, now); observeErr != nil && !isRolloutReconcileRace(observeErr) {
+				} else {
+					var observeErr error
+					switch batch.Kind {
+					case model.RecipeListing:
+						_, observeErr = reconcileListingRolloutValidationOutcome(ctx, repository, batch, item, now)
+					case model.RecipeDetail:
+						_, observeErr = reconcileDetailRolloutValidationOutcome(ctx, repository, batch, item, now)
+					}
+					if observeErr != nil && !isRolloutReconcileRace(observeErr) {
 						return result, observeErr
 					}
 				}

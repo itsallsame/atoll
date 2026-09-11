@@ -47,3 +47,37 @@ func TestDiscoveryRecipeSampleValidationHasNoFakeSourceFence(t *testing.T) {
 		t.Fatalf("Discovery validation invented Source facts: %+v", run)
 	}
 }
+
+func TestDetailRolloutValidationUsesPublishedAssignmentWithoutMutatingJob(t *testing.T) {
+	company, _ := NewCompany("rollout-company", "Company", "https://rollout.example")
+	company.OnboardingStatus = CompanyReady
+	source, _ := NewRecruitmentSource("rollout-source", company.CompanyID,
+		"https://rollout.example/jobs", "all", 1)
+	source.ReadinessStatus = SourceReady
+	recipe, _ := NewRecipe("rollout-detail", RecipeDetail, "rollout.example", 2, "content", "contract",
+		RecipeExecution{ABIVersion: RecipeABIVersion, ContentRef: "recipe://rollout/detail",
+			RequiredCapability: "http.fetch", Transport: RecipeTransportHTTPHTML})
+	recipe, _ = recipe.BeginValidation(recipe.StateVersion)
+	recipe, _ = recipe.Publish(recipe.StateVersion)
+	assignment, _ := NewSourceRecipeAssignment(source.SourceID, RecipeDetail, recipe.RecipeID,
+		recipe.Version, recipe.ContractHash, "2026-09-10T00:00:00Z")
+	source, _ = source.AssignRecipe(source.Version, assignment, false)
+	job, _ := NewSourceJob("rollout-job", source.SourceID, "external-1",
+		"https://rollout.example/jobs/1")
+	accepted, _ := job.AcceptDetail(job.Version, job.RefreshGeneration, "sha256:sample")
+	job = accepted.Job
+	before := job
+	run, err := NewDetailRecipeRolloutValidation("rollout-validation", "rollout-work", company,
+		source, assignment, recipe, job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Mode != RecipeSampleValidationRollout || run.ProposedAssignment != assignment ||
+		run.ExpectedFieldCount != 1 || job != before {
+		t.Fatalf("rollout validation run=%+v job before=%+v after=%+v", run, before, job)
+	}
+	if _, err := NewDetailRecipeRolloutValidation("invalid", "invalid-work", company,
+		source, assignment, recipe, SourceJob{}); err == nil {
+		t.Fatal("Detail rollout validation accepted a missing stable sample Job")
+	}
+}

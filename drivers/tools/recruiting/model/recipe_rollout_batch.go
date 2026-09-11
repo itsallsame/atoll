@@ -211,8 +211,12 @@ func (i RecipeRolloutBatchItem) BindValidation(expected uint64, workID, runID st
 		return RecipeRolloutBatchItem{}, err
 	}
 	workID, runID = strings.TrimSpace(workID), strings.TrimSpace(runID)
+	validSourceVersion := sourceVersion > i.AppliedSourceVersion
+	if i.PreviousAssignment.Kind == RecipeDetail {
+		validSourceVersion = sourceVersion == i.AppliedSourceVersion
+	}
 	if i.Status != RecipeRolloutItemAwaitingValidation || i.ValidationWorkID != "" ||
-		workID == "" || runID == "" || sourceVersion <= i.AppliedSourceVersion {
+		workID == "" || runID == "" || !validSourceVersion {
 		return RecipeRolloutBatchItem{}, fmt.Errorf("awaiting rollout item and validation Work/run are required")
 	}
 	i.ValidationWorkID, i.ValidationRunID = workID, runID

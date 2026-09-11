@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
@@ -18,6 +19,65 @@ type DetailRecipeValidationPreparation struct {
 	CurrentAssignment model.SourceRecipeAssignment
 	Recipe            model.Recipe
 	Job               model.SourceJob
+}
+
+type DetailRecipeRolloutValidationPreparation struct {
+	Company    model.Company
+	Source     model.RecruitmentSource
+	Assignment model.SourceRecipeAssignment
+	Recipe     model.Recipe
+	Job        model.SourceJob
+}
+
+func (r *Repository) PrepareDetailRecipeRolloutValidation(ctx context.Context, sourceID, recipeID string,
+	recipeVersion uint64) (DetailRecipeRolloutValidationPreparation, error) {
+	return readDetailRecipeRolloutValidationPreparation(ctx, r.db, sourceID, recipeID, recipeVersion, "", false)
+}
+
+func readDetailRecipeRolloutValidationPreparation(ctx context.Context, queryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, sourceID, recipeID string, recipeVersion uint64, jobID string,
+	lock bool) (DetailRecipeRolloutValidationPreparation, error) {
+	jobClause := `j.job_id = (SELECT MIN(sample.job_id) FROM recruiting_source_jobs sample
+WHERE sample.source_id = s.source_id AND sample.job_status = 'available')`
+	args := []any{recipeID, recipeVersion, sourceID}
+	if jobID != "" {
+		jobClause = "j.job_id = ? AND j.source_id = s.source_id"
+		args = []any{recipeID, recipeVersion, jobID, sourceID}
+	}
+	query := `SELECT c.state_json, s.state_json, a.state_json, r.state_json, j.state_json
+FROM recruiting_sources s
+JOIN recruiting_companies c ON c.company_id = s.company_id
+JOIN recruiting_source_assignments a ON a.source_id = s.source_id AND a.recipe_kind = 'detail'
+JOIN recruiting_recipes r ON r.recipe_id = ? AND r.recipe_version = ?
+JOIN recruiting_source_jobs j ON ` + jobClause + `
+WHERE s.source_id = ?`
+	if lock {
+		query += " FOR UPDATE"
+	}
+	var companyState, sourceState, assignmentState, recipeState, jobState []byte
+	if err := queryer.QueryRowContext(ctx, query, args...).Scan(&companyState, &sourceState, &assignmentState,
+		&recipeState, &jobState); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return DetailRecipeRolloutValidationPreparation{}, ErrNotFound
+		}
+		return DetailRecipeRolloutValidationPreparation{}, fmt.Errorf("read Detail rollout validation input: %w", err)
+	}
+	var value DetailRecipeRolloutValidationPreparation
+	for _, item := range []struct {
+		data   []byte
+		target any
+	}{{companyState, &value.Company}, {sourceState, &value.Source}, {assignmentState, &value.Assignment},
+		{recipeState, &value.Recipe}, {jobState, &value.Job}} {
+		if err := json.Unmarshal(item.data, item.target); err != nil {
+			return DetailRecipeRolloutValidationPreparation{}, fmt.Errorf("decode Detail rollout validation input: %w", err)
+		}
+	}
+	return value, nil
+}
+
+func (p DetailRecipeRolloutValidationPreparation) NewRun(runID, workID string) (model.RecipeSampleValidation, error) {
+	return model.NewDetailRecipeRolloutValidation(runID, workID, p.Company, p.Source, p.Assignment, p.Recipe, p.Job)
 }
 
 func (r *Repository) PrepareDetailRecipeValidation(ctx context.Context, sourceID, recipeID string,
@@ -160,6 +220,76 @@ WHERE recipe_id = ? AND recipe_version = ? AND state_version = ?`, nextRecipe.St
 	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
 }
 
+// ApplyDetailRecipeRolloutValidationCommand creates an evidence-only canary
+// for an active Detail Assignment. It deliberately does not mutate the Recipe,
+// Source, Assignment, Job, or any DetailVersion.
+func (r *Repository) ApplyDetailRecipeRolloutValidationCommand(ctx context.Context,
+	run model.RecipeSampleValidation, work model.Work, placement WorkPlacement,
+	receipt model.CommandReceipt, event model.EventIntent, dispatch *ExecutionDispatchIntent,
+	businessAt time.Time) (CommandResult, error) {
+	targetID := fmt.Sprintf("%s@%d", run.Candidate.RecipeID, run.Candidate.Version)
+	if run.Mode != model.RecipeSampleValidationRollout || run.Status != model.RecipeSampleValidationQueued ||
+		run.WorkID != work.WorkID || work.Status != model.WorkOpen || work.Version != 1 ||
+		work.Purpose != "recipe_validation" || work.TargetType != "recipe" || work.TargetID != targetID ||
+		receipt.CommandID == "" || event.AggregateType != "source" || event.AggregateID != run.SourceID ||
+		event.AggregateVersion != run.SourceVersion || event.CauseCommandID != receipt.CommandID || businessAt.IsZero() {
+		return CommandResult{}, fmt.Errorf("Detail Recipe rollout validation command facts are inconsistent")
+	}
+	if err := run.Validate(); err != nil {
+		return CommandResult{}, err
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("begin Detail rollout validation command: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if replay, found, err := readCommandReceipt(ctx, tx, receipt.CommandID, receipt.RequestHash); err != nil {
+		return CommandResult{}, err
+	} else if found {
+		return CommandResult{Response: replay, Replayed: true}, nil
+	}
+	current, err := readDetailRecipeRolloutValidationPreparation(ctx, tx, run.SourceID,
+		run.Candidate.RecipeID, run.Candidate.Version, run.SampleJobID, true)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	expectedRun, err := current.NewRun(run.ValidationRunID, run.WorkID)
+	if err != nil || !reflect.DeepEqual(expectedRun, run) ||
+		placement.BusinessKey != "recipe-rollout-validation|"+run.ValidationRunID ||
+		placement.Capability != run.Candidate.Execution.RequiredCapability || placement.Origin != run.Origin ||
+		!placement.NotBefore.Equal(businessAt.UTC()) {
+		return CommandResult{}, fmt.Errorf("Detail rollout validation input changed before commit")
+	}
+	if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {
+		if errors.Is(err, ErrCommandConflict) {
+			_ = tx.Rollback()
+			return r.replayCommittedCommand(ctx, receipt.CommandID, receipt.RequestHash)
+		}
+		return CommandResult{}, err
+	}
+	if err := insertWork(ctx, tx, work, placement, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := insertRecipeSampleValidation(ctx, tx, run, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	eventAt, err := time.Parse(time.RFC3339, event.BusinessAt)
+	if err != nil || !eventAt.Equal(businessAt) {
+		return CommandResult{}, fmt.Errorf("Detail rollout validation business time is inconsistent")
+	}
+	if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := appendWorkCommandDispatch(ctx, tx, dispatch, placement, receipt.CommandID,
+		"recipe_validation", businessAt); err != nil {
+		return CommandResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CommandResult{}, fmt.Errorf("commit Detail rollout validation command: %w", err)
+	}
+	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
+}
+
 func insertRecipeSampleValidation(ctx context.Context, tx *sql.Tx, run model.RecipeSampleValidation, at time.Time) error {
 	state, _ := json.Marshal(run)
 	_, err := tx.ExecContext(ctx, `INSERT INTO recruiting_recipe_validation_runs(
@@ -193,6 +323,14 @@ func getRecipeSampleValidationByWorkWith(ctx context.Context, queryer interface 
 		return model.RecipeSampleValidation{}, err
 	}
 	return run, run.Validate()
+}
+
+func (r *Repository) GetRecipeSampleValidationByWork(ctx context.Context,
+	workID string) (model.RecipeSampleValidation, error) {
+	if strings.TrimSpace(workID) == "" {
+		return model.RecipeSampleValidation{}, fmt.Errorf("Work is required")
+	}
+	return getRecipeSampleValidationByWorkWith(ctx, r.db, strings.TrimSpace(workID), false)
 }
 
 func updateRecipeSampleValidationTx(ctx context.Context, tx *sql.Tx, previous uint64,

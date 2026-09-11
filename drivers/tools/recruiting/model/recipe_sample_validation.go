@@ -8,16 +8,26 @@ import (
 
 type RecipeSampleValidationStatus string
 
+type RecipeSampleValidationMode string
+
 const (
 	RecipeSampleValidationQueued    RecipeSampleValidationStatus = "queued"
 	RecipeSampleValidationRunning   RecipeSampleValidationStatus = "running"
 	RecipeSampleValidationCompleted RecipeSampleValidationStatus = "completed"
 )
 
+const (
+	// RecipeSampleValidationCandidate is also represented by the empty value
+	// when reading rows written before validation modes were introduced.
+	RecipeSampleValidationCandidate RecipeSampleValidationMode = "candidate"
+	RecipeSampleValidationRollout   RecipeSampleValidationMode = "rollout"
+)
+
 // RecipeSampleValidation is an evidence-only execution of a candidate Recipe
 // against one frozen real business sample. It is deliberately separate from
 // ListingRun and production Detail Work so validation cannot publish data.
 type RecipeSampleValidation struct {
+	Mode               RecipeSampleValidationMode   `json:"validation_mode,omitempty"`
 	ValidationRunID    string                       `json:"validation_run_id"`
 	WorkID             string                       `json:"work_id"`
 	RecipeKind         RecipeKind                   `json:"recipe_kind"`
@@ -60,11 +70,43 @@ func NewDetailRecipeSampleValidation(id, workID string, company Company, source 
 		return RecipeSampleValidation{}, fmt.Errorf("Detail Recipe validation sample URL does not match candidate scope")
 	}
 	run := RecipeSampleValidation{ValidationRunID: id, WorkID: workID, RecipeKind: RecipeDetail,
+		Mode:      RecipeSampleValidationCandidate,
 		CompanyID: company.CompanyID, SourceID: source.SourceID, CompanyVersion: company.Version, SourceVersion: source.Version,
 		Candidate: candidate, ProposedAssignment: proposed, SampleJobID: job.JobID, SampleJobVersion: job.Version,
 		ExpectedFieldCount: expectedFieldCount,
 		EndpointURL:        job.DetailURL, EndpointVersion: job.Version, Origin: endpoint.Scheme + "://" + endpoint.Host,
 		Status: RecipeSampleValidationQueued, Version: 1}
+	return run, run.Validate()
+}
+
+// NewDetailRecipeRolloutValidation executes an already-published Detail
+// Recipe against one frozen real Job without publishing a DetailVersion. The
+// Assignment has already been switched by the rollout item, so unlike a
+// candidate validation there is no proposed future Assignment.
+func NewDetailRecipeRolloutValidation(id, workID string, company Company, source RecruitmentSource,
+	assignment SourceRecipeAssignment, recipe Recipe, job SourceJob) (RecipeSampleValidation, error) {
+	id, workID = strings.TrimSpace(id), strings.TrimSpace(workID)
+	if id == "" || workID == "" || company.CompanyID != source.CompanyID || company.Version == 0 ||
+		company.OnboardingStatus != CompanyReady || company.ControlStatus != ControlActive ||
+		source.ReadinessStatus != SourceReady || source.ControlStatus != ControlActive ||
+		source.HealthStatus != HealthHealthy || source.DetailAssignment == nil || *source.DetailAssignment != assignment ||
+		assignment.SourceID != source.SourceID || assignment.Kind != RecipeDetail ||
+		recipe.Kind != RecipeDetail || recipe.Status != RecipeActive || recipe.RecipeID != assignment.RecipeID ||
+		recipe.Version != assignment.RecipeVersion || recipe.ContractHash != assignment.ContractHash ||
+		job.SourceID != source.SourceID || job.JobID == "" || job.Version == 0 || job.Status != JobAvailable {
+		return RecipeSampleValidation{}, fmt.Errorf("Detail rollout validation requires an active assigned Recipe and stable Source Job")
+	}
+	endpoint, err := url.Parse(job.DetailURL)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" || endpoint.User != nil || endpoint.Fragment != "" ||
+		!strings.EqualFold(recipe.Scope, endpoint.Hostname()) {
+		return RecipeSampleValidation{}, fmt.Errorf("Detail rollout validation sample URL does not match Recipe scope")
+	}
+	run := RecipeSampleValidation{Mode: RecipeSampleValidationRollout, ValidationRunID: id, WorkID: workID,
+		RecipeKind: RecipeDetail, CompanyID: company.CompanyID, SourceID: source.SourceID,
+		CompanyVersion: company.Version, SourceVersion: source.Version, Candidate: recipe,
+		ProposedAssignment: assignment, SampleJobID: job.JobID, SampleJobVersion: job.Version,
+		ExpectedFieldCount: 1, EndpointURL: job.DetailURL, EndpointVersion: job.Version,
+		Origin: endpoint.Scheme + "://" + endpoint.Host, Status: RecipeSampleValidationQueued, Version: 1}
 	return run, run.Validate()
 }
 
@@ -82,6 +124,7 @@ func NewDiscoveryRecipeSampleValidation(id, workID string, company Company, cand
 		return RecipeSampleValidation{}, fmt.Errorf("Discovery Recipe validation sample does not match Company scope")
 	}
 	run := RecipeSampleValidation{ValidationRunID: id, WorkID: workID, RecipeKind: RecipeDiscovery,
+		Mode:      RecipeSampleValidationCandidate,
 		CompanyID: company.CompanyID, CompanyVersion: company.Version, Candidate: candidate,
 		ExpectedFieldCount: expectedFieldCount, EndpointURL: company.Website, EndpointVersion: company.Version,
 		Origin: endpoint.Scheme + "://" + endpoint.Host, Status: RecipeSampleValidationQueued, Version: 1}
@@ -89,9 +132,15 @@ func NewDiscoveryRecipeSampleValidation(id, workID string, company Company, cand
 }
 
 func (r RecipeSampleValidation) Validate() error {
+	mode := r.Mode
+	if mode == "" {
+		mode = RecipeSampleValidationCandidate
+	}
 	if r.ValidationRunID == "" || r.WorkID == "" || r.CompanyID == "" || r.CompanyVersion == 0 ||
 		r.ExpectedFieldCount < 1 || r.Version == 0 || r.Candidate.Kind != r.RecipeKind ||
-		r.Candidate.Status != RecipeValidating {
+		(mode != RecipeSampleValidationCandidate && mode != RecipeSampleValidationRollout) ||
+		(mode == RecipeSampleValidationCandidate && r.Candidate.Status != RecipeValidating) ||
+		(mode == RecipeSampleValidationRollout && r.Candidate.Status != RecipeActive) {
 		return fmt.Errorf("Recipe sample validation is incomplete or inconsistent")
 	}
 	switch r.RecipeKind {
@@ -103,7 +152,14 @@ func (r RecipeSampleValidation) Validate() error {
 			r.ProposedAssignment.ContractHash != r.Candidate.ContractHash {
 			return fmt.Errorf("Detail Recipe sample validation is incomplete or inconsistent")
 		}
+		if mode == RecipeSampleValidationRollout &&
+			r.ProposedAssignment.AssignmentVersion == 0 {
+			return fmt.Errorf("Detail rollout validation requires the published Assignment")
+		}
 	case RecipeDiscovery:
+		if mode != RecipeSampleValidationCandidate {
+			return fmt.Errorf("Discovery Recipe rollout validation is unsupported")
+		}
 		if r.SourceID != "" || r.SourceVersion != 0 || r.SampleJobID != "" || r.SampleJobVersion != 0 ||
 			r.EndpointVersion != r.CompanyVersion || r.ProposedAssignment != (SourceRecipeAssignment{}) {
 			return fmt.Errorf("Discovery Recipe sample validation is incomplete or inconsistent")

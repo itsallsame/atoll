@@ -508,8 +508,38 @@ func (r *Repository) ApplyRecipeRolloutBatchItemTransition(ctx context.Context, 
 
 func validateRecipeRolloutValidationBinding(ctx context.Context, tx *sql.Tx, batch model.RecipeRolloutBatch,
 	current, next model.RecipeRolloutBatchItem) error {
+	if batch.Kind == model.RecipeDetail {
+		work, err := getWorkWith(ctx, tx, next.ValidationWorkID, true)
+		if err != nil {
+			return err
+		}
+		run, err := getRecipeSampleValidationByWorkWith(ctx, tx, next.ValidationWorkID, true)
+		if err != nil {
+			return err
+		}
+		source, err := getSourceForUpdate(ctx, tx, current.SourceID)
+		if err != nil {
+			return err
+		}
+		assignment, found, err := getAssignmentForUpdate(ctx, tx, current.SourceID, batch.Kind)
+		if err != nil {
+			return err
+		}
+		if !found || work.TargetType != "recipe" || work.Purpose != "recipe_validation" || work.Terminal() ||
+			run.Mode != model.RecipeSampleValidationRollout || run.ValidationRunID != next.ValidationRunID ||
+			run.WorkID != work.WorkID || run.SourceID != current.SourceID ||
+			next.ValidationSourceVersion != current.AppliedSourceVersion ||
+			run.SourceVersion != next.ValidationSourceVersion || source.Version != next.ValidationSourceVersion ||
+			source.ReadinessStatus != model.SourceReady || source.DetailAssignment == nil ||
+			*source.DetailAssignment != assignment || assignment.AssignmentVersion != current.AppliedAssignmentVersion ||
+			run.Candidate.RecipeID != batch.RecipeID || run.Candidate.Version != batch.RecipeVersion ||
+			run.Candidate.ContractHash != batch.ContractHash || run.ProposedAssignment != assignment {
+			return fmt.Errorf("Detail Recipe rollout validation Work/run does not match applied member facts")
+		}
+		return nil
+	}
 	if batch.Kind != model.RecipeListing {
-		return fmt.Errorf("Recipe rollout validation binding for %s is not implemented", batch.Kind)
+		return fmt.Errorf("Recipe rollout validation binding for %s is unsupported", batch.Kind)
 	}
 	work, err := getWorkWith(ctx, tx, next.ValidationWorkID, true)
 	if err != nil {
@@ -599,8 +629,45 @@ func validateRecipeRollbackSkippedApplication(ctx context.Context, tx *sql.Tx, b
 
 func validateRecipeRolloutValidationOutcome(ctx context.Context, tx *sql.Tx, batch model.RecipeRolloutBatch,
 	item model.RecipeRolloutBatchItem, targetStatus model.RecipeRolloutItemStatus) error {
-	if batch.Kind != model.RecipeListing {
+	if batch.Kind == model.RecipeDetail {
+		work, err := getWorkWith(ctx, tx, item.ValidationWorkID, true)
+		if err != nil {
+			return err
+		}
+		run, err := getRecipeSampleValidationByWorkWith(ctx, tx, item.ValidationWorkID, true)
+		if err != nil {
+			return err
+		}
+		source, err := getSourceForUpdate(ctx, tx, item.SourceID)
+		if err != nil {
+			return err
+		}
+		assignment, found, err := getAssignmentForUpdate(ctx, tx, item.SourceID, batch.Kind)
+		if err != nil {
+			return err
+		}
+		if !found || run.Mode != model.RecipeSampleValidationRollout || run.ValidationRunID != item.ValidationRunID ||
+			run.SourceID != item.SourceID || run.SourceVersion != item.ValidationSourceVersion ||
+			source.Version != item.ValidationSourceVersion || source.DetailAssignment == nil ||
+			*source.DetailAssignment != assignment || assignment.AssignmentVersion != item.AppliedAssignmentVersion ||
+			assignment.RecipeID != batch.RecipeID || assignment.RecipeVersion != batch.RecipeVersion ||
+			assignment.ContractHash != batch.ContractHash || run.ProposedAssignment != assignment {
+			return fmt.Errorf("Detail Recipe rollout validation no longer matches the applied Assignment")
+		}
+		if targetStatus == model.RecipeRolloutItemSucceeded {
+			if work.Status != model.WorkCompleted || work.Resolution != model.ResolutionSucceeded ||
+				run.Status != model.RecipeSampleValidationCompleted {
+				return fmt.Errorf("Detail Recipe rollout member has no completed validation evidence")
+			}
+			return nil
+		}
+		if work.Status != model.WorkWaitingHuman && work.Status != model.WorkCanceled {
+			return fmt.Errorf("Detail Recipe rollout validation has not reached a failure requiring batch pause")
+		}
 		return nil
+	}
+	if batch.Kind != model.RecipeListing {
+		return fmt.Errorf("Recipe rollout validation outcome for %s is unsupported", batch.Kind)
 	}
 	work, err := getWorkWith(ctx, tx, item.ValidationWorkID, true)
 	if err != nil {
