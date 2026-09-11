@@ -9,7 +9,7 @@
     "memory_gib": 15,
     "go": "go1.25.7 linux/amd64",
     "mysql": "mysql:8.4",
-    "mysql_storage": "4g tmpfs",
+    "mysql_storage": "4g tmpfs for L0-L2; 8g tmpfs for L3-L4",
     "database_identity": "ephemeral non-root migration and runtime users"
   },
   "command": "RECRUITING_CAPACITY_LEVEL=<level> RECRUITING_CAPACITY_LARGE_ACK=local-only-large-load make recruiting-capacity",
@@ -52,6 +52,32 @@
       "detail_seed_ms": 25542,
       "total_ms": 114394,
       "result": "pass"
+    },
+    {
+      "level": "L3",
+      "companies": 10000,
+      "sources": 20000,
+      "details_per_source": 20,
+      "retry_percent": 0,
+      "seed_ms": 21351,
+      "plan_ms": 14206,
+      "materialize_ms": 53379,
+      "detail_seed_ms": 254660,
+      "total_ms": 344639,
+      "result": "pass"
+    },
+    {
+      "level": "L4",
+      "companies": 10000,
+      "sources": 20000,
+      "details_per_source": 20,
+      "retry_percent": 10,
+      "seed_ms": 21737,
+      "plan_ms": 13981,
+      "materialize_ms": 53822,
+      "detail_seed_ms": 256697,
+      "total_ms": 347350,
+      "result": "pass"
     }
   ],
   "correctness_assertions": [
@@ -67,6 +93,7 @@
   "notes": [
     "The first L2 attempt stopped because the host filesystem was full while MySQL used an anonymous disk volume; it did not reach a product assertion.",
     "The harness now places ephemeral MySQL capacity data on an explicitly bounded tmpfs, preventing interrupted tests from leaking large anonymous database volumes.",
-    "L3, L4, 24-hour spread, five-times peak, executor latency, artifact volume, and backup/restore remain release-gate work."
+    "L3 contains 420000 open Work including listing; L4 contains exactly 380000 open and 40000 waiting_retry Work.",
+    "The 24-hour spread, five-times peak, executor latency, artifact volume, and backup/restore remain release-gate work."
   ]
 }

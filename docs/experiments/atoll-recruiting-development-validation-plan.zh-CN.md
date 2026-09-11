@@ -531,7 +531,7 @@ S01—S24 至少有 model/Repository/actor 测试中的一种自动化覆盖，�
 
 ## 14. P9：容量、可靠性和生产准入
 
-执行状态（2026-09-11）：新增版本化 workload manifest、`make recruiting-capacity` 入口和真实 MySQL 8.4 容量合同。L0、L1、L2 已在 4 vCPU/15 GiB 参考机、隔离非 root 数据库和 4 GiB tmpfs 上通过；L2 实际写入 10,000 Company、20,000 Source、20,000 Occurrence、20,000 Listing Work 与 40,000 Detail Work，验证八小时分桶、500 条渐进物化、业务键唯一和 `capacity.status` 每状态 5,000 行扫描上限的精确/截断语义。L2 领域计划耗时 14.224 秒，物化耗时 52.953 秒，总测试数据构建与断言耗时 114.394 秒。该结果证明数据库计划/物化路径可承载正常目标规模，但不包含真实网络执行吞吐，不能据此宣称 P9 完成。L3/L4、24 小时/5 倍峰值、Executor/Artifact/ledger 指标、故障矩阵、备份恢复和三层真实网站持续验证仍是退出项。机读证据见 `evidence/recruiting-capacity-l0-l2-20260911.json`。
+执行状态（2026-09-11）：新增版本化 workload manifest、`make recruiting-capacity` 入口和真实 MySQL 8.4 容量合同。L0—L4 已在 4 vCPU/15 GiB 参考机、隔离非 root 数据库和有界 tmpfs 上全部通过；L2 实际写入 10,000 Company、20,000 Source、20,000 Occurrence、20,000 Listing Work 与 40,000 Detail Work，L3/L4 各写入 400,000 Detail Work，L4 另将其中精确 40,000 条推进为 `waiting_retry`，数据库终态精确为 380,000 `open` 与 40,000 `waiting_retry`。测试验证八小时分桶、500 条渐进物化、业务键唯一和 `capacity.status` 每状态 5,000 行扫描上限的精确/截断语义。L2 领域计划/物化/总耗时分别为 14.224/52.953/114.394 秒；L3 为 14.206/53.379/344.639 秒；加强状态断言后的 L4 为 13.981/53.822/347.350 秒。详情放大与重试积压没有反向放大日切计划时间。该结果证明数据库计划/物化路径可承载目标规模，但不包含真实网络执行吞吐，不能据此宣称 P9 完成。24 小时平铺/5 倍峰值、Executor/Artifact/ledger 指标、故障矩阵、备份恢复和三层真实网站持续验证仍是退出项。机读证据见 `evidence/recruiting-capacity-l0-l4-20260911.json`。
 
 ### 14.1 负载模型
 

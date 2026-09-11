@@ -278,24 +278,35 @@ func insertCapacityWork(ctx context.Context, tx *sql.Tx, work model.Work, placem
 func assertCapacityFacts(t *testing.T, ctx context.Context, db *sql.DB, repository *Repository,
 	workload capacityWorkload, dailyRunID string, windowStart, windowEnd, dueAt time.Time) {
 	t.Helper()
-	var occurrences, distinctSources, queued, listingWorks, detailWorks, distinctBusinessKeys int
+	var occurrences, distinctSources, queued, listingWorks, detailWorks, distinctBusinessKeys, openStatus, retryStatus int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(DISTINCT source_id),
   SUM(status = 'queued') FROM recruiting_source_occurrences WHERE daily_run_id = ?`, dailyRunID).
 		Scan(&occurrences, &distinctSources, &queued); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRowContext(ctx, `SELECT
-  SUM(purpose = 'listing_sync'), SUM(purpose = 'detail_sync'), COUNT(DISTINCT business_key)
-FROM recruiting_works`).Scan(&listingWorks, &detailWorks, &distinctBusinessKeys); err != nil {
+  SUM(purpose = 'listing_sync'), SUM(purpose = 'detail_sync'), COUNT(DISTINCT business_key),
+  SUM(status = 'open'), SUM(status = 'waiting_retry')
+FROM recruiting_works`).Scan(&listingWorks, &detailWorks, &distinctBusinessKeys, &openStatus, &retryStatus); err != nil {
 		t.Fatal(err)
 	}
 	expectedDetails := workload.Sources * workload.DetailsPerSource
 	expectedWorks := workload.Sources + expectedDetails
+	expectedRetryWorks := 0
+	if workload.RetryPercent > 0 {
+		for ordinal := 0; ordinal < expectedDetails; ordinal++ {
+			if ordinal%100 < workload.RetryPercent {
+				expectedRetryWorks++
+			}
+		}
+	}
+	expectedOpenWorks := expectedWorks - expectedRetryWorks
 	if occurrences != workload.Sources || distinctSources != workload.Sources || queued != workload.Sources ||
-		listingWorks != workload.Sources || detailWorks != expectedDetails || distinctBusinessKeys != expectedWorks {
-		t.Fatalf("capacity facts occurrences=%d sources=%d queued=%d listing=%d detail=%d keys=%d want sources=%d detail=%d works=%d",
-			occurrences, distinctSources, queued, listingWorks, detailWorks, distinctBusinessKeys,
-			workload.Sources, expectedDetails, expectedWorks)
+		listingWorks != workload.Sources || detailWorks != expectedDetails || distinctBusinessKeys != expectedWorks ||
+		openStatus != expectedOpenWorks || retryStatus != expectedRetryWorks {
+		t.Fatalf("capacity facts occurrences=%d sources=%d queued=%d listing=%d detail=%d keys=%d open=%d retry=%d want sources=%d detail=%d works=%d open=%d retry=%d",
+			occurrences, distinctSources, queued, listingWorks, detailWorks, distinctBusinessKeys, openStatus, retryStatus,
+			workload.Sources, expectedDetails, expectedWorks, expectedOpenWorks, expectedRetryWorks)
 	}
 	var outsideWindow int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_source_occurrences
@@ -327,19 +338,10 @@ WHERE daily_run_id = ? GROUP BY HOUR(due_at)`, dailyRunID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	retryWorks := 0
-	if workload.RetryPercent > 0 {
-		for ordinal := 0; ordinal < expectedDetails; ordinal++ {
-			if ordinal%100 < workload.RetryPercent {
-				retryWorks++
-			}
-		}
-	}
-	openWorks := expectedWorks - retryWorks
-	expectedScanned := min(openWorks, capacityRunnableScanPerStatus) + min(retryWorks, capacityRunnableScanPerStatus)
-	expectedExact := openWorks <= capacityRunnableScanPerStatus && retryWorks <= capacityRunnableScanPerStatus
+	expectedScanned := min(expectedOpenWorks, capacityRunnableScanPerStatus) + min(expectedRetryWorks, capacityRunnableScanPerStatus)
+	expectedExact := expectedOpenWorks <= capacityRunnableScanPerStatus && expectedRetryWorks <= capacityRunnableScanPerStatus
 	if snapshot.RunnableScanned != uint64(expectedScanned) || snapshot.RunnableCountsExact != expectedExact {
 		t.Fatalf("capacity projection=%+v expected_scanned=%d expected_exact=%v total=%d open=%d retry=%d",
-			snapshot, expectedScanned, expectedExact, expectedWorks, openWorks, retryWorks)
+			snapshot, expectedScanned, expectedExact, expectedWorks, expectedOpenWorks, expectedRetryWorks)
 	}
 }
