@@ -50,8 +50,35 @@ func TestScopeControlOperationKeepsPauseModesDistinctAndBounded(t *testing.T) {
 	}
 	canceled, err := cancel.RecordBatch(cancel.Version, ScopeControlBatch{Cursor: "work-2", Scanned: 2,
 		Canceled: 2, ExpiredAttempts: 1, AppliedAt: now.Add(time.Second)})
-	if err != nil || canceled.Status != ScopeControlCompleted || canceled.WorksCanceled != 2 || canceled.AttemptsExpired != 1 {
+	if err != nil || canceled.Status != ScopeControlApplying || !canceled.ProjectionCompleted ||
+		canceled.CancellationCompleted || canceled.WorksCanceled != 2 || canceled.AttemptsExpired != 1 {
 		t.Fatalf("canceled operation=%+v err=%v", canceled, err)
+	}
+	canceled, err = canceled.RecordCancellationBatch(canceled.Version, 0, false, now.Add(2*time.Second))
+	if err != nil || canceled.Status != ScopeControlCompleted || !canceled.CancellationCompleted || canceled.CompletedAt == "" {
+		t.Fatalf("settled cancel dependencies=%+v err=%v", canceled, err)
+	}
+}
+
+func TestScopeCancelRecordsBackfillDependenciesSeparatelyAndBoundedly(t *testing.T) {
+	now := time.Date(2026, 9, 12, 3, 0, 0, 0, time.UTC)
+	operation, _ := NewScopeControlOperation("pause-cancel-dependencies", "company", "company-1", PauseCancel,
+		2, 1, 2, 2, 0, now)
+	projected, err := operation.RecordBatch(operation.Version, ScopeControlBatch{AppliedAt: now.Add(time.Second)})
+	if err != nil || !projected.ProjectionCompleted || projected.Status != ScopeControlApplying {
+		t.Fatalf("projected cancel=%+v err=%v", projected, err)
+	}
+	first, err := projected.RecordCancellationBatch(projected.Version, 500, true, now.Add(2*time.Second))
+	if err != nil || first.BackfillItemsCanceled != 500 || first.CancellationCompleted || first.Status != ScopeControlApplying {
+		t.Fatalf("first cancellation page=%+v err=%v", first, err)
+	}
+	completed, err := first.RecordCancellationBatch(first.Version, 1, false, now.Add(3*time.Second))
+	if err != nil || completed.BackfillItemsCanceled != 501 || !completed.CancellationCompleted ||
+		completed.Status != ScopeControlCompleted {
+		t.Fatalf("completed cancellation=%+v err=%v", completed, err)
+	}
+	if _, err := projected.RecordCancellationBatch(projected.Version, 501, true, now.Add(2*time.Second)); err == nil {
+		t.Fatal("unbounded cancellation dependency page was accepted")
 	}
 }
 

@@ -24,7 +24,7 @@ func (r *Repository) CreateScopeControlOperation(ctx context.Context, operation 
 	if err != nil || operation.OperationID == "" || operation.Action == "" || operation.ScopeID == "" || operation.Status != model.ScopeControlApplying ||
 		operation.Version != 1 || operation.ProjectionCompleted || operation.WorkCursor != "" || operation.CompletedAt != "" ||
 		operation.WorksScanned != 0 || operation.WorksPaused != 0 || operation.WorksCanceled != 0 || operation.WorksResumed != 0 ||
-		operation.AttemptsExpired != 0 || operation.CatchUpCursor != "" || operation.SourcesScanned != 0 ||
+		operation.AttemptsExpired != 0 || operation.BackfillItemsCanceled != 0 || operation.CatchUpCursor != "" || operation.SourcesScanned != 0 ||
 		operation.CatchUpsQueued != 0 || operation.CatchUpsSkipped != 0 || businessAt.IsZero() ||
 		uint64(len(rootWorkIDs)) != operation.ActiveRoots || len(rootWorkIDs) > scopeControlBatchLimit {
 		return fmt.Errorf("new applying scope control operation and its bounded roots are required")
@@ -35,11 +35,13 @@ func (r *Repository) CreateScopeControlOperation(ctx context.Context, operation 
 	switch operation.Action {
 	case model.ScopeControlPause:
 		if !operation.CatchUpCompleted || operation.CatchUpUpperSourceID != "" || operation.ReversesOperationID != "" || operation.Mode.Validate() != nil ||
+			operation.CancellationCompleted != (operation.Mode != model.PauseCancel) ||
 			(operation.Mode != model.PauseFinishCausalChain && operation.ActiveRoots != 0) {
 			return fmt.Errorf("new pause scope control operation is inconsistent")
 		}
 	case model.ScopeControlResume:
-		if operation.CatchUpCompleted || operation.Mode != "" || strings.TrimSpace(operation.ReversesOperationID) == "" || operation.ActiveRoots != 0 {
+		if operation.CatchUpCompleted || !operation.CancellationCompleted || operation.Mode != "" ||
+			strings.TrimSpace(operation.ReversesOperationID) == "" || operation.ActiveRoots != 0 {
 			return fmt.Errorf("new resume scope control operation is inconsistent")
 		}
 		if operation.ScopeType == "source" && operation.CatchUpUpperSourceID != operation.ScopeID {
@@ -76,17 +78,19 @@ func createScopeControlOperationTx(ctx context.Context, tx *sql.Tx, operation mo
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO recruiting_scope_control_operations(
   operation_id, operation_kind, scope_type, scope_id, pause_mode, reverses_operation_id, paused_entity_version,
-  configuration_version, control_epoch, execution_fence, operation_status,
-  projection_completed, active_scope_key, work_cursor, works_scanned, works_paused, works_canceled,
-  works_resumed, attempts_expired, active_roots, catch_up_completed, catch_up_cursor,
+	  configuration_version, control_epoch, execution_fence, operation_status,
+	  projection_completed, active_scope_key, work_cursor, works_scanned, works_paused, works_canceled,
+	  works_resumed, attempts_expired, cancellation_completed, backfill_items_canceled,
+	  active_roots, catch_up_completed, catch_up_cursor,
   catch_up_upper_source_id, sources_scanned, catch_ups_queued, catch_ups_skipped,
   version, state_json, started_at, completed_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		operation.OperationID, operation.Action, operation.ScopeType, operation.ScopeID, operation.Mode,
 		nullableString(operation.ReversesOperationID), operation.PausedEntityVersion,
 		operation.ConfigurationVersion, operation.ControlEpoch, operation.ExecutionFence, operation.Status, operation.ProjectionCompleted,
 		activeKey, nullableString(operation.WorkCursor), operation.WorksScanned, operation.WorksPaused, operation.WorksCanceled,
-		operation.WorksResumed, operation.AttemptsExpired, operation.ActiveRoots, operation.CatchUpCompleted,
+		operation.WorksResumed, operation.AttemptsExpired, operation.CancellationCompleted,
+		operation.BackfillItemsCanceled, operation.ActiveRoots, operation.CatchUpCompleted,
 		nullableString(operation.CatchUpCursor), nullableString(operation.CatchUpUpperSourceID),
 		operation.SourcesScanned, operation.CatchUpsQueued, operation.CatchUpsSkipped,
 		operation.Version, state, startedAt.UTC(), nil, businessAt.UTC())
@@ -240,6 +244,23 @@ WHERE operation_id = ? FOR UPDATE`, strings.TrimSpace(operationID)).Scan(&state)
 	if !operation.NeedsProjection() {
 		return model.ScopeControlOperation{}, fmt.Errorf("scope control backlog projection is not runnable")
 	}
+	if operation.ProjectionCompleted {
+		canceled, hasMore, cancelErr := cancelScopeBackfillDependencyPageTx(ctx, tx, operation.OperationID, limit, businessAt)
+		if cancelErr != nil {
+			return model.ScopeControlOperation{}, cancelErr
+		}
+		next, recordErr := operation.RecordCancellationBatch(operation.Version, canceled, hasMore, businessAt)
+		if recordErr != nil {
+			return model.ScopeControlOperation{}, recordErr
+		}
+		if err := updateScopeControlOperationTx(ctx, tx, operation, next, businessAt); err != nil {
+			return model.ScopeControlOperation{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return model.ScopeControlOperation{}, fmt.Errorf("commit scope cancellation dependency reconciliation: %w", err)
+		}
+		return next, nil
+	}
 	var query string
 	var queryArgs []any
 	if operation.Action == model.ScopeControlResume {
@@ -363,6 +384,9 @@ WHERE work_id = ? AND version = ? AND paused_by_scope_operation_id = ?`, value.w
 				expired, err = expireActiveAttemptsForScopeControlTx(ctx, tx, value.work.WorkID, businessAt)
 				batch.ExpiredAttempts += expired
 			}
+			if err == nil {
+				err = cancelScopeBusinessExecutionTx(ctx, tx, value.work, operation.OperationID, businessAt)
+			}
 			batch.Canceled++
 		} else {
 			value.work, err = value.work.PauseByScope(value.work.Version, operation.OperationID)
@@ -388,29 +412,8 @@ WHERE work_id = ? AND version = ?`, value.work.Status, nullableString(string(val
 	if err != nil {
 		return model.ScopeControlOperation{}, err
 	}
-	nextState, _ := json.Marshal(next)
-	var activeScopeKey any = operation.ScopeType + ":" + operation.ScopeID
-	var completedAt any
-	if next.Action == model.ScopeControlResume && next.ProjectionCompleted {
-		activeScopeKey = nil
-	}
-	if next.Status == model.ScopeControlCompleted {
-		activeScopeKey = nil
-		completed, _ := time.Parse(time.RFC3339Nano, next.CompletedAt)
-		completedAt = completed.UTC()
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE recruiting_scope_control_operations
-SET operation_status = ?, projection_completed = ?, active_scope_key = ?, work_cursor = ?,
-    works_scanned = ?, works_paused = ?, works_canceled = ?, works_resumed = ?, attempts_expired = ?, active_roots = ?,
-    version = ?, state_json = ?, completed_at = ?, updated_at = ?
-WHERE operation_id = ? AND version = ?`, next.Status, next.ProjectionCompleted, activeScopeKey,
-		nullableString(next.WorkCursor), next.WorksScanned, next.WorksPaused, next.WorksCanceled, next.WorksResumed, next.AttemptsExpired,
-		next.ActiveRoots, next.Version, nextState, completedAt, businessAt.UTC(), next.OperationID, operation.Version)
-	if err != nil {
-		return model.ScopeControlOperation{}, fmt.Errorf("advance scope control operation: %w", err)
-	}
-	if changed, _ := result.RowsAffected(); changed != 1 {
-		return model.ScopeControlOperation{}, ErrProgressConflict
+	if err := updateScopeControlOperationTx(ctx, tx, operation, next, businessAt); err != nil {
+		return model.ScopeControlOperation{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return model.ScopeControlOperation{}, fmt.Errorf("commit scope control reconciliation: %w", err)
@@ -418,12 +421,381 @@ WHERE operation_id = ? AND version = ?`, next.Status, next.ProjectionCompleted, 
 	return next, nil
 }
 
+func updateScopeControlOperationTx(ctx context.Context, tx *sql.Tx, previous, next model.ScopeControlOperation,
+	at time.Time) error {
+	nextState, _ := json.Marshal(next)
+	var activeScopeKey any = next.ScopeType + ":" + next.ScopeID
+	var completedAt any
+	if (next.Action == model.ScopeControlResume && next.ProjectionCompleted) || next.Status == model.ScopeControlCompleted {
+		activeScopeKey = nil
+	}
+	if next.Status == model.ScopeControlCompleted {
+		completed, _ := time.Parse(time.RFC3339Nano, next.CompletedAt)
+		completedAt = completed.UTC()
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE recruiting_scope_control_operations
+SET operation_status = ?, projection_completed = ?, active_scope_key = ?, work_cursor = ?,
+    works_scanned = ?, works_paused = ?, works_canceled = ?, works_resumed = ?, attempts_expired = ?,
+    cancellation_completed = ?, backfill_items_canceled = ?, active_roots = ?,
+    version = ?, state_json = ?, completed_at = ?, updated_at = ?
+WHERE operation_id = ? AND version = ?`, next.Status, next.ProjectionCompleted, activeScopeKey,
+		nullableString(next.WorkCursor), next.WorksScanned, next.WorksPaused, next.WorksCanceled, next.WorksResumed,
+		next.AttemptsExpired, next.CancellationCompleted, next.BackfillItemsCanceled, next.ActiveRoots,
+		next.Version, nextState, completedAt, at.UTC(), next.OperationID, previous.Version)
+	if err != nil {
+		return fmt.Errorf("advance scope control operation: %w", err)
+	}
+	if changed, _ := result.RowsAffected(); changed != 1 {
+		return ErrProgressConflict
+	}
+	return nil
+}
+
+// cancelScopeBusinessExecutionTx closes the execution owner in the same
+// bounded per-Work transaction as its Work/Attempt fence. Without this step a
+// canceled Work can leave an occurrence or validation run permanently marked
+// running, making operational reports disagree with the executor ledger.
+func cancelScopeBusinessExecutionTx(ctx context.Context, tx *sql.Tx, work model.Work,
+	operationID string, at time.Time) error {
+	reason := "scope_canceled:" + operationID
+	switch work.Purpose {
+	case "listing_sync":
+		occurrence, err := getOccurrenceByWorkWith(ctx, tx, work.WorkID, true)
+		if err == nil {
+			if occurrence.Status == model.OccurrencePlanned || occurrence.Status == model.OccurrenceQueued ||
+				occurrence.Status == model.OccurrenceRunning {
+				canceled, cancelErr := occurrence.CloseWithException(occurrence.Version, reason)
+				if cancelErr != nil {
+					return cancelErr
+				}
+				return updateOccurrenceInTx(ctx, tx, occurrence.Version, canceled, at)
+			}
+			return nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		return cancelScopeListingRunTx(ctx, tx, work.WorkID, at)
+	case "source_validation":
+		return cancelScopeListingRunTx(ctx, tx, work.WorkID, at)
+	case "recipe_validation":
+		if err := cancelScopeListingRunTx(ctx, tx, work.WorkID, at); err == nil {
+			var exists bool
+			if queryErr := tx.QueryRowContext(ctx, `SELECT EXISTS(
+  SELECT 1 FROM recruiting_listing_runs WHERE work_id = ?)`, work.WorkID).Scan(&exists); queryErr != nil {
+				return queryErr
+			}
+			if exists {
+				return nil
+			}
+		} else {
+			return err
+		}
+		run, err := getRecipeSampleValidationByWorkWith(ctx, tx, work.WorkID, true)
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if run.Status != model.RecipeSampleValidationQueued && run.Status != model.RecipeSampleValidationRunning {
+			return nil
+		}
+		canceled, err := run.Cancel(run.Version)
+		if err != nil {
+			return err
+		}
+		return updateRecipeSampleValidationTx(ctx, tx, run.Version, canceled, at)
+	case "source_discovery":
+		var state []byte
+		err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_source_discoveries
+WHERE work_id = ? FOR UPDATE`, work.WorkID).Scan(&state)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var discovery model.SourceDiscovery
+		if err := json.Unmarshal(state, &discovery); err != nil {
+			return err
+		}
+		if discovery.Status != model.SourceDiscoveryQueued && discovery.Status != model.SourceDiscoveryRunning {
+			return nil
+		}
+		canceled, err := discovery.Cancel(discovery.Version)
+		if err != nil {
+			return err
+		}
+		return updateSourceDiscoveryCAS(ctx, tx, discovery.Version, canceled, at)
+	case "baseline_listing":
+		var state []byte
+		err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_baseline_generations
+WHERE work_id = ? FOR UPDATE`, work.WorkID).Scan(&state)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var baseline model.BaselineGeneration
+		if err := json.Unmarshal(state, &baseline); err != nil {
+			return err
+		}
+		if baseline.Status != model.BaselineListing || baseline.ListingFinalized {
+			return nil
+		}
+		canceled, err := baseline.Cancel(baseline.Version)
+		if err != nil {
+			return err
+		}
+		state, _ = json.Marshal(canceled)
+		result, err := tx.ExecContext(ctx, `UPDATE recruiting_baseline_generations
+SET generation_status = ?, version = ?, state_json = ?, updated_at = ?
+WHERE source_id = ? AND baseline_generation = ? AND version = ?`, canceled.Status, canceled.Version,
+			state, at.UTC(), canceled.SourceID, canceled.Generation, baseline.Version)
+		if err != nil {
+			return err
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return ErrProgressConflict
+		}
+	case "historical_backfill":
+		var state []byte
+		err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_backfills
+WHERE work_id = ? FOR UPDATE`, work.WorkID).Scan(&state)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var backfill model.Backfill
+		if err := json.Unmarshal(state, &backfill); err != nil {
+			return err
+		}
+		if backfill.Status == model.BackfillCanceled || backfill.Status == model.BackfillCompleted ||
+			backfill.Status == model.BackfillCanceling {
+			return nil
+		}
+		canceling, err := backfill.RequestScopeCancel(backfill.Version, operationID)
+		if err != nil {
+			return err
+		}
+		return updateBackfillCASTx(ctx, tx, backfill.Version, canceling, at)
+	case "historical_backfill_item":
+		return cancelScopeBackfillItemTx(ctx, tx, work.WorkID, operationID, at)
+	}
+	return nil
+}
+
+func cancelScopeListingRunTx(ctx context.Context, tx *sql.Tx, workID string, at time.Time) error {
+	run, err := getListingRunByWorkWith(ctx, tx, workID, true)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if run.Status != model.ListingRunQueued && run.Status != model.ListingRunRunning {
+		return nil
+	}
+	canceled, err := run.Cancel(run.Version)
+	if err != nil {
+		return err
+	}
+	return updateListingRunInTx(ctx, tx, run.Version, canceled, at)
+}
+
+func cancelScopeBackfillItemTx(ctx context.Context, tx *sql.Tx, workID, operationID string, at time.Time) error {
+	var backfillState, itemState []byte
+	err := tx.QueryRowContext(ctx, `SELECT backfill.state_json, item.state_json
+FROM recruiting_backfill_items item
+JOIN recruiting_backfills backfill ON backfill.backfill_id = item.backfill_id
+WHERE item.work_id = ? FOR UPDATE`, workID).Scan(&backfillState, &itemState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var backfill model.Backfill
+	var item model.BackfillItem
+	if err := json.Unmarshal(backfillState, &backfill); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(itemState, &item); err != nil {
+		return err
+	}
+	if item.Status != model.BackfillItemPending && item.Status != model.BackfillItemQueued &&
+		item.Status != model.BackfillItemFailed {
+		return nil
+	}
+	originalBackfillVersion := backfill.Version
+	if backfill.Status != model.BackfillCanceling {
+		backfill, err = backfill.RequestScopeCancel(backfill.Version, operationID)
+		if err != nil {
+			return err
+		}
+	}
+	canceledItem, err := item.Cancel(item.Version)
+	if err != nil {
+		return err
+	}
+	if err := updateBackfillItemCASTx(ctx, tx, item.Version, canceledItem, at); err != nil {
+		return err
+	}
+	var canceled, failed, remaining uint64
+	if err := tx.QueryRowContext(ctx, `SELECT
+  SUM(item_status = 'canceled'), SUM(item_status = 'failed'),
+  SUM(item_status IN ('pending','queued','failed'))
+FROM recruiting_backfill_items WHERE backfill_id = ?`, backfill.BackfillID).Scan(&canceled, &failed, &remaining); err != nil {
+		return err
+	}
+	backfill, err = backfill.RecordCancellationProgress(backfill.Version, canceled, failed)
+	if err != nil {
+		return err
+	}
+	if remaining == 0 {
+		backfill, err = backfill.FinishCancel(backfill.Version, canceled)
+		if err != nil {
+			return err
+		}
+	}
+	return updateBackfillCASTx(ctx, tx, originalBackfillVersion, backfill, at)
+}
+
+// cancelScopeBackfillDependencyPageTx settles one Backfill page after all
+// scope-owned Work has been projected. This second phase catches previewed
+// items that had no Work at the immutable pause cut and remains bounded by the
+// caller's page size.
+func cancelScopeBackfillDependencyPageTx(ctx context.Context, tx *sql.Tx, operationID string, limit int,
+	at time.Time) (int, bool, error) {
+	var backfillID string
+	err := tx.QueryRowContext(ctx, `SELECT backfill_id FROM recruiting_backfills
+WHERE cancel_scope_operation_id = ? AND backfill_status = 'canceling'
+ORDER BY backfill_id LIMIT 1`, operationID).Scan(&backfillID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	type candidate struct{ itemID, workID string }
+	rows, err := tx.QueryContext(ctx, `SELECT item_id, COALESCE(work_id, '')
+FROM recruiting_backfill_items
+WHERE backfill_id = ? AND item_status IN ('pending','queued','failed')
+ORDER BY item_id LIMIT ?`, backfillID, limit)
+	if err != nil {
+		return 0, false, err
+	}
+	candidates := make([]candidate, 0, limit)
+	for rows.Next() {
+		var value candidate
+		if err := rows.Scan(&value.itemID, &value.workID); err != nil {
+			_ = rows.Close()
+			return 0, false, err
+		}
+		candidates = append(candidates, value)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, false, err
+	}
+	// Keep the established Attempt -> Work -> Backfill -> Item lock order so a
+	// concurrently finishing executor result can only win or lose cleanly.
+	for _, value := range candidates {
+		if value.workID == "" {
+			continue
+		}
+		if _, err := expireActiveAttemptsForScopeControlTx(ctx, tx, value.workID, at); err != nil {
+			return 0, false, err
+		}
+		work, err := getWorkWith(ctx, tx, value.workID, true)
+		if err != nil {
+			return 0, false, err
+		}
+		if !work.Terminal() {
+			canceled, err := work.Cancel(work.Version)
+			if err != nil {
+				return 0, false, err
+			}
+			if err := updateWorkTx(ctx, tx, work.Version, canceled, at); err != nil {
+				return 0, false, err
+			}
+		}
+	}
+	backfill, err := getBackfillWith(ctx, tx, backfillID, true)
+	if err != nil {
+		return 0, false, err
+	}
+	if backfill.Status != model.BackfillCanceling || backfill.CancelScopeOperationID != operationID {
+		return 0, true, nil
+	}
+	canceledCount := 0
+	for _, value := range candidates {
+		item, err := getBackfillItemWith(ctx, tx, backfillID, value.itemID, true)
+		if err != nil {
+			return 0, false, err
+		}
+		if item.Status != model.BackfillItemPending && item.Status != model.BackfillItemQueued &&
+			item.Status != model.BackfillItemFailed {
+			continue
+		}
+		canceled, err := item.Cancel(item.Version)
+		if err != nil {
+			return 0, false, err
+		}
+		if err := updateBackfillItemCASTx(ctx, tx, item.Version, canceled, at); err != nil {
+			return 0, false, err
+		}
+		canceledCount++
+	}
+	var canceled, failed, remaining uint64
+	if err := tx.QueryRowContext(ctx, `SELECT
+  COALESCE(SUM(item_status = 'canceled'), 0), COALESCE(SUM(item_status = 'failed'), 0),
+  COALESCE(SUM(item_status IN ('pending','queued','failed')), 0)
+FROM recruiting_backfill_items WHERE backfill_id = ?`, backfillID).Scan(&canceled, &failed, &remaining); err != nil {
+		return 0, false, err
+	}
+	next, err := backfill.RecordCancellationProgress(backfill.Version, canceled, failed)
+	if err != nil {
+		return 0, false, err
+	}
+	if remaining == 0 {
+		next, err = next.FinishCancel(next.Version, canceled)
+		if err != nil {
+			return 0, false, err
+		}
+	}
+	if err := updateBackfillCASTx(ctx, tx, backfill.Version, next, at); err != nil {
+		return 0, false, err
+	}
+	if next.Status == model.BackfillCanceled {
+		payload, _ := json.Marshal(map[string]any{"canceled_items": next.CanceledItems})
+		event, err := model.NewEventIntent("backfill-canceled-"+backfillStoreDigest(backfillID), "backfill.canceled",
+			"backfill", backfillID, next.Version, at.UTC().Format(time.RFC3339Nano), next.CancelCommandID, payload)
+		if err != nil {
+			return 0, false, err
+		}
+		if err := appendEventIntent(ctx, tx, event, at, at); err != nil {
+			return 0, false, err
+		}
+	}
+	var more bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM recruiting_backfills
+WHERE cancel_scope_operation_id = ? AND backfill_status = 'canceling')`, operationID).Scan(&more); err != nil {
+		return 0, false, err
+	}
+	return canceledCount, more, nil
+}
+
 func (r *Repository) ListScopeControlOperationsForReconcile(ctx context.Context, limit int) ([]model.ScopeControlOperation, error) {
 	if limit <= 0 || limit > scopeControlBatchLimit {
 		return nil, fmt.Errorf("scope control operation limit must be in [1,500]")
 	}
 	rows, err := r.db.QueryContext(ctx, `SELECT state_json FROM recruiting_scope_control_operations
-WHERE operation_status = 'applying' AND projection_completed = FALSE
+WHERE operation_status = 'applying'
+  AND (projection_completed = FALSE OR cancellation_completed = FALSE)
 ORDER BY updated_at, operation_id LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list scope control operations for reconcile: %w", err)

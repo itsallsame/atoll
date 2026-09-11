@@ -24,34 +24,36 @@ const (
 // Source pause command over its Work set. It is data owned by the Recruiting
 // extension, not a new Actor or Worker type.
 type ScopeControlOperation struct {
-	OperationID          string             `json:"operation_id"`
-	Action               ScopeControlAction `json:"action"`
-	ScopeType            string             `json:"scope_type"`
-	ScopeID              string             `json:"scope_id"`
-	Mode                 PauseMode          `json:"pause_mode"`
-	ReversesOperationID  string             `json:"reverses_operation_id,omitempty"`
-	PausedEntityVersion  uint64             `json:"paused_entity_version"`
-	ConfigurationVersion uint64             `json:"configuration_version"`
-	ControlEpoch         uint64             `json:"control_epoch"`
-	ExecutionFence       uint64             `json:"execution_fence"`
-	Status               ScopeControlStatus `json:"status"`
-	ProjectionCompleted  bool               `json:"projection_completed"`
-	WorkCursor           string             `json:"work_cursor,omitempty"`
-	WorksScanned         uint64             `json:"works_scanned"`
-	WorksPaused          uint64             `json:"works_paused"`
-	WorksCanceled        uint64             `json:"works_canceled"`
-	WorksResumed         uint64             `json:"works_resumed"`
-	AttemptsExpired      uint64             `json:"attempts_expired"`
-	ActiveRoots          uint64             `json:"active_roots"`
-	CatchUpCompleted     bool               `json:"catch_up_completed"`
-	CatchUpCursor        string             `json:"catch_up_cursor,omitempty"`
-	CatchUpUpperSourceID string             `json:"catch_up_upper_source_id,omitempty"`
-	SourcesScanned       uint64             `json:"sources_scanned"`
-	CatchUpsQueued       uint64             `json:"catch_ups_queued"`
-	CatchUpsSkipped      uint64             `json:"catch_ups_skipped"`
-	StartedAt            string             `json:"started_at"`
-	CompletedAt          string             `json:"completed_at,omitempty"`
-	Version              uint64             `json:"version"`
+	OperationID           string             `json:"operation_id"`
+	Action                ScopeControlAction `json:"action"`
+	ScopeType             string             `json:"scope_type"`
+	ScopeID               string             `json:"scope_id"`
+	Mode                  PauseMode          `json:"pause_mode"`
+	ReversesOperationID   string             `json:"reverses_operation_id,omitempty"`
+	PausedEntityVersion   uint64             `json:"paused_entity_version"`
+	ConfigurationVersion  uint64             `json:"configuration_version"`
+	ControlEpoch          uint64             `json:"control_epoch"`
+	ExecutionFence        uint64             `json:"execution_fence"`
+	Status                ScopeControlStatus `json:"status"`
+	ProjectionCompleted   bool               `json:"projection_completed"`
+	WorkCursor            string             `json:"work_cursor,omitempty"`
+	WorksScanned          uint64             `json:"works_scanned"`
+	WorksPaused           uint64             `json:"works_paused"`
+	WorksCanceled         uint64             `json:"works_canceled"`
+	WorksResumed          uint64             `json:"works_resumed"`
+	AttemptsExpired       uint64             `json:"attempts_expired"`
+	CancellationCompleted bool               `json:"cancellation_completed"`
+	BackfillItemsCanceled uint64             `json:"backfill_items_canceled"`
+	ActiveRoots           uint64             `json:"active_roots"`
+	CatchUpCompleted      bool               `json:"catch_up_completed"`
+	CatchUpCursor         string             `json:"catch_up_cursor,omitempty"`
+	CatchUpUpperSourceID  string             `json:"catch_up_upper_source_id,omitempty"`
+	SourcesScanned        uint64             `json:"sources_scanned"`
+	CatchUpsQueued        uint64             `json:"catch_ups_queued"`
+	CatchUpsSkipped       uint64             `json:"catch_ups_skipped"`
+	StartedAt             string             `json:"started_at"`
+	CompletedAt           string             `json:"completed_at,omitempty"`
+	Version               uint64             `json:"version"`
 }
 
 type ScopeControlBatch struct {
@@ -84,7 +86,8 @@ func NewScopeControlOperation(id, scopeType, scopeID string, mode PauseMode, ent
 	return ScopeControlOperation{OperationID: id, Action: ScopeControlPause, ScopeType: scopeType, ScopeID: scopeID, Mode: mode,
 		PausedEntityVersion: entityVersion, ConfigurationVersion: configurationVersion,
 		ControlEpoch: controlEpoch, ExecutionFence: executionFence, Status: ScopeControlApplying,
-		ActiveRoots: activeRoots, CatchUpCompleted: true, StartedAt: at.UTC().Format(time.RFC3339Nano), Version: 1}, nil
+		CancellationCompleted: mode != PauseCancel, ActiveRoots: activeRoots, CatchUpCompleted: true,
+		StartedAt: at.UTC().Format(time.RFC3339Nano), Version: 1}, nil
 }
 
 func NewScopeResumeOperation(id, scopeType, scopeID, reversesOperationID, catchUpUpperSourceID string, entityVersion,
@@ -105,7 +108,7 @@ func NewScopeResumeOperation(id, scopeType, scopeID, reversesOperationID, catchU
 	return ScopeControlOperation{OperationID: id, Action: ScopeControlResume, ScopeType: scopeType, ScopeID: scopeID,
 		ReversesOperationID: reversesOperationID, PausedEntityVersion: entityVersion,
 		ConfigurationVersion: configurationVersion, ControlEpoch: controlEpoch, ExecutionFence: executionFence,
-		Status: ScopeControlApplying, CatchUpUpperSourceID: catchUpUpperSourceID,
+		Status: ScopeControlApplying, CancellationCompleted: true, CatchUpUpperSourceID: catchUpUpperSourceID,
 		StartedAt: at.UTC().Format(time.RFC3339Nano), Version: 1}, nil
 }
 
@@ -153,9 +156,33 @@ func (o ScopeControlOperation) RecordBatch(expected uint64, batch ScopeControlBa
 	}
 	if !batch.HasMore {
 		o.ProjectionCompleted = true
-		if o.Action == ScopeControlPause && (o.Mode != PauseFinishCausalChain || o.ActiveRoots == 0) {
+		if o.Action == ScopeControlPause && o.CancellationCompleted &&
+			(o.Mode != PauseFinishCausalChain || o.ActiveRoots == 0) {
 			o.Status = ScopeControlCompleted
 			o.CompletedAt = batch.AppliedAt.UTC().Format(time.RFC3339Nano)
+		}
+	}
+	o.Version++
+	return o, nil
+}
+
+// RecordCancellationBatch advances the independently bounded cancellation of
+// business children that do not yet have a Work row.
+func (o ScopeControlOperation) RecordCancellationBatch(expected uint64, canceled int, hasMore bool,
+	at time.Time) (ScopeControlOperation, error) {
+	if err := requireVersion(expected, o.Version); err != nil {
+		return ScopeControlOperation{}, err
+	}
+	if o.Status != ScopeControlApplying || o.Action != ScopeControlPause || o.Mode != PauseCancel ||
+		!o.ProjectionCompleted || o.CancellationCompleted || canceled < 0 || canceled > scopeControlBatchMax || at.IsZero() {
+		return ScopeControlOperation{}, fmt.Errorf("active projected cancel operation and bounded cancellation batch are required")
+	}
+	o.BackfillItemsCanceled += uint64(canceled)
+	if !hasMore {
+		o.CancellationCompleted = true
+		if o.ActiveRoots == 0 {
+			o.Status = ScopeControlCompleted
+			o.CompletedAt = at.UTC().Format(time.RFC3339Nano)
 		}
 	}
 	o.Version++
@@ -218,7 +245,7 @@ func (o ScopeControlOperation) SettleRoot(expected uint64, at time.Time) (ScopeC
 }
 
 func (o ScopeControlOperation) NeedsProjection() bool {
-	return o.Status == ScopeControlApplying && !o.ProjectionCompleted
+	return o.Status == ScopeControlApplying && (!o.ProjectionCompleted || !o.CancellationCompleted)
 }
 
 func (o ScopeControlOperation) AcceptsExistingAttempt() bool {

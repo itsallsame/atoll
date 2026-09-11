@@ -147,7 +147,10 @@ func (r *Repository) ResolveBackfillItem(ctx context.Context,
 		if err == nil {
 			placement := WorkPlacement{BusinessKey: "backfill-item-retry|" + backfill.BackfillID + "|" + item.ItemID + "|" + retry.WorkID,
 				Priority: 50, Capability: capability, Origin: origin, ProfileID: item.ProfileID, NotBefore: input.BusinessAt.UTC()}
-			err = insertWork(ctx, tx, retry, placement, input.BusinessAt)
+			placement, err = bindWorkPlacementScope(placement, item.CompanyID, item.SourceID)
+			if err == nil {
+				err = insertWork(ctx, tx, retry, placement, input.BusinessAt)
+			}
 		}
 		if err == nil {
 			nextItem, err = item.Retry(item.Version, retry.WorkID)

@@ -24,6 +24,7 @@ const (
 	ListingRunQueued    ListingRunStatus = "queued"
 	ListingRunRunning   ListingRunStatus = "running"
 	ListingRunCompleted ListingRunStatus = "completed"
+	ListingRunCanceled  ListingRunStatus = "canceled"
 )
 
 // ListingRun is the immutable execution context for a standalone manual
@@ -105,12 +106,24 @@ func (r ListingRun) Complete(expected uint64) (ListingRun, error) {
 	return r, nil
 }
 
+func (r ListingRun) Cancel(expected uint64) (ListingRun, error) {
+	if err := requireVersion(expected, r.Version); err != nil {
+		return ListingRun{}, err
+	}
+	if r.Status != ListingRunQueued && r.Status != ListingRunRunning {
+		return ListingRun{}, &InvalidTransitionError{Entity: "listing run", From: string(r.Status), Action: "cancel"}
+	}
+	r.Status, r.Version = ListingRunCanceled, r.Version+1
+	return r, nil
+}
+
 func (r ListingRun) RebindWork(expected uint64, previousWorkID, retryWorkID string) (ListingRun, error) {
 	if err := requireVersion(expected, r.Version); err != nil {
 		return ListingRun{}, err
 	}
 	previousWorkID, retryWorkID = strings.TrimSpace(previousWorkID), strings.TrimSpace(retryWorkID)
-	if r.Status == ListingRunCompleted || r.WorkID != previousWorkID || previousWorkID == "" || retryWorkID == "" || previousWorkID == retryWorkID {
+	if (r.Status != ListingRunQueued && r.Status != ListingRunRunning) || r.WorkID != previousWorkID ||
+		previousWorkID == "" || retryWorkID == "" || previousWorkID == retryWorkID {
 		return ListingRun{}, &InvalidTransitionError{Entity: "listing run", From: string(r.Status), Action: "rebind retry work"}
 	}
 	r.WorkID, r.Version = retryWorkID, r.Version+1

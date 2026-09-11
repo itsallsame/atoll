@@ -102,6 +102,17 @@ func (d SourceDiscovery) Complete(expected uint64, candidateCount int) (SourceDi
 	return d, nil
 }
 
+func (d SourceDiscovery) Cancel(expected uint64) (SourceDiscovery, error) {
+	if err := requireVersion(expected, d.Version); err != nil {
+		return SourceDiscovery{}, err
+	}
+	if d.Status != SourceDiscoveryQueued && d.Status != SourceDiscoveryRunning {
+		return SourceDiscovery{}, &InvalidTransitionError{Entity: "source_discovery", From: string(d.Status), Action: "cancel"}
+	}
+	d.Status, d.Version = SourceDiscoveryCanceled, d.Version+1
+	return d, nil
+}
+
 func (d SourceDiscovery) AppendCandidates(expected, sequence uint64, count int) (SourceDiscovery, error) {
 	if err := requireVersion(expected, d.Version); err != nil {
 		return SourceDiscovery{}, err

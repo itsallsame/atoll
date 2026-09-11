@@ -113,30 +113,31 @@ const (
 )
 
 type Backfill struct {
-	BackfillID          string         `json:"backfill_id"`
-	WorkID              string         `json:"work_id"`
-	RequestedBy         string         `json:"requested_by"`
-	TargetType          string         `json:"target_type"`
-	TargetID            string         `json:"target_id"`
-	Mode                BackfillMode   `json:"mode"`
-	RangeStart          string         `json:"range_start"`
-	RangeEnd            string         `json:"range_end"`
-	Fields              []string       `json:"fields"`
-	RecipeID            string         `json:"recipe_id"`
-	RecipeVersion       uint64         `json:"recipe_version"`
-	PolicyVersion       uint64         `json:"policy_version"`
-	Status              BackfillStatus `json:"status"`
-	PreviewCursor       string         `json:"preview_cursor,omitempty"`
-	PreviewedItems      uint64         `json:"previewed_items"`
-	PreviewAccumulator  string         `json:"preview_accumulator,omitempty"`
-	PreviewHash         string         `json:"preview_hash,omitempty"`
-	ConfirmationVersion uint64         `json:"confirmation_version,omitempty"`
-	SucceededItems      uint64         `json:"succeeded_items"`
-	AcceptedGapItems    uint64         `json:"accepted_gap_items"`
-	FailedItems         uint64         `json:"failed_items"`
-	CanceledItems       uint64         `json:"canceled_items"`
-	CancelCommandID     string         `json:"cancel_command_id,omitempty"`
-	Version             uint64         `json:"version"`
+	BackfillID             string         `json:"backfill_id"`
+	WorkID                 string         `json:"work_id"`
+	RequestedBy            string         `json:"requested_by"`
+	TargetType             string         `json:"target_type"`
+	TargetID               string         `json:"target_id"`
+	Mode                   BackfillMode   `json:"mode"`
+	RangeStart             string         `json:"range_start"`
+	RangeEnd               string         `json:"range_end"`
+	Fields                 []string       `json:"fields"`
+	RecipeID               string         `json:"recipe_id"`
+	RecipeVersion          uint64         `json:"recipe_version"`
+	PolicyVersion          uint64         `json:"policy_version"`
+	Status                 BackfillStatus `json:"status"`
+	PreviewCursor          string         `json:"preview_cursor,omitempty"`
+	PreviewedItems         uint64         `json:"previewed_items"`
+	PreviewAccumulator     string         `json:"preview_accumulator,omitempty"`
+	PreviewHash            string         `json:"preview_hash,omitempty"`
+	ConfirmationVersion    uint64         `json:"confirmation_version,omitempty"`
+	SucceededItems         uint64         `json:"succeeded_items"`
+	AcceptedGapItems       uint64         `json:"accepted_gap_items"`
+	FailedItems            uint64         `json:"failed_items"`
+	CanceledItems          uint64         `json:"canceled_items"`
+	CancelCommandID        string         `json:"cancel_command_id,omitempty"`
+	CancelScopeOperationID string         `json:"cancel_scope_operation_id,omitempty"`
+	Version                uint64         `json:"version"`
 }
 
 func NewBackfill(id, workID, requestedBy, targetType, targetID string, mode BackfillMode,
@@ -286,6 +287,19 @@ func (b Backfill) RequestCancel(expected uint64, commandID string) (Backfill, er
 	}
 	b.CancelCommandID, b.Status, b.Version = commandID, BackfillCanceling, b.Version+1
 	return b, nil
+}
+
+func (b Backfill) RequestScopeCancel(expected uint64, operationID string) (Backfill, error) {
+	operationID = strings.TrimSpace(operationID)
+	if operationID == "" {
+		return Backfill{}, fmt.Errorf("scope cancel operation identity is required")
+	}
+	next, err := b.RequestCancel(expected, "scope-control:"+operationID)
+	if err != nil {
+		return Backfill{}, err
+	}
+	next.CancelScopeOperationID = operationID
+	return next, nil
 }
 
 func (b Backfill) FinishCancel(expected, canceled uint64) (Backfill, error) {

@@ -34,6 +34,13 @@ func TestSourceDiscoveryBindsGenerationCompanyAndRecipe(t *testing.T) {
 	if err != nil || completed.Status != SourceDiscoveryCompleted || completed.CandidateCount != 2 {
 		t.Fatalf("completed=%+v err=%v", completed, err)
 	}
+	canceled, err := running.Cancel(running.Version)
+	if err != nil || canceled.Status != SourceDiscoveryCanceled || canceled.Version != running.Version+1 {
+		t.Fatalf("canceled=%+v err=%v", canceled, err)
+	}
+	if _, err := completed.Cancel(completed.Version); err == nil {
+		t.Fatal("completed Source Discovery was canceled")
+	}
 }
 
 func TestSourceDiscoveryCandidateRequiresExplicitIndependentDecision(t *testing.T) {

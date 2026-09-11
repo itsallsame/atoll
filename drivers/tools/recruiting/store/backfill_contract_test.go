@@ -152,6 +152,12 @@ VALUES ('backfill-observation', 'manual-history', ?, ?, ?, ?, ?, 'sha256:listing
 		queuedHistorical.Items[1].Status != model.BackfillItemQueued || queuedHistorical.Items[0].WorkID == queuedHistorical.Items[1].WorkID {
 		t.Fatalf("queued historical items=%+v err=%v", queuedHistorical, err)
 	}
+	for _, item := range queuedHistorical.Items {
+		record, err := repository.GetWorkRecord(ctx, item.WorkID)
+		if err != nil || record.Placement.CompanyID != item.CompanyID || record.Placement.SourceID != item.SourceID {
+			t.Fatalf("Backfill child scope=%+v item=%+v err=%v", record.Placement, item, err)
+		}
+	}
 	page, err := repository.ListBackfillItems(ctx, historical.BackfillID, "", 1)
 	if err != nil || len(page.Items) != 1 || page.NextCursor == "" {
 		t.Fatalf("historical page=%+v err=%v", page, err)

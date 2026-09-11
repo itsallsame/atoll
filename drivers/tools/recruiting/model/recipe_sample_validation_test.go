@@ -30,6 +30,13 @@ func TestDetailRecipeSampleValidationFreezesCandidateAndJob(t *testing.T) {
 	if _, err := running.Complete(running.Version); err != nil {
 		t.Fatal(err)
 	}
+	canceled, err := running.Cancel(running.Version)
+	if err != nil || canceled.Status != RecipeSampleValidationCanceled || canceled.Version != running.Version+1 {
+		t.Fatalf("canceled validation=%+v err=%v", canceled, err)
+	}
+	if err := canceled.Validate(); err != nil {
+		t.Fatalf("canceled validation is invalid: %v", err)
+	}
 }
 
 func TestDiscoveryRecipeSampleValidationHasNoFakeSourceFence(t *testing.T) {

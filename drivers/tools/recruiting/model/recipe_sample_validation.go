@@ -14,6 +14,7 @@ const (
 	RecipeSampleValidationQueued    RecipeSampleValidationStatus = "queued"
 	RecipeSampleValidationRunning   RecipeSampleValidationStatus = "running"
 	RecipeSampleValidationCompleted RecipeSampleValidationStatus = "completed"
+	RecipeSampleValidationCanceled  RecipeSampleValidationStatus = "canceled"
 )
 
 const (
@@ -176,7 +177,8 @@ func (r RecipeSampleValidation) Validate() error {
 		return fmt.Errorf("Recipe sample validation endpoint is invalid")
 	}
 	switch r.Status {
-	case RecipeSampleValidationQueued, RecipeSampleValidationRunning, RecipeSampleValidationCompleted:
+	case RecipeSampleValidationQueued, RecipeSampleValidationRunning, RecipeSampleValidationCompleted,
+		RecipeSampleValidationCanceled:
 	default:
 		return fmt.Errorf("Recipe sample validation status is invalid")
 	}
@@ -205,5 +207,17 @@ func (r RecipeSampleValidation) Complete(expected uint64) (RecipeSampleValidatio
 		return RecipeSampleValidation{}, &InvalidTransitionError{Entity: "Recipe sample validation", From: string(r.Status), Action: "complete"}
 	}
 	r.Status, r.Version = RecipeSampleValidationCompleted, r.Version+1
+	return r, nil
+}
+
+func (r RecipeSampleValidation) Cancel(expected uint64) (RecipeSampleValidation, error) {
+	if err := requireVersion(expected, r.Version); err != nil {
+		return RecipeSampleValidation{}, err
+	}
+	if r.Status != RecipeSampleValidationQueued && r.Status != RecipeSampleValidationRunning {
+		return RecipeSampleValidation{}, &InvalidTransitionError{
+			Entity: "Recipe sample validation", From: string(r.Status), Action: "cancel"}
+	}
+	r.Status, r.Version = RecipeSampleValidationCanceled, r.Version+1
 	return r, nil
 }

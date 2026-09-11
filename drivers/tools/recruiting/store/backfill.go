@@ -148,6 +148,10 @@ ORDER BY item.item_id LIMIT ? FOR UPDATE`, backfill.BackfillID, limit)
 		}
 		placement := WorkPlacement{BusinessKey: "backfill-item|" + backfill.BackfillID + "|" + item.ItemID,
 			Priority: 50, Capability: capability, Origin: origin, ProfileID: item.ProfileID, NotBefore: at.UTC()}
+		placement, err = bindWorkPlacementScope(placement, item.CompanyID, item.SourceID)
+		if err != nil {
+			return BackfillMaterializationResult{}, err
+		}
 		if err := insertWork(ctx, tx, work, placement, at); err != nil {
 			return BackfillMaterializationResult{}, err
 		}
@@ -384,9 +388,10 @@ func insertBackfillTx(ctx context.Context, tx *sql.Tx, backfill model.Backfill, 
 INSERT INTO recruiting_backfills(
   backfill_id, work_id, requested_by, target_type, target_id, backfill_mode,
   range_start, range_end, fields_json, recipe_id, recipe_version, policy_version,
-  backfill_status, preview_cursor, previewed_items, preview_accumulator, preview_hash,
-  succeeded_items, accepted_gap_items, failed_items, canceled_items, version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL, NULL, 0, 0, 0, 0, ?, ?, ?, ?)`,
+	  backfill_status, preview_cursor, previewed_items, preview_accumulator, preview_hash,
+	  succeeded_items, accepted_gap_items, failed_items, canceled_items, cancel_scope_operation_id,
+	  version, state_json, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL, NULL, 0, 0, 0, 0, NULL, ?, ?, ?, ?)`,
 		backfill.BackfillID, backfill.WorkID, backfill.RequestedBy, backfill.TargetType, backfill.TargetID,
 		backfill.Mode, start.UTC(), end.UTC(), fields, backfill.RecipeID, backfill.RecipeVersion,
 		backfill.PolicyVersion, backfill.Status, backfill.Version, state, businessAt.UTC(), businessAt.UTC())
@@ -728,10 +733,12 @@ func updateBackfillCASTx(ctx context.Context, tx *sql.Tx, expected uint64, next 
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_backfills
 SET backfill_status = ?, preview_cursor = ?, previewed_items = ?, preview_accumulator = ?, preview_hash = ?,
-    succeeded_items = ?, accepted_gap_items = ?, failed_items = ?, canceled_items = ?, version = ?, state_json = ?, updated_at = ?
+    succeeded_items = ?, accepted_gap_items = ?, failed_items = ?, canceled_items = ?, cancel_scope_operation_id = ?,
+    version = ?, state_json = ?, updated_at = ?
 WHERE backfill_id = ? AND version = ?`, next.Status, nullableString(next.PreviewCursor), next.PreviewedItems,
 		nullableString(next.PreviewAccumulator), nullableString(next.PreviewHash), next.SucceededItems,
-		next.AcceptedGapItems, next.FailedItems, next.CanceledItems, next.Version, state, businessAt.UTC(), next.BackfillID, expected)
+		next.AcceptedGapItems, next.FailedItems, next.CanceledItems, nullableString(next.CancelScopeOperationID),
+		next.Version, state, businessAt.UTC(), next.BackfillID, expected)
 	if err != nil {
 		return err
 	}

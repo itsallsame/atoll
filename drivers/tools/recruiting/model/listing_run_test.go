@@ -20,6 +20,13 @@ func TestStandaloneListingRunHasAnIndependentLifecycle(t *testing.T) {
 	if _, err := completed.Start(completed.Version); err == nil {
 		t.Fatal("completed listing run restarted")
 	}
+	canceled, err := running.Cancel(running.Version)
+	if err != nil || canceled.Status != ListingRunCanceled || canceled.Version != running.Version+1 {
+		t.Fatalf("canceled run = %+v err=%v", canceled, err)
+	}
+	if _, err := canceled.RebindWork(canceled.Version, canceled.WorkID, "work-canceled-retry"); err == nil {
+		t.Fatal("canceled listing run rebound to retry Work")
+	}
 	rebound, err := running.RebindWork(running.Version, running.WorkID, "work-2")
 	if err != nil || rebound.WorkID != "work-2" || rebound.Version != running.Version+1 {
 		t.Fatalf("rebound run = %+v err=%v", rebound, err)
