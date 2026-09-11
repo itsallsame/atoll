@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -641,6 +642,282 @@ WHERE work_id = ?`, fixture.offer.Work.WorkID).Scan(&state); err != nil {
 			t.Fatalf("late page rewrote canceled Baseline=%+v err=%v", baseline, err)
 		}
 	})
+}
+
+func TestScopeCancelAndResultsConvergeUnderConcurrentStress(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	repository, db, ctx, cleanup := detailContractRepository(t)
+	defer cleanup()
+	now := time.Date(2095, 2, 24, 4, 0, 0, 0, time.UTC)
+
+	type raceFixture struct {
+		workID, attemptID string
+		artifactCount     int
+		acceptResult      func() error
+		applyPause        func() error
+		operationID       string
+	}
+	newSourcePause := func(t *testing.T, sourceID, prefix string, at time.Time) (func() error, string) {
+		t.Helper()
+		source, err := repository.GetSource(ctx, sourceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paused, err := source.Pause(source.Version, model.PauseCancel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt, _ := model.NewCommandReceipt(prefix+"-pause", "recruiting.source.pause",
+			"sha256:"+prefix+"-pause", json.RawMessage(`{}`))
+		event, _ := model.NewEventIntent(prefix+"-pause-event", "source.paused", "source", source.SourceID,
+			paused.Version, at.Format(time.RFC3339Nano), receipt.CommandID, json.RawMessage(`{"mode":"cancel"}`))
+		operationID := prefix + "-operation"
+		return func() error {
+			_, err := repository.ApplySourcePauseCommand(ctx, source.Version, paused, receipt, event, operationID, at)
+			return err
+		}, operationID
+	}
+	newCompanyPause := func(t *testing.T, companyID, prefix string, at time.Time) (func() error, string) {
+		t.Helper()
+		company, err := repository.GetCompany(ctx, companyID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paused, err := company.Pause(company.Version, model.PauseCancel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt, _ := model.NewCommandReceipt(prefix+"-pause", "recruiting.company.pause",
+			"sha256:"+prefix+"-pause", json.RawMessage(`{}`))
+		event, _ := model.NewEventIntent(prefix+"-pause-event", "company.paused", "company", company.CompanyID,
+			paused.Version, at.Format(time.RFC3339Nano), receipt.CommandID, json.RawMessage(`{"mode":"cancel"}`))
+		operationID := prefix + "-operation"
+		return func() error {
+			_, err := repository.ApplyCompanyPauseCommand(ctx, company.Version, paused, receipt, event, operationID, at)
+			return err
+		}, operationID
+	}
+
+	kinds := []string{"source_discovery", "source_validation", "detail", "diagnostic",
+		"listing_recipe_validation", "detail_recipe_sample", "discovery_recipe_validation"}
+	resultFirst, cancelFirst := 0, 0
+	for iteration := 0; iteration < 5; iteration++ {
+		for kindIndex, kind := range kinds {
+			kind, iteration := kind, iteration
+			t.Run(fmt.Sprintf("%s/%02d", kind, iteration), func(t *testing.T) {
+				prefix := fmt.Sprintf("scope-concurrent-%s-%02d", strings.ReplaceAll(kind, "_", "-"), iteration)
+				at := now.Add(time.Duration(iteration*len(kinds)+kindIndex) * time.Hour)
+				var fixture raceFixture
+				switch kind {
+				case "source_discovery":
+					value := createRunningSourceDiscoveryFixture(t, ctx, repository, prefix, at)
+					fixture.workID, fixture.attemptID, fixture.artifactCount = value.offer.Work.WorkID, value.offer.Attempt.AttemptID, 1
+					fixture.acceptResult = func() error { _, err := repository.AcceptSourceDiscoveryResult(ctx, value.result); return err }
+					fixture.applyPause, fixture.operationID = newCompanyPause(t, value.company.CompanyID, prefix, at.Add(5*time.Second))
+				case "source_validation":
+					value := createRunningSourceValidationFixture(t, ctx, repository, prefix, at)
+					fixture.workID, fixture.attemptID, fixture.artifactCount = value.work.WorkID, value.offer.Attempt.AttemptID, 2
+					fixture.acceptResult = func() error { _, err := repository.AcceptDiagnosticResult(ctx, value.result); return err }
+					fixture.applyPause, fixture.operationID = newSourcePause(t, value.source.SourceID, prefix, at.Add(5*time.Second))
+				case "detail":
+					value := createDetailFixture(t, ctx, repository, prefix, at)
+					result := value.result(prefix + "-artifact")
+					fixture.workID, fixture.attemptID, fixture.artifactCount = value.work.WorkID, value.attempt.AttemptID, 1
+					fixture.acceptResult = func() error { _, err := repository.AcceptDetailResult(ctx, result); return err }
+					fixture.applyPause, fixture.operationID = newSourcePause(t, value.source.SourceID, prefix, at.Add(5*time.Second))
+				case "diagnostic":
+					value := createRunningDiagnosticFixture(t, ctx, repository, prefix, at)
+					fixture.workID, fixture.attemptID, fixture.artifactCount = value.offer.Work.WorkID, value.offer.Attempt.AttemptID, 2
+					fixture.acceptResult = func() error { _, err := repository.AcceptDiagnosticResult(ctx, value.result); return err }
+					fixture.applyPause, fixture.operationID = newSourcePause(t, value.source.SourceID, prefix, at.Add(5*time.Second))
+				case "listing_recipe_validation":
+					value := createRunningListingRecipeValidationFixture(t, ctx, repository, prefix, at)
+					fixture.workID, fixture.attemptID, fixture.artifactCount = value.offer.Work.WorkID, value.offer.Attempt.AttemptID, 2
+					fixture.acceptResult = func() error { _, err := repository.AcceptDiagnosticResult(ctx, value.result); return err }
+					fixture.applyPause, fixture.operationID = newSourcePause(t, value.source.SourceID, prefix, at.Add(5*time.Second))
+				case "detail_recipe_sample":
+					value := createRunningDetailRecipeSampleFixture(t, ctx, repository, prefix, at)
+					fixture.workID, fixture.attemptID, fixture.artifactCount = value.offer.Work.WorkID, value.offer.Attempt.AttemptID, 2
+					fixture.acceptResult = func() error { _, err := repository.AcceptRecipeSampleValidationResult(ctx, value.result); return err }
+					fixture.applyPause, fixture.operationID = newSourcePause(t, value.source.SourceID, prefix, at.Add(5*time.Second))
+				case "discovery_recipe_validation":
+					value := createRunningDiscoveryRecipeValidationFixture(t, ctx, repository, prefix, at)
+					fixture.workID, fixture.attemptID, fixture.artifactCount = value.offer.Work.WorkID, value.offer.Attempt.AttemptID, 2
+					fixture.acceptResult = func() error { _, err := repository.AcceptRecipeSampleValidationResult(ctx, value.result); return err }
+					fixture.applyPause, fixture.operationID = newCompanyPause(t, value.company.CompanyID, prefix, at.Add(5*time.Second))
+				default:
+					t.Fatalf("unknown race kind %q", kind)
+				}
+
+				start := make(chan struct{})
+				resultErr := make(chan error, 1)
+				pauseErr := make(chan error, 1)
+				var wait sync.WaitGroup
+				wait.Add(2)
+				go func() { defer wait.Done(); <-start; resultErr <- fixture.acceptResult() }()
+				go func() { defer wait.Done(); <-start; pauseErr <- fixture.applyPause() }()
+				close(start)
+				wait.Wait()
+				if err := <-pauseErr; err != nil {
+					t.Fatalf("concurrent scope pause failed: %v", err)
+				}
+				acceptedErr := <-resultErr
+				if acceptedErr != nil && !errors.Is(acceptedErr, ErrResultFenced) {
+					t.Fatalf("concurrent result returned a third outcome: %v", acceptedErr)
+				}
+				operation := reconcileCompletedScopeOperation(t, ctx, repository, fixture.operationID, at.Add(6*time.Second))
+				work, workErr := repository.GetWork(ctx, fixture.workID)
+				attempt, attemptErr := repository.GetAttempt(ctx, fixture.attemptID)
+				var activePermits, rejectedArtifacts int
+				permitErr := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_budget_permits
+WHERE attempt_id = ? AND permit_status = 'active'`, fixture.attemptID).Scan(&activePermits)
+				artifactErr := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_artifacts
+WHERE attempt_id = ? AND rejected = TRUE`, fixture.attemptID).Scan(&rejectedArtifacts)
+				if workErr != nil || attemptErr != nil || permitErr != nil || artifactErr != nil ||
+					operation.Status != model.ScopeControlCompleted || activePermits != 0 {
+					t.Fatalf("concurrent convergence read failed: operation=%+v Work=%+v Attempt=%+v permits=%d rejected=%d err=%v/%v/%v/%v",
+						operation, work, attempt, activePermits, rejectedArtifacts, workErr, attemptErr, permitErr, artifactErr)
+				}
+				if acceptedErr == nil {
+					resultFirst++
+					if work.Status != model.WorkCompleted || attempt.Status != model.AttemptSucceeded || rejectedArtifacts != 0 {
+						t.Fatalf("result-first did not preserve success: Work=%+v Attempt=%+v rejected=%d",
+							work, attempt, rejectedArtifacts)
+					}
+				} else {
+					cancelFirst++
+					if work.Status != model.WorkCanceled || attempt.Status != model.AttemptExpired ||
+						rejectedArtifacts != fixture.artifactCount {
+						t.Fatalf("cancel-first did not preserve cancellation: Work=%+v Attempt=%+v rejected=%d want=%d",
+							work, attempt, rejectedArtifacts, fixture.artifactCount)
+					}
+				}
+			})
+		}
+	}
+	if resultFirst+cancelFirst != len(kinds)*5 {
+		t.Fatalf("stress matrix lost outcomes: result_first=%d cancel_first=%d", resultFirst, cancelFirst)
+	}
+	t.Logf("35 concurrent cutpoints converged: result_first=%d cancel_first=%d", resultFirst, cancelFirst)
+}
+
+func TestScopeAndGeneralBackfillCancelCoordinatorsConvergeUnderConcurrentStress(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	repository, db, ctx, cleanup := detailContractRepository(t)
+	defer cleanup()
+	now := time.Date(2095, 2, 25, 4, 0, 0, 0, time.UTC)
+
+	for iteration := 0; iteration < 10; iteration++ {
+		t.Run(fmt.Sprintf("%02d", iteration), func(t *testing.T) {
+			prefix := fmt.Sprintf("scope-general-backfill-concurrent-%02d", iteration)
+			at := now.Add(time.Duration(iteration) * time.Hour)
+			detail := createDetailFixture(t, ctx, repository, prefix, at)
+			assignment := *detail.source.DetailAssignment
+			recipe, err := repository.GetRecipe(ctx, assignment.RecipeID, assignment.RecipeVersion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent, _ := model.NewWork(prefix+"-parent", "source", detail.source.SourceID,
+				"historical_backfill", "human")
+			parent, _ = parent.WithCausality("human:scope-concurrent", prefix+"-message", "")
+			backfill, err := model.NewBackfill(prefix+"-backfill", parent.WorkID, parent.InitiatorActorID,
+				"source", detail.source.SourceID, model.BackfillLiveRefetch,
+				at.Add(-time.Hour).Format(time.RFC3339), at.Add(time.Hour).Format(time.RFC3339),
+				[]string{"title"}, recipe.RecipeID, recipe.Version, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, _ := json.Marshal(backfill)
+			receipt, _ := model.NewCommandReceipt(prefix+"-create", "recruiting.backfill.create",
+				"sha256:"+prefix+"-create", response)
+			event, _ := model.NewEventIntent(prefix+"-created", "backfill.created", "work", parent.WorkID,
+				parent.Version, at.Format(time.RFC3339Nano), receipt.CommandID, json.RawMessage(`{}`))
+			if _, err := repository.ApplyCreateBackfillCommand(ctx, parent,
+				WorkPlacement{BusinessKey: "backfill|" + prefix, NotBefore: at}, backfill, receipt, event, at); err != nil {
+				t.Fatal(err)
+			}
+			backfill, items, err := repository.PreviewBackfillChunk(ctx, backfill.BackfillID, backfill.Version,
+				at.Add(time.Second))
+			if err != nil || len(items) != 1 {
+				t.Fatalf("preview Backfill items=%d err=%v", len(items), err)
+			}
+			parent, _ = repository.GetWork(ctx, parent.WorkID)
+			confirmed, _ := backfill.Confirm(backfill.Version, backfill.PreviewHash)
+			runningParent, _ := parent.Start(parent.Version)
+			confirmResponse, _ := json.Marshal(map[string]any{"backfill": confirmed, "work": runningParent})
+			confirmReceipt, _ := model.NewCommandReceipt(prefix+"-confirm", "recruiting.backfill.confirm",
+				"sha256:"+prefix+"-confirm", confirmResponse)
+			confirmEvent, _ := model.NewEventIntent(prefix+"-confirmed", "backfill.confirmed", "work", parent.WorkID,
+				runningParent.Version, at.Add(2*time.Second).Format(time.RFC3339Nano), confirmReceipt.CommandID,
+				json.RawMessage(`{}`))
+			if _, err := repository.ApplyConfirmBackfillCommand(ctx, backfill.BackfillID, backfill.Version,
+				parent.Version, backfill.PreviewHash, confirmReceipt, confirmEvent, at.Add(2*time.Second)); err != nil {
+				t.Fatal(err)
+			}
+
+			operation := startSourceCancelScope(t, ctx, repository, detail.source.SourceID, prefix, at.Add(5*time.Second))
+			for !operation.ProjectionCompleted {
+				operation, err = repository.ReconcileScopeControlOperation(ctx, operation.OperationID, operation.Version,
+					500, at.Add(6*time.Second))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if operation.Status != model.ScopeControlApplying || operation.CancellationCompleted {
+				t.Fatalf("scope operation skipped dependency race: %+v", operation)
+			}
+
+			start := make(chan struct{})
+			scopeResult := make(chan error, 1)
+			generalResult := make(chan error, 1)
+			var wait sync.WaitGroup
+			wait.Add(2)
+			go func(version uint64) {
+				defer wait.Done()
+				<-start
+				_, err := repository.ReconcileScopeControlOperation(ctx, operation.OperationID, version, 1,
+					at.Add(7*time.Second))
+				scopeResult <- err
+			}(operation.Version)
+			go func() {
+				defer wait.Done()
+				<-start
+				_, err := repository.CancelNextBackfillPage(ctx, 1, at.Add(7*time.Second))
+				generalResult <- err
+			}()
+			close(start)
+			wait.Wait()
+			if err := <-scopeResult; err != nil {
+				t.Fatalf("scope Backfill coordinator failed under concurrency: %v", err)
+			}
+			if err := <-generalResult; err != nil {
+				t.Fatalf("general Backfill coordinator failed under concurrency: %v", err)
+			}
+			operation = reconcileCompletedScopeOperation(t, ctx, repository, operation.OperationID,
+				at.Add(8*time.Second))
+			stored, storedErr := repository.GetBackfill(ctx, backfill.BackfillID)
+			page, pageErr := repository.ListBackfillItems(ctx, backfill.BackfillID, "", 10)
+			parent, parentErr := repository.GetWork(ctx, parent.WorkID)
+			if storedErr != nil || pageErr != nil || parentErr != nil || operation.Status != model.ScopeControlCompleted ||
+				stored.Status != model.BackfillCanceled || stored.CanceledItems != 1 || len(page.Items) != 1 ||
+				page.Items[0].Status != model.BackfillItemCanceled || parent.Status != model.WorkCanceled {
+				t.Fatalf("coordinators did not converge: operation=%+v Backfill=%+v items=%+v parent=%+v err=%v/%v/%v",
+					operation, stored, page, parent, storedErr, pageErr, parentErr)
+			}
+			var events int
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_event_outbox
+WHERE aggregate_type = 'backfill' AND aggregate_id = ? AND event_kind = 'backfill.canceled'`,
+				backfill.BackfillID).Scan(&events); err != nil || events != 1 {
+				t.Fatalf("concurrent Backfill terminal events=%d err=%v", events, err)
+			}
+		})
+	}
 }
 
 func TestCancelScopeControlWaitsForBoundedUnmaterializedBackfillItems(t *testing.T) {
