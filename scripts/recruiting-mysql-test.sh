@@ -33,7 +33,11 @@ if [[ ! "${iterations}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 cleanup() {
-  docker rm -f "${container_name}" >/dev/null 2>&1 || true
+  # -v matters when this script is interrupted: mysql:8.4 declares an
+  # anonymous /var/lib/mysql volume unless the caller supplies tmpfs. A plain
+  # docker rm -f leaves that volume behind and repeated stress runs can fill
+  # the host even though every container itself has gone away.
+  docker rm -f -v "${container_name}" >/dev/null 2>&1 || true
   rm -f "${init_sql}"
   rmdir "${init_directory}" 2>/dev/null || true
 }
