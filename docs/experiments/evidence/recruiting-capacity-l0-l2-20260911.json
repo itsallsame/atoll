@@ -1,0 +1,72 @@
+{
+  "schema": "recruiting.capacity-evidence.v1",
+  "captured_at": "2026-09-11",
+  "revision_before_capacity_commit": "d5d053f1",
+  "workload_manifest": "docs/experiments/workloads/recruiting-capacity-v1.json",
+  "environment": {
+    "kernel": "Linux 6.8.0-71-generic x86_64",
+    "cpu": "4 vCPU, AMD EPYC 9754",
+    "memory_gib": 15,
+    "go": "go1.25.7 linux/amd64",
+    "mysql": "mysql:8.4",
+    "mysql_storage": "4g tmpfs",
+    "database_identity": "ephemeral non-root migration and runtime users"
+  },
+  "command": "RECRUITING_CAPACITY_LEVEL=<level> RECRUITING_CAPACITY_LARGE_ACK=local-only-large-load make recruiting-capacity",
+  "results": [
+    {
+      "level": "L0",
+      "companies": 100,
+      "sources": 200,
+      "details_per_source": 0,
+      "retry_percent": 0,
+      "seed_ms": 283,
+      "plan_ms": 180,
+      "materialize_ms": 556,
+      "detail_seed_ms": 0,
+      "total_ms": 1028,
+      "result": "pass"
+    },
+    {
+      "level": "L1",
+      "companies": 1000,
+      "sources": 2000,
+      "details_per_source": 2,
+      "retry_percent": 0,
+      "seed_ms": 2318,
+      "plan_ms": 1461,
+      "materialize_ms": 5731,
+      "detail_seed_ms": 2383,
+      "total_ms": 11936,
+      "result": "pass"
+    },
+    {
+      "level": "L2",
+      "companies": 10000,
+      "sources": 20000,
+      "details_per_source": 2,
+      "retry_percent": 0,
+      "seed_ms": 21383,
+      "plan_ms": 14224,
+      "materialize_ms": 52953,
+      "detail_seed_ms": 25542,
+      "total_ms": 114394,
+      "result": "pass"
+    }
+  ],
+  "correctness_assertions": [
+    "one occurrence per active source",
+    "one unique listing work per occurrence",
+    "detail work count equals sources multiplied by details_per_source",
+    "all work business keys are unique",
+    "all due times stay inside the eight-hour daily window",
+    "all eight hourly buckets are populated and no bucket exceeds twice the mean",
+    "capacity projection is exact only when each runnable state stays within its 5000-row scan bound",
+    "capacity projection explicitly reports truncation otherwise"
+  ],
+  "notes": [
+    "The first L2 attempt stopped because the host filesystem was full while MySQL used an anonymous disk volume; it did not reach a product assertion.",
+    "The harness now places ephemeral MySQL capacity data on an explicitly bounded tmpfs, preventing interrupted tests from leaking large anonymous database volumes.",
+    "L3, L4, 24-hour spread, five-times peak, executor latency, artifact volume, and backup/restore remain release-gate work."
+  ]
+}

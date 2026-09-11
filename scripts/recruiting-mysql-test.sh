@@ -7,9 +7,21 @@ test_password="atoll_recruiting_test_only_$$"
 runtime_password="atoll_recruiting_runtime_test_only_$$"
 iterations="${RECRUITING_MYSQL_ITERATIONS:-1}"
 test_run="${RECRUITING_MYSQL_TEST_RUN:-}"
+tmpfs_size="${RECRUITING_MYSQL_TMPFS_SIZE:-}"
 test_args=()
+storage_args=()
 if [[ -n "$test_run" ]]; then
   test_args=(-run "$test_run")
+fi
+if [[ "${RECRUITING_MYSQL_TEST_VERBOSE:-0}" == "1" ]]; then
+  test_args+=(-v)
+fi
+if [[ -n "${tmpfs_size}" ]]; then
+  if [[ ! "${tmpfs_size}" =~ ^[1-9][0-9]*[kKmMgG]$ ]]; then
+    echo "recruiting mysql test: RECRUITING_MYSQL_TMPFS_SIZE must look like 512m or 4g" >&2
+    exit 1
+  fi
+  storage_args=(--tmpfs "/var/lib/mysql:rw,nosuid,size=${tmpfs_size}")
 fi
 init_directory=$(mktemp -d /tmp/atoll-recruiting-mysql-init.XXXXXX)
 init_sql="${init_directory}/10-recruiting-runtime.sql"
@@ -39,6 +51,7 @@ docker run -d --rm \
   -e MYSQL_USER=staircase_migrator \
   -e MYSQL_PASSWORD="${test_password}" \
   -v "${init_sql}:/docker-entrypoint-initdb.d/10-recruiting-runtime.sql:ro" \
+  "${storage_args[@]}" \
   mysql:8.4 --default-time-zone=+00:00 >/dev/null
 
 host_port=$(docker port "${container_name}" 3306/tcp | awk -F: 'NR == 1 {print $NF}')
