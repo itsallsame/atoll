@@ -84,6 +84,6 @@ ATOLL_RECRUITING_LIVE_E2E=1 go test ./e2e -run '^TestRecruitingLiveDetailRecipeR
 
 ## 尚未完成
 
-- 分类失败已有版本化、有界退避并能转 `waiting_human`；按 origin/Recipe/Profile/single-target 故障域创建活动单飞 RepairIncident，普通用户可用成功 canary 证据验证、结案并以每批至多 100 条恢复，初始 wake 按 capability 聚合且 offer 仍经过原预算。站点级策略覆盖参数和自动续批协调仍待实现。主动 incarnation 失效信号当前仅按无进展超时恢复；正常 dispatch→Executor→result→ack、“Work/dispatch 已提交、首次投递前 server 退出”及 completion acknowledgement 丢失均已通过真实进程与真实网站。业务 result response 丢失现有一次精确重试和 MySQL receipt 原子重放合同，且修复了 Detail 成功回执被通用错误字段误解析的问题；真实连接强制丢回包以及 Executor 处理中退出仍需进程级切点。execution offer 和高频 page 是否写 ledger/outbox 的审计分层仍待按容量测试确定（accept/start/fail/result 的数据库 receipt 已完成）；
+- 分类失败已有版本化、有界退避并能转 `waiting_human`；按 origin/Recipe/Profile/single-target 故障域创建活动单飞 RepairIncident，普通用户可用成功 canary 证据验证、结案并以每批至多 100 条恢复，初始 wake 按 capability 聚合且 offer 仍经过原预算。站点级策略覆盖参数和自动续批协调仍待实现。主动 incarnation 失效信号当前仅按无进展超时恢复；正常 dispatch→Executor→result→ack、“Work/dispatch 已提交、首次投递前 Server 退出”、completion acknowledgement 丢失以及 Executor 提交 baseline 第一页后被 `SIGKILL` 均已通过真实进程与公共只读网站。后者证明旧 Attempt/Permit 被恢复、新 daemon 从第一页重跑且没有提前发布业务事实，证据见 `evidence/recruiting-live-executor-exit-recovery-20260911.json`。业务 result response 丢失现有一次精确重试和 MySQL receipt 原子重放合同，且修复了 Detail 成功回执被通用错误字段误解析的问题；尚缺真实连接强制丢回包。execution offer 和高频 page 是否写 ledger/outbox 的审计分层仍待按容量测试确定（accept/start/fail/result 的数据库 receipt 已完成）；
 
 P3 仍为进行中，Company/Source/Work 纵向切片不能替代完整退出门。

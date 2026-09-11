@@ -1,0 +1,26 @@
+{
+  "evidence_version": "recruiting-evidence.v1",
+  "recorded_at": "2026-09-11T00:00:00Z",
+  "scope": "P3/P4 real-process Executor exit during paged baseline execution",
+  "branch": "codex/atoll-recruiting",
+  "core_boundary_base": "a94d2b8d",
+  "target": "Lever public postings API",
+  "fault_cut": "the first daemon is sent SIGKILL after its first baseline page and Artifact are durable but before terminal completion",
+  "claims": [
+    "reconcile expires the abandoned Attempt and releases its BudgetPermit",
+    "the same Work is retried by a new daemon incarnation and a distinct Attempt",
+    "the new Attempt restarts at page sequence 1 instead of mixing progress with the old Attempt",
+    "both immutable page Artifacts remain available",
+    "no Checkpoint, accepted Observation, or Job is published from the interrupted partial baseline"
+  ],
+  "verification": [
+    {
+      "command": "ATOLL_RECRUITING_LIVE_E2E=1 go test ./e2e -run '^TestRecruitingLiveBaselinePageRecoveryThroughAtoll$' -count=1 -v -timeout 180s",
+      "result": "pass",
+      "environment": "real Atoll Server, two real daemon processes, ordinary operator, Artifact File Resource, ephemeral MySQL 8.4 non-root accounts, public read-only website",
+      "observed_seconds": 35.499
+    }
+  ],
+  "third_party_writes": false,
+  "atoll_core_modified": false
+}
