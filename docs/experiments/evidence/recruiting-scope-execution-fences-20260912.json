@@ -3,7 +3,9 @@
   "observed_at": "2026-09-12T02:45:26+08:00",
   "scope": "Company/Source operational, configuration, and cancellation fences across Recruiting execution types",
   "implementation": {
-    "commit": "e1e235ca",
+    "execution_fence_commit": "e1e235ca",
+    "work_scope_commit": "e3b6fce0",
+    "complete_result_matrix_commit": "5d713295",
     "core_modified": false,
     "new_worker_types": 0,
     "new_attempt_authority": "current eligibility gates new claims; configuration_version and execution_fence authorize issued Attempts",
@@ -12,21 +14,34 @@
   "contract_observation": {
     "listing": "drain accepted; cancel and configuration change fenced",
     "detail": "drain accepted; cancel and Endpoint configuration change fenced with rejected Artifact retained",
-    "baseline": "drain accepted an issued page; resume preserved the ability to claim a retry Attempt",
-    "live_backfill": "drain accepted an issued result without changing current Job or Checkpoint",
-    "diagnostic": "drain accepted bounded evidence without business writes",
-    "detail_recipe_sample": "drain accepted evidence-only response/trace Artifacts",
+    "diagnostic": "drain accepted; cancel and Source configuration change fenced without business writes",
+    "source_discovery": "drain accepted; cancel and Company website configuration change fenced",
+    "source_validation": "drain accepted; cancel and Source Endpoint configuration change fenced",
+    "listing_recipe_validation": "drain accepted; cancel and Source configuration change fenced",
+    "detail_recipe_sample": "drain accepted; cancel and Source configuration change fenced",
+    "discovery_recipe_sample": "drain accepted; cancel and Company website configuration change fenced",
+    "baseline": "drain accepted; cancel and Source configuration change fenced",
+    "live_backfill": "drain accepted; cancel and Source configuration change fenced",
+    "recipe_work_scope": "candidate and rollout validation Work derive immutable Company/Source ownership from locked domain facts; conflicting caller scope is rejected",
     "aggregate_version": "ordinary control/health version churn is no longer treated as configuration drift"
   },
   "verification": {
     "database": "ephemeral MySQL 8.4",
     "migration_identity": "staircase_migrator (non-root)",
     "runtime_identity": "staircase_runtime (non-root, DML only)",
-    "full_store_suite": "pass in 218.254s",
-    "actor_suite": "pass in 3.030s",
+    "full_store_suite": "pass in 236.350s",
+    "actor_suite": "pass in 3.429s",
     "targeted_tests": [
       "TestInFlightResultDistinguishesDrainFromCancelFence",
       "TestDetailResultUsesSeparatedScopeFences",
+      "TestSourceDiscoveryResultUsesSeparatedCompanyFences",
+      "TestSourceValidationResultUsesSeparatedSourceFences",
+      "TestListingRecipeValidationResultUsesSeparatedSourceFences",
+      "TestDetailRecipeSampleResultUsesSeparatedSourceFences",
+      "TestDiscoveryRecipeValidationResultUsesSeparatedCompanyFences",
+      "TestBaselineListingResultUsesSeparatedSourceFences",
+      "TestLiveBackfillResultUsesSeparatedSourceFences",
+      "TestDiagnosticResultUsesSeparatedSourceFences",
       "TestExecutableBaselineCreatesCheckpointFromStagedPages",
       "TestLiveBackfillResultCreatesIndependentOutputWithoutChangingJobOrCheckpoint",
       "TestDiagnosticRunExecutesWithEvidenceAndNoBusinessWrites",
@@ -36,8 +51,8 @@
     "core_boundary": "pass from a94d2b8d; no protocol/runtime/lib/platform/registry changes"
   },
   "limits": [
-    "Source discovery, Source validation, Listing/Discovery Recipe validation, Backfill, and Baseline still need explicit cancel and configuration-change result cases even though they share the same authority function.",
-    "All-business-aggregate cancellation terminal-state and cutoff race matrices remain open.",
+    "Result-level matrices are complete, but bounded ScopeControlOperation cancellation still needs an all-business-aggregate terminal-state matrix.",
+    "Full pause/cancel cutoff and concurrent operator race matrices remain open.",
     "S15 and S16 remain partially complete."
   ]
 }
