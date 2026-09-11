@@ -62,7 +62,7 @@ func TestBridgeAcceptsOnlyPairedChromeExtensionAndReturnsBoundedResult(t *testin
 
 func TestProfileTaskUsesSeparateExecutorTokenAndRelaysOnlyThroughPairedExtension(t *testing.T) {
 	now := time.Date(2026, 9, 10, 15, 0, 0, 0, time.UTC)
-	registry, profileToken := testProfileRegistry(t, 1)
+	registry, profileToken, _ := testProfileRegistry(t, 1)
 	service := &Service{Client: &submissionFake{source: readyBridgeSource(), sender: "human:operator:7"},
 		Token: strings.Repeat("extension-token-", 3), ExecutorToken: strings.Repeat("executor-token-", 3),
 		ProfileRegistry: registry, Now: func() time.Time { return now }}
@@ -214,7 +214,7 @@ func TestFailedProfileProbeMayReportFewerThanMinimumRecords(t *testing.T) {
 
 func TestProfileTasksAreQueuedAndDeliveredOneAtATime(t *testing.T) {
 	now := time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC)
-	registry, profileToken := testProfileRegistry(t, 3)
+	registry, profileToken, _ := testProfileRegistry(t, 3)
 	service := &Service{Client: &submissionFake{source: readyBridgeSource(), sender: "human:operator:7"},
 		Token: strings.Repeat("extension-queue-token-", 2), ExecutorToken: strings.Repeat("executor-queue-token-", 2),
 		ProfileRegistry: registry, Now: func() time.Time { return now }}
@@ -316,7 +316,7 @@ func TestProfileTasksAreQueuedAndDeliveredOneAtATime(t *testing.T) {
 	lease.Release()
 }
 
-func testProfileRegistry(t *testing.T, version uint64) (*browserbroker.FileProfileResolver, string) {
+func testProfileRegistry(t *testing.T, version uint64) (*browserbroker.FileProfileResolver, string, string) {
 	t.Helper()
 	directory := filepath.Join(t.TempDir(), "chrome-profile")
 	if err := os.Mkdir(directory, 0o700); err != nil {
@@ -337,7 +337,7 @@ func testProfileRegistry(t *testing.T, version uint64) (*browserbroker.FileProfi
 	if err != nil {
 		t.Fatal(err)
 	}
-	return resolver, token
+	return resolver, token, directory
 }
 
 func waitForPendingProfileTasks(t *testing.T, service *Service, count int) {

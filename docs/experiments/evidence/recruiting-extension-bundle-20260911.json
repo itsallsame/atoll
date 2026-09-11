@@ -1,0 +1,27 @@
+{
+  "version": "recruiting.extension-bundle-evidence.v1",
+  "observed_at": "2026-09-11T09:02:56Z",
+  "browser": {
+    "name": "Google Chrome for Testing",
+    "version": "153.0.8010.36",
+    "platform": "linux64",
+    "download_url": "https://storage.googleapis.com/chrome-for-testing-public/153.0.8010.36/linux64/chrome-linux64.zip",
+    "archive_sha256": "167a098c4fdec156b58a9f678c90a84f9072d789f9c6e7b35496a6987b8b7ef8"
+  },
+  "command": "RECRUITING_CHROME_BIN=<chrome-for-testing>/chrome make recruiting-extension-bundle-test",
+  "test": "TestRecruitingExtensionBundlePairsManagedProfileThroughPopup",
+  "result": "passed",
+  "assertions": [
+    "Chrome loaded the repository Manifest V3 extension and its real background service worker",
+    "the real popup sent bridge and managed Profile configuration through chrome.runtime messaging",
+    "the popup reached the connected state after its real WebSocket handshake",
+    "the loopback Bridge bound the connection to the exact provisioned Profile ID",
+    "the connected repair browser excluded a concurrent daily Profile lease"
+  ],
+  "external_site_access": false,
+  "credential_material_recorded": false,
+  "remaining_limits": [
+    "this deterministic bundle test does not contain a real third-party authenticated account",
+    "production OS or container egress isolation is not proven by this browser test"
+  ]
+}

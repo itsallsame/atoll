@@ -113,8 +113,9 @@ Profile 修复流程：运营员通过 `recruiting.profile.repair.begin` 创建�
 
 ```bash
 make recruiting-extension-test
+RECRUITING_CHROME_BIN=/absolute/path/to/chrome-for-testing make recruiting-extension-bundle-test
 make recruiting-extension-live-test
 ./scripts/recruiting-boundary-check.sh a94d2b8d
 ```
 
-真实站点测试访问 Discord 的公开 Greenhouse 岗位列表页及其第一条真实详情页，使用同一选择器/Recipe 生成内核确认 `tr.job-post` 能提取多条岗位、稳定详情 URL 和标题，并从详情页提取标题与正文；它只证明捕获机制与真实 DOM，不代替 Source 活动倒序契约或候选 Recipe 发布验证。
+整包门要求 Chrome for Testing 或允许命令行加载 unpacked extension 的 Chromium：测试从真实 Manifest V3 启动 Service Worker，打开真实 popup，填写 Bridge 与受管 Profile 绑定并点击连接，随后同时检查 UI “已连接”、Bridge 的 Profile 定向连接和每日 Runner 的跨进程互斥。真实站点测试访问 Discord 的公开 Greenhouse 岗位列表页及其第一条真实详情页，使用同一选择器/Recipe 生成内核确认 `tr.job-post` 能提取多条岗位、稳定详情 URL 和标题，并从详情页提取标题与正文；它只证明捕获机制与真实 DOM，不代替 Source 活动倒序契约或候选 Recipe 发布验证。

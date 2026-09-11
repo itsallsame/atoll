@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope recruiting-boundary-check recruiting-live-smoke recruiting-mysql-stress recruiting-extension-test recruiting-extension-live-test dev clean e2e-loop
+.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope recruiting-boundary-check recruiting-live-smoke recruiting-mysql-stress recruiting-extension-test recruiting-extension-live-test recruiting-extension-bundle-test dev clean e2e-loop
 
 # server/daemon ship namespaced (atoll-server / atoll-daemon); the entry
 # command itself is plain `atoll` — its own name IS the namespace.
@@ -190,6 +190,10 @@ recruiting-extension-test:
 
 recruiting-extension-live-test:
 	ATOLL_RECRUITING_EXTENSION_LIVE=1 go test ./e2e -run '^TestRecruitingExtensionCaptureLogicAgainstRealDiscordPage$$' -count=1 -v
+
+recruiting-extension-bundle-test:
+	test -n "$$RECRUITING_CHROME_BIN"
+	go test -race ./tools/recruiting-extension/bridge -run '^TestRecruitingExtensionBundlePairsManagedProfileThroughPopup$$' -count=1 -v -timeout 45s
 
 # ----------------------------------------------------------------------------
 # dev — 备好一个干净的开发场地：清空 $(DEV_HOME) + 编译，然后把启动命令
