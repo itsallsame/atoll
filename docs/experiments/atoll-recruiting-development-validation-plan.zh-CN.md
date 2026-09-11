@@ -501,6 +501,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。
 
+逐场景当前状态、权威测试映射和缺口统一维护在 `docs/experiments/atoll-recruiting-scenario-acceptance.zh-CN.md`。截至 2026-09-12，S15、S17 尚未完成，S12、S13、S16、S18、S19、S25 部分完成，因此 P8/P9 与整体产品均不得宣称完成。
+
 | ID | 场景 | 必须自动化的核心断言 |
 |---|---|---|
 | S01 | 单个公司新增 | command replay、业务去重、0/1/N Source |
