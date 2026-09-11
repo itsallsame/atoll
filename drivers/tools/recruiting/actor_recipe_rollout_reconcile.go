@@ -34,10 +34,15 @@ func reconcileRecipeRolloutBatches(ctx context.Context, cfg Config, repository *
 	}
 	result.BatchesScanned = len(batches)
 	remaining := limit
-	for _, listed := range batches {
+	for batchIndex, listed := range batches {
+		if remaining == 0 {
+			break
+		}
+		batchesLeft := len(batches) - batchIndex
+		batchLimit := recipeRolloutBatchShare(remaining, batchesLeft)
 		if listed.Status == model.RecipeRolloutBatchRollingBack {
 			processed, rollbackResult, rollbackErr := reconcileRecipeRollbackBatch(ctx, cfg, repository,
-				listed.BatchID, remaining, now)
+				listed.BatchID, batchLimit, now)
 			if rollbackErr != nil {
 				return result, rollbackErr
 			}
@@ -61,7 +66,7 @@ func reconcileRecipeRolloutBatches(ctx context.Context, cfg Config, repository *
 		if batch.Status != model.RecipeRolloutBatchRunning || remaining == 0 {
 			continue
 		}
-		items, err := repository.ListRecipeRolloutActiveItems(ctx, batch.BatchID, remaining)
+		items, err := repository.ListRecipeRolloutActiveItems(ctx, batch.BatchID, batchLimit)
 		if err != nil {
 			return result, err
 		}
@@ -127,6 +132,13 @@ func reconcileRecipeRolloutBatches(ctx context.Context, cfg Config, repository *
 		}
 	}
 	return result, nil
+}
+
+func recipeRolloutBatchShare(remaining, batchesLeft int) int {
+	if remaining < 1 || batchesLeft < 1 {
+		return 0
+	}
+	return (remaining + batchesLeft - 1) / batchesLeft
 }
 
 func reconcileRecipeRolloutApplication(ctx context.Context, repository *store.Repository,

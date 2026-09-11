@@ -459,6 +459,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 执行状态补充（2026-09-11，Detail Recipe 整批回滚）：rollback 协调器现按 Batch kind 选择验证策略，Assignment 恢复、逆序完整前缀、成员 fence、暂停/恢复和父 Work 结案仍与 Listing 共用；Detail 恢复不清空 Listing assessment、不移动 Checkpoint，也不把 Source 置为 repairing。每个已应用成员追加指向预览冻结旧 Recipe 的更高 Assignment version，并以该恢复 Assignment 选择当前稳定 Job，创建全新的 mode=`rollout` sample validation Work/run。非 root MySQL 纵向旅程覆盖第二个 Detail 目标的真实验证失败、Work 人工终结、显式 batch rollback、old→target→failed-target→restored 的单调 Assignment 历史、旧 Recipe 样本验证和最终 `rolled_back`；验证前后的 Job、refresh generation 与 DetailVersion 精确相等。多 wave 容量和真实 Server/Executor 进程 E2E 仍待完成，S22 继续保持未完成。
 
+执行状态补充（2026-09-11，20,000 Source 与多 wave 容量）：新增非 root MySQL 容量合同真实写入 20,000 个 ready Source、当前 Assignment 和不可变历史，以 40 个各 500 项的生产 Repository 短事务建立完整预览，随后确认只开放 10 个 canary。数据库事实模拟 canary 成功后只开放 500 项 wave；前 499 项成功时不推进，第 500 项成功后才开放下一固定 500 项。测试首次真实跨第二 wave 时发现 reconcile 事件错误归属到版本不变的父 Work，触发唯一键冲突；现改为归属版本单调的 `recipe_rollout_batch`，父 Work 只表达运行控制。成员查询也排除仍在执行/退避的 validation Work，终态后重新纳入；20K 合同明确验证第 511 项运行时第 512 项仍能取得配额、第 511 项转人工后会被优先收口。Actor 对本轮活动 Batch 使用确定性预算均分，总处理数仍不超过 tick limit。增强合同 67.034 秒通过并以正式 cancel 释放测试 scope。真实 Server/Executor 进程 E2E 仍待完成，S22 继续保持未完成。
+
 ## 13. P8：25 场景验收矩阵
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。

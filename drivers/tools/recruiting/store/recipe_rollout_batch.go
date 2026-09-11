@@ -1177,8 +1177,14 @@ func (r *Repository) ListRecipeRolloutActiveItems(ctx context.Context, batchID s
 	}
 	rows, err := r.db.QueryContext(ctx, `SELECT state_json FROM recruiting_recipe_rollout_items
 WHERE batch_id = ? AND ordinal BETWEEN ? AND ? AND item_status <> ?
+  AND (item_status <> ? OR validation_work_id IS NULL OR EXISTS (
+    SELECT 1 FROM recruiting_works validation_work
+    WHERE validation_work.work_id = recruiting_recipe_rollout_items.validation_work_id
+      AND validation_work.status IN (?, ?, ?)
+  ))
 ORDER BY ordinal LIMIT ?`, batch.BatchID, batch.ActiveFrom, batch.ActiveThrough,
-		model.RecipeRolloutItemSucceeded, limit)
+		model.RecipeRolloutItemSucceeded, model.RecipeRolloutItemAwaitingValidation,
+		model.WorkWaitingHuman, model.WorkCompleted, model.WorkCanceled, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list active Recipe rollout items: %w", err)
 	}
@@ -1212,8 +1218,15 @@ func (r *Repository) ListRecipeRollbackItems(ctx context.Context, batchID string
 	}
 	rows, err := r.db.QueryContext(ctx, `SELECT state_json FROM recruiting_recipe_rollout_items
 WHERE batch_id = ? AND ordinal <= ? AND rollback_status NOT IN (?, ?)
+  AND (rollback_status <> ? OR rollback_validation_work_id IS NULL OR EXISTS (
+    SELECT 1 FROM recruiting_works validation_work
+    WHERE validation_work.work_id = recruiting_recipe_rollout_items.rollback_validation_work_id
+      AND validation_work.status IN (?, ?, ?)
+  ))
 ORDER BY ordinal DESC LIMIT ?`, batch.BatchID, batch.RollbackThrough,
-		model.RecipeRollbackItemSucceeded, model.RecipeRollbackItemSkipped, limit)
+		model.RecipeRollbackItemSucceeded, model.RecipeRollbackItemSkipped,
+		model.RecipeRollbackItemAwaitingValidation, model.WorkWaitingHuman, model.WorkCompleted,
+		model.WorkCanceled, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list Recipe rollback items: %w", err)
 	}
@@ -1326,7 +1339,8 @@ GROUP BY item_status`, current.BatchID, current.ActiveFrom, current.ActiveThroug
 	payload, _ := json.Marshal(progress)
 	cause := fmt.Sprintf("reconcile:recipe-rollout:%s:%d", current.BatchID, current.Version)
 	event, err := model.NewEventIntent(fmt.Sprintf("recipe-rollout-wave-%s-%d", current.BatchID, next.Version),
-		eventType, "work", parent.WorkID, nextParent.Version, businessAt.UTC().Format(time.RFC3339Nano), cause, payload)
+		eventType, "recipe_rollout_batch", current.BatchID, next.Version,
+		businessAt.UTC().Format(time.RFC3339Nano), cause, payload)
 	if err != nil {
 		return model.RecipeRolloutBatch{}, false, err
 	}
@@ -1433,7 +1447,8 @@ FROM recruiting_recipe_rollout_items WHERE batch_id = ? AND ordinal <= ? GROUP B
 	payload, _ := json.Marshal(progress)
 	cause := fmt.Sprintf("reconcile:recipe-rollback:%s:%d", current.BatchID, current.Version)
 	event, err := model.NewEventIntent(fmt.Sprintf("recipe-rollback-progress-%s-%d", current.BatchID, next.Version),
-		eventType, "work", parent.WorkID, nextParent.Version, businessAt.UTC().Format(time.RFC3339Nano), cause, payload)
+		eventType, "recipe_rollout_batch", current.BatchID, next.Version,
+		businessAt.UTC().Format(time.RFC3339Nano), cause, payload)
 	if err != nil {
 		return model.RecipeRolloutBatch{}, false, err
 	}

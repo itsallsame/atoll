@@ -311,6 +311,21 @@ func TestRecipeRolloutValidationIdentityIsStableWithinGenerationAndChangesAfterR
 	}
 }
 
+func TestRecipeRolloutReconcileBudgetIsSharedAcrossActiveBatches(t *testing.T) {
+	remaining := 5
+	want := []int{2, 2, 1}
+	for index, expected := range want {
+		share := recipeRolloutBatchShare(remaining, len(want)-index)
+		if share != expected {
+			t.Fatalf("batch %d share=%d want=%d remaining=%d", index, share, expected, remaining)
+		}
+		remaining -= share
+	}
+	if remaining != 0 || recipeRolloutBatchShare(0, 1) != 0 {
+		t.Fatalf("reconcile budget was not bounded: remaining=%d", remaining)
+	}
+}
+
 func TestRecipeRolloutReconcileValidatesDetailWithoutPublishingSampleData(t *testing.T) {
 	dsn := os.Getenv("RECRUITING_ACTOR_MYSQL_TEST_DSN")
 	if dsn == "" {
