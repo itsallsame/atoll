@@ -30,8 +30,14 @@ for ((shard=1; shard<=shards; shard++)); do
   logs[$shard]=$log
   (
     cd "$repo_dir"
-    RECRUITING_MYSQL_ITERATIONS="$count" ./scripts/recruiting-mysql-test.sh >"$log" 2>&1
-  ) &
+    # A fresh container/schema per iteration is part of the P2 contract and
+    # prevents InnoDB system files from accumulating across repeated 20K
+    # fixtures even after application tables are dropped.
+    for iteration in $(seq 1 "$count"); do
+      RECRUITING_MYSQL_ITERATIONS=1 ./scripts/recruiting-mysql-test.sh
+    done
+    echo "recruiting mysql shard: ok (iterations=$count)"
+  ) >"$log" 2>&1 &
   pids[$shard]=$!
   echo "recruiting mysql stress: shard=$shard pid=${pids[$shard]} iterations=$count log=$log"
 done
