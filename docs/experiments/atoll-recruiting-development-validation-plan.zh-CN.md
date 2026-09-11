@@ -549,6 +549,8 @@ MySQL 故障注入进展（2026-09-11）：除既有行锁超时、真实 InnoDB
 
 Browser 故障注入进展（2026-09-11）：受控 Broker 在导航后、DOM 完成前异常退出时，Driver 把错误稳定分类为 `browser_transport`，并在返回失败前保存绑定原 Attempt 的部分 DOM Artifact；不会把残缺页面送入离线 Recipe 或形成业务结果。该合同关闭 Browser crash 的 Driver 切片，控制面状态收口继续复用统一 `execution.failed` 合同；真实 Chrome 进程 kill 与 Artifact provider 同时不可用的组合切点仍未完成。
 
+Artifact provider 故障进展（2026-09-11）：若 Executor 已 accept/start，但网站执行失败后连本地 failure Artifact 都无法持久化，Executor 明确返回 provider 错误，不发送没有证据的 `execution.failed`，也不伪造业务终态；持久 Attempt 保持可由既有 TTL/reconcile 过期恢复的状态。该合同与 Permit/Attempt expiry 合同共同给出可解释结果。仍需真实 File provider 断连、恢复后新 Attempt 成功以及与 Chrome kill 的组合进程验收。
+
 ### 14.1 负载模型
 
 至少运行以下可复现档位：

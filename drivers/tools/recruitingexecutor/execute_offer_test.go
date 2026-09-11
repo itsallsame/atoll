@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -465,6 +466,23 @@ func TestExecuteOfferTurnsRecipeResolutionFailureIntoEvidence(t *testing.T) {
 	if len(control.calls) != 3 || control.calls[0] != "accept" || control.calls[1] != "started" || control.calls[2] != "failed" ||
 		control.failed.Class != "contract_violated" || !control.failed.NeedsRepair || control.failed.Artifact.ArtifactID == "" {
 		t.Fatalf("failure lifecycle=%v report=%+v", control.calls, control.failed)
+	}
+}
+
+func TestExecuteOfferLeavesStartedAttemptForRecoveryWhenArtifactProviderIsUnavailable(t *testing.T) {
+	now := time.Date(2026, 9, 8, 10, 5, 0, 0, time.UTC)
+	offer, _, recipe := detailExecutionOffer(t, now)
+	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{
+		writer: &writeHandleStub{}, outcome: accessdoor.Outcome{RejectReason: access.AccessDenied},
+	}, recipe: recipe}
+	control := &executeControlStub{}
+	err := executeOffer(context.Background(), control, resources,
+		executeDriverStub{err: errors.New("injected detail transport failure")}, offer, executeTestOptions(now))
+	if err == nil || !strings.Contains(err.Error(), "save local failure evidence") {
+		t.Fatalf("Artifact outage error=%v", err)
+	}
+	if len(control.calls) != 2 || control.calls[0] != "accept" || control.calls[1] != "started" {
+		t.Fatalf("Artifact outage falsely submitted an evidence-free terminal result: %v", control.calls)
 	}
 }
 
