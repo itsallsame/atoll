@@ -61,6 +61,32 @@ func TestExecuteJSONReportsOrderingAndIdentityContractViolations(t *testing.T) {
 	}
 }
 
+func TestExecuteJSONNormalizesDeclaredUTCDateTimeActivity(t *testing.T) {
+	spec := listingSpec()
+	spec.Listing.ActivityTimeFormat = "utc_datetime"
+	document := []byte(`{"data":{"jobs":[
+      {"id":"job-2","title":"New","url":"https://jobs.example/2","updated_at":"2026-09-11T09:40:32","pinned":false},
+      {"id":"job-1","title":"Old","url":"https://jobs.example/1","updated_at":"2026-09-11T09:39:54","pinned":false}
+    ],"next":null}}`)
+	result, err := ExecuteJSON(spec, document)
+	if err != nil || !result.Quality.OrderingContractHeld {
+		t.Fatalf("declared UTC datetime result=%+v err=%v", result, err)
+	}
+	for index, expected := range []string{"2026-09-11T09:40:32Z", "2026-09-11T09:39:54Z"} {
+		var activity string
+		if err := json.Unmarshal(result.Items[index]["activity_at"], &activity); err != nil || activity != expected {
+			t.Fatalf("normalized activity[%d]=%q err=%v", index, activity, err)
+		}
+	}
+
+	bad, err := ExecuteJSON(spec, []byte(`{"data":{"jobs":[
+      {"id":"job-1","title":"Bad","url":"https://jobs.example/1","updated_at":"2026-09-11T09:40:32Z","pinned":false}
+    ],"next":null}}`))
+	if err != nil || bad.Quality.OrderingContractHeld {
+		t.Fatalf("offset-bearing value was accepted under utc_datetime: result=%+v err=%v", bad, err)
+	}
+}
+
 func TestExecuteJSONDerivesBoundedOffsetPagination(t *testing.T) {
 	spec := listingSpec()
 	spec.Extraction.Collection = "/content"

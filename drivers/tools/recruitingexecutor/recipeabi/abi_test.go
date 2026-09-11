@@ -161,13 +161,14 @@ func TestOffsetPaginationIsHashBoundAndRestrictedToJSONListings(t *testing.T) {
 
 func TestRecipeSpecRejectsWritesSecretsAndWeakIncrementalClaims(t *testing.T) {
 	for name, mutate := range map[string]func(*Spec){
-		"write method":        func(s *Spec) { s.Request.Method = "POST" },
-		"secret header":       func(s *Spec) { s.Request.Headers["Authorization"] = "secret" },
-		"unbounded response":  func(s *Spec) { s.Request.MaxResponseBytes = 21 << 20 },
-		"oversized page":      func(s *Spec) { s.Listing.MaxItemsPerPage = 501 },
-		"no update retop":     func(s *Spec) { s.Listing.UpdateRetop = false },
-		"no detail URL field": func(s *Spec) { s.Listing.DetailURLField = "" },
-		"no activity field":   func(s *Spec) { s.Listing.ActivityField = "" },
+		"write method":                 func(s *Spec) { s.Request.Method = "POST" },
+		"secret header":                func(s *Spec) { s.Request.Headers["Authorization"] = "secret" },
+		"unbounded response":           func(s *Spec) { s.Request.MaxResponseBytes = 21 << 20 },
+		"oversized page":               func(s *Spec) { s.Listing.MaxItemsPerPage = 501 },
+		"no update retop":              func(s *Spec) { s.Listing.UpdateRetop = false },
+		"no detail URL field":          func(s *Spec) { s.Listing.DetailURLField = "" },
+		"no activity field":            func(s *Spec) { s.Listing.ActivityField = "" },
+		"unknown activity time format": func(s *Spec) { s.Listing.ActivityTimeFormat = "site_local" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			spec := validListingSpec()
@@ -176,6 +177,23 @@ func TestRecipeSpecRejectsWritesSecretsAndWeakIncrementalClaims(t *testing.T) {
 				t.Fatal("unsafe or incomplete recipe was accepted")
 			}
 		})
+	}
+}
+
+func TestActivityTimeFormatIsCompatibilityHashBound(t *testing.T) {
+	spec := validListingSpec()
+	first, err := spec.ContractHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Listing.ActivityTimeFormat = "utc_datetime"
+	second, err := spec.ContractHash()
+	if err != nil || second == first {
+		t.Fatalf("activity time normalization was not compatibility hash-bound: first=%s second=%s err=%v", first, second, err)
+	}
+	spec.Listing.ActivityField = ""
+	if err := spec.Validate(); err == nil {
+		t.Fatal("activity time format without an activity field was accepted")
 	}
 }
 

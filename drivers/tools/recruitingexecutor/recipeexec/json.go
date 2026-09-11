@@ -118,7 +118,7 @@ func ExecuteJSON(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 			}
 			if spec.Listing.ActivityField != "" {
 				activityRaw, ok := rawString(item[spec.Listing.ActivityField])
-				activity, err := time.Parse(time.RFC3339, activityRaw)
+				activity, normalized, err := parseListingActivity(activityRaw, spec.Listing.ActivityTimeFormat)
 				if !ok || err != nil {
 					result.Quality.OrderingContractHeld = false
 				} else if !previousActivity.IsZero() && activity.After(previousActivity) {
@@ -126,6 +126,7 @@ func ExecuteJSON(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 				}
 				if err == nil {
 					previousActivity = activity
+					item[spec.Listing.ActivityField], _ = json.Marshal(normalized)
 				}
 			}
 		}
@@ -153,6 +154,30 @@ func ExecuteJSON(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 		}
 	}
 	return result, nil
+}
+
+// parseListingActivity converts the small, explicitly declared set of source
+// timestamp representations into the RFC3339 UTC value used by checkpoints and
+// observations. utc_datetime is deliberately narrow: the Recipe author must
+// assert that an offset-free source field is UTC (for example a documented GMT
+// field); arbitrary layouts and implicit local time zones are not accepted.
+func parseListingActivity(value, format string) (time.Time, string, error) {
+	var (
+		parsed time.Time
+		err    error
+	)
+	switch format {
+	case "", "rfc3339":
+		parsed, err = time.Parse(time.RFC3339, value)
+	case "utc_datetime":
+		parsed, err = time.ParseInLocation("2006-01-02T15:04:05", value, time.UTC)
+	default:
+		return time.Time{}, "", fmt.Errorf("unsupported activity time format %q", format)
+	}
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	return parsed, parsed.UTC().Format(time.RFC3339Nano), nil
 }
 
 func extractOffsetPage(root any, rowCount int, spec recipeabi.OffsetPagination) (OffsetPage, bool, error) {

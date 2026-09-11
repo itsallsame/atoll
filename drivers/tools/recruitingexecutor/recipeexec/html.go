@@ -93,7 +93,7 @@ func ExecuteHTML(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 			}
 			if spec.Listing.ActivityField != "" {
 				activityRaw, ok := rawString(item[spec.Listing.ActivityField])
-				activity, parseErr := time.Parse(time.RFC3339, activityRaw)
+				activity, normalized, parseErr := parseListingActivity(activityRaw, spec.Listing.ActivityTimeFormat)
 				if !ok || parseErr != nil {
 					result.Quality.OrderingContractHeld = false
 				} else if !previousActivity.IsZero() && activity.After(previousActivity) {
@@ -101,6 +101,7 @@ func ExecuteHTML(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 				}
 				if parseErr == nil {
 					previousActivity = activity
+					item[spec.Listing.ActivityField], _ = json.Marshal(normalized)
 				}
 			}
 		}

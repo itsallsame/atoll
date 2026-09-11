@@ -297,6 +297,7 @@ type ListingContract struct {
 	IdentityField      string `json:"identity_field"`
 	DetailURLField     string `json:"detail_url_field"`
 	ActivityField      string `json:"activity_field,omitempty"`
+	ActivityTimeFormat string `json:"activity_time_format,omitempty"`
 	BoundaryMode       string `json:"boundary_mode"`
 	Ordering           string `json:"ordering"`
 	UpdateRetop        bool   `json:"update_retop"`
@@ -454,6 +455,14 @@ func (c *ListingContract) Validate() error {
 	}
 	if c.FrontierWidth < 1 || c.FrontierWidth > 100 {
 		return fmt.Errorf("listing frontier width must be in [1,100]")
+	}
+	switch c.ActivityTimeFormat {
+	case "", "rfc3339", "utc_datetime":
+	default:
+		return fmt.Errorf("unsupported listing activity_time_format %q", c.ActivityTimeFormat)
+	}
+	if c.ActivityTimeFormat != "" && strings.TrimSpace(c.ActivityField) == "" {
+		return fmt.Errorf("listing activity_time_format requires activity_field")
 	}
 	switch c.BoundaryMode {
 	case "activity_time":
