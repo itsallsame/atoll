@@ -2,10 +2,18 @@
 set -euo pipefail
 
 level="${RECRUITING_CAPACITY_LEVEL:-L0}"
+shape="${RECRUITING_CAPACITY_SHAPE:-8h}"
 case "${level}" in
   L0|L1|L2|L3|L4) ;;
   *)
     echo "recruiting capacity: level must be one of L0, L1, L2, L3, L4" >&2
+    exit 2
+    ;;
+esac
+case "${shape}" in
+  8h|24h|peak5x) ;;
+  *)
+    echo "recruiting capacity: shape must be one of 8h, 24h, peak5x" >&2
     exit 2
     ;;
 esac
@@ -26,6 +34,7 @@ if [[ ! -f "${manifest}" ]]; then
 fi
 
 export RECRUITING_CAPACITY_LEVEL="${level}"
+export RECRUITING_CAPACITY_SHAPE="${shape}"
 export RECRUITING_MYSQL_TEST_RUN='^TestDailyCapacityWorkload$'
 export RECRUITING_MYSQL_TEST_VERBOSE=1
 case "${level}" in
@@ -33,5 +42,5 @@ case "${level}" in
   L3|L4) export RECRUITING_MYSQL_TMPFS_SIZE=8g ;;
 esac
 
-echo "recruiting capacity: level=${level} mysql_tmpfs=${RECRUITING_MYSQL_TMPFS_SIZE} manifest=${manifest} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
+echo "recruiting capacity: level=${level} shape=${shape} mysql_tmpfs=${RECRUITING_MYSQL_TMPFS_SIZE} manifest=${manifest} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
 "${script_dir}/recruiting-mysql-test.sh"

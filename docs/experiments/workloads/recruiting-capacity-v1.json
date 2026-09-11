@@ -1,7 +1,11 @@
 {
   "version": "recruiting.capacity-workload.v1",
   "description": "Deterministic local-only daily cutoff, gradual materialization, detail amplification, and retry backlog workload. No third-party network access.",
-  "window_hours": 8,
+  "schedule_shapes": {
+    "8h": {"window_minutes": 480, "distribution_buckets": 8},
+    "24h": {"window_minutes": 1440, "distribution_buckets": 24},
+    "peak5x": {"window_minutes": 96, "distribution_buckets": 8, "relative_arrival_rate": 5}
+  },
   "materialize_batch": 500,
   "levels": {
     "L0": {"companies": 100, "sources": 200, "details_per_source": 0, "retry_percent": 0},
@@ -15,7 +19,7 @@
     "every occurrence is materialized exactly once",
     "listing and detail Work counts exactly match the workload",
     "business keys remain unique",
-    "due times remain inside the frozen window and avoid a two-times-mean hourly hotspot",
+    "due times remain inside the frozen schedule shape and every bucket is populated without exceeding twice its mean",
     "capacity projection is exact only while each runnable status stays within its 5000-row scan bound and is explicitly truncated otherwise"
   ]
 }

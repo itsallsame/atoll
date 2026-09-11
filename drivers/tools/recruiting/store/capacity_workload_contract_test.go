@@ -20,12 +20,23 @@ type capacityWorkload struct {
 	Timeout          time.Duration
 }
 
+type capacityScheduleShape struct {
+	Window  time.Duration
+	Buckets int
+}
+
 var capacityWorkloads = map[string]capacityWorkload{
 	"L0": {Companies: 100, Sources: 200, DetailsPerSource: 0, RetryPercent: 0, Timeout: 2 * time.Minute},
 	"L1": {Companies: 1_000, Sources: 2_000, DetailsPerSource: 2, RetryPercent: 0, Timeout: 5 * time.Minute},
 	"L2": {Companies: 10_000, Sources: 20_000, DetailsPerSource: 2, RetryPercent: 0, Timeout: 15 * time.Minute},
 	"L3": {Companies: 10_000, Sources: 20_000, DetailsPerSource: 20, RetryPercent: 0, Timeout: 30 * time.Minute},
 	"L4": {Companies: 10_000, Sources: 20_000, DetailsPerSource: 20, RetryPercent: 10, Timeout: 30 * time.Minute},
+}
+
+var capacityScheduleShapes = map[string]capacityScheduleShape{
+	"8h":     {Window: 8 * time.Hour, Buckets: 8},
+	"24h":    {Window: 24 * time.Hour, Buckets: 24},
+	"peak5x": {Window: 96 * time.Minute, Buckets: 8},
 }
 
 // TestDailyCapacityWorkload is intentionally opt-in. The committed manifest
@@ -39,6 +50,14 @@ func TestDailyCapacityWorkload(t *testing.T) {
 	workload, ok := capacityWorkloads[level]
 	if !ok {
 		t.Fatalf("unknown capacity workload %q", level)
+	}
+	shapeName := os.Getenv("RECRUITING_CAPACITY_SHAPE")
+	if shapeName == "" {
+		shapeName = "8h"
+	}
+	shape, ok := capacityScheduleShapes[shapeName]
+	if !ok {
+		t.Fatalf("unknown capacity schedule shape %q", shapeName)
 	}
 	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
 	if dsn == "" {
@@ -58,13 +77,14 @@ func TestDailyCapacityWorkload(t *testing.T) {
 	seedCapacityRoster(t, ctx, db, repository, workload, now)
 	seedDuration := time.Since(started)
 
-	windowStart, windowEnd := now.Add(time.Hour), now.Add(9*time.Hour)
+	windowStart := now.Add(time.Hour)
+	windowEnd := windowStart.Add(shape.Window)
 	planStarted := time.Now()
-	plan, err := repository.PlanDailyRunAtCutoff(ctx, DailyPlanRequest{DailyRunID: "capacity-" + level,
+	plan, err := repository.PlanDailyRunAtCutoff(ctx, DailyPlanRequest{DailyRunID: "capacity-" + level + "-" + shapeName,
 		ScheduleDate: "2099-01-01", Schedule: model.DailySchedule{PolicyVersion: 1,
 			CutoffAt: now.Format(time.RFC3339Nano), WindowStartAt: windowStart.Format(time.RFC3339Nano),
-			WindowEndAt: windowEnd.Format(time.RFC3339Nano)}, TriggerID: "capacity-trigger-" + level,
-		EventID: "capacity-event-" + level}, now)
+			WindowEndAt: windowEnd.Format(time.RFC3339Nano)}, TriggerID: "capacity-trigger-" + level + "-" + shapeName,
+		EventID: "capacity-event-" + level + "-" + shapeName}, now)
 	if err != nil || plan.Occurrences != workload.Sources || plan.Run.ExpectedSources != workload.Sources {
 		t.Fatalf("capacity daily plan=%+v err=%v", plan, err)
 	}
@@ -72,22 +92,33 @@ func TestDailyCapacityWorkload(t *testing.T) {
 
 	materializeStarted := time.Now()
 	queued := 0
-	for queued < workload.Sources {
-		result, err := repository.MaterializeDueOccurrenceWorks(ctx, windowEnd, 500, "recruiting",
-			"capacity-materializer-"+level, windowStart)
-		if err != nil || result.Queued == 0 {
-			t.Fatalf("capacity materialization stopped at %d/%d: result=%+v err=%v", queued, workload.Sources, result, err)
+	bucketWidth := shape.Window / time.Duration(shape.Buckets)
+	for bucket := 0; bucket < shape.Buckets; bucket++ {
+		cutoff := windowStart.Add(time.Duration(bucket+1)*bucketWidth - time.Microsecond)
+		for {
+			result, err := repository.MaterializeDueOccurrenceWorks(ctx, cutoff, 500, "recruiting",
+				fmt.Sprintf("capacity-materializer-%s-%s-%02d", level, shapeName, bucket), cutoff)
+			if err != nil {
+				t.Fatalf("capacity materialization failed at bucket %d and %d/%d: %v", bucket, queued, workload.Sources, err)
+			}
+			if result.Queued == 0 {
+				break
+			}
+			queued += result.Queued
 		}
-		queued += result.Queued
+	}
+	if queued != workload.Sources {
+		t.Fatalf("capacity materialization stopped at %d/%d", queued, workload.Sources)
 	}
 	materializeDuration := time.Since(materializeStarted)
 	detailStarted := time.Now()
 	seedCapacityDetailWorks(t, ctx, db, workload, now)
 	detailDuration := time.Since(detailStarted)
 
-	assertCapacityFacts(t, ctx, db, repository, workload, plan.Run.DailyRunID, windowStart, windowEnd,
+	assertCapacityFacts(t, ctx, db, repository, workload, shape, plan.Run.DailyRunID, windowStart, windowEnd,
 		windowEnd.Add(-time.Microsecond))
 	metrics, _ := json.Marshal(map[string]any{"version": "recruiting.capacity-result.v1", "level": level,
+		"shape": shapeName, "window_minutes": int(shape.Window.Minutes()), "materialize_ticks": shape.Buckets,
 		"companies": workload.Companies, "sources": workload.Sources, "details_per_source": workload.DetailsPerSource,
 		"retry_percent": workload.RetryPercent, "seed_ms": seedDuration.Milliseconds(),
 		"plan_ms": planDuration.Milliseconds(), "materialize_ms": materializeDuration.Milliseconds(),
@@ -276,7 +307,7 @@ func insertCapacityWork(ctx context.Context, tx *sql.Tx, work model.Work, placem
 }
 
 func assertCapacityFacts(t *testing.T, ctx context.Context, db *sql.DB, repository *Repository,
-	workload capacityWorkload, dailyRunID string, windowStart, windowEnd, dueAt time.Time) {
+	workload capacityWorkload, shape capacityScheduleShape, dailyRunID string, windowStart, windowEnd, dueAt time.Time) {
 	t.Helper()
 	var occurrences, distinctSources, queued, listingWorks, detailWorks, distinctBusinessKeys, openStatus, retryStatus int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(DISTINCT source_id),
@@ -313,26 +344,40 @@ FROM recruiting_works`).Scan(&listingWorks, &detailWorks, &distinctBusinessKeys,
 WHERE daily_run_id = ? AND (due_at < ? OR due_at >= ?)`, dailyRunID, windowStart, windowEnd).Scan(&outsideWindow); err != nil || outsideWindow != 0 {
 		t.Fatalf("capacity due times outside window=%d err=%v", outsideWindow, err)
 	}
-	rows, err := db.QueryContext(ctx, `SELECT HOUR(due_at), COUNT(*) FROM recruiting_source_occurrences
-WHERE daily_run_id = ? GROUP BY HOUR(due_at)`, dailyRunID)
+	rows, err := db.QueryContext(ctx, `SELECT due_at FROM recruiting_source_occurrences
+WHERE daily_run_id = ? ORDER BY due_at, occurrence_id`, dailyRunID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	maxHourly, buckets := 0, 0
+	bucketWidth := shape.Window / time.Duration(shape.Buckets)
+	bucketCounts := make([]int, shape.Buckets)
 	for rows.Next() {
-		var hour, count int
-		if err := rows.Scan(&hour, &count); err != nil {
+		var scheduled time.Time
+		if err := rows.Scan(&scheduled); err != nil {
 			_ = rows.Close()
 			t.Fatal(err)
 		}
-		buckets++
-		if count > maxHourly {
-			maxHourly = count
+		bucket := int(scheduled.Sub(windowStart) / bucketWidth)
+		if bucket < 0 || bucket >= len(bucketCounts) {
+			_ = rows.Close()
+			t.Fatalf("capacity due time %s maps outside %d buckets", scheduled, shape.Buckets)
 		}
+		bucketCounts[bucket]++
 	}
 	_ = rows.Close()
-	if buckets != 8 || maxHourly > (workload.Sources+3)/4 {
-		t.Fatalf("capacity due distribution buckets=%d max=%d sources=%d", buckets, maxHourly, workload.Sources)
+	maxBucket := 0
+	populatedBuckets := 0
+	for _, count := range bucketCounts {
+		if count > 0 {
+			populatedBuckets++
+		}
+		if count > maxBucket {
+			maxBucket = count
+		}
+	}
+	if populatedBuckets != shape.Buckets || maxBucket > (2*workload.Sources+shape.Buckets-1)/shape.Buckets {
+		t.Fatalf("capacity due distribution buckets=%d/%d max=%d sources=%d window=%s",
+			populatedBuckets, shape.Buckets, maxBucket, workload.Sources, shape.Window)
 	}
 	snapshot, err := repository.GetCapacitySnapshot(ctx, dueAt, 100)
 	if err != nil {
