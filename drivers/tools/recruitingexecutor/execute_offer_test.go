@@ -14,6 +14,7 @@ import (
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/browserdriver"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/httpdriver"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 	"github.com/wanpengxie/atoll/protocol/access"
@@ -483,6 +484,54 @@ func TestExecuteOfferLeavesStartedAttemptForRecoveryWhenArtifactProviderIsUnavai
 	}
 	if len(control.calls) != 2 || control.calls[0] != "accept" || control.calls[1] != "started" {
 		t.Fatalf("Artifact outage falsely submitted an evidence-free terminal result: %v", control.calls)
+	}
+}
+
+func TestExecuteOfferLeavesBrowserCrashForRecoveryWhenArtifactProviderAlsoFails(t *testing.T) {
+	now := time.Date(2026, 9, 12, 0, 30, 0, 0, time.UTC)
+	offer, _, _ := baselineExecutionOffer(t, now)
+	spec := browserListingSpecForExecutionTest()
+	contentHash, err := spec.ContentHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contractHash, err := spec.ContractHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipe, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer.Baseline.ListingExecution.Execution.RequiredCapability = "browser.public"
+	offer.Baseline.ListingExecution.Execution.Transport = model.RecipeTransportBrowser
+	offer.Baseline.ListingExecution.ContentHash = contentHash
+	offer.Baseline.ListingExecution.ContractHash = contractHash
+	offer.Baseline.ListingExecution.Assignment.ContractHash = contractHash
+	offer.Attempt.Capability = "browser.public"
+	offer.RequestedCapability = "browser.public"
+	offer.Budget.Capability = "browser.public"
+	partialDOM := []byte(`<main><div class="job">partial`)
+	broker := publicBrowserBrokerStub{result: browserdriver.SessionResult{
+		FinalURL: offer.Baseline.ListingExecution.Endpoint.URL, ContentType: "text/html", DOM: partialDOM,
+		Attestation: browserdriver.Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET"},
+			PublicEndpoint: true, RobotsAllowed: true, TermsPolicyVersion: 1},
+	}, err: errors.New("Chrome exited during DOM capture")}
+	browserPageDriver, err := browserdriver.New(broker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{
+		writer: &writeHandleStub{}, outcome: accessdoor.Outcome{RejectReason: access.AccessDenied},
+	}, recipe: recipe}
+	control := &executeControlStub{}
+	err = executeOffer(context.Background(), control, resources,
+		&browserExecutionDriver{driver: browserPageDriver}, offer, executeTestOptions(now))
+	if err == nil || !strings.Contains(err.Error(), "save local failure evidence") {
+		t.Fatalf("combined Browser/Artifact outage error=%v", err)
+	}
+	if len(control.calls) != 2 || control.calls[0] != "accept" || control.calls[1] != "started" {
+		t.Fatalf("combined outage submitted an evidence-free terminal result: %v", control.calls)
 	}
 }
 
