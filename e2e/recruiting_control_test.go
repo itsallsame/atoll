@@ -667,6 +667,7 @@ func startRecruitingMySQL(t *testing.T) string {
 	}
 	command := exec.Command("docker", "run", "-d", "--name", containerName,
 		"-p", "127.0.0.1::3306", "-e", "MYSQL_RANDOM_ROOT_PASSWORD=yes",
+		"--tmpfs", "/var/lib/mysql:rw,nosuid,size=2g",
 		"-e", "MYSQL_DATABASE="+databaseName, "-e", "MYSQL_USER=staircase_migrator",
 		"-e", "MYSQL_PASSWORD="+migrationPassword,
 		"-v", initSQL+":/docker-entrypoint-initdb.d/10-runtime.sql:ro",

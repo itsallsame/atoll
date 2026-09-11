@@ -90,6 +90,7 @@ const (
 	TypeRecipeValidate             = "recruiting.recipe.validate"
 	TypeRecipeApprove              = "recruiting.recipe.approve"
 	TypeRecipeReject               = "recruiting.recipe.reject"
+	TypeRecipeAssign               = "recruiting.recipe.assign"
 	TypeRecipeRollout              = "recruiting.recipe.rollout"
 	TypeRecipeRolloutBatch         = "recruiting.recipe.rollout.batch"
 	TypeRecipeRolloutBatchGet      = "recruiting.recipe.rollout.batch.get"

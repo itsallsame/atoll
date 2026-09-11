@@ -25,6 +25,14 @@ type recipeRolloutPayload struct {
 	ExpectedAssignmentVersion uint64 `json:"expected_assignment_version"`
 }
 
+// recipeAssignPayload creates only the missing first Detail assignment. Recipe
+// replacement remains a separate rollout command with its own version fence.
+type recipeAssignPayload struct {
+	MutationCommand
+	RecipeID      string `json:"recipe_id"`
+	RecipeVersion uint64 `json:"recipe_version"`
+}
+
 type recipeRolloutResponse struct {
 	ContractVersion string                       `json:"contract_version"`
 	CorrelationID   string                       `json:"correlation_id"`
@@ -149,6 +157,8 @@ func handleRecipeMessage(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		handleRecipeApprove(sys, repository, msg)
 	case TypeRecipeReject:
 		handleRecipeReject(sys, repository, msg)
+	case TypeRecipeAssign:
+		handleRecipeAssign(sys, repository, msg)
 	case TypeRecipeRollout:
 		handleRecipeRollout(sys, repository, msg)
 	case TypeRecipeRolloutBatch, TypeRecipeRolloutBatchConfirm, TypeRecipeRolloutBatchResume,
@@ -1065,4 +1075,84 @@ func handleRecipeRollout(sys actorbase.Sys, repository *store.Repository, msg ac
 		}
 	}
 	failStoreError(sys, msg, err)
+}
+
+// handleRecipeAssign closes the onboarding gap between a successful Listing
+// validation and the first baseline. It can only attach an already-active
+// Detail Recipe whose scope matches the Source's active Listing Recipe. A
+// later change must use rollout and cannot masquerade as another first bind.
+func handleRecipeAssign(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	if repository == nil {
+		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
+		return
+	}
+	var payload recipeAssignPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	commandContext, err := NewCommandContext(payload.MutationCommand, string(msg.Sender.ID))
+	if err != nil || payload.Target.Type != "source" || strings.TrimSpace(payload.RecipeID) == "" ||
+		payload.RecipeVersion == 0 {
+		if err == nil {
+			err = fmt.Errorf("source target, recipe_id, and recipe_version are required")
+		}
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	requestHash := commandRequestHash(msg)
+	if replay, found, lookupErr := repository.LookupCommand(msg.Ctx(), payload.CommandID, requestHash); lookupErr != nil {
+		failStoreError(sys, msg, lookupErr)
+		return
+	} else if found {
+		_, _ = sys.Reply(msg, json.RawMessage(replay.Response))
+		return
+	}
+	current, err := repository.GetSource(msg.Ctx(), payload.Target.ID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	recipe, err := repository.GetRecipe(msg.Ctx(), strings.TrimSpace(payload.RecipeID), payload.RecipeVersion)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	businessAt := time.UnixMilli(msg.TS).UTC()
+	assignment, err := model.NewSourceRecipeAssignment(current.SourceID, model.RecipeDetail, recipe.RecipeID,
+		recipe.Version, recipe.ContractHash, businessAt.Format(time.RFC3339Nano))
+	var next model.RecruitmentSource
+	if err == nil {
+		next, err = current.AssignRecipe(payload.ExpectedVersion, assignment, false)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	nextAction := "start_initial_baseline"
+	if recipe.Execution.RequiredCapability == "browser.recipe" {
+		nextAction = "bind_detail_profile_before_baseline"
+	}
+	response := recipeRolloutResponse{ContractVersion: ContractVersion, CorrelationID: string(msg.CorrelationID),
+		RequestedBy: commandContext.RequestedBy, Source: next, Assignment: assignment,
+		Target: Target{Type: "source", ID: next.SourceID}, NextAction: nextAction}
+	responseBytes, _ := json.Marshal(response)
+	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, requestHash, responseBytes)
+	auditPayload, _ := json.Marshal(map[string]any{"requested_by": commandContext.RequestedBy,
+		"reason": payload.Reason, "recipe_id": assignment.RecipeID, "recipe_version": assignment.RecipeVersion})
+	var event model.EventIntent
+	if err == nil {
+		event, err = model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|source.detail_recipe_assigned"),
+			"source.detail_recipe_assigned", "source", next.SourceID, next.Version,
+			businessAt.Format(time.RFC3339Nano), payload.CommandID, auditPayload)
+	}
+	var result store.CommandResult
+	if err == nil {
+		result, err = repository.ApplyInitialDetailAssignmentCommand(msg.Ctx(), payload.ExpectedVersion,
+			next, assignment, receipt, event, businessAt)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
 }
