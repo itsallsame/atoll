@@ -533,6 +533,8 @@ S01—S24 至少有 model/Repository/actor 测试中的一种自动化覆盖，�
 
 执行状态（2026-09-11）：新增版本化 workload manifest、`make recruiting-capacity` 入口和真实 MySQL 8.4 容量合同。L0—L4 已在 4 vCPU/15 GiB 参考机、隔离非 root 数据库和有界 tmpfs 上全部通过；L2 实际写入 10,000 Company、20,000 Source、20,000 Occurrence、20,000 Listing Work 与 40,000 Detail Work，L3/L4 各写入 400,000 Detail Work，L4 另将其中精确 40,000 条推进为 `waiting_retry`，数据库终态精确为 380,000 `open` 与 40,000 `waiting_retry`。测试验证分桶、500 条渐进物化、业务键唯一和 `capacity.status` 每状态 5,000 行扫描上限的精确/截断语义。L2 又分别按 8 小时/8 tick、24 小时/24 tick 和 96 分钟/8 tick 运行；96 分钟承载与 8 小时相同的日工作量，构成 5 倍到期速率。三者的计划/物化/总耗时分别为 14.160/53.345/114.296 秒、14.235/52.656/113.918 秒和 14.219/52.878/113.399 秒。L3 为 14.206/53.379/344.639 秒；加强状态断言后的 L4 为 13.981/53.822/347.350 秒。详情放大、重试积压与到期压缩没有反向放大日切计划时间。该结果证明数据库计划/物化路径可承载目标规模，但不包含真实网络执行吞吐，不能据此宣称 P9 完成；Executor/Artifact/ledger 指标、外部执行 5 倍峰值、故障矩阵、备份恢复和三层真实网站持续验证仍是退出项。机读证据见 `evidence/recruiting-capacity-l0-l4-20260911.json`。
 
+备份恢复进展（2026-09-11）：新增 `make recruiting-backup-restore`，在一次性 MySQL 8.4 上以 migration/runtime 分离的非 root 身份建立源库和全新恢复库。源库通过正式 Repository 原子写入 Company、Work、两个稳定 receipt、两个领域 event intent 和一个 execution dispatch；脚本用一致性快照逻辑备份，恢复后在另一个测试进程中只以 runtime 身份核对领域状态 JSON、两类 outbox、完整 migration ledger 和命令重放，且再次证明 runtime 无 DDL 权限。正式演练的 90,553 字节 dump 在 394 ms 内恢复，端到端 9.634 秒；凭证未进入 dump。该合同关闭“能否从干净库恢复控制面因果”的机制缺口，但不替代生产数据量 RTO/RPO、加密异地保留、binlog 时间点恢复、Atoll ledger 和 Artifact provider 的联合恢复演练。证据见 `evidence/recruiting-backup-restore-20260911.json`。
+
 ### 14.1 负载模型
 
 至少运行以下可复现档位：
@@ -623,6 +625,7 @@ make recruiting-live-smoke
 make recruiting-live-nightly
 make recruiting-live-weekly
 make recruiting-capacity
+make recruiting-backup-restore
 ```
 
 CI 层级：

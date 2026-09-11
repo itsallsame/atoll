@@ -1,0 +1,40 @@
+{
+  "schema": "recruiting.backup-restore-evidence.v1",
+  "captured_at": "2026-09-11",
+  "revision_before_commit": "cfe8305d",
+  "command": "make recruiting-backup-restore",
+  "environment": {
+    "mysql": "mysql:8.4",
+    "mysql_client": "8.0.46",
+    "storage": "1g tmpfs",
+    "backup_method": "mysqldump --single-transaction --quick --routines --triggers --set-gtid-purged=OFF --no-tablespaces",
+    "migration_identity": "staircase_migrator",
+    "runtime_identity": "staircase_runtime"
+  },
+  "result": {
+    "dump_bytes": 90553,
+    "dump_sha256": "847e088fe4ad37c461a7a26e08d54895802ad1c650b32b0f9bade6fc42da1363",
+    "seed_ms": 8457,
+    "dump_ms": 266,
+    "restore_ms": 394,
+    "verify_ms": 517,
+    "total_ms": 9634,
+    "status": "pass"
+  },
+  "verified_facts": [
+    "the source and restored databases have different database names",
+    "seed and verification execute in separate go test processes",
+    "Company and Work projections match their state_json after restore",
+    "two command receipts retain byte-stable replay responses",
+    "two pending domain event intents retain aggregate and command causality",
+    "one pending execution dispatch retains target, capability, origin, cause, and retry state",
+    "the complete applied migration ledger is present",
+    "replayed Company and Work commands create no duplicate facts after restore",
+    "the runtime account can perform product DML but cannot create a table",
+    "the dump contains neither the migration nor runtime database password"
+  ],
+  "scope": {
+    "proved": "logical backup and clean-database restore preserve representative control-plane facts and idempotency using split non-root identities",
+    "not_proved": "production-volume RTO/RPO, encrypted off-host retention, point-in-time binlog recovery, or Atoll ledger and Artifact provider backup"
+  }
+}

@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope recruiting-boundary-check recruiting-live-smoke recruiting-mysql-stress recruiting-capacity recruiting-extension-test recruiting-extension-live-test recruiting-extension-bundle-test dev clean e2e-loop
+.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope recruiting-boundary-check recruiting-live-smoke recruiting-mysql-stress recruiting-capacity recruiting-backup-restore recruiting-extension-test recruiting-extension-live-test recruiting-extension-bundle-test dev clean e2e-loop
 
 # server/daemon ship namespaced (atoll-server / atoll-daemon); the entry
 # command itself is plain `atoll` — its own name IS the namespace.
@@ -179,6 +179,9 @@ recruiting-mysql-stress:
 
 recruiting-capacity:
 	./scripts/recruiting-capacity.sh
+
+recruiting-backup-restore:
+	./scripts/recruiting-backup-restore.sh
 
 recruiting-live-smoke:
 	./scripts/recruiting-live-smoke.sh
