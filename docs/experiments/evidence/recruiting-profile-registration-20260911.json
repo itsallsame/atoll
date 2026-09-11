@@ -1,0 +1,28 @@
+{
+  "evidence_version": "recruiting-evidence.v1",
+  "recorded_at": "2026-09-11T00:00:00Z",
+  "scope": "public Profile registration and mandatory provisioning repair",
+  "branch": "codex/atoll-recruiting",
+  "core_boundary_base": "a94d2b8d",
+  "claims": [
+    "a human command registers only secret-free Profile metadata and an immutable canary Recipe Resource",
+    "a new Profile is persisted as repairing version 2 and cannot enter daily scheduling before repair, canary, and resolution",
+    "registration atomically creates one profile_unprovisioned incident and one operator Repair Work without fabricating an affected production Work",
+    "command replay is byte-stable and conflicting creation leaves no command receipt",
+    "Profile SecretRef and authorized device identity do not enter public responses or outbox payloads"
+  ],
+  "verification": [
+    {
+      "command": "RECRUITING_MYSQL_TEST_RUN='^TestProfileRegisterIsAtomicIdempotentAndSecretFree$' ./scripts/recruiting-mysql-test.sh",
+      "result": "pass",
+      "environment": "ephemeral MySQL 8.4 with separate non-root staircase_migrator and staircase_runtime identities"
+    },
+    {
+      "command": "go test ./e2e -run '^TestRecruitingOperatorStartsDeviceBoundProfileRepairThroughServer$' -count=1",
+      "result": "pass",
+      "environment": "real Atoll Server, ordinary human operator, Home Channel, Recruiting Actor, Recipe Resource, non-root MySQL"
+    }
+  ],
+  "third_party_writes": false,
+  "atoll_core_modified": false
+}

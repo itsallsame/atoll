@@ -97,6 +97,19 @@ func NewBrowserProfileWithVerification(id, securityDomain, deviceID, secretRef s
 	return profile, nil
 }
 
+// NewUnprovisionedBrowserProfile creates the control-plane side of a locally
+// provisioned browser directory. Version 1 names the empty local slot; the
+// returned version 2 is repairing and therefore cannot be scheduled until the
+// existing repair, verification, and human resolution flow succeeds.
+func NewUnprovisionedBrowserProfile(id, securityDomain, deviceID, secretRef string,
+	verification ProfileVerificationRecipe) (BrowserProfile, error) {
+	profile, err := NewBrowserProfileWithVerification(id, securityDomain, deviceID, secretRef, verification)
+	if err != nil {
+		return BrowserProfile{}, err
+	}
+	return profile.BeginRepair(profile.Version)
+}
+
 func (p BrowserProfile) BeginRepair(expected uint64) (BrowserProfile, error) {
 	if err := requireVersion(expected, p.Version); err != nil {
 		return BrowserProfile{}, err

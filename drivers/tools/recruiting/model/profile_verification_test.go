@@ -34,3 +34,21 @@ func TestProfileVerificationRequiresSiteSpecificBrowserRecipe(t *testing.T) {
 		})
 	}
 }
+
+func TestUnprovisionedProfileCannotEnterSchedulingAsReady(t *testing.T) {
+	canary := ProfileVerificationRecipe{EndpointURL: "https://jobs.example.com/account/jobs", RecipeID: "profile-canary",
+		RecipeVersion: 2, ContentHash: "sha256:" + strings.Repeat("a", 64),
+		ContractHash: "sha256:" + strings.Repeat("b", 64), Kind: RecipeDetail,
+		Execution: RecipeExecution{ABIVersion: RecipeABIVersion, ContentRef: "recipe://profile/canary-v2",
+			RequiredCapability: "browser.profile.repair", Transport: RecipeTransportBrowser}, MinimumRecordCount: 1}
+	profile, err := NewUnprovisionedBrowserProfile("profile-new", "jobs.example.com", "tool:device",
+		"secret://local-browser-profile/profile-new/v1", canary)
+	if err != nil || profile.AuthStatus != ProfileRepairing || profile.Version != 2 || profile.Verification == nil {
+		t.Fatalf("unprovisioned Profile=%+v err=%v", profile, err)
+	}
+	incident, err := NewProfileProvisioningIncident("incident-new", profile.ProfileID, "repair-work-new")
+	if err != nil || incident.Status != RepairOpen || incident.Version != 1 || len(incident.AffectedWorkIDs) != 0 ||
+		incident.Domain != FailureProfile || incident.FailingVersion != "profile:1" || incident.RepairWorkID != "repair-work-new" {
+		t.Fatalf("provisioning incident=%+v err=%v", incident, err)
+	}
+}

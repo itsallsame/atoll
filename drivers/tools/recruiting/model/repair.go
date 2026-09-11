@@ -62,6 +62,19 @@ func NewRepairIncident(id string, domain FailureDomain, domainKey, signature, fa
 	return RepairIncident{IncidentID: id, RepairKey: key, Domain: domain, DomainKey: domainKey, FailureSignature: signature, FailingVersion: failingVersion, AffectedWorkIDs: []string{firstWorkID}, Status: RepairOpen, Version: 1}, nil
 }
 
+// NewProfileProvisioningIncident is the only repair incident without an
+// affected production Work. It represents a new credential slot that must be
+// authenticated before any Source may bind to it.
+func NewProfileProvisioningIncident(id, profileID, repairWorkID string) (RepairIncident, error) {
+	key, err := RepairKey(FailureProfile, profileID, "profile_unprovisioned", "profile:1")
+	if err != nil || strings.TrimSpace(id) == "" || strings.TrimSpace(repairWorkID) == "" {
+		return RepairIncident{}, fmt.Errorf("Profile provisioning incident requires complete identity")
+	}
+	return RepairIncident{IncidentID: strings.TrimSpace(id), RepairKey: key, Domain: FailureProfile,
+		DomainKey: strings.TrimSpace(profileID), FailureSignature: "profile_unprovisioned", FailingVersion: "profile:1",
+		RepairWorkID: strings.TrimSpace(repairWorkID), Status: RepairOpen, Version: 1}, nil
+}
+
 func (r RepairIncident) WithRepairWork(workID string) (RepairIncident, error) {
 	workID = strings.TrimSpace(workID)
 	if r.Version != 1 || r.Status != RepairOpen || r.RepairWorkID != "" || workID == "" {

@@ -43,7 +43,9 @@ Bridge 在标准输出打印一次 JSON，其中包含随机 `endpoint` 和 `tok
 install -m 0600 /dev/null /tmp/atoll-recruiting-executor-token
 ```
 
-写入随机令牌后，先为每个受管浏览器目录生成独立的 Profile 绑定令牌，并只把 SHA-256 放进 `0600` registry。`user_data_dir` 必须是绝对、规范、非符号链接且仅当前用户可访问的目录；明文绑定令牌只保存在该受管 Chrome Profile 的插件本地存储中：
+写入随机令牌后，先通过公开 `recruiting.profile.register` 登记 Profile。命令只接受 Profile ID、安全域、授权 Tool Actor 和 immutable canary Recipe Resource；控制面自行生成 opaque SecretRef，并把 Profile 原子保存为 `repairing@v2`，同时创建唯一的 `profile_unprovisioned` RepairIncident/Repair Work。新 Profile 在设备登录、canary 和人工结案全部成功前不会参与每日调度。Cookie、密码、OTP、绑定令牌和 SecretRef 都不是该命令的输入。
+
+设备侧为同一个 Profile ID 建立初始 `v1` 本地槽位：为每个受管浏览器目录生成独立的 Profile 绑定令牌，并只把 SHA-256 放进 `0600` registry。`user_data_dir` 必须是绝对、规范、非符号链接且仅当前用户可访问的目录；明文绑定令牌只保存在该受管 Chrome Profile 的插件本地存储中：
 
 ```json
 {
@@ -58,6 +60,8 @@ install -m 0600 /dev/null /tmp/atoll-recruiting-executor-token
   }]
 }
 ```
+
+然后以登记响应中的 `repair_incident_id` 调用 `recruiting.profile.repair.begin`。首次修复任务使用控制面 Profile `v2` 和本地槽位 `v1`；修复成功后本地进入 verifying，验证成功并由运营员解决 RepairIncident 后，两侧共同进入下一 ready 版本。不得手工把数据库 Profile 改成 ready。
 
 给 Bridge 增加 `--executor-token-file /tmp/atoll-recruiting-executor-token --profile-registry /absolute/path/profiles.json`。Bridge 输出会额外包含 `browser_broker_url`，但不会打印 Executor 令牌或 Profile 绑定令牌。必须从 registry 指定的 `user_data_dir/profile_directory` 启动并安装插件，在插件连接区同时填写 `profile_id` 和明文 Profile 绑定令牌；普通 Recipe 捕获连接可把两项都留空。
 

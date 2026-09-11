@@ -192,6 +192,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleBaselineStart(sys, cfg, repository, msg)
 		case TypeJobCorrect:
 			handleJobCorrect(sys, repository, msg)
+		case TypeProfileRegister:
+			handleProfileRegister(sys, repository, msg)
 		case TypeProfileRepairBegin:
 			handleProfileRepairBegin(sys, cfg, repository, msg)
 		case TypeWorkCreate, TypeWorkPause, TypeWorkResume, TypeWorkCorrect, TypeWorkRetry, TypeWorkCancel, TypeWorkResolve:

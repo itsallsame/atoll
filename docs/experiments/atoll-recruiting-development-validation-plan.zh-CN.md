@@ -491,6 +491,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 执行状态补充（2026-09-11，S22 真实进程闭环）：新增 opt-in `TestRecruitingLiveDetailRecipeRolloutBatchThroughAtoll`，由普通运营员经公开消息上传固定 Source Resource、审阅并确认批次；真实 Atoll Server、durable reconcile timer、daemon 和唯一 `recruiting-executor` class 动态读取 MongoDB Greenhouse 当前公开岗位详情。两个 Source 严格先运行 1 个 canary，再开放 1 个 wave 并完成；随后对单 Source 发布故意缺字段的 active Recipe，真实 Executor 失败后 Batch/父 Work 停在 `paused/waiting_human`，未向未来成员扩散。运营员公开终结失败 validation Work 并执行整批 rollback，控制面恢复冻结的旧 Assignment，再由同一 Executor 对同一公开详情页生成新的 evidence-only 成功证据，Batch 最终为 `rolled_back`。测试逐字段比较执行前后 Job，并核对 DetailVersion 数量不变、Assignment 历史分别为 current→target 和 current→target→bad→restored；2026-09-11 实测 25.20 秒通过。此旅程与 20K MySQL 容量合同共同关闭 S22 自动化退出门；真实站点长期契约仍按 Live Smoke/Nightly/Weekly 分层持续观察。紧凑证据见 `evidence/recruiting-live-recipe-rollout-batch-20260911.json`。
 
+执行状态补充（2026-09-11，Profile 首次登记）：新增公开 `recruiting.profile.register`，补上此前只能预置数据库事实的运营缺口。普通运营员提交 Profile ID、安全域、授权 Tool Actor 和 canary Recipe Resource；Actor 重新读取 Resource、执行严格 ABI 解码、重算 content/contract hash，并限定 exact HTTPS 域、`browser.profile.repair` 和 Listing/Detail kind。SecretRef 由控制面按本地槽位约定生成，客户端不能提交 Cookie、密码、OTP 或 SecretRef。单一 MySQL 事务把新 Profile 保存为不可调度的 `repairing@v2`，创建零 affected production Work 的 `profile_unprovisioned` Incident、唯一人工 Repair Work、稳定 receipt 和两条 outbox 事件；任何冲突全部回滚。公开 Server E2E 已改为真实 Resource→register→repair.begin→重启查询，不再直写 Profile/Incident 种子；非 root MySQL 合同验证原子重放、秘密/设备不进入响应和事件、且没有伪造受影响抓取任务。设备 registry 初始 `v1` 仍是 owner-only 本地部署步骤；真实第三方授权账号和生产出站隔离仍是外部准入门。
+
 ## 13. P8：25 场景验收矩阵
 
 每个场景保存独立测试记录：前置数据、用户身份、命令、预期状态转换、注入故障、用户可见结果、数据库断言和 ledger/Artifact 因果链。

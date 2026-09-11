@@ -54,6 +54,7 @@ const (
 	TypeJobCorrect       = "recruiting.job.correct"
 	TypeJobCorrectionGet = "recruiting.job.correction.get"
 
+	TypeProfileRegister    = "recruiting.profile.register"
 	TypeProfileGet         = "recruiting.profile.get"
 	TypeProfileRepairBegin = "recruiting.profile.repair.begin"
 
