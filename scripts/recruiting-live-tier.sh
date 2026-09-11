@@ -49,10 +49,17 @@ if ! jq -e --arg tier "${tier}" '
   exit 1
 fi
 
-git -C "${repo_dir}" diff --quiet -- cmd/recruiting-live-smoke drivers/tools/recruitingexecutor/recipeabi drivers/tools/recruitingexecutor/httpdriver || {
+manifest_pathspec=""
+if [[ "${manifest}" == "${repo_dir}/"* ]]; then
+  manifest_pathspec="${manifest#"${repo_dir}/"}"
+fi
+if [[ -n "$(git -C "${repo_dir}" status --porcelain -- cmd/recruiting-live-smoke \
+  drivers/tools/recruitingexecutor/recipeabi drivers/tools/recruitingexecutor/httpdriver \
+  scripts/recruiting-live-tier.sh scripts/recruiting-live-nightly.sh scripts/recruiting-live-weekly.sh \
+  ${manifest_pathspec:+"${manifest_pathspec}"})" ]]; then
   echo "recruiting live tier: executable inputs have uncommitted changes" >&2
   exit 1
-}
+fi
 go build -o "${build_dir}/recruiting-live-smoke" ./cmd/recruiting-live-smoke
 
 started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)

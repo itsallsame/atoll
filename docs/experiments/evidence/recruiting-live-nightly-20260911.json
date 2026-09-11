@@ -1,0 +1,89 @@
+{
+  "schema": "recruiting.live-nightly-evidence.v1",
+  "revision": "e4ff0ebb",
+  "started_at": "2026-09-11T10:41:24Z",
+  "finished_at": "2026-09-11T10:41:38Z",
+  "manifest": "docs/experiments/workloads/recruiting-live-sites-v1.json",
+  "manifest_sha256": "152c1ac02f2b8c174fe50bd056ebc9023149e3e33ed78a37aa90173e98a7ad14",
+  "command": "RECRUITING_LIVE_RUN_DIR=<private-directory> make recruiting-live-nightly",
+  "policy": {
+    "method": "GET",
+    "targets_run_serially": true,
+    "between_target_delay_seconds": 2,
+    "max_listing_pages": 1,
+    "max_response_bytes": 2097152,
+    "robots_required": true,
+    "checkpoint_committed": false
+  },
+  "summary": {
+    "target_count": 5,
+    "diagnostic_passed": 5,
+    "transport_failed": 0,
+    "observed_items": 711,
+    "ordering_contract_rejected": 4,
+    "production_incremental_eligible": 0
+  },
+  "targets": [
+    {
+      "target_id": "greenhouse-mongodb",
+      "source_url": "https://boards-api.greenhouse.io/v1/boards/mongodb/jobs",
+      "observed_items": 402,
+      "identity_complete": true,
+      "ordering_contract_held": false,
+      "result": "quality_rejected",
+      "recipe_hash": "sha256:1a1cd412238776de9ef835c62a67903255dde36c3b24cbceacf2765f3d70ea03",
+      "page_hash": "sha256:439e4656952a197f3aafa4f423000dde51d0099f01fb2a694c3b3289956f6ea6",
+      "robots_hash": "sha256:0bc35a3bc59e53b4932c848ba1f33890320d2de73fa0c1357555dd79c5629be9"
+    },
+    {
+      "target_id": "greenhouse-discord",
+      "source_url": "https://boards-api.greenhouse.io/v1/boards/discord/jobs",
+      "observed_items": 44,
+      "identity_complete": true,
+      "ordering_contract_held": false,
+      "result": "quality_rejected",
+      "recipe_hash": "sha256:1a1cd412238776de9ef835c62a67903255dde36c3b24cbceacf2765f3d70ea03",
+      "page_hash": "sha256:a4fb5e9cc33409aabc3e5e650d258a6f63c46e7885ba80c1dd32b7bad6bc23a1",
+      "robots_hash": "sha256:0bc35a3bc59e53b4932c848ba1f33890320d2de73fa0c1357555dd79c5629be9"
+    },
+    {
+      "target_id": "greenhouse-acuitymd",
+      "source_url": "https://boards-api.greenhouse.io/v1/boards/acuitymd/jobs",
+      "observed_items": 9,
+      "identity_complete": true,
+      "ordering_contract_held": false,
+      "result": "quality_rejected",
+      "recipe_hash": "sha256:1a1cd412238776de9ef835c62a67903255dde36c3b24cbceacf2765f3d70ea03",
+      "page_hash": "sha256:99a2cfc9493cc69a0bb29589423b5ab909be99f7ece9c61868582d82afa386ee",
+      "robots_hash": "sha256:0bc35a3bc59e53b4932c848ba1f33890320d2de73fa0c1357555dd79c5629be9"
+    },
+    {
+      "target_id": "greenhouse-figma",
+      "source_url": "https://boards-api.greenhouse.io/v1/boards/figma/jobs",
+      "observed_items": 156,
+      "identity_complete": true,
+      "ordering_contract_held": false,
+      "result": "quality_rejected",
+      "recipe_hash": "sha256:1a1cd412238776de9ef835c62a67903255dde36c3b24cbceacf2765f3d70ea03",
+      "page_hash": "sha256:02a354c8038c19df65f95c24e40770f2968c54706ef4b4d19dfb882d558a4cc6",
+      "robots_hash": "sha256:0bc35a3bc59e53b4932c848ba1f33890320d2de73fa0c1357555dd79c5629be9"
+    },
+    {
+      "target_id": "lever-palantir",
+      "source_url": "https://api.lever.co/v0/postings/palantir?mode=json&limit=100",
+      "observed_items": 100,
+      "identity_complete": true,
+      "ordering_contract_held": true,
+      "result": "diagnostic_pass",
+      "recipe_hash": "sha256:93f3eeff49dc87e0ba36b2f97042dcd3d46a8f96a1380d4be0e99f6c703691b6",
+      "page_hash": "sha256:ef1ad9386b0389dbdb48fdabf3c4d3ad70c4bd4a248b0e0e9d947abded7e2450",
+      "robots_hash": "sha256:6aa3556bd611889c4480a143bb6186f9d0c5e919c6b4c9901f3a6a8141549a1b"
+    }
+  ],
+  "interpretation": [
+    "diagnostic_pass means the bounded read and auditable evidence path completed; it does not mean the source is production incremental eligible",
+    "all four Greenhouse snapshots violated the declared newest-activity ordering and were correctly rejected by the quality gate",
+    "the Lever sample passed snapshot quality but update-retop remains unverified, so its checkpoint candidate was discarded",
+    "raw third-party response bodies were held only in a private temporary run directory, reduced to hashes, and removed without being committed"
+  ]
+}
