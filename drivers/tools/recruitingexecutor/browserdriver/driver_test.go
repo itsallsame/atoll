@@ -34,6 +34,7 @@ func (s *memorySink) Put(_ context.Context, write ArtifactWrite) (recipeabi.Arti
 }
 
 func browserSpec() recipeabi.Spec {
+	plan := browserPlan()
 	return recipeabi.Spec{
 		ABIVersion: recipeabi.Version, Kind: recipeabi.KindListing, RequiredCapability: "browser.public", Transport: recipeabi.TransportBrowser,
 		Request: recipeabi.ReadRequest{Method: "GET", Headers: map[string]string{"Accept-Language": "en"}, TimeoutMS: 2_000,
@@ -44,6 +45,7 @@ func browserSpec() recipeabi.Spec {
 		Listing: &recipeabi.ListingContract{IdentityField: "job_key", DetailURLField: "detail_url", ActivityField: "activity_at", BoundaryMode: "activity_time",
 			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 1, MaxPages: 5,
 			MaxItemsPerPage: 100, MaxTotalBytes: 1 << 20, FrontierWidth: 10},
+		BrowserPlan: &plan,
 	}
 }
 
@@ -147,5 +149,18 @@ func TestMissingPolicyEvidenceIsRejectedBeforeOpeningBrowser(t *testing.T) {
 	_, err := driver.ExecutePage(context.Background(), browserSpec(), browserInput(), browserPlan(), PolicyEvidence{}, &memorySink{})
 	if err == nil || broker.calls != 0 {
 		t.Fatalf("missing terms evidence opened browser: err=%v calls=%d", err, broker.calls)
+	}
+}
+
+func TestExecutePageRejectsPlanDifferentFromImmutableRecipe(t *testing.T) {
+	broker := &fakeBroker{}
+	driver, _ := New(broker)
+	changed := browserPlan()
+	changed.Actions[0].Selector = ".opening"
+	if _, err := driver.ExecutePage(context.Background(), browserSpec(), browserInput(), changed, browserPolicy, &memorySink{}); err == nil {
+		t.Fatal("runtime browser plan different from Recipe was accepted")
+	}
+	if broker.calls != 0 {
+		t.Fatal("browser opened before immutable plan fence was checked")
 	}
 }

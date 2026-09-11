@@ -145,7 +145,23 @@ func (c Capture) Validate() error {
 			}
 		}
 	}
-	if err := c.Candidate.Validate(); err != nil {
+	candidate := c.Candidate
+	if candidate.Transport == recipeabi.TransportBrowser {
+		if c.BrowserPlan == nil {
+			return fmt.Errorf("browser candidate requires a constrained browser plan")
+		}
+		if candidate.BrowserPlan != nil {
+			candidateHash, _ := candidate.BrowserPlan.ContentHash()
+			captureHash, _ := c.BrowserPlan.ContentHash()
+			if candidateHash == "" || candidateHash != captureHash {
+				return fmt.Errorf("browser candidate and capture plans differ")
+			}
+		}
+		candidate.BrowserPlan = c.BrowserPlan
+	} else if c.BrowserPlan != nil || candidate.BrowserPlan != nil {
+		return fmt.Errorf("non-browser candidate cannot carry browser actions")
+	}
+	if err := candidate.Validate(); err != nil {
 		return fmt.Errorf("extension candidate recipe: %w", err)
 	}
 	if c.Version == LegacyVersion && (c.Candidate.Kind != recipeabi.KindListing || c.PageURL != "" ||
@@ -163,16 +179,6 @@ func (c Capture) Validate() error {
 		}
 	case recipeabi.KindDiscovery:
 		return fmt.Errorf("Source-bound extension capture does not support discovery Recipes")
-	}
-	if c.Candidate.Transport == recipeabi.TransportBrowser {
-		if c.BrowserPlan == nil {
-			return fmt.Errorf("browser candidate requires a constrained browser plan")
-		}
-		if err := c.BrowserPlan.Validate(); err != nil {
-			return fmt.Errorf("extension browser plan: %w", err)
-		}
-	} else if c.BrowserPlan != nil {
-		return fmt.Errorf("non-browser candidate cannot carry browser actions")
 	}
 	if len(c.Artifacts) == 0 || len(c.Artifacts) > 100 || len(c.Trace) == 0 || len(c.Trace) > 500 {
 		return fmt.Errorf("extension capture requires bounded artifact evidence and trace")
@@ -290,6 +296,7 @@ func (c Capture) proposalWithHash(unsigned []byte) (Proposal, error) {
 			return Proposal{}, cloneErr
 		}
 		browserPlan = &plan
+		candidate.BrowserPlan = browserPlan
 	}
 	return Proposal{SourceID: c.SourceID, EndpointVersion: c.EndpointVersion, SourceURL: c.SourceURL,
 		PageURL: pageURL(c), SampleJobID: c.SampleJobID, SampleJobVersion: c.SampleJobVersion,

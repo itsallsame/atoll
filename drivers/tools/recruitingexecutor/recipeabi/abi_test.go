@@ -65,6 +65,36 @@ func TestRecipeContractHashSeparatesCompatibilityFromRequestTuning(t *testing.T)
 	}
 }
 
+func TestBrowserPlanIsRequiredAndCompatibilityHashBound(t *testing.T) {
+	spec := validListingSpec()
+	spec.Transport = TransportBrowser
+	spec.RequiredCapability = "browser.public"
+	if err := spec.Validate(); err == nil {
+		t.Fatal("browser Recipe without a persisted plan was accepted")
+	}
+	plan := BrowserPlan{Version: BrowserPlanVersion, MaxNavigations: 2, MaxDOMBytes: 1 << 20,
+		Actions: []BrowserAction{{Kind: BrowserActionWaitSelector, Selector: ".job", TimeoutMS: 1_000}}}
+	spec.BrowserPlan = &plan
+	first, err := spec.ContractHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := spec
+	changedPlan := plan
+	changedPlan.Actions = append([]BrowserAction(nil), plan.Actions...)
+	changedPlan.Actions[0].Selector = ".opening"
+	changed.BrowserPlan = &changedPlan
+	second, err := changed.ContractHash()
+	if err != nil || first == second {
+		t.Fatalf("browser plan was not compatibility hash-bound: first=%s second=%s err=%v", first, second, err)
+	}
+	nonBrowser := validListingSpec()
+	nonBrowser.BrowserPlan = &plan
+	if err := nonBrowser.Validate(); err == nil {
+		t.Fatal("HTTP Recipe carrying browser actions was accepted")
+	}
+}
+
 func TestDecodeSpecIsStrictBoundedAndShared(t *testing.T) {
 	raw, _ := json.Marshal(validListingSpec())
 	decoded, err := DecodeSpec(raw)

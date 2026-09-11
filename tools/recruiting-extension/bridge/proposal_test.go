@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/browserdriver"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/extensioncapture"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
@@ -100,6 +101,29 @@ func TestBuildBindsDetailCaptureToAuthoritativeJobSample(t *testing.T) {
 	if _, err := Build(bridgeDetailDraft(), moved, "human:operator:7",
 		time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)); err == nil {
 		t.Fatal("Detail page no longer matching the authoritative Job was accepted")
+	}
+}
+
+func TestBuildPersistsBrowserPlanInsideRecipeResource(t *testing.T) {
+	draft := bridgeDraft()
+	draft.Candidate.Transport = recipeabi.TransportBrowser
+	draft.Candidate.RequiredCapability = "browser.public"
+	plan := browserdriver.Plan{Version: browserdriver.PlanVersion, MaxNavigations: 2, MaxDOMBytes: 1 << 20,
+		Actions: []browserdriver.Action{{Kind: browserdriver.ActionWaitSelector, Selector: ".job", TimeoutMS: 1_000}}}
+	draft.BrowserPlan = &plan
+	resources, err := Build(draft, bridgeSource(), "human:operator:7",
+		time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := recipeabi.DecodeSpec(resources.RecipeBody)
+	if err != nil || spec.BrowserPlan == nil {
+		t.Fatalf("browser Recipe Resource lost its plan: spec=%+v err=%v", spec, err)
+	}
+	got, _ := spec.BrowserPlan.ContentHash()
+	want, _ := plan.ContentHash()
+	if got != want || resources.Capture.Candidate.BrowserPlan == nil {
+		t.Fatalf("browser plan hashes got=%s want=%s capture=%+v", got, want, resources.Capture.Candidate.BrowserPlan)
 	}
 }
 

@@ -94,10 +94,26 @@ func Build(draft Draft, source SourceFence, capturedBy string, receivedAt time.T
 		pageURL.User != nil || pageURL.Fragment != "" {
 		return ResourceSet{}, fmt.Errorf("captured page and active Source Endpoint must be safe HTTPS URLs")
 	}
-	if err := draft.Candidate.Validate(); err != nil {
+	candidate := draft.Candidate
+	if candidate.Transport == recipeabi.TransportBrowser {
+		if draft.BrowserPlan == nil {
+			return ResourceSet{}, fmt.Errorf("browser draft requires a constrained browser plan")
+		}
+		if candidate.BrowserPlan != nil {
+			candidateHash, _ := candidate.BrowserPlan.ContentHash()
+			draftHash, _ := draft.BrowserPlan.ContentHash()
+			if candidateHash == "" || candidateHash != draftHash {
+				return ResourceSet{}, fmt.Errorf("browser draft candidate and plan differ")
+			}
+		}
+		candidate.BrowserPlan = draft.BrowserPlan
+	} else if draft.BrowserPlan != nil || candidate.BrowserPlan != nil {
+		return ResourceSet{}, fmt.Errorf("non-browser draft cannot carry a browser plan")
+	}
+	if err := candidate.Validate(); err != nil {
 		return ResourceSet{}, fmt.Errorf("extension draft candidate: %w", err)
 	}
-	switch draft.Candidate.Kind {
+	switch candidate.Kind {
 	case recipeabi.KindListing:
 		if draft.PageURL != source.EndpointURL || draft.SampleJobID != "" {
 			return ResourceSet{}, fmt.Errorf("Listing capture must exactly match the active Source Endpoint")
@@ -118,11 +134,11 @@ func Build(draft Draft, source SourceFence, capturedBy string, receivedAt time.T
 	recipeRef := "recipe://" + base + "/candidate"
 	captureRef := "artifact://" + base + "/capture"
 	evidenceHash := contentHash(draft.Evidence)
-	recipeBody, err := json.Marshal(draft.Candidate)
+	recipeBody, err := json.Marshal(candidate)
 	if err != nil {
 		return ResourceSet{}, fmt.Errorf("encode candidate Recipe: %w", err)
 	}
-	candidate, err := recipeabi.DecodeSpec(recipeBody)
+	candidate, err = recipeabi.DecodeSpec(recipeBody)
 	if err != nil {
 		return ResourceSet{}, err
 	}

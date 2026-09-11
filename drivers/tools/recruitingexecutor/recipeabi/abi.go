@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/andybalholm/cascadia"
 )
 
 const (
@@ -159,6 +161,74 @@ type Spec struct {
 	Extraction         Extraction        `json:"extraction"`
 	OffsetPagination   *OffsetPagination `json:"offset_pagination,omitempty"`
 	Listing            *ListingContract  `json:"listing,omitempty"`
+	BrowserPlan        *BrowserPlan      `json:"browser_plan,omitempty"`
+}
+
+const BrowserPlanVersion = "recruiting.browser-plan.v1"
+
+type BrowserActionKind string
+
+const (
+	BrowserActionWaitSelector BrowserActionKind = "wait_selector"
+	BrowserActionScrollPage   BrowserActionKind = "scroll_page"
+	BrowserActionFollowLink   BrowserActionKind = "follow_link"
+)
+
+// BrowserAction intentionally has no script, input, form submit, or generic
+// click primitive. FollowLink reads an anchor href and navigates with GET only
+// after the broker verifies that the destination remains same-origin.
+type BrowserAction struct {
+	Kind       BrowserActionKind `json:"kind"`
+	Selector   string            `json:"selector,omitempty"`
+	TimeoutMS  int               `json:"timeout_ms,omitempty"`
+	MaxRepeats int               `json:"max_repeats,omitempty"`
+}
+
+type BrowserPlan struct {
+	Version        string          `json:"version"`
+	Actions        []BrowserAction `json:"actions"`
+	MaxNavigations int             `json:"max_navigations"`
+	MaxDOMBytes    int64           `json:"max_dom_bytes"`
+}
+
+func (p BrowserPlan) Validate() error {
+	if p.Version != BrowserPlanVersion || len(p.Actions) > 100 || p.MaxNavigations < 1 || p.MaxNavigations > 100 ||
+		p.MaxDOMBytes < 1 || p.MaxDOMBytes > 20<<20 {
+		return fmt.Errorf("browser plan requires supported version and bounded actions/navigation/DOM")
+	}
+	for index, action := range p.Actions {
+		if action.TimeoutMS < 0 || action.TimeoutMS > 30_000 || action.MaxRepeats < 0 || action.MaxRepeats > 100 {
+			return fmt.Errorf("browser action %d exceeds time or repeat bounds", index)
+		}
+		switch action.Kind {
+		case BrowserActionWaitSelector, BrowserActionFollowLink:
+			if strings.TrimSpace(action.Selector) == "" {
+				return fmt.Errorf("browser action %d requires selector", index)
+			}
+			if _, err := cascadia.Parse(action.Selector); err != nil {
+				return fmt.Errorf("browser action %d selector: %w", index, err)
+			}
+		case BrowserActionScrollPage:
+			if action.Selector != "" {
+				return fmt.Errorf("scroll_page cannot target an interactive element")
+			}
+		default:
+			return fmt.Errorf("browser action %d has unsupported kind %q", index, action.Kind)
+		}
+	}
+	return nil
+}
+
+func (p BrowserPlan) ContentHash() (string, error) {
+	if err := p.Validate(); err != nil {
+		return "", err
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 type ReadRequest struct {
@@ -289,6 +359,16 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("HTML next_attribute is invalid")
 		}
 	}
+	if s.Transport == TransportBrowser && s.RequiredCapability != "browser.profile.repair" {
+		if s.BrowserPlan == nil {
+			return fmt.Errorf("browser recipe requires a constrained browser plan")
+		}
+		if err := s.BrowserPlan.Validate(); err != nil {
+			return err
+		}
+	} else if s.BrowserPlan != nil && s.Transport != TransportBrowser {
+		return fmt.Errorf("non-browser recipe cannot carry a browser plan")
+	}
 	if s.Kind == KindListing {
 		if err := s.Listing.Validate(); err != nil {
 			return err
@@ -405,7 +485,8 @@ func (s Spec) ContractHash() (string, error) {
 		Extraction       Extraction        `json:"extraction"`
 		OffsetPagination *OffsetPagination `json:"offset_pagination,omitempty"`
 		Listing          *ListingContract  `json:"listing,omitempty"`
-	}{s.Kind, s.Transport, s.Extraction, s.OffsetPagination, s.Listing}
+		BrowserPlan      *BrowserPlan      `json:"browser_plan,omitempty"`
+	}{s.Kind, s.Transport, s.Extraction, s.OffsetPagination, s.Listing, s.BrowserPlan}
 	raw, err := json.Marshal(contract)
 	if err != nil {
 		return "", err

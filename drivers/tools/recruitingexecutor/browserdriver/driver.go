@@ -8,84 +8,27 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/andybalholm/cascadia"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeexec"
 )
 
-const PlanVersion = "recruiting.browser-plan.v1"
+const PlanVersion = recipeabi.BrowserPlanVersion
 
-type ActionKind string
+type ActionKind = recipeabi.BrowserActionKind
+type Action = recipeabi.BrowserAction
+type Plan = recipeabi.BrowserPlan
 
 const (
-	ActionWaitSelector ActionKind = "wait_selector"
-	ActionScrollPage   ActionKind = "scroll_page"
-	ActionFollowLink   ActionKind = "follow_link"
+	ActionWaitSelector = recipeabi.BrowserActionWaitSelector
+	ActionScrollPage   = recipeabi.BrowserActionScrollPage
+	ActionFollowLink   = recipeabi.BrowserActionFollowLink
 )
-
-// Action intentionally has no script, input text, form submit, or generic
-// click primitive. follow_link means reading an anchor href and navigating
-// with GET after the broker verifies the destination origin.
-type Action struct {
-	Kind       ActionKind `json:"kind"`
-	Selector   string     `json:"selector,omitempty"`
-	TimeoutMS  int        `json:"timeout_ms,omitempty"`
-	MaxRepeats int        `json:"max_repeats,omitempty"`
-}
-
-type Plan struct {
-	Version        string   `json:"version"`
-	Actions        []Action `json:"actions"`
-	MaxNavigations int      `json:"max_navigations"`
-	MaxDOMBytes    int64    `json:"max_dom_bytes"`
-}
-
-func (p Plan) Validate() error {
-	if p.Version != PlanVersion || len(p.Actions) > 100 || p.MaxNavigations < 1 || p.MaxNavigations > 100 ||
-		p.MaxDOMBytes < 1 || p.MaxDOMBytes > 20<<20 {
-		return fmt.Errorf("browser plan requires supported version and bounded actions/navigation/DOM")
-	}
-	for index, action := range p.Actions {
-		if action.TimeoutMS < 0 || action.TimeoutMS > 30_000 || action.MaxRepeats < 0 || action.MaxRepeats > 100 {
-			return fmt.Errorf("browser action %d exceeds time or repeat bounds", index)
-		}
-		switch action.Kind {
-		case ActionWaitSelector, ActionFollowLink:
-			if strings.TrimSpace(action.Selector) == "" {
-				return fmt.Errorf("browser action %d requires selector", index)
-			}
-			if _, err := cascadia.Parse(action.Selector); err != nil {
-				return fmt.Errorf("browser action %d selector: %w", index, err)
-			}
-		case ActionScrollPage:
-			if action.Selector != "" {
-				return fmt.Errorf("scroll_page cannot target an interactive element")
-			}
-		default:
-			return fmt.Errorf("browser action %d has unsupported kind %q", index, action.Kind)
-		}
-	}
-	return nil
-}
-
-func (p Plan) ContentHash() (string, error) {
-	if err := p.Validate(); err != nil {
-		return "", err
-	}
-	raw, err := json.Marshal(p)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(raw)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
-}
 
 type SessionRequest struct {
 	EndpointURL    string         `json:"endpoint_url"`
@@ -206,8 +149,17 @@ func (d *Driver) ExecutePage(ctx context.Context, spec recipeabi.Spec, input rec
 	if spec.Transport != recipeabi.TransportBrowser {
 		return PageResult{}, fmt.Errorf("browser driver requires browser transport")
 	}
+	canonicalPlanHash := ""
+	if spec.BrowserPlan != nil {
+		canonicalPlanHash, _ = spec.BrowserPlan.ContentHash()
+	}
+	requestedPlanHash, _ := plan.ContentHash()
+	if spec.BrowserPlan == nil || canonicalPlanHash == "" || canonicalPlanHash != requestedPlanHash {
+		return PageResult{}, fmt.Errorf("browser execution plan must match the immutable Recipe")
+	}
 	offlineSpec := spec
 	offlineSpec.Transport = recipeabi.TransportHTTPHTML
+	offlineSpec.BrowserPlan = nil
 	if err := offlineSpec.Validate(); err != nil {
 		return PageResult{}, err
 	}
