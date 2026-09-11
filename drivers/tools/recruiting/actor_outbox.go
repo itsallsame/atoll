@@ -54,6 +54,9 @@ type outboxReconcileResponse struct {
 	BaselineDispatches          int    `json:"baseline_dispatches"`
 	BaselinePageCompleted       bool   `json:"baseline_page_completed"`
 	CompanyReadyID              string `json:"company_ready_id,omitempty"`
+	CompanyErasureID            string `json:"company_erasure_id,omitempty"`
+	CompanyErasurePreviewed     int    `json:"company_erasure_previewed"`
+	CompanyErasurePreviewDone   bool   `json:"company_erasure_preview_done"`
 	RepairCandidatesScanned     int    `json:"repair_candidates_scanned"`
 	RepairBatchesRecovered      int    `json:"repair_batches_recovered"`
 	RepairWorksRecovered        int    `json:"repair_works_recovered"`
@@ -155,6 +158,14 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 	if readyCompany != nil {
 		response.CompanyReadyID = readyCompany.CompanyID
 	}
+	erasurePreview, err := reconcileCompanyErasurePreview(msg.Ctx(), repository, payload.Limit, now)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response.CompanyErasureID = erasurePreview.Erasure.ErasureID
+	response.CompanyErasurePreviewed = erasurePreview.Processed
+	response.CompanyErasurePreviewDone = erasurePreview.Completed
 	repairRecovery, err := reconcileRepairRecoveryBatch(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
 	if err != nil {
 		failStoreError(sys, msg, err)
@@ -329,6 +340,7 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 		_, _ = repository.MaterializeNextBaselinePage(msg.Ctx(), cfg.BaselineMaterializeLimit, now,
 			cfg.executionDispatchTargets())
 		_, _ = repository.PromoteNextReadyCompany(msg.Ctx(), now)
+		_, _ = reconcileCompanyErasurePreview(msg.Ctx(), repository, maxReconcileLimit, now)
 		_, _ = reconcileRepairRecoveryBatch(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)
 		_, _ = reconcileScopeControl(msg.Ctx(), repository, maxReconcileLimit, now, cfg.executionDispatchTargets())
 		_, _ = reconcileRecipeRolloutBatches(msg.Ctx(), cfg, repository, defaultReconcileLimit, now)

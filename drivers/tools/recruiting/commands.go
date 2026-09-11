@@ -30,6 +30,9 @@ const (
 	TypeCompanyRestore           = "recruiting.company.restore"
 	TypeCompanyGet               = "recruiting.company.get"
 	TypeCompanyList              = "recruiting.company.list"
+	TypeCompanyErasurePreview    = "recruiting.company.erasure.preview"
+	TypeCompanyErasureGet        = "recruiting.company.erasure.get"
+	TypeCompanyErasureApprove    = "recruiting.company.erasure.approve"
 
 	TypeSourceAdd                      = "recruiting.source.add"
 	TypeSourceUpdate                   = "recruiting.source.update"

@@ -224,6 +224,20 @@ func (r *Repository) applySourceCommand(ctx context.Context, expectedVersion uin
 			return CommandResult{}, fmt.Errorf("Source endpoint change does not match locked state")
 		}
 	}
+	if receipt.Word == "recruiting.source.restore" {
+		var companyControl model.ControlStatus
+		err := tx.QueryRowContext(ctx, `SELECT control_status FROM recruiting_companies
+WHERE company_id = ? FOR SHARE`, source.CompanyID).Scan(&companyControl)
+		if errors.Is(err, sql.ErrNoRows) {
+			return CommandResult{}, ErrNotFound
+		}
+		if err != nil {
+			return CommandResult{}, fmt.Errorf("lock restored Source Company: %w", err)
+		}
+		if companyControl == model.ControlArchived {
+			return CommandResult{}, &model.InvalidTransitionError{Entity: "company", From: string(companyControl), Action: "restore Source"}
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO recruiting_command_receipts(command_id, word_name, request_hash, response_bytes, committed_at)
 VALUES (?, ?, ?, ?, ?)`, receipt.CommandID, receipt.Word, receipt.RequestHash, []byte(receipt.Response), businessAt.UTC()); err != nil {

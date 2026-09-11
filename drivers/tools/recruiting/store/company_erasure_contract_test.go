@@ -1,0 +1,187 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+)
+
+func TestCompanyErasureBuildsBoundedFrozenPreview(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	now := time.Date(2093, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	company, err := model.NewCompany("erasure-company", "Erasure Company", "https://erasure.example")
+	if err != nil || repository.CreateCompany(ctx, company, now) != nil {
+		t.Fatalf("create Company=%+v err=%v", company, err)
+	}
+	for _, id := range []string{"erasure-source-a", "erasure-source-b"} {
+		source, sourceErr := model.NewRecruitmentSource(id, company.CompanyID,
+			"https://erasure.example/jobs/"+id, "all", 1)
+		if sourceErr != nil || repository.CreateSource(ctx, source, now) != nil {
+			t.Fatalf("create Source=%+v err=%v", source, sourceErr)
+		}
+		archived, archiveErr := source.Archive(source.Version)
+		if archiveErr != nil || repository.UpdateSourceCAS(ctx, source.Version, archived, now) != nil {
+			t.Fatalf("archive Source=%+v err=%v", archived, archiveErr)
+		}
+		job, _ := model.NewSourceJob("job-"+id, source.SourceID, "job-key", "https://erasure.example/job/"+id)
+		tx, txErr := db.BeginTx(ctx, nil)
+		if txErr != nil {
+			t.Fatal(txErr)
+		}
+		if err := insertJob(ctx, tx, job, now); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archivedCompany, err := company.Archive(company.Version)
+	if err != nil || repository.UpdateCompanyCAS(ctx, company.Version, archivedCompany, now) != nil {
+		t.Fatalf("archive Company=%+v err=%v", archivedCompany, err)
+	}
+	archivedSource, err := repository.GetSource(ctx, "erasure-source-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredSource, err := archivedSource.Restore(archivedSource.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreReceipt, _ := model.NewCommandReceipt("erasure-source-restore-command", "recruiting.source.restore",
+		"hash-erasure-source-restore", json.RawMessage(`{"must_not_commit":true}`))
+	restoreEvent, _ := model.NewEventIntent("event-erasure-source-restore", "source.restored", "source",
+		restoredSource.SourceID, restoredSource.Version, now.Format(time.RFC3339Nano), restoreReceipt.CommandID,
+		json.RawMessage(`{"requested_by":"human:requester"}`))
+	if _, err := repository.ApplySourceRestoreCommand(ctx, archivedSource.Version, restoredSource, restoreReceipt,
+		restoreEvent, "scope-erasure-source-restore", now); err == nil {
+		t.Fatal("archived Company unexpectedly allowed Source restore")
+	}
+	var restoreReceipts, restoreOperations int
+	if err := db.QueryRowContext(ctx, `SELECT
+  (SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id = ?),
+  (SELECT COUNT(*) FROM recruiting_scope_control_operations WHERE operation_id = ?)`, restoreReceipt.CommandID,
+		"scope-erasure-source-restore").Scan(&restoreReceipts, &restoreOperations); err != nil {
+		t.Fatal(err)
+	}
+	if restoreReceipts != 0 || restoreOperations != 0 {
+		t.Fatalf("rejected Source restore receipt=%d operation=%d", restoreReceipts, restoreOperations)
+	}
+	work, _ := model.NewWork("erasure-control-work", "company", company.CompanyID,
+		"company_compliance_erasure", "manual")
+	work, _ = work.WithCausality("human:requester", "message-erasure", "")
+	erasure, err := model.NewCompanyErasure("erasure-request", work.WorkID, archivedCompany, "policy-2026-1",
+		"human:requester", "verified regulatory erasure request", now.Add(24*time.Hour), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, _ := json.Marshal(map[string]any{"erasure": erasure, "next_action": "await_preview"})
+	receipt, _ := model.NewCommandReceipt("erasure-create-command", "recruiting.company.erasure.preview",
+		"hash-erasure-create", response)
+	event, _ := model.NewEventIntent("event-erasure-create", "company.erasure.preview_started",
+		"company_erasure", erasure.ErasureID, erasure.Version, now.Format(time.RFC3339Nano),
+		receipt.CommandID, json.RawMessage(`{"requested_by":"human:requester"}`))
+	created, err := repository.ApplyCreateCompanyErasureCommand(ctx, erasure, work,
+		WorkPlacement{BusinessKey: "company-erasure|" + company.CompanyID, NotBefore: now}, receipt, event, now)
+	if err != nil || created.Replayed {
+		t.Fatalf("create erasure=%+v err=%v", created, err)
+	}
+	replay, err := repository.ApplyCreateCompanyErasureCommand(ctx, erasure, work,
+		WorkPlacement{BusinessKey: "company-erasure|" + company.CompanyID, NotBefore: now}, receipt, event, now)
+	if err != nil || !replay.Replayed || string(replay.Response) != string(created.Response) {
+		t.Fatalf("create replay=%+v err=%v", replay, err)
+	}
+	first, err := repository.BuildNextCompanyErasurePreview(ctx, erasure.ErasureID, 1, now.Add(time.Minute))
+	if err != nil || first.Processed != 1 || first.Completed || first.Erasure.SourceCount != 1 {
+		t.Fatalf("first preview page=%+v err=%v", first, err)
+	}
+	second, err := repository.BuildNextCompanyErasurePreview(ctx, erasure.ErasureID, 1, now.Add(2*time.Minute))
+	if err != nil || second.Processed != 1 || !second.Completed ||
+		second.Erasure.Status != model.CompanyErasureAwaitingApproval || second.Erasure.SourceCount != 2 ||
+		second.Erasure.Impact.Sources != 2 || second.Erasure.Impact.Jobs != 2 ||
+		second.Erasure.Impact.ActiveExecutions != 0 || second.Erasure.PreviewHash == "" {
+		t.Fatalf("final preview page=%+v err=%v", second, err)
+	}
+	storedWork, err := repository.GetWork(ctx, work.WorkID)
+	if err != nil || storedWork.Status != model.WorkWaitingHuman ||
+		storedWork.WaitingReason != "compliance_approval_required" {
+		t.Fatalf("erasure control Work=%+v err=%v", storedWork, err)
+	}
+	var members, requests, receipts, events int
+	if err := db.QueryRowContext(ctx, `SELECT
+  (SELECT COUNT(*) FROM recruiting_company_erasure_sources WHERE erasure_id = ?),
+  (SELECT COUNT(*) FROM recruiting_company_erasures WHERE erasure_id = ?),
+  (SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id = ?),
+  (SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = ?)`, erasure.ErasureID,
+		erasure.ErasureID, receipt.CommandID, event.EventID).Scan(&members, &requests, &receipts, &events); err != nil {
+		t.Fatal(err)
+	}
+	if members != 2 || requests != 1 || receipts != 1 || events != 1 {
+		t.Fatalf("erasure persisted members=%d request=%d receipt=%d event=%d", members, requests, receipts, events)
+	}
+
+	forbiddenReceipt, _ := model.NewCommandReceipt("erasure-self-approve",
+		"recruiting.company.erasure.approve", "hash-erasure-self-approve", json.RawMessage(`{"forbidden":true}`))
+	if _, err := repository.ApplyApproveCompanyErasureCommand(ctx, erasure.ErasureID, second.Erasure.Version,
+		second.Erasure.PreviewHash, erasure.RequestedBy, forbiddenReceipt, "event-erasure-self-approve",
+		"requester must not self approve", now.Add(3*time.Minute)); err == nil {
+		t.Fatal("requesting operator unexpectedly approved their own erasure")
+	}
+	var forbiddenReceipts int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id = ?`,
+		forbiddenReceipt.CommandID).Scan(&forbiddenReceipts); err != nil || forbiddenReceipts != 0 {
+		t.Fatalf("rejected approval receipt count=%d err=%v", forbiddenReceipts, err)
+	}
+
+	approvedAt := now.Add(4 * time.Minute)
+	approvedErasure, err := second.Erasure.Approve(second.Erasure.Version, second.Erasure.PreviewHash,
+		"human:approver", approvedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runningWork, _ := storedWork.Start(storedWork.Version)
+	approvedWork, _ := runningWork.WaitHuman(runningWork.Version, "compliance_retention_wait")
+	approvalResponse, _ := json.Marshal(map[string]any{"erasure": approvedErasure, "work": approvedWork,
+		"next_action": "await_retention_and_erasure"})
+	approvalReceipt, _ := model.NewCommandReceipt("erasure-approve-command",
+		"recruiting.company.erasure.approve", "hash-erasure-approve", approvalResponse)
+	approved, err := repository.ApplyApproveCompanyErasureCommand(ctx, erasure.ErasureID, second.Erasure.Version,
+		second.Erasure.PreviewHash, "human:approver", approvalReceipt, "event-erasure-approved",
+		"second operator verified scope and policy", approvedAt)
+	if err != nil || approved.Replayed {
+		t.Fatalf("approve erasure=%+v err=%v", approved, err)
+	}
+	replayedApproval, err := repository.ApplyApproveCompanyErasureCommand(ctx, erasure.ErasureID,
+		second.Erasure.Version, second.Erasure.PreviewHash, "human:approver", approvalReceipt,
+		"event-erasure-approved", "second operator verified scope and policy", approvedAt)
+	if err != nil || !replayedApproval.Replayed || string(replayedApproval.Response) != string(approved.Response) {
+		t.Fatalf("approval replay=%+v err=%v", replayedApproval, err)
+	}
+	storedErasure, err := repository.GetCompanyErasure(ctx, erasure.ErasureID)
+	if err != nil || storedErasure.Status != model.CompanyErasureApproved ||
+		storedErasure.ApprovedBy != "human:approver" || storedErasure.Version != approvedErasure.Version {
+		t.Fatalf("approved stored erasure=%+v err=%v", storedErasure, err)
+	}
+	storedWork, err = repository.GetWork(ctx, work.WorkID)
+	if err != nil || storedWork.Status != model.WorkWaitingHuman ||
+		storedWork.WaitingReason != "compliance_retention_wait" || storedWork.Version != approvedWork.Version {
+		t.Fatalf("approved control Work=%+v err=%v", storedWork, err)
+	}
+}
