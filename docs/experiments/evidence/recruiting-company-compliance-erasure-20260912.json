@@ -1,0 +1,57 @@
+{
+  "version": "recruiting.company-compliance-erasure-evidence.v1",
+  "observed_at": "2026-09-12T18:30:00+08:00",
+  "scope": "S18 Company archive and compliance erasure",
+  "implementation": {
+    "commits": ["2fbaaab8", "f4550388", "11f6de13", "057d0260", "c735bbd8"],
+    "core_modified": false,
+    "new_worker_types": 0,
+    "state_machine": ["previewing", "awaiting_approval", "approved", "erasing", "resource_cleanup", "completed"],
+    "preview": "immutable Company/version/policy/retention request plus Source version and execution-fence members, seek-paged at no more than 500 per transaction",
+    "approval": "exact preview hash and version; requester and approver must be distinct authenticated human principals, independent of actor incarnation",
+    "retention": "execution cannot begin before execute_after and revalidates the frozen Company, Source membership, and absence of active Work",
+    "database_erasure": "foreign-key-aware 48-phase state machine; each transaction affects at most 500 rows and resumes from the durable phase after restart",
+    "resource_erasure": "Artifact object references and hashes are materialized before metadata deletion; an authorized creator or channel owner deletes through Atoll Resource and Recruiting verifies the not-found tombstone",
+    "proof": "non-Company-FK request, frozen members, Resource resolutions, purge counts, and deterministic SHA-256 proof survive deletion",
+    "identity_tombstone": "an erased Company ID cannot be reused"
+  },
+  "retained_audit": {
+    "facts": ["CompanyErasure request", "frozen Source member identities and fences", "Resource cleanup resolutions", "completion proof", "minimal command/event/dispatch delivery audit"],
+    "reason": "policy and operational proof are retained deliberately; shared Recipe, Profile, DailyRun aggregates, and unrelated Company data are not cascade-deleted"
+  },
+  "verification": {
+    "database": "ephemeral MySQL 8.4",
+    "migration_identity": "staircase_migrator (non-root)",
+    "runtime_identity": "staircase_runtime (non-root, DML only)",
+    "repository_test": "TestCompanyErasureBuildsBoundedFrozenPreview",
+    "repository_assertions": [
+      "bounded frozen preview and exact impact",
+      "archived Company blocks Source restore",
+      "same human principal cannot approve through a different actor incarnation",
+      "retention blocks early start",
+      "Artifact manifest precedes metadata purge",
+      "all 48 phase SQL paths execute against the migrated schema; populated Company, Source, Job, historical Work, and Artifact relations are removed while control facts survive",
+      "proof completes once every Resource is verified absent",
+      "erased Company identity cannot be reused"
+    ],
+    "process_e2e": "TestRecruitingTwoOperatorsApproveFrozenCompanyErasureAcrossRestart passed in 24.43s",
+    "process_assertions": [
+      "two registered users operate in one shared Atoll Channel",
+      "preview resumes after Server restart",
+      "requester self-approval is rejected and second operator approval succeeds",
+      "Resource verification rejects an existing object, then succeeds after creator deletion",
+      "public reconcile reaches completed proof and Company get returns not_found",
+      "proof hash survives another Server restart"
+    ],
+    "full_store_suite": "pass with race in 228.721s",
+    "actor_race": "pass in 3.208s",
+    "vet_and_diff_check": "pass",
+    "core_boundary": "pass from a94d2b8d; no protocol/runtime/lib/platform/registry changes"
+  },
+  "acceptance": {
+    "scenario": "S18",
+    "status": "complete",
+    "scenario_completion": "23/25 (92%)",
+    "remaining_global_gates": ["S12 real authorized login and production egress isolation", "S25 external execution throughput and production SLO", "P9 release readiness"]
+  }
+}

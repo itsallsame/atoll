@@ -116,6 +116,14 @@ repair.get
 - Recipe quarantine 是常量规模的版本熔断。Listing rollback 保留 frontier 但令 Source 进入 `repairing`；Detail rollback 不改变 Listing readiness。二者都必须引用不可变 Assignment 历史。
 - 批量 Recipe rollout 先预览并确认 hash，只开放 canary，再按固定 wave 推进。失败后显式 resume 或 rollback，不能跳过暂停 wave 扩散到未来成员。
 
+Company 合规物理擦除不得使用普通 archive 或直接执行 SQL：
+
+1. 先归档全部 Source、结算活动 Work、关闭活动 alias，再提交 `recruiting.company.erasure.preview`；保存 policy version、`execute_after`、请求人和原因。
+2. 用 `recruiting.company.erasure.get` 等待有界预览进入 `awaiting_approval`，由另一 human principal 核对 Source/Job/Work/Artifact 影响量及精确 preview hash 后调用 `recruiting.company.erasure.approve`。同一用户换会话或 actor incarnation 仍不能自批。
+3. 保留期内不得恢复 Company/Source。到期后由 durable reconcile 固化 Resource 清单并分阶段擦除；用 `recruiting.company.erasure.resources` 分页取得对象。Actor 没有替用户删除 Resource 的权限，必须由创建者或频道 owner 通过原生 Resource delete 执行。
+4. Resource delete 后调用 `recruiting.company.erasure.resource.verify_absent`；对象仍存在时命令必然拒绝。继续 reconcile，直到 `company.erasure.get` 返回 `completed`、控制 Work 为 `succeeded` 且 proof hash 可读。
+5. proof、冻结成员、Resource 清理记录以及政策允许的最小 command/event/dispatch 审计是故意保留的合规事实；Company ID 是永久 tombstone，不得重新创建。任何阶段失败都从当前 phase 重试，禁止跳 phase、改 hash 或手工删控制表。
+
 ## 8. 历史回填
 
 - `artifact_recompute` 从已冻结的原始 Artifact 离线重算，声明原观测时间；`live_refetch` 读取当前页面，只能声明当前结果。
