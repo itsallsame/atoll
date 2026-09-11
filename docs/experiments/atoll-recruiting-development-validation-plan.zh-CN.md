@@ -515,6 +515,8 @@ S15/S16 实现契约已在产品设计冻结：使用 Company/Source 的配置�
 
 执行状态补充（2026-09-12，Company Backfill 的 Source cancel 隔离）：提交 `ee8bafce` 使 Backfill 成员 Work 从冻结 Item 得到的 Source scope 真正参与聚合语义。Source-only cancel 遇到 Source-targeted Backfill 时仍取消整批；遇到包含多个 Source 的 Company-targeted Backfill 时只终结匹配成员，其他 Source 的 Work 和父批次不变。`canceled_items` 纳入所有成功、失败、人工 resolution 与物化前失败路径的数据库事实重聚合且只能单调增加；最后一个成员终态后，存在 scope-canceled 成员的父 Work 以系统可审计的 `terminated` 结案，不冒充 succeeded 或 accepted gap。真实 MySQL `TestSourceCancelIsolatesCompanyBackfillMembers` 证明先取消 Source A 后 A canceled、B open、Backfill/父 Work running，再取消 B 后 Backfill completed、父 Work terminated。完整非 root MySQL 8.4 Store 回归 219.563 秒、Actor 3.026 秒，race/vet 与核心冻结检查通过。S16 剩余正确性缺口为 cancel、结果提交和通用 Backfill coordinator 的全截点竞态矩阵。
 
+执行状态补充（2026-09-12，Backfill cancel 截点与协调器交接）：提交 `e454ab35` 增加真实 pause operation 的两个结果提交截点。pause fence 先提交、Work 尚未投影时，迟到结果已经被拒绝，只保留 rejected Artifact 且不创建 Output；结果先提交时，后续 scope projection 不改写已经 completed/succeeded 的 Backfill 子 Work 与 Attempt。另一个有界测试让 scope coordinator 先结算一条未物化 Item、通用 Backfill coordinator 接手最后一条、scope operation 再观察依赖清空；测试发现通用终结器会对已经由 scope 取消的父 Work 再次 Cancel 并卡住 Backfill，现仅把精确 `WorkCanceled` 视为幂等前置状态，其他矛盾终态仍报错。交接最终只产生一个稳定 `backfill.canceled` 事件。完整非 root MySQL 8.4 Store 回归 222.297 秒、Actor 3.055 秒，race/vet 与核心冻结检查通过。Backfill 的关键 cancel/result/coordinator 截点已闭合；S15/S16 仍需把同等级证据扩到其余执行类型，并做重复并发压力验证。
+
 | ID | 场景 | 必须自动化的核心断言 |
 |---|---|---|
 | S01 | 单个公司新增 | command replay、业务去重、0/1/N Source |

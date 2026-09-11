@@ -292,6 +292,8 @@ DailyRun 本身不提供修改窗口、名单、期望数或终态摘要的通�
 
 Source 级 cancel 必须保持同 Company 其他 Source 的隔离。若 Backfill 的 Target 本身就是该 Source，则取消整个 Backfill；若 Company 级 Backfill 同时包含多个 Source，则只把被暂停 Source 的成员记为 `canceled`，其他成员与父批次继续运行。`canceled_items` 与 succeeded、accepted gap、failed 一起参与数据库事实重聚合，但取消不能伪装成用户接受的 gap；最后一个未终态成员结算后 Backfill 可进入 `completed`，只要存在 scope-canceled 成员，父 Work 就以 `terminated` 而不是 succeeded/accepted_gap 结案，并保留逐项取消事件。
 
+Scope cancel 与 Backfill 自身的通用 cancel coordinator 共享同一 `canceling` 栅栏，但不共享不透明的进程状态。两者可以按任意顺序接续有界成员页：父 Work 已被另一协调路径取消属于幂等成功，其他终态仍视为矛盾；最后一页只能生成一个稳定 ID 的 `backfill.canceled` 事件。若结果先于 pause 事务提交则保留成功事实，若 pause execution fence 先提交，即使 Work 投影尚未运行，迟到结果也只能保存 rejected Artifact，不能生成 Output。
+
 恢复必须先确认对应 pause operation 已达到可恢复终态。被冻结的历史 DailyRun/Occurrence 不逐日重开：旧日报保持 excluded/exception，系统只按当前配置和当前时间创建至多一个显式 catch-up occurrence；已有仍可安全继续的 manual/repair Work 按原因果身份恢复。Company 恢复时按 Source 游标分别判定，不能用一个大事务扇出全部 Source；Source 恢复不得影响同 Company 的其他 Source，且任何 pause/resume 都不移动 Incremental Checkpoint。
 - 产品不判断岗位下架，不因岗位从列表中消失而更新或删除已有岗位。
 - 移除 Source 实际执行可恢复归档：停止其后续调度，保留 Endpoint、Recipe Assignment、Checkpoint、岗位和运行历史。再次添加相同规范入口时优先提示恢复；恢复先验证身份、Recipe 和 Checkpoint 兼容性。

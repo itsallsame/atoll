@@ -1,6 +1,6 @@
 {
   "version": "recruiting.scope-execution-fences-evidence.v2",
-  "observed_at": "2026-09-12T03:49:50+08:00",
+  "observed_at": "2026-09-12T04:00:20+08:00",
   "scope": "Company/Source operational, configuration, and cancellation fences across Recruiting execution types",
   "implementation": {
     "execution_fence_commit": "e1e235ca",
@@ -9,6 +9,7 @@
     "bounded_scope_cancel_commit": "2d22700d",
     "validation_recovery_commit": "0fdead09",
     "cross_source_backfill_commit": "ee8bafce",
+    "backfill_cancel_cutpoints_commit": "e454ab35",
     "core_modified": false,
     "new_worker_types": 0,
     "new_attempt_authority": "current eligibility gates new claims; configuration_version and execution_fence authorize issued Attempts",
@@ -16,7 +17,8 @@
     "cancel_phases": "work projection and business dependency settlement are separate durable bounded phases",
     "backfill_scope": "child Work derives immutable Company/Source ownership from its frozen BackfillItem",
     "validation_recovery": "canceled Source validation returns to candidate or repairing; canceled candidate Recipe validation returns to draft; rollout Recipe remains active",
-    "cross_source_backfill": "Source-only cancel terminates only matching Company Backfill members; other Source Work remains runnable; a partially canceled terminal parent resolves as terminated"
+    "cross_source_backfill": "Source-only cancel terminates only matching Company Backfill members; other Source Work remains runnable; a partially canceled terminal parent resolves as terminated",
+    "backfill_cancel_cutpoints": "result-first preserves success; pause-fence-first rejects late result before Work projection; scope and general coordinators hand off bounded pages and emit one terminal event"
   },
   "contract_observation": {
     "listing": "drain accepted; cancel and configuration change fenced",
@@ -38,8 +40,8 @@
     "database": "ephemeral MySQL 8.4",
     "migration_identity": "staircase_migrator (non-root)",
     "runtime_identity": "staircase_runtime (non-root, DML only)",
-    "full_store_suite": "pass in 219.563s",
-    "actor_suite": "pass in 3.026s",
+    "full_store_suite": "pass in 222.297s",
+    "actor_suite": "pass in 3.055s",
     "targeted_tests": [
       "TestInFlightResultDistinguishesDrainFromCancelFence",
       "TestDetailResultUsesSeparatedScopeFences",
@@ -58,14 +60,15 @@
       "TestCancelScopeControlFencesWorkAndExpiresAttempt",
       "TestCancelScopeControlClosesExecutionOwnerAggregates",
       "TestCancelScopeControlWaitsForBoundedUnmaterializedBackfillItems",
-      "TestSourceCancelIsolatesCompanyBackfillMembers"
+      "TestSourceCancelIsolatesCompanyBackfillMembers",
+      "TestBackfillResultAndScopeCancelConvergeAtBothCommitCutpoints"
     ],
     "race_and_vet": "pass for ./drivers/tools/recruiting/...",
     "core_boundary": "pass from a94d2b8d; no protocol/runtime/lib/platform/registry changes"
   },
   "limits": [
     "Result-level matrices, principal execution-owner cancellation, and Source/Recipe validation recovery states are complete.",
-    "Full pause/cancel cutoff and cancel/result/general Backfill coordinator race matrices remain open.",
+    "Backfill cancel/result/general coordinator commit-order cutpoints are complete; equivalent operation-driven cutpoints for the remaining execution types and repeated concurrent stress remain open.",
     "S15 and S16 remain partially complete."
   ]
 }
