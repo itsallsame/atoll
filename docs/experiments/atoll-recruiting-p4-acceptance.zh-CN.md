@@ -44,6 +44,7 @@
 - 生产 Dialer 在实际连接前解析全部地址并拒绝 loopback、private、link-local、multicast、CGNAT、benchmark 和文档网段，避免 DNS rebinding/SSRF；redirect 只允许相同 scheme+authority 且次数受 Recipe 限制；
 - 每次 fetch 必须同时携带有效 robots 证据和条款审查版本/时间；robots 拒绝发生在网站请求之前；429、403、5xx、超时、过大响应、危险 Endpoint 和 redirect 分为稳定错误类别，连续 429/403/5xx 会打开本进程 origin circuit；
 - `httptest` 验证 GET/UA、robots 先决条件、响应截断、超时、同源与跨源 redirect、429 熔断及生产 Dialer 的私网拒绝。测试专用私网开关只存在于未导出的构造函数，生产 `New` 无法开启。
+- HTTP 状态矩阵现直接在 Driver 边界锁定：403=`forbidden/non-retryable`、503=`upstream_5xx/retryable`、404=`unexpected_status/non-retryable`，三者都保留受字节上限约束的响应体、状态码和内容哈希。429 的 `Retry-After: 120` 会把 origin circuit 截止时间从默认 60 秒延长为 120 秒；截止前不再触达 origin，截止后只允许重新探测，而不是永久熔断。全部用例不依赖 wall-clock sleep 并通过 race。
 - `RobotsTxtChecker` 使用同一生产级安全 Dialer 获取每个 origin 的 `/robots.txt`，限制 1 MiB/30s 上限，按实际 Recipe User-Agent 解析 allow/disallow 与 crawl-delay，并保存 policy URL、内容 SHA-256、检查时间；
 - robots cache 按 origin 带 TTL，单 origin lock 合并并发首次加载；401/403/429、超量、解析或网络失败均 fail closed，跨 origin redirect 被拒绝；crawl-delay 会延长 HTTP Driver 后续请求的 origin 间隔。
 - `RunListing` 已串联 HTTP→Artifact→离线 Recipe→`ListingScan`：每页原始响应必须先经 `ArtifactSink` 成功持久化，之后才允许解析；单页和整次扫描都有独立字节上限，next page 必须保持初始 scheme+authority 且不得携带凭据或 fragment；
@@ -105,7 +106,7 @@ make recruiting-live-smoke
 ## 尚未完成
 
 - Browser Runner 已有 Chromium/CDP 实现并接入统一 Executor 的 `browser.public` 与设备定向 `browser.recipe` capability；本地 owner-only registry、版本/域围栏、进程内与跨进程单 Profile 租约、Profile DOM 脱敏和跨 Session Cookie 复用已有真实 Chrome 证据。修复 Bridge 已使用每 Profile 独立绑定令牌定向插件连接，并以明确旧/新版本围栏原子轮换相同 registry。Chrome for Testing 153 整包门已从真实 Manifest V3 启动 Service Worker，打开 popup、点击 Profile 配对并同时证明 Bridge 定向连接与每日 Runner 互斥。尚缺生产部署的 OS/container 级出站隔离和真实授权登录站点 canary；
-- 本地确定性站点的全部异常矩阵；
+- 本地确定性站点已覆盖 redirect、空结果、字段/JSON 异常、429/403/404/5xx、慢响应/超时、响应超限、robots 拒绝、Browser POST/popup/download/跨源导航和 selector 缺失；仍需把登录过期与验证码标记的 Profile 端到端分支纳入同一矩阵，并补 Artifact provider 断连与 Browser crash 的组合进程切点；
 - 更多站型的 Nightly/Weekly Live 验证，以及由正式 Artifact 存储提供保留期，而不是验收机本地文件；
 - 页面进度已改为 Attempt 作用域，并通过 MySQL 8.4 的 crash/retry 合同：Attempt A 接受第一页后失败，Attempt B 可从第一页重新运行；A/B 页面证据同时保留，B 的 completion 只统计 B 的页面。Failure Artifact 的原子控制面合同及真实进程自动执行正常路径已闭合；启用前仍须补齐真实进程崩溃切点。
 - accept/start/failed 以及 page/completion/detail 的 command receipt 已闭合，控制面也已有 capability-aware fleet 的持久单次 wake 和 authenticated completion acknowledgement；“控制面已提交 dispatch、首次投递前 Server 退出”和“Executor 已处理、控制面未保存 completion acknowledgement”已有真实 Atoll 进程恢复证明。Executor 在 baseline 第一页后被 `SIGKILL` 的真实进程测试也证明旧 Attempt 到期、新进程从第 1 页安全重跑，且未提前发布业务事实。业务 result response 丢失除精确客户端重试与非 root MySQL receipt 合同外，也已在真实 Server/daemon 链路以事务 fault gate→暂停 daemon→提交 result→杀死 daemon→新 daemon 恢复的顺序通过；首次切点只有一个 receipt/page，旧 Attempt expired，最终 production recovery 只完成一次。

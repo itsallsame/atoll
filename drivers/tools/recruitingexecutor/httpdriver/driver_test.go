@@ -143,6 +143,86 @@ func TestOriginCircuitOpensAfterRepeated429(t *testing.T) {
 	}
 }
 
+func TestFetchClassifiesStatusFailuresAndPreservesBoundedEvidence(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		class     string
+		retryable bool
+	}{
+		{name: "forbidden", status: http.StatusForbidden, class: "forbidden", retryable: false},
+		{name: "upstream unavailable", status: http.StatusServiceUnavailable, class: "upstream_5xx", retryable: true},
+		{name: "not found", status: http.StatusNotFound, class: "unexpected_status", retryable: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				response.Header().Set("Content-Type", "text/plain")
+				response.WriteHeader(test.status)
+				_, _ = response.Write([]byte("bounded diagnostic body"))
+			}))
+			defer server.Close()
+			driver, _ := newDriver(testPolicy(), allowRobots{allowed: true}, true)
+			result, err := driver.Fetch(context.Background(), testSpec(), testInput(server.URL), compliance)
+			var fetchErr *FetchError
+			if !errors.As(err, &fetchErr) || fetchErr.Class != test.class || fetchErr.Retryable != test.retryable ||
+				fetchErr.StatusCode != test.status || result.StatusCode != test.status ||
+				string(result.Body) != "bounded diagnostic body" || !strings.HasPrefix(result.ContentHash, "sha256:") {
+				t.Fatalf("status result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestRetryAfterExtendsOriginCircuitWithoutSleeping(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		response.Header().Set("Retry-After", "120")
+		response.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	policy := testPolicy()
+	policy.CircuitCooldown = time.Minute
+	driver, _ := newDriver(policy, allowRobots{allowed: true}, true)
+	fixedNow := time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC)
+	currentNow := fixedNow
+	driver.now = func() time.Time { return currentNow }
+	for attempt := 0; attempt < policy.CircuitThreshold; attempt++ {
+		_, err := driver.Fetch(context.Background(), testSpec(), testInput(server.URL), compliance)
+		var fetchErr *FetchError
+		if !errors.As(err, &fetchErr) || fetchErr.Class != "throttled" || !fetchErr.Retryable {
+			t.Fatalf("throttled attempt %d err=%v", attempt+1, err)
+		}
+	}
+	origin := normalizedOrigin(mustURL(t, server.URL))
+	driver.mu.Lock()
+	state := driver.circuits[origin]
+	driver.mu.Unlock()
+	if !state.openUntil.Equal(fixedNow.Add(120 * time.Second)) {
+		t.Fatalf("Retry-After circuit deadline=%s want=%s", state.openUntil, fixedNow.Add(120*time.Second))
+	}
+	_, err := driver.Fetch(context.Background(), testSpec(), testInput(server.URL), compliance)
+	var fetchErr *FetchError
+	if !errors.As(err, &fetchErr) || fetchErr.Class != "throttled" || fetchErr.StatusCode != 0 || requests.Load() != 2 {
+		t.Fatalf("open circuit reached transport or changed classification: %v", err)
+	}
+	currentNow = fixedNow.Add(121 * time.Second)
+	_, err = driver.Fetch(context.Background(), testSpec(), testInput(server.URL), compliance)
+	if !errors.As(err, &fetchErr) || fetchErr.StatusCode != http.StatusTooManyRequests || requests.Load() != 3 {
+		t.Fatalf("expired circuit did not probe origin again: requests=%d err=%v", requests.Load(), err)
+	}
+}
+
+func mustURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
+}
+
 func TestProductionDialerRejectsNonPublicNetworks(t *testing.T) {
 	for _, raw := range []string{"127.0.0.1", "10.0.0.1", "169.254.1.1", "100.64.0.1", "192.0.2.1", "::1", "2001:db8::1"} {
 		if publicAddress(netip.MustParseAddr(raw)) {
