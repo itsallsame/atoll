@@ -1,0 +1,45 @@
+{
+  "observed_at": "2026-09-11",
+  "branch": "codex/atoll-recruiting",
+  "scenario": "company import waiting_human item resolution and parent reaggregation",
+  "architecture": {
+    "control_actor_class": "recruiting",
+    "executor_actor_class": "recruiting-executor",
+    "new_worker_or_actor_class": false,
+    "atoll_core_modified": false
+  },
+  "mysql_contract": {
+    "command": "RECRUITING_MYSQL_TEST_RUN='^TestCompanyImportPreviewPersistsBoundedChunksAndVerifiesHash$' scripts/recruiting-mysql-test.sh",
+    "mysql": "8.4",
+    "migration_identity": "staircase_migrator",
+    "runtime_identity": "staircase_runtime",
+    "store_elapsed_seconds": 3.118,
+    "passed": true,
+    "proved": [
+      "retry before external uniqueness repair rolls back without changing batch or item",
+      "an invalid immutable preview item cannot be retried",
+      "concurrent identical skip commands converge to one commit and one receipt replay",
+      "the parent remains waiting while another waiting item exists",
+      "the final successful retry reaggregates all item facts and completes the parent",
+      "the original preview state remains unchanged"
+    ]
+  },
+  "process_e2e": {
+    "command": "go test ./e2e -run '^TestRecruitingCompanyImportPreviewThroughResourceAndExecutor$' -count=1",
+    "elapsed_seconds": 20.970,
+    "passed": true,
+    "actors": "ordinary operator, real Atoll server, daemon and recruiting executor",
+    "flow": "Resource preview -> bounded apply -> company.update conflict repair -> item retry -> invalid-row skip -> parent completion",
+    "final_outcome": {
+      "succeeded": 3,
+      "skipped": 2,
+      "waiting_human": 0,
+      "parent_work_status": "completed"
+    },
+    "immutable_input_bytes_changed": false
+  },
+  "boundary_check": {
+    "base": "a94d2b8d",
+    "passed": true
+  }
+}

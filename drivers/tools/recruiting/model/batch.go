@@ -57,6 +57,13 @@ const (
 	CompanyImportWaitingHuman CompanyImportDisposition = "waiting_human"
 )
 
+type CompanyImportItemResolution string
+
+const (
+	CompanyImportItemRetry CompanyImportItemResolution = "retry"
+	CompanyImportItemSkip  CompanyImportItemResolution = "skip"
+)
+
 func NewCompanyImport(importID, parentWorkID, artifactRef, artifactHash, schemaVersion string, policyVersion uint64) (CompanyImport, error) {
 	values := []string{importID, parentWorkID, artifactRef, artifactHash, schemaVersion}
 	for _, value := range values {
@@ -166,6 +173,28 @@ func (b CompanyImport) Complete(expected uint64, results []BatchItemResult) (Com
 		return CompanyImport{}, fmt.Errorf("company import result count %d does not match preview count %d", outcome.Total, b.ItemCount)
 	}
 	b.Outcome, b.Status = outcome, CompanyImportCompleted
+	b.Version++
+	return b, nil
+}
+
+// ReaggregateCompleted replaces only the derived outcome of a completed
+// import. Preview rows and their immutable Resource binding are never
+// rewritten when an operator resolves an item that required human attention.
+func (b CompanyImport) ReaggregateCompleted(expected uint64, results []BatchItemResult) (CompanyImport, error) {
+	if err := requireVersion(expected, b.Version); err != nil {
+		return CompanyImport{}, err
+	}
+	if b.Status != CompanyImportCompleted {
+		return CompanyImport{}, &InvalidTransitionError{Entity: "company_import", From: string(b.Status), Action: "reaggregate completed outcomes"}
+	}
+	outcome, err := AggregateBatch(results)
+	if err != nil {
+		return CompanyImport{}, err
+	}
+	if outcome.Total != b.ItemCount {
+		return CompanyImport{}, fmt.Errorf("company import result count %d does not match preview count %d", outcome.Total, b.ItemCount)
+	}
+	b.Outcome = outcome
 	b.Version++
 	return b, nil
 }

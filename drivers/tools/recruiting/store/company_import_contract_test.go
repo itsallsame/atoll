@@ -284,6 +284,99 @@ func TestCompanyImportPreviewPersistsBoundedChunksAndVerifiesHash(t *testing.T) 
 		items[0].ChildWorkID == "" || items[4].ChildWorkID == "" {
 		t.Fatalf("applied item outcomes = %+v err=%v", items, err)
 	}
+
+	// Retrying before the external business-key conflict is repaired fails the
+	// whole command transaction and leaves both item and parent untouched.
+	failedRetry := CompanyImportItemResolutionCommand{CommandID: "company-import-resolve-row-5-too-early",
+		Word: "recruiting.company.import.item.resolve", RequestHash: "sha256:resolve-row-5-too-early",
+		ContractVersion: "recruiting.v1alpha1", CorrelationID: "correlation-resolve-row-5-too-early",
+		RequestedBy: "human:operator:1", ImportID: batch.ImportID, ItemKey: "row-5",
+		ExpectedBatchVersion: finalApply.Import.Version, ExpectedItemVersion: items[4].Version,
+		Resolution: model.CompanyImportItemRetry, Reason: "external conflict was corrected", BusinessAt: now.Add(23 * time.Second)}
+	if _, err := repository.ApplyResolveCompanyImportItemCommand(ctx, failedRetry); !errors.Is(err, ErrBusinessKeyExists) {
+		t.Fatalf("unrepaired company conflict was accepted: %v", err)
+	}
+	afterFailedRetry, err := repository.GetCompanyImport(ctx, batch.ImportID)
+	if err != nil || afterFailedRetry.Version != finalApply.Import.Version || afterFailedRetry.Outcome.WaitingHuman != 2 {
+		t.Fatalf("failed retry changed batch: %+v err=%v", afterFailedRetry, err)
+	}
+	invalidRetry := failedRetry
+	invalidRetry.CommandID, invalidRetry.RequestHash, invalidRetry.ItemKey = "company-import-retry-invalid-row", "sha256:retry-invalid-row", "row-4"
+	invalidRetry.ExpectedItemVersion = items[3].Version
+	if _, err := repository.ApplyResolveCompanyImportItemCommand(ctx, invalidRetry); err == nil ||
+		!strings.Contains(err.Error(), "originally ready") {
+		t.Fatalf("invalid immutable preview row was retryable: %v", err)
+	}
+
+	// An invalid immutable preview row cannot be rewritten. The operator may
+	// explicitly accept the gap by skipping it; the original preview detail
+	// remains in state_json while its outcome and child Work record the reason.
+	skipInput := CompanyImportItemResolutionCommand{
+		CommandID: "company-import-resolve-row-4", Word: "recruiting.company.import.item.resolve",
+		RequestHash: "sha256:resolve-row-4", ContractVersion: "recruiting.v1alpha1", CorrelationID: "correlation-resolve-row-4",
+		RequestedBy: "human:operator:1", ImportID: batch.ImportID, ItemKey: "row-4",
+		ExpectedBatchVersion: finalApply.Import.Version, ExpectedItemVersion: items[3].Version,
+		Resolution: model.CompanyImportItemSkip, Reason: "missing source fields; accepted for this batch",
+		BusinessAt: now.Add(24 * time.Second),
+	}
+	type resolutionResult struct {
+		outcome CompanyImportItemResolutionOutcome
+		err     error
+	}
+	resolved := make(chan resolutionResult, 2)
+	for range 2 {
+		go func() {
+			outcome, resolveErr := repository.ApplyResolveCompanyImportItemCommand(ctx, skipInput)
+			resolved <- resolutionResult{outcome: outcome, err: resolveErr}
+		}()
+	}
+	firstResolved, secondResolved := <-resolved, <-resolved
+	if firstResolved.err != nil || secondResolved.err != nil || firstResolved.outcome.Replayed == secondResolved.outcome.Replayed {
+		t.Fatalf("concurrent item resolution did not converge: first=%+v second=%+v", firstResolved, secondResolved)
+	}
+	skipped, err := firstResolved.outcome, firstResolved.err
+	if skipped.Replayed {
+		skipped, err = secondResolved.outcome, secondResolved.err
+	}
+	if err != nil || skipped.Import.Outcome.WaitingHuman != 1 || skipped.Import.Outcome.Skipped != 2 ||
+		skipped.Item.Outcome != model.BatchItemSkipped || skipped.Item.Item.Detail != "name is missing" ||
+		skipped.Work.Status != model.WorkCompleted || skipped.Work.Resolution != model.ResolutionSkipped ||
+		skipped.ParentWork.Status != model.WorkWaitingHuman || skipped.NextAction != "resolve_remaining_items" {
+		t.Fatalf("skip waiting item = %+v err=%v", skipped, err)
+	}
+
+	// Simulate the normal company maintenance command having removed the
+	// conflicting record, then retry the exact immutable ready row.
+	if _, err := db.ExecContext(ctx, "DELETE FROM recruiting_companies WHERE company_id = ?", existing.CompanyID); err != nil {
+		t.Fatal(err)
+	}
+	retriedInput := CompanyImportItemResolutionCommand{CommandID: "company-import-resolve-row-5",
+		Word: "recruiting.company.import.item.resolve", RequestHash: "sha256:resolve-row-5",
+		ContractVersion: "recruiting.v1alpha1", CorrelationID: "correlation-resolve-row-5",
+		RequestedBy: "human:operator:1", ImportID: batch.ImportID, ItemKey: "row-5",
+		ExpectedBatchVersion: skipped.Import.Version, ExpectedItemVersion: items[4].Version,
+		Resolution: model.CompanyImportItemRetry, Reason: "external company-key conflict was removed", BusinessAt: now.Add(25 * time.Second)}
+	retried, err := repository.ApplyResolveCompanyImportItemCommand(ctx, retriedInput)
+	if err != nil || retried.Import.Status != model.CompanyImportCompleted || retried.Import.Outcome.WaitingHuman != 0 ||
+		retried.Import.Outcome.Succeeded != 3 || retried.Import.Outcome.Skipped != 2 ||
+		retried.Item.Outcome != model.BatchItemSucceeded || retried.Work.Status != model.WorkCompleted ||
+		retried.ParentWork.Status != model.WorkCompleted || retried.ParentWork.Resolution != model.ResolutionSucceeded ||
+		retried.NextAction != "completed" {
+		t.Fatalf("retry resolved item = %+v err=%v", retried, err)
+	}
+	if imported, err := repository.GetCompany(ctx, "import-company-5"); err != nil || imported.Website != "https://existing.import.example" {
+		t.Fatalf("retried imported company = %+v err=%v", imported, err)
+	}
+	replayResolution, err := repository.ApplyResolveCompanyImportItemCommand(ctx, retriedInput)
+	if err != nil || !replayResolution.Replayed || replayResolution.Import.Version != retried.Import.Version {
+		t.Fatalf("item resolution replay = %+v err=%v", replayResolution, err)
+	}
+	var resolvedEvents int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_event_outbox
+WHERE aggregate_type = 'company_import' AND aggregate_id = ? AND event_kind = 'company.import.item.resolved'`, batch.ImportID).
+		Scan(&resolvedEvents); err != nil || resolvedEvents != 2 {
+		t.Fatalf("resolved event count=%d err=%v", resolvedEvents, err)
+	}
 }
 
 func TestCompanyImportChunkCASRejectsConcurrentWriter(t *testing.T) {

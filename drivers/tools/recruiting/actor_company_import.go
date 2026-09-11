@@ -74,6 +74,16 @@ type companyImportQueryPayload struct {
 	Limit    int    `json:"limit,omitempty"`
 }
 
+type companyImportItemResolvePayload struct {
+	CommandID            string                            `json:"command_id"`
+	ImportID             string                            `json:"import_id"`
+	ItemKey              string                            `json:"item_key"`
+	ExpectedBatchVersion uint64                            `json:"expected_batch_version"`
+	ExpectedItemVersion  uint64                            `json:"expected_item_version"`
+	Resolution           model.CompanyImportItemResolution `json:"resolution"`
+	Reason               string                            `json:"reason"`
+}
+
 func handleCompanyImport(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	if repository == nil {
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
@@ -89,6 +99,10 @@ func handleCompanyImport(sys actorbase.Sys, cfg Config, repository *store.Reposi
 	}
 	if msg.Type == TypeCompanyImportCancel {
 		handleCompanyImportCancel(sys, cfg, repository, msg)
+		return
+	}
+	if msg.Type == TypeCompanyImportItemResolve {
+		handleCompanyImportItemResolve(sys, repository, msg)
 		return
 	}
 	var payload companyImportPayload
@@ -153,6 +167,32 @@ func handleCompanyImport(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		return
 	}
 	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
+}
+
+func handleCompanyImportItemResolve(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload companyImportItemResolvePayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.CommandID, payload.ImportID, payload.ItemKey = strings.TrimSpace(payload.CommandID), strings.TrimSpace(payload.ImportID), strings.TrimSpace(payload.ItemKey)
+	payload.Reason = strings.TrimSpace(payload.Reason)
+	if payload.CommandID == "" || payload.ImportID == "" || payload.ItemKey == "" || payload.ExpectedBatchVersion == 0 ||
+		payload.ExpectedItemVersion == 0 || payload.Reason == "" || strings.TrimSpace(string(msg.Sender.ID)) == "" ||
+		(payload.Resolution != model.CompanyImportItemRetry && payload.Resolution != model.CompanyImportItemSkip) {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "command_id, import_id, item_key, exact batch/item versions, retry|skip resolution, reason, and authenticated sender are required")
+		return
+	}
+	outcome, err := repository.ApplyResolveCompanyImportItemCommand(msg.Ctx(), store.CompanyImportItemResolutionCommand{
+		CommandID: payload.CommandID, Word: msg.Type, RequestHash: commandRequestHash(msg), ContractVersion: ContractVersion,
+		CorrelationID: string(msg.CorrelationID), RequestedBy: string(msg.Sender.ID), ImportID: payload.ImportID,
+		ItemKey: payload.ItemKey, ExpectedBatchVersion: payload.ExpectedBatchVersion, ExpectedItemVersion: payload.ExpectedItemVersion,
+		Resolution: payload.Resolution, Reason: payload.Reason, BusinessAt: time.UnixMilli(msg.TS).UTC(),
+	})
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, outcome)
 }
 
 func handleCompanyImportCancel(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {

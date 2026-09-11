@@ -183,6 +183,36 @@ func TestCompanyImportCancellationAggregatesTerminalItems(t *testing.T) {
 	}
 }
 
+func TestCompanyImportReaggregatesResolvedItemsWithoutReopeningBatch(t *testing.T) {
+	batch, _ := NewCompanyImport("repair-import", "repair-parent", "artifact://imports/repair.csv",
+		"sha256:"+strings.Repeat("e", 64), "company-import.v1", 1)
+	preview := []CompanyImportItem{
+		{ItemKey: "row-1", CompanyID: "repair-company-1", Name: "One"},
+		{ItemKey: "row-2", CompanyID: "repair-company-2", Name: "Two"},
+	}
+	batch, _ = batch.RecordPreview(batch.Version, preview)
+	batch, _ = batch.Confirm(batch.Version, batch.PreviewHash)
+	batch, _ = batch.Start(batch.Version)
+	batch, _ = batch.Complete(batch.Version, []BatchItemResult{
+		{ItemKey: "row-1", Status: BatchItemSucceeded},
+		{ItemKey: "row-2", Status: BatchItemWaitingHuman, Detail: "conflict"},
+	})
+	inputHash, previewHash := batch.InputArtifactHash, batch.PreviewHash
+
+	next, err := batch.ReaggregateCompleted(batch.Version, []BatchItemResult{
+		{ItemKey: "row-1", Status: BatchItemSucceeded},
+		{ItemKey: "row-2", Status: BatchItemSkipped, Detail: "operator accepted existing record"},
+	})
+	if err != nil || next.Status != CompanyImportCompleted || next.Outcome.Succeeded != 1 || next.Outcome.Skipped != 1 ||
+		next.Outcome.WaitingHuman != 0 || next.Version != batch.Version+1 || next.InputArtifactHash != inputHash ||
+		next.PreviewHash != previewHash {
+		t.Fatalf("reaggregated import = %+v err=%v", next, err)
+	}
+	if _, err := next.ReaggregateCompleted(batch.Version, nil); err == nil {
+		t.Fatal("stale reaggregation was accepted")
+	}
+}
+
 func TestArtifactAndListingObservationRequireStableReferences(t *testing.T) {
 	artifact, err := NewArtifactMetadata("artifact-1", ArtifactPage, "sha256:page", "object://bucket/page", "work-1", "attempt-1", "operators", "30d", true)
 	if err != nil || artifact.Kind != ArtifactPage {

@@ -60,12 +60,17 @@ func TestRecruitingCompanyImportPreviewThroughResourceAndExecutor(t *testing.T) 
 	executorIntro := ws.request(homeID, "system.member.create", systemActor, map[string]any{"decl_id": executorName, "desired_host": deviceID})
 	executorID := stringField(t, executorIntro, "member")
 	waitActorPresenceInChannel(t, ws, homeID, executorID, daemon, daemonLog)
+	existingConflict := ws.request(homeID, "recruiting.company.add", controlID, map[string]any{
+		"command_id": "e2e-company-import-existing", "company_id": "existing-e2e-conflict", "name": "Existing conflict",
+		"website": "https://conflict.import-e2e.example", "reason": "seed an external business-key conflict for repair",
+	})
 
 	content := []byte("company_id,name,website\n" +
 		"import-e2e-1,One,HTTPS://ONE.IMPORT-E2E.EXAMPLE:443/\n" +
 		"import-e2e-2,Two,https://two.import-e2e.example\n" +
 		"import-e2e-2,Duplicate,https://duplicate.import-e2e.example\n" +
-		",Missing ID,https://missing.import-e2e.example\n")
+		",Missing ID,https://missing.import-e2e.example\n" +
+		"import-e2e-5,Five,https://conflict.import-e2e.example\n")
 	address := "daemon://" + deviceName + "/" + qualifiedChannel + "/imports/companies.csv"
 	created := ws.resource(map[string]any{"channel_id": homeID, "op": "create", "address": address, "with_content": true})
 	httpPutFile(t, operator, h.base, homeID, address, stringField(t, created, "ticket"), content)
@@ -154,8 +159,8 @@ func TestRecruitingCompanyImportPreviewThroughResourceAndExecutor(t *testing.T) 
 		t.Fatalf("company import did not complete bounded apply pages\nserver:\n%s\ndaemon:\n%s", tailLog(h.server.logPath, 150), tailLog(daemonLog, 150))
 	}
 	outcome, _ := completed["company_import"].(map[string]any)["outcome"].(map[string]any)
-	if numberField(t, outcome, "total") != 4 || numberField(t, outcome, "succeeded") != 2 ||
-		numberField(t, outcome, "skipped") != 1 || numberField(t, outcome, "waiting_human") != 1 {
+	if numberField(t, outcome, "total") != 5 || numberField(t, outcome, "succeeded") != 2 ||
+		numberField(t, outcome, "skipped") != 1 || numberField(t, outcome, "waiting_human") != 2 {
 		t.Fatalf("company import aggregate outcome=%v", outcome)
 	}
 	work = ws.request(homeID, "recruiting.work.get", controlID, map[string]any{"id": workID})
@@ -173,10 +178,10 @@ func TestRecruitingCompanyImportPreviewThroughResourceAndExecutor(t *testing.T) 
 	appliedItems := ws.request(homeID, "recruiting.company.import.items", controlID,
 		map[string]any{"import_id": "e2e-company-import-1", "limit": 10})
 	itemValues, _ := appliedItems["items"].([]any)
-	if len(itemValues) != 4 {
+	if len(itemValues) != 5 {
 		t.Fatalf("applied import items=%v", appliedItems)
 	}
-	wantOutcomes := []string{"succeeded", "succeeded", "skipped", "waiting_human"}
+	wantOutcomes := []string{"succeeded", "succeeded", "skipped", "waiting_human", "waiting_human"}
 	for index, value := range itemValues {
 		item, _ := value.(map[string]any)
 		if stringField(t, item, "outcome") != wantOutcomes[index] || stringField(t, item, "child_work_id") == "" {
@@ -185,6 +190,74 @@ func TestRecruitingCompanyImportPreviewThroughResourceAndExecutor(t *testing.T) 
 	}
 	if stored, err := os.ReadFile(physical); err != nil || !bytes.Equal(stored, content) {
 		t.Fatalf("confirmed import changed immutable input File Resource: bytes=%d err=%v", len(stored), err)
+	}
+
+	// Repair the external uniqueness conflict through the ordinary Company
+	// command, then retry the exact immutable import row through the public
+	// item-resolution word.
+	ws.request(homeID, "recruiting.company.update", controlID, map[string]any{
+		"command_id":       "e2e-company-import-fix-conflict",
+		"target":           map[string]any{"target_type": "company", "target_id": "existing-e2e-conflict"},
+		"expected_version": nestedNumberField(t, existingConflict, "company", "version"),
+		"website":          "https://moved.import-e2e.example", "reason": "free the imported company's normalized website",
+	})
+	var conflictItem, invalidItem map[string]any
+	for _, value := range itemValues {
+		record, _ := value.(map[string]any)
+		item, _ := record["item"].(map[string]any)
+		companyID, _ := item["company_id"].(string)
+		previewDisposition, _ := item["preview_disposition"].(string)
+		if companyID == "import-e2e-5" {
+			conflictItem = record
+		}
+		if companyID == "" && previewDisposition == "waiting_human" {
+			invalidItem = record
+		}
+	}
+	if conflictItem == nil || invalidItem == nil {
+		t.Fatalf("repairable import items not found: %v", appliedItems)
+	}
+	retriedPayload := map[string]any{
+		"command_id": "e2e-company-import-retry-conflict", "import_id": "e2e-company-import-1",
+		"item_key":               nestedStringField(t, conflictItem, "item", "item_key"),
+		"expected_batch_version": nestedNumberField(t, completed, "company_import", "version"),
+		"expected_item_version":  numberField(t, conflictItem, "version"),
+		"resolution":             "retry", "reason": "external business-key conflict was corrected",
+	}
+	retried := ws.request(homeID, "recruiting.company.import.item.resolve", controlID, retriedPayload)
+	retriedImport, _ := retried["company_import"].(map[string]any)
+	retriedOutcome, _ := retriedImport["outcome"].(map[string]any)
+	if nestedStringField(t, retried, "item", "outcome") != "succeeded" ||
+		nestedStringField(t, retried, "parent_work", "work_status") != "waiting_human" ||
+		numberField(t, retriedOutcome, "waiting_human") != 1 {
+		t.Fatalf("retried company import item=%v", retried)
+	}
+	retriedReplay := ws.request(homeID, "recruiting.company.import.item.resolve", controlID, retriedPayload)
+	if nestedNumberField(t, retriedReplay, "company_import", "version") != nestedNumberField(t, retried, "company_import", "version") {
+		t.Fatalf("resolved item replay changed batch: first=%v replay=%v", retried, retriedReplay)
+	}
+	skipped := ws.request(homeID, "recruiting.company.import.item.resolve", controlID, map[string]any{
+		"command_id": "e2e-company-import-skip-invalid", "import_id": "e2e-company-import-1",
+		"item_key":               nestedStringField(t, invalidItem, "item", "item_key"),
+		"expected_batch_version": nestedNumberField(t, retried, "company_import", "version"),
+		"expected_item_version":  numberField(t, invalidItem, "version"),
+		"resolution":             "skip", "reason": "accept invalid source row as an explicit batch gap",
+	})
+	skippedRecord, _ := skipped["item"].(map[string]any)
+	skippedImport, _ := skipped["company_import"].(map[string]any)
+	skippedOutcome, _ := skippedImport["outcome"].(map[string]any)
+	if nestedStringField(t, skipped, "item", "outcome") != "skipped" ||
+		nestedStringField(t, skippedRecord, "item", "detail") != "company_id and name are required" ||
+		nestedStringField(t, skipped, "parent_work", "work_status") != "completed" ||
+		numberField(t, skippedOutcome, "waiting_human") != 0 || numberField(t, skippedOutcome, "succeeded") != 3 ||
+		numberField(t, skippedOutcome, "skipped") != 2 {
+		t.Fatalf("final company import resolution=%v", skipped)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM recruiting_companies WHERE company_id LIKE 'import-e2e-%'").Scan(&companies); err != nil || companies != 3 {
+		t.Fatalf("repaired applied companies count=%d err=%v", companies, err)
+	}
+	if stored, err := os.ReadFile(physical); err != nil || !bytes.Equal(stored, content) {
+		t.Fatalf("item repair changed immutable input File Resource: bytes=%d err=%v", len(stored), err)
 	}
 
 	// A second import proves that an operator can cancel after preview without
@@ -228,7 +301,7 @@ func TestRecruitingCompanyImportPreviewThroughResourceAndExecutor(t *testing.T) 
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if canceledImport == nil || nestedNumberField(t, canceledImport, "company_import", "item_count") != 4 {
+	if canceledImport == nil || nestedNumberField(t, canceledImport, "company_import", "item_count") != 5 {
 		t.Fatalf("company import cancellation did not finish: %v\nserver:\n%s\ndaemon:\n%s", canceledImport,
 			tailLog(h.server.logPath, 100), tailLog(daemonLog, 100))
 	}
@@ -241,7 +314,7 @@ func TestRecruitingCompanyImportPreviewThroughResourceAndExecutor(t *testing.T) 
 	canceledItems := ws.request(homeID, "recruiting.company.import.items", controlID,
 		map[string]any{"import_id": cancelImportID, "limit": 10})
 	canceledValues, _ := canceledItems["items"].([]any)
-	if len(canceledValues) != 4 {
+	if len(canceledValues) != 5 {
 		t.Fatalf("canceled item count=%v", canceledItems)
 	}
 	for index, value := range canceledValues {

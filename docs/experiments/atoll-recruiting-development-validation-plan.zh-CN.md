@@ -273,6 +273,8 @@ Work 查询现已分离面向人的 operational Work Center 与面向执行面�
 
 进展补充（2026-09-09，公司导入预览、应用与取消）：`recruiting.company.import` 已建立 Resource-backed 纵向切片。命令原子创建父 Work、`CompanyImport`、receipt/event/dispatch；同一 `recruiting-executor` class 以 `company.import` capability 读取 File Resource、校验原始 SHA-256 和 `company-import.v1` CSV，并以最多 500 项的 envelope 提交。控制面用 batch version、连续 chunk sequence、Attempt incarnation 和 Work acceptance 联合 fence，每个分片独立提交，最终不信任 Executor 自报摘要而从已存项目重算 preview hash。中断后按 item count/sequence 续传；预览成功只让父 Work 进入 `waiting_human(preview_ready)`，逐项审阅可用稳定游标分页。`recruiting.company.import.confirm` 以精确 preview hash/version 启动有界应用协调 Work；每项独立事务创建 Company、子 Work、outcome/event，数据库重复转人工而不回滚其他项；超过一页时同一 Work 持久重投，只续跑 outcome 为空的项，最后 item 已提交而页回执丢失时用空 finalizer offer 恢复汇总。`import.cancel` 先推进 batch fence 并取消旧协调 Work，使在途结果失效，再逐页、逐项取消未开始项。普通用户 Portal、真实 server/daemon、daemon File Resource、非 root MySQL 的 E2E 已覆盖两页 apply、命令重放、部分成功以及预览后取消；隔离 MySQL 另覆盖取消正在执行的批次及陈旧结果拒绝。等待人工项的修复与修复后重新汇总尚未实现。
 
+进展补充（2026-09-11，公司导入人工修复闭环，替代上一段末句）：公开 `recruiting.company.import.item.resolve` 以精确 Batch/Item version 处理已完成批次中的单个 `waiting_human` outcome。`retry` 只重试 immutable preview 中原本 ready 的项，要求运营员先用正常 Company 命令消除外部唯一键冲突；预览即不合法的项不能篡改原输入，只能明确 `skip`，字段纠正必须形成新 Resource/批次。Repository 在同一短事务内锁定 Batch、Item、子 Work 和父 Work，按动作写 Company、Item outcome、Work resolution、receipt/event，再从全部 Item 事实重新聚合；仍有异常时父 Work 不动，最后异常解决后才成功结案。非 root MySQL 8.4 合同验证未修复冲突全事务回滚、并发相同 resolve 一次提交/一次 replay、跳过后继续等待、最终重试后自动结案和原预览详情不变。真实 server/daemon E2E 由普通运营员先通过 `company.update` 释放网站唯一键，再公开 retry 冲突项、skip 无效源行，最终从 2 个等待项收敛到 3 成功/2 跳过/0 等待，输入 File Resource 字节始终不变；没有增加 Worker/Actor 类型。
+
 ### 开发顺序
 
 1. 查询：company/source/job/work/daily run/system/capacity；
@@ -470,7 +472,7 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 | ID | 场景 | 必须自动化的核心断言 |
 |---|---|---|
 | S01 | 单个公司新增 | command replay、业务去重、0/1/N Source |
-| S02 | 批量导入公司 | 文件 hash、重复行、部分失败、取消续跑 |
+| S02 | 批量导入公司 | 文件 hash、重复行、部分失败、取消续跑、人工 retry/skip、父级事实重聚合 |
 | S03 | Source Discovery | 候选证据、拒绝、generation、登录阻塞 |
 | S04 | 人工维护 Source | canonical key、草稿验证、原子发布/回滚 |
 | S05 | 首次全量 | 10K 分页、staging、崩溃恢复、阶段完成 |
