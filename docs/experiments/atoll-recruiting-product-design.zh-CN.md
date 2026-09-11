@@ -303,6 +303,10 @@ Scope cancel 与 Backfill 自身的通用 cancel coordinator 共享同一 `cance
 恢复必须先确认对应 pause operation 已达到可恢复终态。被冻结的历史 DailyRun/Occurrence 不逐日重开：旧日报保持 excluded/exception，系统只按当前配置和当前时间创建至多一个显式 catch-up occurrence；已有仍可安全继续的 manual/repair Work 按原因果身份恢复。Company 恢复时按 Source 游标分别判定，不能用一个大事务扇出全部 Source；Source 恢复不得影响同 Company 的其他 Source，且任何 pause/resume 都不移动 Incremental Checkpoint。
 - 产品不判断岗位下架，不因岗位从列表中消失而更新或删除已有岗位。
 - 移除 Source 实际执行可恢复归档：停止其后续调度，保留 Endpoint、Recipe Assignment、Checkpoint、岗位和运行历史。再次添加相同规范入口时优先提示恢复；恢复先验证身份、Recipe 和 Checkpoint 兼容性。
+
+公开 `source.add` 遇到同 Company 下由已归档 Source 占用的 `canonical_source_key` 时，不创建第二个 Source，也不把普通唯一键错误留给 UI 猜测；它返回可机读 `source_restore_required`，并在错误 detail 中给出保留的 Source ID/version 和 `source.restore` 下一步。该拒绝事务不保留新 Source、command receipt 或新增事件。仍为活动状态的重复入口继续返回普通业务键冲突，不能把两个活动 Source 错误合并。
+
+`source.restore` 把归档 Source 恢复为 `paused + repairing`，从最后一个 active Endpoint 复制新的验证 candidate，同时保留 Source ID、Company 归属、Assignment、Checkpoint、Job 和历史观测。恢复事务还创建一个使用归档后 execution fence 的 cancel-mode `ScopeControlOperation`，有界取消/收束归档前遗留 Work；只有该操作完成，后续 `source.resume` 才可逆转它。这里的 resume 只开放人工修复执行：readiness 仍为 `repairing`，所以 Source 仍不进入 DailyRun。操作者必须用保留的 Assignment version 启动真实 Source validation、提交 Attempt/Artifact 证据并发布新的 ContractAssessment；只有形成 `active + ready + verified contract` 后才重新具备每日调度资格。整个流程不重建、不移动也不倒退原 Incremental Checkpoint。
 - 公司“删除”默认是可恢复归档：停止公司及 Source 调度，保留审计和历史岗位。
 - 公司恢复进入 `paused`，经入口验证后再显式恢复调度。公司及子数据的物理删除属于 M5 独立合规操作，必须展示影响范围、执行权限/审批、保留期和删除结果；岗位下架或普通采集失败不得触发它。
 - 批量更新、删除和 Recipe 发布必须逐项记录结果，允许部分失败重试，不能只返回一个模糊的整体成功。

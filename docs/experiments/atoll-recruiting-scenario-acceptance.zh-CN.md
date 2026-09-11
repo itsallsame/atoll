@@ -28,7 +28,7 @@
 | S16 Source 暂停/恢复 | 完成 | 活动因果根、一次当前 production catch-up、Checkpoint 不前移、其他 Source 隔离、验证取消可重试、Company Backfill Source-only cancel、全执行类型 drain/cancel/config/result 和并发协调器合同；`TestSourceCancelIsolatesCompanyBackfillMembers`、`TestBackfillResultAndScopeCancelConvergeAtBothCommitCutpoints`、`recruiting-scope-execution-fences-20260912.json` | — |
 | S17 Source redirect/改归属 | 未完成 | Endpoint correction 能建立 candidate 并 fence 旧验证；Company logical merge 不改写 Source 归属 | redirect 谱系/cutover 已有部分事实，但没有显式 Source 改归属命令与兼容性验收 |
 | S18 Company 归档/合规删除 | 部分完成 | 逻辑 archive/restore 和归档后拒绝新增 Source | M5 合规硬删除流程、保留策略和联合 Resource 清理 |
-| S19 Source 归档/恢复 | 部分完成 | `TestSourceArchiveRestoreRequiresValidation`、公开 archive/restore E2E | 同 URL 新增时引导恢复的用户可见合同和完整重新校准旅程 |
+| S19 Source 归档/恢复 | 完成 | `TestSourceArchiveRestoreRequiresValidation`、`TestCreateSourceReturnsActionableRestoreForArchivedCanonicalIdentity`、`TestRecruitingArchivedSourceGuidesRestoreAndRequiresRecalibration`、`recruiting-source-restore-recalibration-20260912.json` | — |
 | S20 数据纠正与重算 | 完成 | `TestRecruitingOperatorCorrectsAndClearsJobWithoutRewritingCrawlFacts`、override CAS、S21 artifact recompute | — |
 | S21 历史回填 | 完成 | `TestRecruitingLiveDetailRecipeRepairThroughAtoll` 中两种 backfill、`recruiting-live-historical-backfill-20260911.json` | — |
 | S22 Recipe 批量升级 | 完成 | 20,000 Source 多 wave 合同、`TestRecruitingLiveDetailRecipeRolloutBatchThroughAtoll` | — |
@@ -38,7 +38,7 @@
 
 ## 当前实施顺序
 
-1. S17/S19：补 Source redirect/归属迁移和“相同 URL 应恢复而非新建”的公开交互。
+1. S17：补 Source redirect/归属迁移、谱系、cutover 和兼容性验收。
 2. S18：按独立 M5 合规流程设计保留、擦除、Resource 删除和证明，绝不把普通 archive 伪装成硬删除。
 3. S12/S25/P9：在授权部署环境完成真实登录、出站隔离、执行吞吐、联合恢复和长期监控。
 

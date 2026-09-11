@@ -1,0 +1,42 @@
+{
+  "version": "recruiting.source-restore-recalibration-evidence.v1",
+  "observed_at": "2026-09-12T05:07:29+08:00",
+  "scope": "S19 archived Source identity recovery and mandatory recalibration",
+  "implementation": {
+    "commit": "5e5083ed",
+    "core_modified": false,
+    "new_worker_types": 0,
+    "duplicate_identity": "source.add returns source_restore_required for an archived same-Company canonical_source_key",
+    "rejection_atomicity": "the rejected duplicate leaves no new Source, command receipt, or event",
+    "restore_state": "the retained Source becomes paused + repairing with its last active Endpoint staged as candidate",
+    "restore_projection": "restore atomically creates a cancel-mode ScopeControlOperation using the archived execution fence",
+    "repair_gate": "resume opens repair execution but repairing readiness continues to exclude the Source from DailyRun",
+    "recalibration": "a fresh Source validation Attempt and page/trace Artifacts must publish a new ContractAssessment before daily eligibility returns",
+    "history": "Source identity, Company ownership, Assignment, Incremental Checkpoint, Jobs, and accepted observations are retained"
+  },
+  "contract_observation": {
+    "canonicalization": "URL case, default port, trailing slash, and tracking query differences resolve to the retained canonical Source",
+    "actionable_error": "public error code is source_restore_required and detail names the retained Source and recruiting.source.restore",
+    "scope_safety": "resume is rejected until the restore pause projection completes; no bypass was added",
+    "daily_gate": "active + repairing is not daily eligible; active + ready with fresh verified assessment is eligible",
+    "checkpoint": "checkpoint version 1 and original baseline occurrence lineage remain unchanged",
+    "replay": "restore replay returns version 5 after validation later advances the live Source to version 8"
+  },
+  "verification": {
+    "database": "ephemeral MySQL 8.4",
+    "migration_identity": "staircase_migrator (non-root)",
+    "runtime_identity": "staircase_runtime (non-root, DML only)",
+    "targeted_store_test": "TestCreateSourceReturnsActionableRestoreForArchivedCanonicalIdentity",
+    "process_e2e": "TestRecruitingArchivedSourceGuidesRestoreAndRequiresRecalibration passed in 12.50s",
+    "full_store_suite": "pass with race in 231.477s",
+    "actor_suite": "pass with race in 3.740s",
+    "unit_and_vet": "pass for ./drivers/tools/recruiting/... and ./e2e",
+    "diff_check": "pass",
+    "core_boundary": "pass from a94d2b8d; no protocol/runtime/lib/platform/registry changes"
+  },
+  "acceptance": {
+    "scenario": "S19",
+    "status": "complete",
+    "remaining_production_gate": "none specific to S19; global S12/S25/P9 deployment gates remain"
+  }
+}
