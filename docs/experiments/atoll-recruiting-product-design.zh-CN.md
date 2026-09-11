@@ -283,6 +283,7 @@ DailyRun 本身不提供修改窗口、名单、期望数或终态摘要的通�
 - 公司恢复进入 `paused`，经入口验证后再显式恢复调度。公司及子数据的物理删除属于 M5 独立合规操作，必须展示影响范围、执行权限/审批、保留期和删除结果；岗位下架或普通采集失败不得触发它。
 - 批量更新、删除和 Recipe 发布必须逐项记录结果，允许部分失败重试，不能只返回一个模糊的整体成功。
 - 第一版公司合并只建立带生效区间的 canonical/alias 映射，不批量改写历史事实；拆分和 Source 改归属使用预览、二次确认及显式归属分配。入口身份改变时默认归档旧 Source、创建带 `supersedes/split_from` 谱系的新 Source。
+- `company.merge.preview` 同时承担合并和逻辑撤销预览：输入 canonical、1—500 个 alias 及全部 Company expected version，输出规范排序的成员、当时的 Source/Job/未终态 Work 影响计数、mapping version 和 `preview_hash`。`company.merge.confirm` 只接受精确 preview version/hash，并在一个短事务内重新锁定全部 Company 与 mapping version；合并追加新的 active alias 生效区间，撤销只关闭原区间，两者都不修改 Company/Source/Job、Assignment、Checkpoint 或历史日报。活动 alias 的 Source 不进入后续每日截点，`company.get` 明示 canonical 映射，并在事务内拒绝继续向 alias 新增 Source；撤销后才恢复新增和次日调度。已经截点或在途的 Work 继续按原冻结身份完成，避免把治理操作伪装成历史迁移。
 - 原始 `ListingObservation`、已验证详情版本和 `CuratedOverride` 分层保存。有效字段优先级为 `manual override > verified detail > listing observation`；人工覆盖可撤销或过期，后续抓取仍保存来源事实但不静默覆盖有效人工值。公开 `job.correct` 的 set/clear 命令同时使用 Job version 与当前 override-head identity/version 双重 CAS；每次变更追加不可变 override version，并把命令 receipt 和不含字段值的审计事件原子提交，绝不改写 Job、Observation 或 DetailVersion。`job.correction.get` 按 Job+field 返回当前 head 与有界历史，让其他会话无需数据库权限即可安全接续；撤销只移除人工优先级，底层最新 verified/listing 事实会重新生效。
 - 历史回填必须声明 `artifact_recompute|live_refetch`。后者只是重新访问当前网页，不得声称恢复历史快照；普通回填永不读取或推进日常 Incremental Checkpoint。
 

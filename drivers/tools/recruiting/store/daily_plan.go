@@ -166,6 +166,10 @@ JOIN recruiting_recipes r
 WHERE c.onboarding_status = 'ready' AND c.control_status = 'active'
   AND s.readiness_status = 'ready' AND s.control_status = 'active'
   AND s.health_status <> 'circuit_open'
+  AND NOT EXISTS (
+    SELECT 1 FROM recruiting_company_aliases ca
+    WHERE ca.alias_company_id = c.company_id AND ca.active_alias_key IS NOT NULL
+  )
 ORDER BY s.source_id`)
 	if err != nil {
 		return nil, fmt.Errorf("read cutoff source roster: %w", err)

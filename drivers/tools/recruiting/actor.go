@@ -160,6 +160,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 			continue
 		}
 		switch msg.Type {
+		case TypeCompanyMergePreview, TypeCompanyMergeConfirm:
+			handleCompanyMerge(sys, repository, msg)
 		case TypeCompanyImport, TypeCompanyImportGet, TypeCompanyImportItems, TypeCompanyImportConfirm, TypeCompanyImportCancel,
 			TypeCompanyImportItemResolve:
 			handleCompanyImport(sys, cfg, repository, msg)

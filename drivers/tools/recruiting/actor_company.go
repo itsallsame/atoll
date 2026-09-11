@@ -67,7 +67,16 @@ func handleCompanyMessage(sys actorbase.Sys, repository *store.Repository, msg a
 			failStoreError(sys, msg, err)
 			return
 		}
-		_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "company": company})
+		alias, isAlias, err := repository.GetActiveCompanyAlias(msg.Ctx(), company.CompanyID)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+		response := map[string]any{"contract_version": ContractVersion, "company": company, "is_alias": isAlias}
+		if isAlias {
+			response["canonical_company_id"], response["alias_mapping"] = alias.CanonicalCompanyID, alias
+		}
+		_, _ = sys.Reply(msg, response)
 	case TypeCompanyList:
 		var request PageRequest
 		if !decode(sys, msg, &request) {

@@ -1,0 +1,30 @@
+{
+  "evidence_version": "recruiting-evidence.v1",
+  "recorded_at": "2026-09-11T00:00:00Z",
+  "scope": "S14 first-phase reversible logical company merge",
+  "branch": "codex/atoll-recruiting",
+  "core_boundary_base": "a94d2b8d",
+  "claims": [
+    "preview freezes canonical and alias company versions, mapping versions, bounded impact counts, and a canonical hash",
+    "confirmation only appends or closes alias effective intervals and never rewrites Company, Source, Job, or frozen daily facts",
+    "an active alias is excluded from future daily cutoff rosters and cannot accept a new Source",
+    "reversal preserves mapping history and restores Source creation and future daily eligibility",
+    "ordinary-user commands replay byte-stably after a real Atoll Server restart"
+  ],
+  "verification": [
+    {
+      "command": "RECRUITING_MYSQL_TEST_RUN='^(TestCompanyMergeLogicalMappingContract|TestSourceCommandTransactionContract)$' scripts/recruiting-mysql-test.sh",
+      "result": "pass",
+      "environment": "ephemeral MySQL 8.4 with separate non-root staircase_migrator and staircase_runtime identities",
+      "observed_seconds": 5.512
+    },
+    {
+      "command": "go test ./e2e -run '^TestRecruitingOperatorLogicallyMergesAndReversesCompanies$' -count=1",
+      "result": "pass",
+      "environment": "real Atoll Server, ordinary human operator, Home Channel, Recruiting Actor, non-root MySQL",
+      "observed_seconds": 21.574
+    }
+  ],
+  "third_party_writes": false,
+  "atoll_core_modified": false
+}

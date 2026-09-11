@@ -17,6 +17,8 @@ func manifest() introspect.Manifest {
 	return introspect.Manifest{
 		Class: Class, Interfaces: []string{"actor", "recruiting-control"},
 		Words: map[string]introspect.WordSpec{
+			TypeCompanyMergePreview:            {Description: "preview a version-fenced reversible logical company merge or reversal without rewriting history"},
+			TypeCompanyMergeConfirm:            {Description: "confirm an exact logical company merge preview and activate or close alias intervals"},
 			TypeCompanyImport:                  {Description: "start a Resource-backed company import preview with immutable hash fencing"},
 			TypeCompanyImportGet:               {Description: "get one durable company import aggregate"},
 			TypeCompanyImportItems:             {Description: "seek-page company import preview items and dispositions"},

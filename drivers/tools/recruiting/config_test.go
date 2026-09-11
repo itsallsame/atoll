@@ -107,7 +107,7 @@ func TestManifestExposesControlAndExecutorResultWords(t *testing.T) {
 	for _, word := range []string{
 		TypeProbeStart, TypeProbeSchedule, TypeProbeStatus, TypeExecutionResult,
 		TypeCompanyImport, TypeCompanyImportGet, TypeCompanyImportItems, TypeCompanyImportConfirm, TypeCompanyImportCancel,
-		TypeCompanyImportItemResolve,
+		TypeCompanyImportItemResolve, TypeCompanyMergePreview, TypeCompanyMergeConfirm,
 		TypeCompanyAdd, TypeCompanyUpdate, TypeCompanyPause, TypeCompanyResume,
 		TypeCompanyArchive, TypeCompanyRestore, TypeCompanyGet, TypeCompanyList,
 		TypeSourceAdd, TypeSourceUpdate, TypeSourceValidate, TypeSourceValidationPublish, TypeSourceValidationReject, TypeSourcePause,

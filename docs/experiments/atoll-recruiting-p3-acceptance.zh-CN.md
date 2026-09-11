@@ -54,6 +54,7 @@
 - `recruiting.work.list` 已分成默认 `operational` 和显式/兼容 `runnable` 两个视图。operational 支持 Work Center 所需筛选、倒序 opaque cursor、Work 与 placement 同页返回且只读；runnable 保留携带 `due_at` 的旧调用。普通运营员 Portal 黑盒已按 Source、open 状态和 repair purpose 找到唯一 retry Work，并验证无关 Target 返回空集；
 - `recruiting.work.correct` 已从产品词表中的悬空词闭合为 manifest 可见的安全 placement 修正：只接受无活动 Attempt 的 open Work 和精确 version，可修改 priority、not-before、deadline、Profile，但不能修改 Target、purpose、business key、capability、origin 或领域输入；Work version 与 acceptance fence 同步提升，receipt/event 和新 capability wake 同事务提交。MySQL 合同验证活动 Attempt 时零副作用，普通用户 Server E2E 验证 create→correct→replay→pause→resume→cancel→retry。紧凑证据见 `evidence/recruiting-work-placement-correction-20260911.json`；
 - DailyRun 人工运维不允许通用 update 改写截点名单、窗口、分母或历史 summary。公开 `daily_run.occurrence.exclude` 只在冻结窗口内以 Run/Occurrence 双 version 把 planned 项记为 excluded，保留分母并原子保存 receipt/event；与 due materializer 的真实并发合同只产生 excluded 或 queued 两种一致结论。普通用户 Server E2E 在重启前后稳定重放，summary 保持 expected=1、excluded=1、uncovered=1，DailyRun version 不变且无 listing Work。紧凑证据见 `evidence/recruiting-daily-occurrence-exclusion-20260911.json`；
+- 公司逻辑合并/撤销已通过公开 `company.merge.preview/confirm` 闭环：普通用户审阅版本化影响快照和 hash，确认只追加或关闭 canonical/alias 生效区间，不搬迁历史 Source/Job。活动 alias 的后续 Source 新增明确拒绝、`company.get` 返回 canonical，下一日截点排除 alias；撤销后新增与调度恢复。真实 Server E2E 覆盖重启后确认重放、合并、阻断、撤销和历史归属不变；
 
 - `recruiting.run.diagnostic` 和 `recruiting.run.production` 已进入公开 manifest（本项替代上文“专用命令均未实现”的旧范围说明）：普通运营员以 Source expected version 创建独立 ListingRun 和 Work，命令可稳定重放；Executor Offer 携带冻结 Endpoint/Recipe/Checkpoint 与 run mode，仍走统一 accept/start、预算和分类失败路径。diagnostic 成功结果只接受有界 page/trace Artifact 与质量摘要，并原子完成 Attempt/Work/ListingRun、释放 Permit、写 receipt/event/dispatch，MySQL 合同断言 Job、ListingObservation 和 Checkpoint 为零变化。production 额外要求 Source 具备已验证增量契约和已有基线，只在完整质量证明后写入岗位事实并 CAS 推进 Checkpoint；并发日常运行先推进水位时 completion 被 fence，不能完成 Work/ListingRun 或覆盖新水位。两种模式的终态非成功重试都会原子把 ListingRun 重绑到新因果 Work；
 
@@ -82,10 +83,7 @@ ATOLL_RECRUITING_LIVE_E2E=1 go test ./e2e -run '^TestRecruitingLiveDetailRecipeR
 
 ## 尚未完成
 
-- Work resolve 的真实 `waiting_human` 旅程依赖后续 Attempt/repair 切片；Source validate 当前只进入 `validating`，验证 Attempt 的接受、契约证明和原子发布仍属于后续纵向切片；
-- 日报关闭后的 recovered 补偿已实现并完成真实站点纵向验收：普通用户为 immutable exception occurrence 创建唯一 production recovery，统一 Executor 以 `frontier_keys` 重新读取 AcuityMD 公开 Greenhouse board 并成功推进 Checkpoint；历史 DailyRun/Occurrence 逐字段不变，`uncovered=1` 保持、`recovered=1` 独立追加，唯一 `daily_occurrence.recovered` 事件与结果事务同提交；
 - 分类失败已有版本化、有界退避并能转 `waiting_human`；按 origin/Recipe/Profile/single-target 故障域创建活动单飞 RepairIncident，普通用户可用成功 canary 证据验证、结案并以每批至多 100 条恢复，初始 wake 按 capability 聚合且 offer 仍经过原预算。站点级策略覆盖参数和自动续批协调仍待实现。主动 incarnation 失效信号当前仅按无进展超时恢复；正常 dispatch→Executor→result→ack、“Work/dispatch 已提交、首次投递前 server 退出”及 completion acknowledgement 丢失均已通过真实进程与真实网站，仍需 Executor 处理中退出和业务结果 acknowledgement 丢失等切点；execution offer 和高频 page 是否写 ledger/outbox 的审计分层仍待按容量测试确定（accept/start/fail/result 的数据库 receipt 已完成）；
-- 批量导入 preview、confirm、逐公司独立 Work/outcome、部分失败、多页续跑、末项已提交但 finalizer 丢失恢复、整批有界取消，以及等待人工项的 retry/skip 和父级事实重聚合均已完成；
 - `recruiting_recovery_test.go` 的完整重启、重复 ledger delivery 与日报恢复路径。
 
 P3 仍为进行中，Company/Source/Work 纵向切片不能替代完整退出门。

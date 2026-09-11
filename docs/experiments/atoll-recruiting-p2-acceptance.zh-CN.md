@@ -14,6 +14,7 @@ P1 契约基线：`a94d2b8d`
 - DSN 必须显式数据库和非 root 用户，adapter 强制 UTC、关闭 multi-statements，并设置有界连接池；
 - Company Repository 已实现 create/get、规范官网并发唯一约束、`updated_at + company_id` seek pagination 和单版本 CAS；
 - Source Repository 已实现 create/get、按 Company 或全局 seek pagination 和单版本 CAS；追加 migration `000002` 建立 `(company_id, updated_at, source_id)` 索引，游标绑定 Company selector，不能跨公司复用；
+- migration `000035` 与 Company merge Repository 已实现可逆的 canonical/alias 生效区间。预览冻结 Company/mapping version、规范成员顺序与影响计数，确认重锁并校验 exact preview hash；合并/撤销都不改写 Company、Source、Job 或历史日报。活动 alias 由唯一键保证单 canonical，次日日切排除，Source 新增在事务内拒绝，撤销后恢复；非 root MySQL 合同覆盖稳定重放、陈旧 Company fence、历史归属不变和合并前后名单变化；
 - 两个并发 Company 更新验证只有一个成功、另一个得到明确 VersionConflict；
 - Company 修改命令把聚合 CAS、逐字节稳定 response receipt 和领域 event outbox 放在同一事务；相同 command ID 并发重放只生效一次，不同 request hash 被拒绝；
 - Source add/update/validate/pause/resume/archive/restore 同样把聚合 CAS、稳定 response receipt 和 outbox 放在单一短事务；创建时在事务内锁定所属 Company 并拒绝 archived 状态，消除 Actor 预检与插入之间的竞态；已提交命令仍在 Company 后续归档后稳定重放；

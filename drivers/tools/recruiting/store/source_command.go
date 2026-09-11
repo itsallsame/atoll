@@ -53,6 +53,17 @@ WHERE company_id = ? FOR SHARE`, source.CompanyID).Scan(&companyControl); errors
 	if companyControl == model.ControlArchived {
 		return CommandResult{}, &model.InvalidTransitionError{Entity: "company", From: string(companyControl), Action: "add source"}
 	}
+	var canonicalCompanyID string
+	err = tx.QueryRowContext(ctx, `
+SELECT canonical_company_id FROM recruiting_company_aliases
+WHERE alias_company_id = ? AND active_alias_key = ?`, source.CompanyID, source.CompanyID).Scan(&canonicalCompanyID)
+	if err == nil {
+		return CommandResult{}, fmt.Errorf("%w: company %s is an alias of %s; add the Source to the canonical company",
+			ErrBusinessKeyExists, source.CompanyID, canonicalCompanyID)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return CommandResult{}, fmt.Errorf("inspect source company alias mapping: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO recruiting_command_receipts(command_id, word_name, request_hash, response_bytes, committed_at)
 VALUES (?, ?, ?, ?, ?)`, receipt.CommandID, receipt.Word, receipt.RequestHash, []byte(receipt.Response), businessAt.UTC()); err != nil {

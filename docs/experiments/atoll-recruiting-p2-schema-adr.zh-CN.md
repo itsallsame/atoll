@@ -102,6 +102,8 @@ migration 30 为 Recipe 批量灰度增加 `recruiting_recipe_rollout_batches` �
 
 migration 32 为成员增加应用时间、验证 Work/run 和验证完成时间的规范化证据列；migration 33 追加 `apply_requested_at`，形成可在进程退出后复用同一业务时间和命令 hash 的 `pending → applying → awaiting_validation` saga。成员 JSON 仍保存完整状态机，列投影只用于有界协调查询与外部事实关联。Listing 预览额外冻结切换前已验证的 Endpoint revision、`update_retop`、Checkpoint strategy/overlap 和 assessment version；运行时字段不进入 preview hash。成员 CAS 总是先锁父批次，再锁成员与 Source/Assignment，只有数据库中的 Assignment 已精确指向目标 Recipe、Source/Assignment 版本和生效时间一致时，才允许结束 applying。已经切换后验证失败的重试保持 applied fence，只重建验证，不重复产生 Assignment version；部分成员已经切换的批次不能用普通 cancel 遗留半发布状态，必须进入后续显式回滚流程。
 
+migration 35 为公司去重增加 `recruiting_company_merge_previews` 与 append-only `recruiting_company_aliases`。预览冻结 canonical/alias Company version、每个 alias 的最新 mapping version 和人可见影响计数；确认以 preview version/hash 重锁 Company 与 mapping，活动别名使用可空唯一 `active_alias_key` 保证每个 alias 至多一个当前 canonical。撤销将活动键置空、填写 `effective_until` 并外键记录 `ended_by_merge_preview_id`，不删除历史区间；再次合并追加更高 mapping version。每日截点用活动键反连接排除 alias，已固化 occurrence 不回写；Source 创建与 merge confirmation 竞争同一 Company 行锁，并在插入前反查活动 alias，避免“命令成功但永不调度”的悬挂 Source。
+
 ## migration 与权限
 
 - migration 从空 schema 开始，不识别、不导入也不删除 Staircase 旧表；
