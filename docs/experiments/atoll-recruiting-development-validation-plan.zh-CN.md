@@ -503,6 +503,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 逐场景当前状态、权威测试映射和缺口统一维护在 `docs/experiments/atoll-recruiting-scenario-acceptance.zh-CN.md`。截至 2026-09-12，S15、S17 尚未完成，S12、S13、S16、S18、S19、S25 部分完成，因此 P8/P9 与整体产品均不得宣称完成。
 
+S15/S16 实现契约已在产品设计冻结：使用 Company/Source 的配置版本、控制 epoch、cancel execution fence，以及扩展内部有界 `ScopeControlOperation`；Work 保存不可变调度归属，既有 Recruiting reconcile 每轮最多处理 500 项。`drain`、`finish_causal_chain`、`cancel` 分别表示当前 Work 结算后冻结、仅有限活动根的因果后代继续、立即拒绝旧结果并有界取消。恢复只产生一次当前 catch-up，不补造暂停期间的逐日日报。当前代码尚未接入这些事实，本段是下一实现切片的验收输入，不代表 S15/S16 已完成。
+
 | ID | 场景 | 必须自动化的核心断言 |
 |---|---|---|
 | S01 | 单个公司新增 | command replay、业务去重、0/1/N Source |

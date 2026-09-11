@@ -279,6 +279,16 @@ DailyRun 本身不提供修改窗口、名单、期望数或终态摘要的通�
 - 公司或 Source 更新采用版本化修改；正在运行的 Attempt 固定其接受时配置。Company 的名称或普通元数据更新不使采集结果失效；官网变更只派生 Source 关系复核，不能自动替换仍然有效的生产入口。
 - Company/Source 分别维护正交的 `control_status`、`readiness_status` 和健康/熔断事实。用户暂停、配置未验证和站点故障不能共用一个状态。
 - 暂停命令必须给出 `pause_mode=drain|finish_causal_chain|cancel`。默认 `drain`：不创建新的自动 Work、冻结未开始 Work、允许已发出的外部请求结束；是否接受结果按命令产生的版本栅栏决定。恢复默认只创建一次 catch-up，不按暂停天数补造每日 Work；超过扫描预算时转校准或人工处理。
+
+暂停不能只把 mode 写进 Company/Source JSON，也不能在用户事务里无界扫描全部历史 Work。实现必须拆开三种单调事实：实体 `version` 只负责命令 CAS；`configuration_version` 只在官网、Endpoint、Assignment、Profile 等会改变执行输入的配置变化时推进；`control_epoch` 在 pause/resume/archive 时推进并阻止新领取。Attempt 同时冻结配置版本和自身 Work acceptance fence，普通 drain/resume 不篡改不可变 Offer，也不把纯控制变化伪装成配置漂移；`cancel` 另推进 scope execution fence，使旧 Attempt 的结果只能保存为 rejected Artifact。
+
+每次 Company/Source pause 创建一个扩展内部的 `ScopeControlOperation`，和实体状态、命令 receipt、审计事件在同一短事务提交。Work 在创建时保存不可变 `company_id/source_id` 调度归属并建立状态前导索引；现有 Recruiting reconcile 按 `(scope,status,work_id)` 游标每轮最多处理 500 项，操作状态和计数可恢复、可重放，不增加 Pause Actor/Worker。三种 mode 的执行语义是：
+
+- `drain`：立即禁止新 Attempt；pause 前已经开始的 Attempt 可按原配置/Work fence 结算当前 Work，结算产生的后续 Work 保留但冻结，直到恢复或人工处置；
+- `finish_causal_chain`：pause 事务只登记当时活动 Attempt 对应的有限根 Work，后续 Work 必须继承相同 operation/root 身份；只有这些根及其因果后代可在 paused scope 内继续领取，不能把 pause 前所有 backlog 当作“当前链”；
+- `cancel`：scope execution fence 立即拒绝所有旧结果；reconcile 再有界地取消未终态 Work、过期活动 Attempt、释放 Permit，并为已固化的 SourceOccurrence 写明确异常结论，全部收口后 operation 才完成。
+
+恢复必须先确认对应 pause operation 已达到可恢复终态。被冻结的历史 DailyRun/Occurrence 不逐日重开：旧日报保持 excluded/exception，系统只按当前配置和当前时间创建至多一个显式 catch-up occurrence；已有仍可安全继续的 manual/repair Work 按原因果身份恢复。Company 恢复时按 Source 游标分别判定，不能用一个大事务扇出全部 Source；Source 恢复不得影响同 Company 的其他 Source，且任何 pause/resume 都不移动 Incremental Checkpoint。
 - 产品不判断岗位下架，不因岗位从列表中消失而更新或删除已有岗位。
 - 移除 Source 实际执行可恢复归档：停止其后续调度，保留 Endpoint、Recipe Assignment、Checkpoint、岗位和运行历史。再次添加相同规范入口时优先提示恢复；恢复先验证身份、Recipe 和 Checkpoint 兼容性。
 - 公司“删除”默认是可恢复归档：停止公司及 Source 调度，保留审计和历史岗位。
