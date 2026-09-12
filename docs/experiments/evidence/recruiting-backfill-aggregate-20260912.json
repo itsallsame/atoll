@@ -1,0 +1,85 @@
+{
+  "schema": "recruiting.backfill-aggregate-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "11dc73e1",
+  "feature_under_test": "monotonic Backfill aggregate advancement on the successful result path",
+  "implementation": {
+    "before": "every successful item result scanned every item in its Backfill with four SUM predicates while holding the parent row lock",
+    "after": "the transaction advances succeeded_items by one from the already locked Backfill state; failure, accepted-gap, cancellation, and repair paths retain factual reconciliation",
+    "complexity_change": "successful completion aggregation changes from O(n^2) total item visits per Backfill to O(n)",
+    "serialization_fence": "loadBackfillOfferFence selects the parent Backfill and queued item FOR UPDATE before the item transition",
+    "replay_fence": "the durable command receipt is checked before item and aggregate mutation",
+    "attempt_artifact_permit_semantics_changed": false,
+    "atoll_core_modified": false
+  },
+  "verification": {
+    "mysql_contract": "TestBackfillPreviewFreezesHistoricalVersionsAndLeavesCheckpointUntouched",
+    "mysql_contract_assertions": [
+      "two distinct queued items each advance the aggregate once",
+      "replaying each accepted result does not advance the aggregate again",
+      "the completed parent aggregate equals factual item-status counts",
+      "parent Work completes and the current Job remains unchanged"
+    ],
+    "full_non_root_mysql_store_race_seconds": 232.359,
+    "full_non_root_mysql_actor_race_seconds": 3.214,
+    "package_race_passed": true,
+    "go_vet_passed": true,
+    "security_audit_passed": true,
+    "core_boundary_from_a94d2b8d_passed": true,
+    "http_h0_real_process_passed": true,
+    "http_h2_run": {
+      "items_succeeded": 1000,
+      "response_bytes": 16384000,
+      "completion_ms": 72079,
+      "outbox_drain_ms": 74002,
+      "restart_recovery_ms": 3436,
+      "ledger_messages": 1635,
+      "ledger_events": 1071,
+      "recruiting_ledger_events": 1062
+    },
+    "http_h3_run": {
+      "items_succeeded": 5000,
+      "response_bytes": 20480000,
+      "completion_ms": 469316,
+      "outbox_drain_ms": 474986,
+      "restart_recovery_ms": 3382,
+      "ledger_messages": 7696,
+      "ledger_events": 5276,
+      "recruiting_ledger_events": 5267,
+      "offer_to_accept_ms": {"p50": 7776, "p95": 13469, "p99": 15776, "max": 16733},
+      "start_to_terminal_ms": {"p50": 5859, "p95": 8236, "p99": 9154, "max": 9749},
+      "terminal_to_next_offer_ms": {"p50": 7869, "p95": 13199, "p99": 15004, "max": 15268}
+    }
+  },
+  "capacity_assessment": {
+    "prior_h2_completion_ms": 72620,
+    "optimized_h2_completion_ms": 72079,
+    "optimized_h2_responses_per_second": 13.87,
+    "h2_completion_improvement_percent": 0.75,
+    "h2_remaining_gap_to_400k_in_8h_percent": 0.11,
+    "prior_h3_completion_ms": 474554,
+    "optimized_h3_completion_ms": 469316,
+    "optimized_h3_responses_per_second": 10.65,
+    "h3_completion_improvement_percent": 1.10,
+    "detail_400k_projected_hours_at_optimized_h3_rate": 10.43,
+    "h3_remaining_gap_to_400k_in_8h_percent": 23.29,
+    "interpretation": "the change removes data-size-dependent aggregate work and is retained for asymptotic safety, but the measured single-host throughput gain is small and does not close the production capacity gate"
+  },
+  "known_repository_gate": {
+    "make_lint_status": "fails on a pre-existing web/societyconsole to drivers/tools/society/model dependency that is unchanged from a94d2b8d",
+    "branch_added_layer_violations": 0,
+    "remediation_in_this_branch": "the Recruiting Extension Bridge Go package was moved from the unregistered top-level tools directory into drivers/tools/recruiting/extensionbridge without changing the Atoll layer allowlist"
+  },
+  "non_claims": [
+    "production throughput readiness",
+    "daily Detail result-path acceleration because the measured workload is live-refetch Backfill",
+    "third-party or remote Artifact performance",
+    "full 20K Listing plus 400K Detail execution",
+    "long-window SLO"
+  ],
+  "acceptance": {
+    "scenario": "S25",
+    "status": "partial",
+    "reason": "the O(n^2) aggregate scan is removed, but optimized H3 remains 23.29 percent below the arithmetic 8-hour reference"
+  }
+}

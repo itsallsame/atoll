@@ -234,7 +234,15 @@ WHERE artifact_kind = 'trace' AND attempt_id LIKE 'backfill-attempt-%' AND rejec
 	completedHistorical, _ := repository.GetBackfill(ctx, historical.BackfillID)
 	completedHistoricalWork, _ := repository.GetWork(ctx, historical.WorkID)
 	jobAfterBackfill, _ := repository.GetJob(ctx, job.JobID)
+	var actualSucceeded, actualGaps, actualFailed, actualCanceled uint64
+	if err := db.QueryRowContext(ctx, `SELECT SUM(item_status = 'succeeded'), SUM(item_status = 'accepted_gap'),
+SUM(item_status = 'failed'), SUM(item_status = 'canceled') FROM recruiting_backfill_items WHERE backfill_id = ?`,
+		historical.BackfillID).Scan(&actualSucceeded, &actualGaps, &actualFailed, &actualCanceled); err != nil {
+		t.Fatal(err)
+	}
 	if completedHistorical.Status != model.BackfillCompleted || completedHistorical.SucceededItems != 2 ||
+		completedHistorical.SucceededItems != actualSucceeded || completedHistorical.AcceptedGapItems != actualGaps ||
+		completedHistorical.FailedItems != actualFailed || completedHistorical.CanceledItems != actualCanceled ||
 		completedHistoricalWork.Status != model.WorkCompleted || jobAfterBackfill != jobBeforeBackfill {
 		t.Fatalf("historical completion changed current Job or failed aggregation: backfill=%+v work=%+v before=%+v after=%+v",
 			completedHistorical, completedHistoricalWork, jobBeforeBackfill, jobAfterBackfill)

@@ -164,13 +164,13 @@ func (r *Repository) acceptBackfillResultTransaction(ctx context.Context,
 		return BackfillResultOutcome{}, nil, err
 	}
 
-	var succeeded, gaps, failed, canceled uint64
-	if err := tx.QueryRowContext(ctx, `SELECT SUM(item_status = 'succeeded'), SUM(item_status = 'accepted_gap'),
-SUM(item_status = 'failed'), SUM(item_status = 'canceled') FROM recruiting_backfill_items WHERE backfill_id = ?`,
-		offerInput.Backfill.BackfillID).Scan(&succeeded, &gaps, &failed, &canceled); err != nil {
-		return BackfillResultOutcome{}, nil, err
-	}
-	nextBackfill, err := offerInput.Backfill.ReconcileCounts(offerInput.Backfill.Version, succeeded, gaps, failed, canceled)
+	// loadBackfillOfferFence locks the Backfill row before the queued Item is
+	// changed. A successful result transitions exactly that Item once, so the
+	// normal high-volume path can advance the locked aggregate monotonically
+	// instead of rescanning every member after every completion (O(n^2)).
+	nextBackfill, err := offerInput.Backfill.ReconcileCounts(offerInput.Backfill.Version,
+		offerInput.Backfill.SucceededItems+1, offerInput.Backfill.AcceptedGapItems,
+		offerInput.Backfill.FailedItems, offerInput.Backfill.CanceledItems)
 	if err != nil {
 		return BackfillResultOutcome{}, err, nil
 	}
