@@ -998,7 +998,7 @@ Recruiting Actor 只做短时、确定性的校验与领域事务，不在 Actor
 
 Recruiting Actor 的恢复 handler 检查长期无进展 Work/Attempt、已上传但未接受的 Artifact、状态投影差异、失效 incarnation、废弃 Recipe 引用和长期未进入 ledger 的事件意图。只有出现独立权限、生命周期或故障边界后才拆 Reconciler Actor。
 
-失效 incarnation 对账复用同一个 durable reconcile timer。Actor 启动时从活动 Attempt 有界恢复需要观测的 concrete Executor ID，之后只跟踪实际成功领取过 Work 的成员；每 tick 调用 Atoll 公共成员查询，按排序游标公平轮转，数据库 sweep 数和 Attempt 回收数都受 `attempt_recovery_limit` 约束。回收、Permit 释放、running Work 转 `waiting_retry`、`attempt.expired` 事件和对应 dispatch 提前到期在短事务内完成。Actor 状态丢失或成员查询失败不会误判执行权，只退化到原有 stale timeout。
+失效 incarnation 对账复用同一个 durable reconcile timer。Actor 启动时从活动 Attempt 有界恢复需要观测的 concrete Executor ID，之后只跟踪实际成功领取过 Work 的成员；每 tick 调用 Atoll 公共成员查询，按排序游标公平轮转，数据库 sweep 数和 Attempt 回收数都受 `attempt_recovery_limit` 约束。回收、Permit 释放、running Work 转 `waiting_retry` 和 `attempt.expired` 事件在短事务内完成。Attempt 还必须冻结产生它的 dispatch identity：同一 Executor incarnation 上重交付原 wake 只会幂等重放已经失效的 Offer，不能作为重试；因此 TTL 回收必须原子收口旧 wake，并创建不同 identity 的 `attempt_recovered` dispatch，让下一次领取产生新 Attempt。incarnation 已更换的旧数据可利用新 incarnation 改变 Offer replay key，但不能依赖内存状态。Actor 状态丢失或成员查询失败不会误判执行权，只退化到原有 stale timeout。
 
 首次全量的大批量结果先按 generation 分块写 staging，最终用一次 fencing finalize 使其可见；Detail Work 使用可重放意图逐步补齐。批量导入、纠正和发布采用父 Work 加逐项结果，默认不要求跨所有 Target 的大事务。
 

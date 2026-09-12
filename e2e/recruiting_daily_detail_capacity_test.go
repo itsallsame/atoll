@@ -39,18 +39,28 @@ func TestRecruitingScheduledDailyDetailCapacityThroughRealDataPlanes(t *testing.
 	if os.Getenv("ATOLL_RECRUITING_DAILY_DETAIL_FAILURE_MATRIX") == "1" {
 		t.Skip("capacity case is disabled during the failure-matrix run")
 	}
-	runRecruitingScheduledDailyDetail(t, false)
+	runRecruitingScheduledDailyDetail(t, false, false)
 }
 
 func TestRecruitingScheduledDailyDetailFailureMatrixThroughRealDataPlanes(t *testing.T) {
 	if os.Getenv("ATOLL_RECRUITING_DAILY_DETAIL_FAILURE_MATRIX") != "1" {
 		t.Skip("set ATOLL_RECRUITING_DAILY_DETAIL_FAILURE_MATRIX=1 through the isolated failure-matrix runner")
 	}
-	runRecruitingScheduledDailyDetail(t, true)
+	runRecruitingScheduledDailyDetail(t, true, false)
 }
 
-func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix bool) {
+func TestRecruitingScheduledDailyArtifactProviderRecoveryThroughRealDataPlanes(t *testing.T) {
+	if os.Getenv("ATOLL_RECRUITING_DAILY_ARTIFACT_RECOVERY") != "1" {
+		t.Skip("set ATOLL_RECRUITING_DAILY_ARTIFACT_RECOVERY=1 through the isolated Artifact recovery runner")
+	}
+	runRecruitingScheduledDailyDetail(t, false, true)
+}
+
+func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix, artifactRecovery bool) {
 	input := dailyDetailCapacityFromEnv(t)
+	if artifactRecovery && input.timeout > 60*time.Second {
+		input.timeout = 60 * time.Second
+	}
 	testStarted := time.Now()
 	h := newHarnessShell(t)
 	runtimeDSN := startRecruitingMySQL(t)
@@ -74,6 +84,24 @@ func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix bool) {
 		"--server", fmt.Sprintf("ws://127.0.0.1:%d/compute", h.port), "--key", stringField(t, device, "key"),
 		"--name", deviceName, "--home", filepath.Join(h.root, "daily-detail-capacity-daemon"),
 	}, h.env, filepath.Join(h.root, "work"), daemonLog)
+	artifactDeviceName := deviceName
+	var artifactDeviceKey, artifactDaemonHome, artifactDaemonLog string
+	var artifactDaemon *proc
+	if artifactRecovery {
+		artifactDeviceName = "daily-detail-artifact-provider"
+		artifactDevice := registrarRequest(t, ws, homeID, systemActor, "system.device.create",
+			map[string]any{"name": artifactDeviceName})
+		attachDevice(t, ws, homeID, stringField(t, artifactDevice, "id"))
+		artifactDeviceKey = stringField(t, artifactDevice, "key")
+		artifactDaemonHome = filepath.Join(h.root, "daily-detail-artifact-provider")
+		artifactDaemonLog = filepath.Join(h.root, "logs", "daily-detail-artifact-provider.log")
+		artifactDaemon = startProc(t, "daily-detail-artifact-provider", filepath.Join(e2eBinDir, "atoll-daemon"), []string{
+			"--server", fmt.Sprintf("ws://127.0.0.1:%d/compute", h.port), "--key", artifactDeviceKey,
+			"--name", artifactDeviceName, "--home", artifactDaemonHome,
+		}, h.env, filepath.Join(h.root, "work"), artifactDaemonLog)
+		waitArtifactProviderReady(t, operator, ws, h.base, homeID, qualifiedChannel, artifactDeviceName,
+			"before-outage", artifactDaemon, artifactDaemonLog)
+	}
 
 	listingSpec := dailyDetailListingRecipe(input.items)
 	detailSpec := responseCapacityRecipe(false, input.payloadBytes)
@@ -101,12 +129,17 @@ func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix bool) {
 		})
 	}
 	const controlName = "daily-detail-capacity-control"
+	attemptStaleAfterMS := 900_000
+	if artifactRecovery {
+		attemptStaleAfterMS = 30_000
+	}
 	registrarRequest(t, ws, homeID, systemActor, "system.actor.template.create", map[string]any{
 		"id": controlName, "name": controlName, "class": "recruiting",
 		"description": "Scheduled daily Listing and Detail capacity control.",
 		"config": map[string]any{
 			"executor_id": "tool:daily-detail-capacity-executor-00", "executors": executorTargets,
-			"reconcile_interval_ms": 200, "daily_schedule_enabled": true, "daily_schedule_timezone": "UTC",
+			"reconcile_interval_ms": 200, "attempt_stale_after_ms": attemptStaleAfterMS,
+			"daily_schedule_enabled": true, "daily_schedule_timezone": "UTC",
 			"daily_cutoff_local": cutoff.Format("15:04:05"), "daily_window_duration_minutes": int(dailyWindow / time.Minute),
 			"daily_schedule_policy_version": policyVersion, "budget_max_active": input.items + 100,
 			"budget_max_per_capability": input.items + 100, "budget_max_per_origin": input.items + 100,
@@ -129,7 +162,7 @@ func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix bool) {
 			"description": "Scheduled daily HTTP capacity Executor.",
 			"config": map[string]any{
 				"capability": "http.fetch", "execution_enabled": true, "control_actor_id": "tool:" + controlName,
-				"control_wait_ms": 30000, "artifact_device_name": deviceName, "artifact_channel_name": qualifiedChannel,
+				"control_wait_ms": 30000, "artifact_device_name": artifactDeviceName, "artifact_channel_name": qualifiedChannel,
 				"artifact_directory": "daily-detail-capacity-responses", "artifact_access_scope": "operators",
 				"artifact_retention": "7d", "artifact_redaction": "raw", "artifact_max_bytes": 2 << 20,
 				"terms_policy_version": 1, "terms_reviewed_at": "2026-09-12T00:00:00Z",
@@ -149,12 +182,36 @@ func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix bool) {
 	// ticket acknowledgements while thousands of domain events arrive.
 	discardCapacityFeed(ws)
 
+	failedArtifactAttemptID := ""
+	artifactOutageDuration := time.Duration(0)
+	if artifactRecovery {
+		failedArtifactAttemptID = waitArtifactExecutionAtProviderCut(t, runtimeDSN, sourceID, input.origin, input.timeout,
+			daemon, artifactDaemon, h.server, daemonLog, artifactDaemonLog, h.server.logPath)
+		outageStarted := time.Now()
+		artifactDaemon.kill9(t)
+		waitArtifactAttemptExpiredWithoutAcceptedEvidence(t, runtimeDSN, failedArtifactAttemptID, input.timeout,
+			daemon, h.server, daemonLog, h.server.logPath)
+		artifactDaemon = startProc(t, "daily-detail-artifact-provider-recovered", filepath.Join(e2eBinDir, "atoll-daemon"), []string{
+			"--server", fmt.Sprintf("ws://127.0.0.1:%d/compute", h.port), "--key", artifactDeviceKey,
+			"--name", artifactDeviceName, "--home", artifactDaemonHome,
+		}, h.env, filepath.Join(h.root, "work"), artifactDaemonLog)
+		waitArtifactProviderReady(t, operator, ws, h.base, homeID, qualifiedChannel, artifactDeviceName,
+			"after-recovery", artifactDaemon, artifactDaemonLog)
+		artifactOutageDuration = time.Since(outageStarted)
+	}
+
 	expectedSucceeded, expectedWaitingHuman, expectedJobRequests, expectedAttempts := input.items, 0, input.items, input.items+1
+	expectedFailedAttempts, expectedExpiredAttempts := 0, 0
 	expectedRunStatus := model.DailyRunCompleted
 	if failureMatrix {
 		expectedSucceeded, expectedWaitingHuman = input.items-1, 1
 		expectedJobRequests, expectedAttempts = input.items+2, input.items+3
+		expectedFailedAttempts = 3
 		expectedRunStatus = model.DailyRunCompletedWithExceptions
+	}
+	if artifactRecovery {
+		expectedAttempts++
+		expectedExpiredAttempts = 1
 	}
 	executionStarted := time.Now()
 	dailyRunID, occurrenceID := waitDailyDetailCapacity(t, runtimeDSN, sourceID, input.items,
@@ -171,15 +228,24 @@ func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix bool) {
 	drainedDuration := time.Since(executionStarted)
 
 	assertDailyDetailCapacityFacts(t, db, sourceID, dailyRunID, occurrenceID, input,
-		expectedSucceeded, expectedWaitingHuman, expectedAttempts, failureMatrix)
+		expectedSucceeded, expectedWaitingHuman, expectedAttempts, expectedFailedAttempts,
+		expectedExpiredAttempts, failureMatrix)
+	if artifactRecovery {
+		assertDailyArtifactProviderRecoveryFacts(t, db, failedArtifactAttemptID)
+	}
 	firstResponseAddress, totalResponseBytes := verifyDailyDetailResponseResources(t, db, operator, ws, h.base,
 		homeID, input, expectedSucceeded)
 	metrics := readDailyDetailOriginMetrics(t, input.origin)
 	wantPages := (input.items + 499) / 500
+	wantListingItems := input.items
+	if artifactRecovery {
+		wantPages++
+		wantListingItems *= 2
+	}
 	if metrics.JobRequests != uint64(expectedJobRequests) || metrics.ListingRequests != uint64(wantPages) ||
-		metrics.ListingItems != uint64(input.items) {
+		metrics.ListingItems != uint64(wantListingItems) {
 		t.Fatalf("controlled origin metrics=%+v want jobs=%d listing requests=%d items=%d",
-			metrics, expectedJobRequests, wantPages, input.items)
+			metrics, expectedJobRequests, wantPages, wantListingItems)
 	}
 	if failureMatrix && (metrics.Injected503 != 1 || metrics.Injected429 != 1 || metrics.Injected403 != 1) {
 		t.Fatalf("controlled origin did not inject the exact failure matrix: %+v", metrics)
@@ -225,6 +291,10 @@ WHERE aggregate_type = 'daily_run' AND aggregate_id = ? AND event_kind = 'daily_
 	for _, executorID := range executorIDs {
 		waitActorPresenceInChannel(t, recovered, homeID, executorID, daemon, daemonLog)
 	}
+	if artifactRecovery {
+		waitArtifactProviderReady(t, recoveredOperator, recovered, h.base, homeID, qualifiedChannel,
+			artifactDeviceName, "after-server-restart", artifactDaemon, artifactDaemonLog)
+	}
 	summary := recovered.request(homeID, "recruiting.daily_run.summary", controlID,
 		map[string]any{"id": dailyRunID, "limit": 10})
 	if nestedStringField(t, summary, "daily_run", "daily_run_status") != string(expectedRunStatus) {
@@ -235,8 +305,8 @@ WHERE aggregate_type = 'daily_run' AND aggregate_id = ? AND event_kind = 'daily_
 	}
 	restartDuration := time.Since(restartStarted)
 
-	t.Logf("daily Detail journey passed: failure_matrix=%t items=%d succeeded=%d waiting_human=%d payload_bytes=%d executors=%d response_bytes=%d complete_ms=%d drain_ms=%d restart_ms=%d listing_requests=%d detail_requests=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
-		failureMatrix, input.items, expectedSucceeded, expectedWaitingHuman, input.payloadBytes, input.executors,
+	t.Logf("daily Detail journey passed: failure_matrix=%t artifact_recovery=%t artifact_outage_ms=%d items=%d succeeded=%d waiting_human=%d payload_bytes=%d executors=%d response_bytes=%d complete_ms=%d drain_ms=%d restart_ms=%d listing_requests=%d detail_requests=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
+		failureMatrix, artifactRecovery, artifactOutageDuration.Milliseconds(), input.items, expectedSucceeded, expectedWaitingHuman, input.payloadBytes, input.executors,
 		totalResponseBytes, completedDuration.Milliseconds(),
 		drainedDuration.Milliseconds(), restartDuration.Milliseconds(), metrics.ListingRequests, metrics.JobRequests,
 		latency.OfferToAccept.P50, latency.OfferToAccept.P95, latency.AcceptToStart.P50, latency.AcceptToStart.P95,
@@ -425,6 +495,113 @@ func activeDailyDetailRecipe(t *testing.T, id string, kind model.RecipeKind, sco
 	return recipe
 }
 
+func waitArtifactExecutionAtProviderCut(t *testing.T, dsn, sourceID, origin string, timeout time.Duration,
+	daemon, artifactDaemon, server *proc, logPaths ...string) string {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var attemptID, status string
+	var artifacts int
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		err = db.QueryRow(`SELECT a.attempt_id, a.attempt_status,
+  (SELECT COUNT(*) FROM recruiting_artifacts x WHERE x.attempt_id = a.attempt_id)
+FROM recruiting_attempts a JOIN recruiting_works w ON w.work_id = a.work_id
+WHERE w.target_id = ? AND w.purpose = 'listing_sync'
+ORDER BY a.created_at LIMIT 1`, sourceID).Scan(&attemptID, &status, &artifacts)
+		metrics := readDailyDetailOriginMetrics(t, origin)
+		if err == nil && status == string(model.AttemptRunning) && artifacts == 0 && metrics.ListingRequests == 1 {
+			return attemptID
+		}
+		if daemon.exited() || artifactDaemon.exited() || server.exited() {
+			t.Fatalf("process exited before the live Artifact provider cut: executor=%s provider=%s server=%s",
+				tailLog(logPaths[0], 160), tailLog(logPaths[1], 160), tailLog(logPaths[2], 160))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("Listing did not enter the running/no-evidence cut while the provider was healthy: attempt=%q status=%q artifacts=%d err=%v\nexecutor:\n%s\nprovider:\n%s\nserver:\n%s",
+		attemptID, status, artifacts, err, tailLog(logPaths[0], 160), tailLog(logPaths[1], 160), tailLog(logPaths[2], 160))
+	return ""
+}
+
+func waitArtifactAttemptExpiredWithoutAcceptedEvidence(t *testing.T, dsn, attemptID string, timeout time.Duration,
+	daemon, server *proc, logPaths ...string) {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var status string
+	var acceptedArtifacts int
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		err = db.QueryRow(`SELECT a.attempt_status,
+  (SELECT COUNT(*) FROM recruiting_artifacts x WHERE x.attempt_id = a.attempt_id AND x.rejected = FALSE)
+FROM recruiting_attempts a WHERE a.attempt_id = ?`, attemptID).Scan(&status, &acceptedArtifacts)
+		if err == nil && status == string(model.AttemptExpired) && acceptedArtifacts == 0 {
+			return
+		}
+		if daemon.exited() || server.exited() {
+			t.Fatalf("process exited while the provider outage was awaiting Attempt expiry: executor=%s server=%s",
+				tailLog(logPaths[0], 160), tailLog(logPaths[1], 160))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("provider outage did not expire the old Attempt without accepted evidence: attempt=%s status=%s accepted_artifacts=%d err=%v\nexecutor:\n%s\nserver:\n%s",
+		attemptID, status, acceptedArtifacts, err, tailLog(logPaths[0], 160), tailLog(logPaths[1], 160))
+}
+
+func waitArtifactProviderReady(t *testing.T, operator *apiClient, ws *wsClient, base, homeID, qualifiedChannel,
+	deviceName, probeName string, daemon *proc, daemonLog string) {
+	t.Helper()
+	address := fmt.Sprintf("daemon://%s/%s/daily-detail-provider-probes/%s.bin", deviceName, qualifiedChannel, probeName)
+	var created map[string]any
+	var err error
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
+		created, err = ws.tryResource(map[string]any{"channel_id": homeID, "op": "create", "address": address, "with_content": true})
+		if err == nil {
+			httpPutFile(t, operator, base, homeID, address, stringField(t, created, "ticket"), []byte(probeName))
+			return
+		}
+		if daemon.exited() {
+			t.Fatalf("Artifact provider exited before becoming ready: %s", tailLog(daemonLog, 160))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("Artifact provider did not become ready: err=%v\n%s", err, tailLog(daemonLog, 160))
+}
+
+func assertDailyArtifactProviderRecoveryFacts(t *testing.T, db *sql.DB, failedAttemptID string) {
+	t.Helper()
+	var failedStatus, failedDispatchStatus, failedDispatchReason, recoveryDispatchStatus string
+	var failedArtifacts, failedAcceptedArtifacts, listingAttempts, expiredListing, succeededListing int
+	if err := db.QueryRow(`SELECT
+  (SELECT attempt_status FROM recruiting_attempts WHERE attempt_id = ?),
+  (SELECT COUNT(*) FROM recruiting_artifacts WHERE attempt_id = ?),
+  (SELECT COUNT(*) FROM recruiting_artifacts WHERE attempt_id = ? AND rejected = FALSE),
+  (SELECT d.delivery_status FROM recruiting_attempts a JOIN recruiting_execution_dispatch_outbox d ON d.dispatch_id = a.dispatch_id WHERE a.attempt_id = ?),
+  (SELECT COALESCE(d.last_error_class, '') FROM recruiting_attempts a JOIN recruiting_execution_dispatch_outbox d ON d.dispatch_id = a.dispatch_id WHERE a.attempt_id = ?),
+  (SELECT delivery_status FROM recruiting_execution_dispatch_outbox WHERE cause_kind = 'attempt_recovered' AND cause_id = ?),
+  (SELECT COUNT(*) FROM recruiting_attempts a JOIN recruiting_works w ON w.work_id = a.work_id WHERE w.purpose = 'listing_sync'),
+  (SELECT COUNT(*) FROM recruiting_attempts a JOIN recruiting_works w ON w.work_id = a.work_id WHERE w.purpose = 'listing_sync' AND a.attempt_status = 'expired'),
+  (SELECT COUNT(*) FROM recruiting_attempts a JOIN recruiting_works w ON w.work_id = a.work_id WHERE w.purpose = 'listing_sync' AND a.attempt_status = 'succeeded')`,
+		failedAttemptID, failedAttemptID, failedAttemptID, failedAttemptID, failedAttemptID, failedAttemptID).
+		Scan(&failedStatus, &failedArtifacts, &failedAcceptedArtifacts, &failedDispatchStatus, &failedDispatchReason,
+			&recoveryDispatchStatus, &listingAttempts, &expiredListing, &succeededListing); err != nil {
+		t.Fatal(err)
+	}
+	if failedStatus != string(model.AttemptExpired) || failedAcceptedArtifacts != 0 ||
+		failedDispatchStatus != "delivered" ||
+		recoveryDispatchStatus != "delivered" || listingAttempts != 2 ||
+		expiredListing != 1 || succeededListing != 1 {
+		t.Fatalf("Artifact provider recovery failed_attempt=%s status=%s artifacts=%d accepted_artifacts=%d old_dispatch=%s/%s recovery_dispatch=%s listing_attempts=%d expired=%d succeeded=%d",
+			failedAttemptID, failedStatus, failedArtifacts, failedAcceptedArtifacts, failedDispatchStatus,
+			failedDispatchReason, recoveryDispatchStatus, listingAttempts, expiredListing, succeededListing)
+	}
+}
+
 func waitDailyDetailCapacity(t *testing.T, dsn, sourceID string, items, succeeded, waitingHuman int, timeout time.Duration,
 	daemon, server *proc, logPaths ...string) (string, string) {
 	t.Helper()
@@ -462,15 +639,64 @@ func waitDailyDetailCapacity(t *testing.T, dsn, sourceID string, items, succeede
 	}
 	t.Fatalf("daily capacity timed out: run=%q occurrence=%q occurrences=%d listing=%d details_succeeded=%d/%d waiting_human=%d/%d jobs=%d versions=%d err=%v%s",
 		dailyRunID, occurrenceID, occurrences, completedListing, completedDetails, succeeded, waitingDetails, waitingHuman,
-		availableJobs, detailVersions, err, logs)
+		availableJobs, detailVersions, err, logs+"\npersisted execution state:\n"+dailyDetailExecutionSnapshot(db, sourceID))
 	return "", ""
 }
 
+func dailyDetailExecutionSnapshot(db *sql.DB, sourceID string) string {
+	var lines []string
+	rows, err := db.Query(`SELECT w.work_id, w.status, COALESCE(w.resolution, ''),
+  COALESCE(JSON_UNQUOTE(JSON_EXTRACT(w.state_json, '$.waiting_reason')), ''),
+  w.version, w.acceptance_version, a.attempt_id, a.attempt_status, COALESCE(a.executor_actor_id, ''),
+  a.created_at, a.updated_at
+FROM recruiting_works w LEFT JOIN recruiting_attempts a ON a.work_id = w.work_id
+WHERE w.target_id = ? AND w.purpose = 'listing_sync' ORDER BY a.created_at`, sourceID)
+	if err != nil {
+		return "work/attempt query: " + err.Error()
+	}
+	for rows.Next() {
+		var workID, workStatus, resolution, waitingReason, attemptID, attemptStatus, executorID string
+		var version, acceptanceVersion uint64
+		var createdAt, updatedAt sql.NullTime
+		if scanErr := rows.Scan(&workID, &workStatus, &resolution, &waitingReason, &version, &acceptanceVersion,
+			&attemptID, &attemptStatus, &executorID, &createdAt, &updatedAt); scanErr != nil {
+			lines = append(lines, "work/attempt scan: "+scanErr.Error())
+			break
+		}
+		lines = append(lines, fmt.Sprintf("work=%s status=%s resolution=%s waiting=%s version=%d acceptance=%d attempt=%s attempt_status=%s executor=%s created=%v updated=%v",
+			workID, workStatus, resolution, waitingReason, version, acceptanceVersion, attemptID, attemptStatus,
+			executorID, createdAt.Time, updatedAt.Time))
+	}
+	_ = rows.Close()
+	rows, err = db.Query(`SELECT dispatch_id, target_actor_id, cause_kind, cause_id, delivery_status,
+  delivery_attempts, max_delivery_attempts, next_attempt_at, COALESCE(last_error_class, '')
+FROM recruiting_execution_dispatch_outbox ORDER BY created_at, dispatch_id`)
+	if err != nil {
+		lines = append(lines, "dispatch query: "+err.Error())
+		return strings.Join(lines, "\n")
+	}
+	for rows.Next() {
+		var dispatchID, targetID, causeKind, causeID, status, failure string
+		var attempts, maxAttempts uint64
+		var next time.Time
+		if scanErr := rows.Scan(&dispatchID, &targetID, &causeKind, &causeID, &status, &attempts, &maxAttempts,
+			&next, &failure); scanErr != nil {
+			lines = append(lines, "dispatch scan: "+scanErr.Error())
+			break
+		}
+		lines = append(lines, fmt.Sprintf("dispatch=%s target=%s cause=%s/%s status=%s deliveries=%d/%d next=%s error=%s",
+			dispatchID, targetID, causeKind, causeID, status, attempts, maxAttempts, next.UTC().Format(time.RFC3339Nano), failure))
+	}
+	_ = rows.Close()
+	return strings.Join(lines, "\n")
+}
+
 func assertDailyDetailCapacityFacts(t *testing.T, db *sql.DB, sourceID, dailyRunID, occurrenceID string,
-	input dailyDetailCapacityInput, succeeded, waitingHuman, attempts int, failureMatrix bool) {
+	input dailyDetailCapacityInput, succeeded, waitingHuman, attempts, expectedFailed, expectedExpired int,
+	failureMatrix bool) {
 	t.Helper()
 	var listingWorks, detailWorks, succeededDetailWorks, waitingDetailWorks int
-	var succeededAttempts, failedAttempts, detailArtifacts, failureArtifacts, detailVersions, observations int
+	var succeededAttempts, failedAttempts, expiredAttempts, detailArtifacts, failureArtifacts, detailVersions, observations int
 	var permits, pendingDispatches, materializeDispatches int
 	if err := db.QueryRow(`SELECT
   (SELECT COUNT(*) FROM recruiting_works WHERE target_id = ? AND purpose = 'listing_sync' AND status = 'completed'),
@@ -479,6 +705,7 @@ func assertDailyDetailCapacityFacts(t *testing.T, db *sql.DB, sourceID, dailyRun
   (SELECT COUNT(*) FROM recruiting_works WHERE purpose = 'detail_sync' AND status = 'waiting_human'),
   (SELECT COUNT(*) FROM recruiting_attempts WHERE attempt_status = 'succeeded'),
   (SELECT COUNT(*) FROM recruiting_attempts WHERE attempt_status = 'failed'),
+	  (SELECT COUNT(*) FROM recruiting_attempts WHERE attempt_status = 'expired'),
   (SELECT COUNT(*) FROM recruiting_artifacts a JOIN recruiting_works w ON w.work_id = a.work_id WHERE w.purpose = 'detail_sync' AND a.artifact_kind = 'response' AND a.rejected = FALSE),
   (SELECT COUNT(*) FROM recruiting_artifacts a JOIN recruiting_works w ON w.work_id = a.work_id WHERE w.purpose = 'detail_sync' AND a.artifact_kind = 'failure' AND a.rejected = FALSE),
   (SELECT COUNT(*) FROM recruiting_job_detail_versions),
@@ -487,19 +714,19 @@ func assertDailyDetailCapacityFacts(t *testing.T, db *sql.DB, sourceID, dailyRun
   (SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE delivery_status <> 'delivered'),
   (SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE cause_kind = 'work_materialized')`,
 		sourceID, dailyRunID, occurrenceID).Scan(&listingWorks, &detailWorks, &succeededDetailWorks, &waitingDetailWorks,
-		&succeededAttempts, &failedAttempts, &detailArtifacts, &failureArtifacts, &detailVersions, &observations,
+		&succeededAttempts, &failedAttempts, &expiredAttempts, &detailArtifacts, &failureArtifacts, &detailVersions, &observations,
 		&permits, &pendingDispatches, &materializeDispatches); err != nil {
 		t.Fatal(err)
 	}
-	expectedFailed := attempts - (succeeded + 1)
 	wantMaxMaterialize := ((input.items+499)/500)*input.executors + input.executors
 	if listingWorks != 1 || detailWorks != input.items || succeededDetailWorks != succeeded || waitingDetailWorks != waitingHuman ||
-		succeededAttempts != succeeded+1 || failedAttempts != expectedFailed || detailArtifacts != succeeded ||
+		succeededAttempts != succeeded+1 || failedAttempts != expectedFailed || expiredAttempts != expectedExpired ||
+		succeededAttempts+failedAttempts+expiredAttempts != attempts || detailArtifacts != succeeded ||
 		failureArtifacts != expectedFailed || detailVersions != succeeded || observations != input.items ||
 		permits != 0 || pendingDispatches != 0 || materializeDispatches < 1 || materializeDispatches > wantMaxMaterialize {
-		t.Fatalf("daily facts listing=%d details=%d succeeded_works=%d waiting_works=%d succeeded_attempts=%d failed_attempts=%d response_artifacts=%d failure_artifacts=%d versions=%d observations=%d permits=%d pending_dispatches=%d materialize_dispatches=%d max=%d",
+		t.Fatalf("daily facts listing=%d details=%d succeeded_works=%d waiting_works=%d succeeded_attempts=%d failed_attempts=%d expired_attempts=%d response_artifacts=%d failure_artifacts=%d versions=%d observations=%d permits=%d pending_dispatches=%d materialize_dispatches=%d max=%d",
 			listingWorks, detailWorks, succeededDetailWorks, waitingDetailWorks, succeededAttempts, failedAttempts,
-			detailArtifacts, failureArtifacts, detailVersions, observations, permits, pendingDispatches,
+			expiredAttempts, detailArtifacts, failureArtifacts, detailVersions, observations, permits, pendingDispatches,
 			materializeDispatches, wantMaxMaterialize)
 	}
 	if failureMatrix {

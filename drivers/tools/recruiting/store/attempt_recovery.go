@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
 
@@ -222,12 +223,12 @@ func (r *Repository) recoverAttempt(ctx context.Context, attemptID string, recov
 	defer func() { _ = tx.Rollback() }()
 	var attemptState []byte
 	var status model.AttemptStatus
-	var executorActorID sql.NullString
+	var executorActorID, dispatchID sql.NullString
 	var createdAt, updatedAt time.Time
 	err = tx.QueryRowContext(ctx, `
-SELECT state_json, attempt_status, executor_actor_id, created_at, updated_at
+SELECT state_json, attempt_status, executor_actor_id, dispatch_id, created_at, updated_at
 FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE SKIP LOCKED`, attemptID).
-		Scan(&attemptState, &status, &executorActorID, &createdAt, &updatedAt)
+		Scan(&attemptState, &status, &executorActorID, &dispatchID, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, false, ErrAttemptConflict
 	}
@@ -293,7 +294,28 @@ WHERE attempt_id = ? AND attempt_status = ?`, expired.Status, expiredState,
 	if err := releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitExpired, recoveredAt); err != nil {
 		return false, false, err
 	}
-	if retryQueued && condition.ExecutorActorID != "" {
+	// Re-delivering the same durable wake to the same Executor incarnation also
+	// replays the same idempotent Offer command, whose Attempt is now expired.
+	// Retire that exact wake and create a fresh dispatch identity atomically with
+	// the retry transition. The new identity yields a new Offer/Attempt while a
+	// late result remains fenced by the expired Attempt.
+	if retryQueued && executorActorID.Valid && executioncontract.ValidToolTarget(executorActorID.String) {
+		if dispatchID.Valid && strings.TrimSpace(dispatchID.String) != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE recruiting_execution_dispatch_outbox
+SET delivery_status = 'delivered', delivered_at = ?, next_attempt_at = ?, last_error_class = ?
+WHERE dispatch_id = ? AND delivery_status = 'pending'`, recoveredAt.UTC(), recoveredAt.UTC(),
+				condition.Reason+"_superseded", dispatchID.String); err != nil {
+				return false, false, err
+			}
+		}
+		if err := appendAttemptDispatch(ctx, tx, attempt.AttemptID, executorActorID.String, attempt.Capability,
+			attempt.ProfileID, "attempt_recovered", attempt.AttemptID, recoveredAt, recoveredAt); err != nil {
+			return false, false, err
+		}
+	} else if retryQueued && condition.ExecutorActorID != "" {
+		// Compatibility for repository-created legacy Attempts that predate the
+		// dispatch identity column. Incarnation replacement makes the replay key
+		// fresh even when the old dispatch itself is accelerated.
 		if err := accelerateExecutorDispatchTx(ctx, tx, condition.ExecutorActorID, recoveredAt, condition.Reason); err != nil {
 			return false, false, err
 		}

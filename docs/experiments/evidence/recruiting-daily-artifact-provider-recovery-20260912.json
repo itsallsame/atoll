@@ -1,0 +1,73 @@
+{
+  "schema": "recruiting.daily-artifact-provider-recovery-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "d4b25be3",
+  "test": "TestRecruitingScheduledDailyArtifactProviderRecoveryThroughRealDataPlanes",
+  "environment": {
+    "origin": "Docker --internal 11.253.x.x controlled HTTP service",
+    "mysql": "ephemeral MySQL 8.4 with separate non-root migration and runtime accounts",
+    "processes": ["Atoll Server", "execution daemon", "separate File provider daemon", "two recruiting-executor instances"],
+    "data_planes": ["Recruiting MySQL", "Atoll Channel ledger", "daemon File Resources"]
+  },
+  "fault_cut": {
+    "provider_state_before_cut": "reachable and proven by a written probe Resource",
+    "cut": "SIGKILL the separate File provider after the Listing Attempt is running and the HTTP Listing request has started",
+    "listing_origin_latency_ms": 5000,
+    "attempt_stale_after_ms": 30000,
+    "provider_outage_ms": 30252
+  },
+  "result": {
+    "listing_requests": 2,
+    "detail_requests": 20,
+    "listing_attempts": 2,
+    "expired_listing_attempts": 1,
+    "succeeded_listing_attempts": 1,
+    "detail_succeeded": 20,
+    "detail_waiting_human": 0,
+    "accepted_artifacts_on_expired_attempt": 0,
+    "response_artifacts": 20,
+    "response_bytes_verified": 20480,
+    "active_permits_after_settlement": 0,
+    "pending_execution_dispatches_after_settlement": 0,
+    "daily_run_status": "completed",
+    "business_completion_after_provider_ready_ms": 7114,
+    "outbox_drain_after_provider_ready_ms": 7319,
+    "server_restart_ms": 3359,
+    "ledger_messages": 719,
+    "ledger_events": 225,
+    "recruiting_ledger_events": 222,
+    "journey_total_ms": 62782
+  },
+  "invariants": [
+    "the provider is a separately authenticated and attached daemon, not an in-process Artifact stub",
+    "the process is killed only after the Listing Attempt is running and the controlled origin has accepted the HTTP request",
+    "the expired Attempt produces no accepted Artifact or business result and its Permit is released",
+    "the Attempt persists its originating dispatch; expiry settles that replay identity and atomically creates a fresh recovery dispatch",
+    "the fresh dispatch creates a distinct Listing Attempt instead of replaying the expired Offer command",
+    "the recovered provider stores the successful Listing and all 20 Detail responses, and the DailyRun closes normally",
+    "after an Atoll Server restart both execution and File provider daemons reconnect and response bytes remain readable"
+  ],
+  "regressions": {
+    "normal_daily_d0": "passed: 20/20, one Listing request, 20480 response bytes",
+    "http_failure_matrix": "passed: 19 success, one waiting_human, 22 Detail requests"
+  },
+  "validation": {
+    "mysql_store_race_seconds": 233.081,
+    "mysql_actor_race_seconds": 3.289,
+    "executor_package_race": "passed",
+    "go_vet": "passed",
+    "security_audit": "passed",
+    "atoll_core_boundary": "unchanged from a94d2b8d"
+  },
+  "non_claims": [
+    "remote cloud or object-storage provider behavior",
+    "simultaneous Chrome process and File provider failure",
+    "third-party origin latency or long-window availability",
+    "complete P9 production readiness"
+  ],
+  "acceptance": {
+    "gate": "P9 separate File provider process outage and recovery",
+    "status": "passed",
+    "scenario_status_changed": false
+  }
+}

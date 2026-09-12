@@ -131,7 +131,7 @@ VALUES ('runtime-permission-fixture', 'fixture', 'hash', '{}', UTC_TIMESTAMP(6))
 
 func assertRuntimeIndexes(t *testing.T, ctx context.Context, db *sql.DB) {
 	t.Helper()
-	for _, index := range []string{"ix_recruiting_work_runnable", "ix_recruiting_occurrence_due", "ix_recruiting_outbox_pending", "ix_recruiting_dispatch_pending", "ix_recruiting_source_company_page", "ix_recruiting_work_initiator", "ix_recruiting_work_cause", "ix_recruiting_attempt_stale", "ix_recruiting_permit_expiry", "ix_recruiting_company_import_status", "uq_recruiting_company_import_ordinal", "ix_recruiting_source_discovery_status", "uq_recruiting_source_discovery_candidate_ordinal", "uq_recruiting_recipe_proposal_recipe", "uq_recruiting_company_alias_active", "ix_recruiting_company_alias_canonical", "ix_recruiting_work_scope_resume", "ix_recruiting_scope_control_catchup", "uq_recruiting_scope_catchup_source"} {
+	for _, index := range []string{"ix_recruiting_work_runnable", "ix_recruiting_occurrence_due", "ix_recruiting_outbox_pending", "ix_recruiting_dispatch_pending", "ix_recruiting_source_company_page", "ix_recruiting_work_initiator", "ix_recruiting_work_cause", "ix_recruiting_attempt_stale", "ix_recruiting_attempt_dispatch", "ix_recruiting_permit_expiry", "ix_recruiting_company_import_status", "uq_recruiting_company_import_ordinal", "ix_recruiting_source_discovery_status", "uq_recruiting_source_discovery_candidate_ordinal", "uq_recruiting_recipe_proposal_recipe", "uq_recruiting_company_alias_active", "ix_recruiting_company_alias_canonical", "ix_recruiting_work_scope_resume", "ix_recruiting_scope_control_catchup", "uq_recruiting_scope_catchup_source"} {
 		var count int
 		if err := db.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM information_schema.statistics

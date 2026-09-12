@@ -68,8 +68,33 @@ func TestStaleAttemptRecoveryReleasesOffersAndRetriesRunningWork(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runningAt, _ := prepareListingExecutionWork(t, ctx, repository, "recovery-running", 1)
-	runningOffer := startListingAttempt(t, ctx, repository, "recovery-running", runningAt)
+	runningAt, runningWorkID := prepareListingExecutionWork(t, ctx, repository, "recovery-running", 1)
+	const runningExecutor = "tool:recovery-running"
+	runningWake, err := NewExecutionDispatchIntent("recovery-running-wake", runningExecutor,
+		"http.fetch", "", "", "attempt_recovery_test", runningWorkID, runningAt.Add(4*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.EnqueueExecutionDispatch(ctx, runningWake, runningAt); err != nil {
+		t.Fatal(err)
+	}
+	runningOffer, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
+		AttemptID: "recovery-running-attempt", DispatchID: runningWake.DispatchID,
+		ExecutorActorID: runningExecutor, ExecutorIncarnation: "recovery-running-boot",
+		Capability: "http.fetch", Origin: "https://recovery-running.example.com", OfferedAt: runningAt,
+		BudgetPolicy: testExecutionBudgetPolicy(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, runningOffer.Attempt.AttemptID, runningExecutor,
+		"recovery-running-boot", runningAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, runningOffer.Attempt.AttemptID, runningExecutor,
+		"recovery-running-boot", runningAt); err != nil {
+		t.Fatal(err)
+	}
 	cutoff := runningAt.Add(time.Hour)
 	recoveredAt = runningAt.Add(2 * time.Hour)
 	results := make(chan AttemptRecoveryResult, 2)
@@ -106,6 +131,25 @@ func TestStaleAttemptRecoveryReleasesOffersAndRetriesRunningWork(t *testing.T) {
 	if attempt.Status != model.AttemptExpired || work.Status != model.WorkWaitingRetry ||
 		work.WaitingReason != "executor_progress_timeout" || occurrence.Status != model.OccurrenceRunning {
 		t.Fatalf("running recovery attempt=%+v work=%+v occurrence=%+v", attempt, work, occurrence)
+	}
+	var oldWakeStatus, oldWakeReason string
+	var oldWakeDeliveredAt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT delivery_status, delivered_at,
+  COALESCE(last_error_class, '') FROM recruiting_execution_dispatch_outbox WHERE dispatch_id = ?`, runningWake.DispatchID).
+		Scan(&oldWakeStatus, &oldWakeDeliveredAt, &oldWakeReason); err != nil {
+		t.Fatal(err)
+	}
+	var retryWakeStatus string
+	var retryWakeDue time.Time
+	if err := db.QueryRowContext(ctx, `SELECT delivery_status, next_attempt_at
+FROM recruiting_execution_dispatch_outbox WHERE cause_kind = 'attempt_recovered' AND cause_id = ?`,
+		runningOffer.Attempt.AttemptID).Scan(&retryWakeStatus, &retryWakeDue); err != nil {
+		t.Fatal(err)
+	}
+	if oldWakeStatus != "delivered" || !oldWakeDeliveredAt.Equal(recoveredAt) ||
+		oldWakeReason != "executor_progress_timeout_superseded" || retryWakeStatus != "pending" || retryWakeDue.After(recoveredAt) {
+		t.Fatalf("TTL recovery did not rotate the durable wake: old=%s delivered=%s reason=%s new=%s due=%s",
+			oldWakeStatus, oldWakeDeliveredAt, oldWakeReason, retryWakeStatus, retryWakeDue)
 	}
 	var events int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_event_outbox WHERE event_id = ?", "attempt-expired-"+runningOffer.Attempt.AttemptID).Scan(&events); err != nil {

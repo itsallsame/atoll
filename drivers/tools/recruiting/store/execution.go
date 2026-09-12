@@ -38,6 +38,7 @@ func isBudgetlessPurpose(purpose string) bool {
 
 type ListingOfferRequest struct {
 	AttemptID           string
+	DispatchID          string
 	ExecutorActorID     string
 	ExecutorIncarnation string
 	Capability          string
@@ -67,7 +68,8 @@ func (r *Repository) offerExecution(ctx context.Context, request ListingOfferReq
 	if strings.TrimSpace(request.AttemptID) == "" || strings.TrimSpace(request.ExecutorActorID) == "" ||
 		strings.TrimSpace(request.ExecutorIncarnation) == "" || strings.TrimSpace(request.Capability) == "" || request.OfferedAt.IsZero() ||
 		request.BudgetPolicy.validate() != nil || request.CompanyImportLimit < 0 || request.CompanyImportLimit > 500 ||
-		len(strings.TrimSpace(request.SupplyBatchID)) > 191 || strings.TrimSpace(request.SupplyBatchID) != request.SupplyBatchID {
+		len(strings.TrimSpace(request.SupplyBatchID)) > 191 || strings.TrimSpace(request.SupplyBatchID) != request.SupplyBatchID ||
+		len(strings.TrimSpace(request.DispatchID)) > 191 || strings.TrimSpace(request.DispatchID) != request.DispatchID {
 		return ExecutionOffer{}, fmt.Errorf("execution offer requires attempt, executor identity, incarnation, capability, and time")
 	}
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
@@ -484,6 +486,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	attempt, err := model.NewAttempt(request.AttemptID, work)
 	if err == nil {
 		attempt, err = attempt.BindExecutor(strings.TrimSpace(request.ExecutorActorID), strings.TrimSpace(request.ExecutorIncarnation), request.Capability)
+		attempt.DispatchID = request.DispatchID
 	}
 	if err == nil {
 		if isCompanyImportPurpose(work.Purpose) {
@@ -566,7 +569,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	if err != nil {
 		return ExecutionOffer{}, err
 	}
-	if err := insertAttempt(ctx, tx, attempt, offerState, request.SupplyBatchID, request.OfferedAt); err != nil {
+	if err := insertAttempt(ctx, tx, attempt, offerState, request.SupplyBatchID, request.DispatchID, request.OfferedAt); err != nil {
 		return ExecutionOffer{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -687,10 +690,11 @@ func executionWorkloadClassTx(ctx context.Context, tx *sql.Tx, work model.Work) 
 
 func getExecutionOfferReplay(ctx context.Context, tx *sql.Tx, request ListingOfferRequest, requiredPurpose string) (ExecutionOffer, bool, error) {
 	var attemptState, offerState []byte
-	var supplyBatchID sql.NullString
+	var supplyBatchID, dispatchID sql.NullString
 	err := tx.QueryRowContext(ctx, `
-SELECT state_json, execution_offer_json, supply_batch_id
-FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE`, request.AttemptID).Scan(&attemptState, &offerState, &supplyBatchID)
+SELECT state_json, execution_offer_json, supply_batch_id, dispatch_id
+FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE`, request.AttemptID).
+		Scan(&attemptState, &offerState, &supplyBatchID, &dispatchID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ExecutionOffer{}, false, nil
 	}
@@ -705,9 +709,14 @@ FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE`, request.AttemptID).Sc
 	if supplyBatchID.Valid {
 		storedSupplyBatchID = supplyBatchID.String
 	}
+	storedDispatchID := ""
+	if dispatchID.Valid {
+		storedDispatchID = dispatchID.String
+	}
 	if attempt.ExecutorActorID != strings.TrimSpace(request.ExecutorActorID) ||
 		attempt.ExecutorIncarnation != strings.TrimSpace(request.ExecutorIncarnation) ||
-		attempt.Capability != strings.TrimSpace(request.Capability) || storedSupplyBatchID != request.SupplyBatchID || len(offerState) == 0 {
+		attempt.Capability != strings.TrimSpace(request.Capability) || storedSupplyBatchID != request.SupplyBatchID ||
+		storedDispatchID != request.DispatchID || len(offerState) == 0 {
 		return ExecutionOffer{}, false, fmt.Errorf("%w: attempt ID reused with different execution request", ErrAttemptConflict)
 	}
 	var offer ExecutionOffer

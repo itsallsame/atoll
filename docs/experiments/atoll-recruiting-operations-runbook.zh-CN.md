@@ -94,9 +94,12 @@ durable timer 到达 cutoff 时冻结当日 eligible Source roster，形成不�
 | Profile 过期或验证码 | Profile state、授权设备、redacted Artifact | `profile.repair.begin`，由绑定设备验证后 resolve | 把 Cookie/OTP 放入消息或 Artifact |
 | runnable age 上升 | capability fleet、origin/Profile 预算、dispatch backlog | 增加同 capability Executor；修复配置或预算瓶颈 | 增加 Actor/Worker 类型规避背压 |
 | event/dispatch outbox 积压 | Server/daemon presence、最后错误、重放次数 | 运行/等待有界 reconcile；确认稳定 ID 收口 | 删除 outbox 行或伪造 delivered |
+| Artifact provider 离线 | `system.device.list`、Attempt 来源 dispatch、provider daemon 日志、Artifact accepted/rejected | 恢复原 provider 身份；等待 TTL 将旧 Attempt/Permit 与 wake 收口并生成 `attempt_recovered` dispatch | 重开旧 Attempt、把旧 wake 当新执行、无证据提交成功/失败 |
 | DailyRun uncovered | occurrence 终态、失败 Incident、window close | 修复后创建唯一 production recovery | 改写历史 DailyRun summary |
 
 受控验收入口 `make recruiting-daily-detail-failure-matrix` 会在隔离 origin 中固定注入一次 503、一次 429 和持续 403：前两项必须自动恢复，403 必须只产生一个共享人工修复事件，不能把 403 改成无限重试。该入口用于发布前回归，不用于探测或压测第三方网站。
+
+独立 File provider 恢复入口为 `make recruiting-daily-artifact-recovery`。它会在 Listing 已开始访问网站后强杀 provider，等待旧 Attempt 按 TTL 失效，再用同一设备身份和持久目录恢复 provider；验收要求出现一个 expired 和一个 succeeded Listing Attempt、旧 Attempt 无 accepted Artifact、全部 Detail 完成且 Server 重启后 Resource 仍可读。该本地入口不替代远程对象存储或 Chrome/provider 组合故障演练。
 
 共享修复的标准顺序：
 

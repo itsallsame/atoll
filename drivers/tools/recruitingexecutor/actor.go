@@ -209,8 +209,9 @@ func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, in
 func handleSingleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, incarnation string,
 	msg actorbase.Msg, payload wakePayload) {
 	offer, err := requestExecutionOffer(msg.Ctx(), sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()), executioncontract.OfferRequest{
-		CommandID: wakeOfferCommandID(incarnation, payload.CommandID, string(msg.ID)), ExecutorIncarnation: incarnation,
-		Capability: cfg.Capability, Origin: payload.Origin, ProfileID: payload.ProfileID,
+		CommandID: wakeOfferCommandID(incarnation, payload.CommandID, string(msg.ID)), DispatchID: payload.CommandID,
+		ExecutorIncarnation: incarnation,
+		Capability:          cfg.Capability, Origin: payload.Origin, ProfileID: payload.ProfileID,
 	}, time.Duration(cfg.ControlWaitMS)*time.Millisecond)
 	if err != nil {
 		_, _ = sys.Fail(msg, "channel_unavailable", err.Error())

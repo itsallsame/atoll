@@ -3,6 +3,7 @@ set -euo pipefail
 
 level="${RECRUITING_DAILY_DETAIL_CAPACITY_LEVEL:-D0}"
 failure_matrix="${RECRUITING_DAILY_DETAIL_FAILURE_MATRIX:-0}"
+artifact_recovery="${RECRUITING_DAILY_ARTIFACT_RECOVERY:-0}"
 case "${level}" in
   D0|D1|D2|D3) ;;
   *)
@@ -14,8 +15,20 @@ if [[ "${failure_matrix}" != "0" && "${failure_matrix}" != "1" ]]; then
   echo "recruiting daily Detail capacity: RECRUITING_DAILY_DETAIL_FAILURE_MATRIX must be 0 or 1" >&2
   exit 2
 fi
+if [[ "${artifact_recovery}" != "0" && "${artifact_recovery}" != "1" ]]; then
+  echo "recruiting daily Detail capacity: RECRUITING_DAILY_ARTIFACT_RECOVERY must be 0 or 1" >&2
+  exit 2
+fi
+if [[ "${failure_matrix}" == "1" && "${artifact_recovery}" == "1" ]]; then
+  echo "recruiting daily Detail capacity: failure matrix and Artifact recovery are separate fault axes" >&2
+  exit 2
+fi
 if [[ "${failure_matrix}" == "1" && "${level}" != "D0" ]]; then
   echo "recruiting daily Detail capacity: the failure matrix uses the bounded D0 workload" >&2
+  exit 2
+fi
+if [[ "${artifact_recovery}" == "1" && "${level}" != "D0" ]]; then
+  echo "recruiting daily Detail capacity: Artifact recovery uses the bounded D0 workload" >&2
   exit 2
 fi
 if [[ "${level}" == "D2" && "${RECRUITING_DAILY_DETAIL_CAPACITY_LARGE_ACK:-}" != "isolated-daily-detail-large-load" ]]; then
@@ -45,6 +58,12 @@ fi
 items=$(jq -r --arg level "${level}" '.levels[$level].items' "${manifest}")
 payload_bytes=$(jq -r --arg level "${level}" '.levels[$level].payload_bytes' "${manifest}")
 latency_ms=$(jq -r --arg level "${level}" '.levels[$level].origin_latency_ms' "${manifest}")
+listing_latency_ms="${latency_ms}"
+if [[ "${artifact_recovery}" == "1" ]]; then
+  # Leave a deterministic interval after the HTTP request starts in which the
+  # test can kill the already-initialized, separate File provider process.
+  listing_latency_ms=5000
+fi
 executors=$(jq -r --arg level "${level}" '.levels[$level].executors' "${manifest}")
 timeout_seconds=$(jq -r --arg level "${level}" '.levels[$level].timeout_seconds' "${manifest}")
 activity_unix=$(date +%s)
@@ -78,6 +97,7 @@ docker run -d --rm --read-only --cap-drop ALL --security-opt no-new-privileges \
   -v "${origin_binary}:/recruiting-origin:ro" --entrypoint /recruiting-origin \
   -e RECRUITING_ORIGIN_PAYLOAD_BYTES="${payload_bytes}" \
   -e RECRUITING_ORIGIN_LATENCY_MS="${latency_ms}" \
+  -e RECRUITING_ORIGIN_LISTING_LATENCY_MS="${listing_latency_ms}" \
   -e RECRUITING_ORIGIN_LISTING_ITEMS="${items}" \
   -e RECRUITING_ORIGIN_FAILURE_MATRIX="${failure_matrix}" \
   -e RECRUITING_ORIGIN_ACTIVITY_UNIX="${activity_unix}" mysql:8.4 >/dev/null
@@ -99,10 +119,14 @@ test_name='TestRecruitingScheduledDailyDetailCapacityThroughRealDataPlanes'
 if [[ "${failure_matrix}" == "1" ]]; then
   test_name='TestRecruitingScheduledDailyDetailFailureMatrixThroughRealDataPlanes'
 fi
-echo "recruiting daily Detail capacity: level=${level} failure_matrix=${failure_matrix} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} executors=${executors} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
+if [[ "${artifact_recovery}" == "1" ]]; then
+  test_name='TestRecruitingScheduledDailyArtifactProviderRecoveryThroughRealDataPlanes'
+fi
+echo "recruiting daily Detail capacity: level=${level} failure_matrix=${failure_matrix} artifact_recovery=${artifact_recovery} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} listing_latency_ms=${listing_latency_ms} executors=${executors} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
 set +e
 ATOLL_RECRUITING_DAILY_DETAIL_CAPACITY=1 \
 ATOLL_RECRUITING_DAILY_DETAIL_FAILURE_MATRIX="${failure_matrix}" \
+ATOLL_RECRUITING_DAILY_ARTIFACT_RECOVERY="${artifact_recovery}" \
 RECRUITING_DAILY_DETAIL_CAPACITY_ITEMS="${items}" \
 RECRUITING_DAILY_DETAIL_CAPACITY_PAYLOAD_BYTES="${payload_bytes}" \
 RECRUITING_DAILY_DETAIL_CAPACITY_EXECUTORS="${executors}" \

@@ -15,6 +15,14 @@ import (
 func main() {
 	payloadBytes := positiveEnv("RECRUITING_ORIGIN_PAYLOAD_BYTES", 4096)
 	latency := time.Duration(positiveEnv("RECRUITING_ORIGIN_LATENCY_MS", 5)) * time.Millisecond
+	listingLatency := latency
+	if raw := strings.TrimSpace(os.Getenv("RECRUITING_ORIGIN_LISTING_LATENCY_MS")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 {
+			log.Fatal("RECRUITING_ORIGIN_LISTING_LATENCY_MS must be a positive integer")
+		}
+		listingLatency = time.Duration(value) * time.Millisecond
+	}
 	listingItems := positiveEnv("RECRUITING_ORIGIN_LISTING_ITEMS", 1)
 	activityUnix := int64(positiveEnv("RECRUITING_ORIGIN_ACTIVITY_UNIX", int(time.Now().UTC().Unix())))
 	failureMatrix := strings.TrimSpace(os.Getenv("RECRUITING_ORIGIN_FAILURE_MATRIX")) == "1"
@@ -57,7 +65,7 @@ func main() {
 			return
 		}
 		listingRequests.Add(1)
-		time.Sleep(latency)
+		time.Sleep(listingLatency)
 		body, emitted := listingResponse(request.Host, listingItems, activityUnix, offset, limit)
 		listedItems.Add(uint64(emitted))
 		response.Header().Set("Content-Type", "application/json")
@@ -111,8 +119,8 @@ func main() {
 		_, _ = response.Write(browserResponseBody(id, payloadBytes))
 	})
 	server := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	log.Printf("recruiting controlled origin listening on %s payload_bytes=%d latency_ms=%d listing_items=%d",
-		server.Addr, payloadBytes, latency.Milliseconds(), listingItems)
+	log.Printf("recruiting controlled origin listening on %s payload_bytes=%d latency_ms=%d listing_latency_ms=%d listing_items=%d",
+		server.Addr, payloadBytes, latency.Milliseconds(), listingLatency.Milliseconds(), listingItems)
 	log.Fatal(server.ListenAndServe())
 }
 

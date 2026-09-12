@@ -285,18 +285,19 @@ LIMIT ?`, query.Capability, query.DueAt.UTC(), query.DueAt.UTC(),
 }
 
 func (r *Repository) CreateAttempt(ctx context.Context, attempt model.Attempt, businessAt time.Time) error {
-	return insertAttempt(ctx, r.db, attempt, nil, "", businessAt)
+	return insertAttempt(ctx, r.db, attempt, nil, "", "", businessAt)
 }
 
 func insertAttempt(ctx context.Context, executor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}, attempt model.Attempt, executionOffer json.RawMessage, supplyBatchID string, businessAt time.Time) error {
+}, attempt model.Attempt, executionOffer json.RawMessage, supplyBatchID, dispatchID string, businessAt time.Time) error {
 	if attempt.AttemptID == "" || attempt.WorkID == "" || attempt.Status != model.AttemptOffered {
 		return fmt.Errorf("new attempt must be offered and identified")
 	}
 	supplyBatchID = strings.TrimSpace(supplyBatchID)
-	if len(supplyBatchID) > 191 {
-		return fmt.Errorf("attempt supply batch ID is too long")
+	dispatchID = strings.TrimSpace(dispatchID)
+	if len(supplyBatchID) > 191 || len(dispatchID) > 191 || dispatchID != attempt.DispatchID {
+		return fmt.Errorf("attempt supply batch and dispatch IDs must be bounded")
 	}
 	state, _ := json.Marshal(attempt)
 	_, err := executor.ExecContext(ctx, `
@@ -305,15 +306,15 @@ INSERT INTO recruiting_attempts(
   capability, acceptance_version, company_version, company_configuration_version, company_execution_fence,
   source_version, source_configuration_version, source_execution_fence, assignment_version,
   recipe_id, recipe_version, checkpoint_version, refresh_generation, profile_id,
-  profile_version, batch_version, state_json, execution_offer_json, offered_observed_at, supply_batch_id, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6), ?, ?, ?)`,
+  profile_version, batch_version, state_json, execution_offer_json, offered_observed_at, supply_batch_id, dispatch_id, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6), ?, ?, ?, ?)`,
 		attempt.AttemptID, attempt.WorkID, attempt.Status, nullableString(attempt.ExecutorActorID),
 		nullableString(attempt.ExecutorIncarnation), nullableString(attempt.Capability), attempt.AcceptanceVersion,
 		nullableUint(attempt.CompanyVersion), nullableUint(attempt.CompanyConfigurationVersion), nullableUint(attempt.CompanyExecutionFence),
 		nullableUint(attempt.SourceVersion), nullableUint(attempt.SourceConfigurationVersion), nullableUint(attempt.SourceExecutionFence), nullableUint(attempt.AssignmentVersion),
 		nullableString(attempt.RecipeID), nullableUint(attempt.RecipeVersion), nullableUint(attempt.CheckpointVersion),
 		nullableUint(attempt.RefreshGeneration), nullableString(attempt.ProfileID), nullableUint(attempt.ProfileVersion), nullableUint(attempt.BatchVersion),
-		state, nullableJSON(executionOffer), nullableString(supplyBatchID), businessAt.UTC(), businessAt.UTC())
+		state, nullableJSON(executionOffer), nullableString(supplyBatchID), nullableString(dispatchID), businessAt.UTC(), businessAt.UTC())
 	if err == nil {
 		return nil
 	}

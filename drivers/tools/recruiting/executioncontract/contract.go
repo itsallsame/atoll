@@ -83,6 +83,7 @@ type WakeCompletion struct {
 
 type OfferRequest struct {
 	CommandID           string `json:"command_id"`
+	DispatchID          string `json:"dispatch_id,omitempty"`
 	ExecutorIncarnation string `json:"executor_incarnation"`
 	Capability          string `json:"capability"`
 	Origin              string `json:"origin,omitempty"`

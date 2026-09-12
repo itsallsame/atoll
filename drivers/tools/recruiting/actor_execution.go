@@ -638,6 +638,7 @@ func handleExecutionOfferBatch(sys actorbase.Sys, cfg Config, repository *store.
 	for index := 0; index < payload.Limit; index++ {
 		offer, err := repository.OfferExecution(msg.Ctx(), store.ListingOfferRequest{
 			AttemptID: executionBatchAttemptID(executorID, supplyBatchID, index), ExecutorActorID: executorID,
+			DispatchID:          payload.DispatchID,
 			ExecutorIncarnation: payload.ExecutorIncarnation, Capability: payload.Capability, Origin: payload.Origin,
 			ProfileID: payload.ProfileID, OfferedAt: time.UnixMilli(msg.TS).UTC(), BudgetPolicy: cfg.executionBudgetPolicy(),
 			CompanyImportLimit: cfg.CompanyImportApplyLimit, SupplyBatchID: supplyBatchID,
@@ -758,6 +759,7 @@ func handleListingOffer(sys actorbase.Sys, cfg Config, repository *store.Reposit
 		return
 	}
 	payload.CommandID = strings.TrimSpace(payload.CommandID)
+	payload.DispatchID = strings.TrimSpace(payload.DispatchID)
 	payload.ExecutorIncarnation = strings.TrimSpace(payload.ExecutorIncarnation)
 	payload.Capability = strings.TrimSpace(payload.Capability)
 	if payload.CommandID == "" || payload.ExecutorIncarnation == "" || payload.Capability == "" {
@@ -766,6 +768,7 @@ func handleListingOffer(sys actorbase.Sys, cfg Config, repository *store.Reposit
 	}
 	offer, err := repository.OfferExecution(msg.Ctx(), store.ListingOfferRequest{
 		AttemptID:           executionAttemptID(string(msg.Sender.ID), payload.CommandID),
+		DispatchID:          payload.DispatchID,
 		ExecutorActorID:     string(msg.Sender.ID),
 		ExecutorIncarnation: payload.ExecutorIncarnation,
 		Capability:          payload.Capability,

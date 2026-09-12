@@ -38,6 +38,8 @@
 
 S25/P9 补充（2026-09-12）：真实每日进程矩阵已固定注入一次 503、一次带 `Retry-After` 的 429 和持续 403，证明前两项有界自动恢复、403 单飞进入人工修复且日报按 19 success/1 exception 结算；证据为 `recruiting-daily-detail-http-failure-matrix-20260912.json`。它关闭 HTTP 状态码故障注入项，但不改变 S25 的“部分完成”状态。
 
+S25/P9 补充（2026-09-12，Artifact provider）：独立 File provider 在 Listing Attempt 已 running 且 HTTP 请求已经到达 origin 后被 `SIGKILL`；TTL 回收通过 Attempt 持久绑定的来源 dispatch 收口旧 replay identity，并用新 `attempt_recovered` dispatch 产生新 Attempt。权威旅程中 provider 停机 30.252 秒，最终一个 Listing Attempt expired、一个 succeeded，20 个 Detail 与 20,480 字节 response、日报及 Server 重启回读全部通过；证据为 `recruiting-daily-artifact-provider-recovery-20260912.json`。它关闭本地 File provider 进程恢复项，但远程 provider 和 Chrome/provider 组合故障仍在 P9，S25 状态不变。
+
 ## 当前实施顺序
 
 1. S12/S25/P9：在授权部署环境完成真实登录、出站隔离、执行吞吐、联合恢复和长期监控。

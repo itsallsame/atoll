@@ -357,6 +357,7 @@ const (
 type Attempt struct {
 	AttemptID                   string        `json:"attempt_id"`
 	WorkID                      string        `json:"work_id"`
+	DispatchID                  string        `json:"dispatch_id,omitempty"`
 	Status                      AttemptStatus `json:"attempt_status"`
 	AcceptanceVersion           uint64        `json:"acceptance_version"`
 	ExecutorActorID             string        `json:"executor_actor_id,omitempty"`
