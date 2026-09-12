@@ -71,6 +71,27 @@ func TestExecutorPresenceObservationOnlySweepsTrustedEdges(t *testing.T) {
 	}
 }
 
+func TestTrackConfiguredExecutorMembersUsesExactActorBase(t *testing.T) {
+	state := &storedState{ExecutorPresence: map[string]executorPresenceObservation{
+		"tool:already-tracked:1": {Present: true},
+	}}
+	catalog := introspect.Catalog{Actors: []introspect.CatalogEntry{
+		{ID: "tool:daily-http:17", Present: false},
+		{ID: "tool:daily-http-extra:18", Present: true},
+		{ID: "tool:already-tracked:1", Present: true},
+	}}
+	trackConfiguredExecutorMembers(state, catalog, []ExecutorTargetConfig{{ActorID: "tool:daily-http", Capability: "http.fetch"}})
+	if _, ok := state.ExecutorPresence["tool:daily-http:17"]; !ok {
+		t.Fatal("configured concrete Executor was not added to the presence set")
+	}
+	if _, ok := state.ExecutorPresence["tool:daily-http-extra:18"]; ok {
+		t.Fatal("a prefix-colliding unconfigured Executor was tracked")
+	}
+	if !state.ExecutorPresence["tool:already-tracked:1"].Present {
+		t.Fatal("existing concrete presence observation was overwritten")
+	}
+}
+
 func TestExecutorSweepRotationStartsAfterLastActor(t *testing.T) {
 	values := []string{"a", "b", "c"}
 	for cursor, want := range map[string][]string{

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -36,27 +37,39 @@ type dailyDetailCapacityInput struct {
 // Works, and captures every response through Server, daemon, Resource, MySQL,
 // and ledger. The wrapper gives it an egress-less controlled HTTP origin.
 func TestRecruitingScheduledDailyDetailCapacityThroughRealDataPlanes(t *testing.T) {
-	if os.Getenv("ATOLL_RECRUITING_DAILY_DETAIL_FAILURE_MATRIX") == "1" {
-		t.Skip("capacity case is disabled during the failure-matrix run")
+	if os.Getenv("ATOLL_RECRUITING_DAILY_DETAIL_FAILURE_MATRIX") == "1" ||
+		os.Getenv("ATOLL_RECRUITING_DAILY_ARTIFACT_RECOVERY") == "1" ||
+		os.Getenv("ATOLL_RECRUITING_DAILY_SERVER_CUTOFF_RECOVERY") == "1" {
+		t.Skip("capacity case is disabled during a fault-recovery run")
 	}
-	runRecruitingScheduledDailyDetail(t, false, false)
+	runRecruitingScheduledDailyDetail(t, false, false, false)
 }
 
 func TestRecruitingScheduledDailyDetailFailureMatrixThroughRealDataPlanes(t *testing.T) {
 	if os.Getenv("ATOLL_RECRUITING_DAILY_DETAIL_FAILURE_MATRIX") != "1" {
 		t.Skip("set ATOLL_RECRUITING_DAILY_DETAIL_FAILURE_MATRIX=1 through the isolated failure-matrix runner")
 	}
-	runRecruitingScheduledDailyDetail(t, true, false)
+	runRecruitingScheduledDailyDetail(t, true, false, false)
 }
 
 func TestRecruitingScheduledDailyArtifactProviderRecoveryThroughRealDataPlanes(t *testing.T) {
 	if os.Getenv("ATOLL_RECRUITING_DAILY_ARTIFACT_RECOVERY") != "1" {
 		t.Skip("set ATOLL_RECRUITING_DAILY_ARTIFACT_RECOVERY=1 through the isolated Artifact recovery runner")
 	}
-	runRecruitingScheduledDailyDetail(t, false, true)
+	runRecruitingScheduledDailyDetail(t, false, true, false)
 }
 
-func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix, artifactRecovery bool) {
+func TestRecruitingScheduledDailyServerCutoffRecoveryThroughRealDataPlanes(t *testing.T) {
+	if os.Getenv("ATOLL_RECRUITING_DAILY_SERVER_CUTOFF_RECOVERY") != "1" {
+		t.Skip("use the isolated daily Server-cutoff recovery runner")
+	}
+	runRecruitingScheduledDailyDetail(t, false, false, true)
+}
+
+func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix, artifactRecovery, serverCutoffRecovery bool) {
+	if serverCutoffRecovery && (failureMatrix || artifactRecovery) {
+		t.Fatal("Server cutoff recovery is an independent daily fault axis")
+	}
 	input := dailyDetailCapacityFromEnv(t)
 	if artifactRecovery && input.timeout > 60*time.Second {
 		input.timeout = 60 * time.Second
@@ -115,7 +128,11 @@ func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix, artifactReco
 		ws.resource(map[string]any{"channel_id": homeID, "op": "create", "resource_id": ref, "args": json.RawMessage(raw)})
 	}
 
-	cutoff := time.Now().UTC().Add(8 * time.Second).Truncate(time.Second)
+	cutoffDelay := 8 * time.Second
+	if serverCutoffRecovery {
+		cutoffDelay = 15 * time.Second
+	}
+	cutoff := time.Now().UTC().Add(cutoffDelay).Truncate(time.Second)
 	const policyVersion uint64 = 29
 	const dailyWindow = 30 * time.Minute
 	sourceID := sourceIDWithEarlyDailyDue(cutoff.Format("2006-01-02"), policyVersion, dailyWindow)
@@ -181,6 +198,48 @@ func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix, artifactReco
 	// the deliberately small live-feed buffer from backpressuring Resource
 	// ticket acknowledgements while thousands of domain events arrive.
 	discardCapacityFeed(ws)
+	dailyServerOutageDuration := time.Duration(0)
+	if serverCutoffRecovery {
+		if time.Until(cutoff) < 2*time.Second {
+			t.Fatalf("daily cutoff %s is too close to inject the Server outage safely", cutoff.Format(time.RFC3339Nano))
+		}
+		outageStarted := time.Now()
+		h.server.kill9(t)
+		if delay := time.Until(cutoff.Add(2 * time.Second)); delay > 0 {
+			time.Sleep(delay)
+		}
+		if daemon.exited() {
+			t.Fatalf("daily execution daemon exited during the Server/cutoff outage: %s", tailLog(daemonLog, 160))
+		}
+		outageDB, err := store.Open(runtimeDSN)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var runsWhileOffline int
+		err = outageDB.QueryRow(`SELECT COUNT(*) FROM recruiting_daily_runs`).Scan(&runsWhileOffline)
+		_ = outageDB.Close()
+		if err != nil || runsWhileOffline != 0 {
+			t.Fatalf("daily runs while Server was offline=%d err=%v", runsWhileOffline, err)
+		}
+		if err := daemon.cmd.Process.Signal(syscall.SIGSTOP); err != nil {
+			t.Fatalf("pause daily daemon before Server recovery: %v", err)
+		}
+		h.startServer()
+		operator = newAPIClient(t, h.base)
+		if login := operator.login("daily-detail-capacity@example.test", "operator-local-password"); login["id"] != "daily-detail-capacity-operator" {
+			t.Fatalf("daily capacity operator login after cutoff recovery=%v", login)
+		}
+		ws = dialWS(t, h.base, operator.cookieHeader(), map[string]int64{homeID: 0})
+		waitRecruitingReady(t, ws, homeID, controlID, h.server)
+		waitDailyDispatchPostedWithoutAttempt(t, runtimeDSN, input.timeout, h.server, h.server.logPath)
+		if err := daemon.cmd.Process.Signal(syscall.SIGCONT); err != nil {
+			t.Fatalf("resume daily daemon after initial post-outage dispatch: %v", err)
+		}
+		for _, executorID := range executorIDs {
+			waitActorPresenceInChannel(t, ws, homeID, executorID, daemon, daemonLog)
+		}
+		dailyServerOutageDuration = time.Since(outageStarted)
+	}
 
 	failedArtifactAttemptID := ""
 	artifactOutageDuration := time.Duration(0)
@@ -218,6 +277,9 @@ func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix, artifactReco
 		expectedSucceeded, expectedWaitingHuman, input.timeout,
 		daemon, h.server, daemonLog, h.server.logPath)
 	completedDuration := time.Since(executionStarted)
+	if serverCutoffRecovery && dailyRunID != "daily-run-"+cutoff.Format("2006-01-02") {
+		t.Fatalf("recovered daily run=%s want original cutoff date %s", dailyRunID, cutoff.Format("2006-01-02"))
+	}
 
 	db, err := store.Open(runtimeDSN)
 	if err != nil {
@@ -229,7 +291,7 @@ func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix, artifactReco
 
 	assertDailyDetailCapacityFacts(t, db, sourceID, dailyRunID, occurrenceID, input,
 		expectedSucceeded, expectedWaitingHuman, expectedAttempts, expectedFailedAttempts,
-		expectedExpiredAttempts, failureMatrix)
+		expectedExpiredAttempts, failureMatrix, serverCutoffRecovery)
 	if artifactRecovery {
 		assertDailyArtifactProviderRecoveryFacts(t, db, failedArtifactAttemptID)
 	}
@@ -258,6 +320,9 @@ func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix, artifactReco
 	run, _, err := repository.GetDailyRunProgress(context.Background(), dailyRunID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if serverCutoffRecovery && run.CutoffAt != cutoff.Format(time.RFC3339Nano) {
+		t.Fatalf("recovered daily cutoff=%s want persisted cutoff %s", run.CutoffAt, cutoff.Format(time.RFC3339Nano))
 	}
 	windowEnd, err := time.Parse(time.RFC3339, run.WindowEndAt)
 	if err != nil {
@@ -305,8 +370,8 @@ WHERE aggregate_type = 'daily_run' AND aggregate_id = ? AND event_kind = 'daily_
 	}
 	restartDuration := time.Since(restartStarted)
 
-	t.Logf("daily Detail journey passed: failure_matrix=%t artifact_recovery=%t artifact_outage_ms=%d items=%d succeeded=%d waiting_human=%d payload_bytes=%d executors=%d response_bytes=%d complete_ms=%d drain_ms=%d restart_ms=%d listing_requests=%d detail_requests=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
-		failureMatrix, artifactRecovery, artifactOutageDuration.Milliseconds(), input.items, expectedSucceeded, expectedWaitingHuman, input.payloadBytes, input.executors,
+	t.Logf("daily Detail journey passed: failure_matrix=%t artifact_recovery=%t server_cutoff_recovery=%t artifact_outage_ms=%d server_outage_ms=%d items=%d succeeded=%d waiting_human=%d payload_bytes=%d executors=%d response_bytes=%d complete_ms=%d drain_ms=%d restart_ms=%d listing_requests=%d detail_requests=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
+		failureMatrix, artifactRecovery, serverCutoffRecovery, artifactOutageDuration.Milliseconds(), dailyServerOutageDuration.Milliseconds(), input.items, expectedSucceeded, expectedWaitingHuman, input.payloadBytes, input.executors,
 		totalResponseBytes, completedDuration.Milliseconds(),
 		drainedDuration.Milliseconds(), restartDuration.Milliseconds(), metrics.ListingRequests, metrics.JobRequests,
 		latency.OfferToAccept.P50, latency.OfferToAccept.P95, latency.AcceptToStart.P50, latency.AcceptToStart.P95,
@@ -643,6 +708,31 @@ func waitDailyDetailCapacity(t *testing.T, dsn, sourceID string, items, succeede
 	return "", ""
 }
 
+func waitDailyDispatchPostedWithoutAttempt(t *testing.T, dsn string, timeout time.Duration, server *proc, serverLog string) {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var pendingPosted, attempts int
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		err = db.QueryRow(`SELECT
+  (SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox
+   WHERE cause_kind = 'work_materialized' AND delivery_status = 'pending' AND delivery_attempts >= 1),
+  (SELECT COUNT(*) FROM recruiting_attempts)`).Scan(&pendingPosted, &attempts)
+		if err == nil && pendingPosted == 1 && attempts == 0 {
+			return
+		}
+		if server.exited() {
+			t.Fatalf("Server exited before the missed-cutoff dispatch was posted: %s", tailLog(serverLog, 160))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("missed-cutoff dispatch did not reach pending/posted with zero Attempts: pending_posted=%d attempts=%d err=%v\nserver:\n%s",
+		pendingPosted, attempts, err, tailLog(serverLog, 160))
+}
+
 func dailyDetailExecutionSnapshot(db *sql.DB, sourceID string) string {
 	var lines []string
 	rows, err := db.Query(`SELECT w.work_id, w.status, COALESCE(w.resolution, ''),
@@ -693,12 +783,14 @@ FROM recruiting_execution_dispatch_outbox ORDER BY created_at, dispatch_id`)
 
 func assertDailyDetailCapacityFacts(t *testing.T, db *sql.DB, sourceID, dailyRunID, occurrenceID string,
 	input dailyDetailCapacityInput, succeeded, waitingHuman, attempts, expectedFailed, expectedExpired int,
-	failureMatrix bool) {
+	failureMatrix, serverCutoffRecovery bool) {
 	t.Helper()
 	var listingWorks, detailWorks, succeededDetailWorks, waitingDetailWorks int
 	var succeededAttempts, failedAttempts, expiredAttempts, detailArtifacts, failureArtifacts, detailVersions, observations int
-	var permits, pendingDispatches, materializeDispatches int
+	var dailyRuns, occurrences, permits, pendingDispatches, materializeDispatches, maxMaterializeDeliveries int
 	if err := db.QueryRow(`SELECT
+  (SELECT COUNT(*) FROM recruiting_daily_runs),
+  (SELECT COUNT(*) FROM recruiting_source_occurrences),
   (SELECT COUNT(*) FROM recruiting_works WHERE target_id = ? AND purpose = 'listing_sync' AND status = 'completed'),
   (SELECT COUNT(*) FROM recruiting_works d JOIN recruiting_works p ON p.work_id = d.parent_work_id JOIN recruiting_source_occurrences o ON o.listing_work_id = p.work_id WHERE o.daily_run_id = ? AND d.purpose = 'detail_sync'),
   (SELECT COUNT(*) FROM recruiting_works WHERE purpose = 'detail_sync' AND status = 'completed' AND resolution = 'succeeded'),
@@ -712,22 +804,24 @@ func assertDailyDetailCapacityFacts(t *testing.T, db *sql.DB, sourceID, dailyRun
   (SELECT COUNT(*) FROM recruiting_listing_observations WHERE occurrence_id = ?),
   (SELECT COUNT(*) FROM recruiting_budget_permits WHERE permit_status = 'active'),
   (SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE delivery_status <> 'delivered'),
-  (SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE cause_kind = 'work_materialized')`,
-		sourceID, dailyRunID, occurrenceID).Scan(&listingWorks, &detailWorks, &succeededDetailWorks, &waitingDetailWorks,
+  (SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE cause_kind = 'work_materialized'),
+  (SELECT COALESCE(MAX(delivery_attempts), 0) FROM recruiting_execution_dispatch_outbox WHERE cause_kind = 'work_materialized')`,
+		sourceID, dailyRunID, occurrenceID).Scan(&dailyRuns, &occurrences, &listingWorks, &detailWorks, &succeededDetailWorks, &waitingDetailWorks,
 		&succeededAttempts, &failedAttempts, &expiredAttempts, &detailArtifacts, &failureArtifacts, &detailVersions, &observations,
-		&permits, &pendingDispatches, &materializeDispatches); err != nil {
+		&permits, &pendingDispatches, &materializeDispatches, &maxMaterializeDeliveries); err != nil {
 		t.Fatal(err)
 	}
 	wantMaxMaterialize := ((input.items+499)/500)*input.executors + input.executors
-	if listingWorks != 1 || detailWorks != input.items || succeededDetailWorks != succeeded || waitingDetailWorks != waitingHuman ||
+	if dailyRuns != 1 || occurrences != 1 || listingWorks != 1 || detailWorks != input.items || succeededDetailWorks != succeeded || waitingDetailWorks != waitingHuman ||
 		succeededAttempts != succeeded+1 || failedAttempts != expectedFailed || expiredAttempts != expectedExpired ||
 		succeededAttempts+failedAttempts+expiredAttempts != attempts || detailArtifacts != succeeded ||
 		failureArtifacts != expectedFailed || detailVersions != succeeded || observations != input.items ||
-		permits != 0 || pendingDispatches != 0 || materializeDispatches < 1 || materializeDispatches > wantMaxMaterialize {
-		t.Fatalf("daily facts listing=%d details=%d succeeded_works=%d waiting_works=%d succeeded_attempts=%d failed_attempts=%d expired_attempts=%d response_artifacts=%d failure_artifacts=%d versions=%d observations=%d permits=%d pending_dispatches=%d materialize_dispatches=%d max=%d",
-			listingWorks, detailWorks, succeededDetailWorks, waitingDetailWorks, succeededAttempts, failedAttempts,
+		permits != 0 || pendingDispatches != 0 || materializeDispatches < 1 || materializeDispatches > wantMaxMaterialize ||
+		(serverCutoffRecovery && maxMaterializeDeliveries < 2) {
+		t.Fatalf("daily facts runs=%d occurrences=%d listing=%d details=%d succeeded_works=%d waiting_works=%d succeeded_attempts=%d failed_attempts=%d expired_attempts=%d response_artifacts=%d failure_artifacts=%d versions=%d observations=%d permits=%d pending_dispatches=%d materialize_dispatches=%d max=%d max_materialize_deliveries=%d",
+			dailyRuns, occurrences, listingWorks, detailWorks, succeededDetailWorks, waitingDetailWorks, succeededAttempts, failedAttempts,
 			expiredAttempts, detailArtifacts, failureArtifacts, detailVersions, observations, permits, pendingDispatches,
-			materializeDispatches, wantMaxMaterialize)
+			materializeDispatches, wantMaxMaterialize, maxMaterializeDeliveries)
 	}
 	if failureMatrix {
 		assertDailyDetailFailureFacts(t, db)

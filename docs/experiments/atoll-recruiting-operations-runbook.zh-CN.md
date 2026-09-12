@@ -107,6 +107,8 @@ durable timer 到达 cutoff 时冻结当日 eligible Source roster，形成不�
 
 Server 单点入口为 `make recruiting-browser-server-recovery`。BF2 在真实 Chrome 请求已到 origin、Attempt running 且零 Artifact 时杀 Server，执行 daemon 必须保持同一 OS 进程存活。Server 恢复后 daemon 应以同一 Actor 身份和新 incarnation 重连；Recruiting Actor 会重新建立周期 reconcile 链，旧 Attempt 必须 expired 且不接受证据，`attempt_recovered` 新 dispatch 才能产生唯一 DOM、trace 和 BackfillOutput。不得因重启手工修改 timer ID、Attempt、Permit 或 dispatch。周期 reconcile 可以在 Actor body 启动时安全换链；每日 cutoff/work/close timer 不得照此替换，否则停机跨过 cutoff 时可能跳过当日运行。BF2 不替代跨 cutoff 故障、Server/MySQL 联合故障或完整灾难恢复演练。
 
+跨每日 cutoff 的 Server 单点入口为 make recruiting-daily-server-cutoff-recovery。验收必须区分两个阶段：Server 离线跨过 cutoff 时 MySQL 不应被旁路写入；Server 恢复后应以原 timer payload 创建当天唯一 DailyRun/Occurrence。若首个 dispatch 在 Executor 尚未重连时为 pending，不要手工改 next_attempt_at：配置 fleet 的具体 incarnation 上线会通过 presence 边沿提前该 dispatch。检查 delivery attempts 增长、随后唯一 Attempt 领取并完成；禁止重新创建 DailyRun、重发人工命令或将 cutoff 改到次日。本入口只覆盖单日 Server 单点，不替代多日停机补偿和联合恢复。
+
 共享修复的标准顺序：
 
 ```text

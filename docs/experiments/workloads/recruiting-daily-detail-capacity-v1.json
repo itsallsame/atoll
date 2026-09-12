@@ -19,6 +19,11 @@
     "all response Resource bytes match MySQL SHA-256 metadata and survive Server restart",
     "all domain event intents due during execution drain to the Atoll Channel ledger, no execution dispatch or Permit remains active, and the logical future close event is not delivered before its immutable window end"
   ],
+  "fault_correctness_gates": [
+    "Server-cutoff recovery kills Atoll Server only after the Recruiting Actor has persisted the exact daily timer and before that cutoff",
+    "while Server is offline past the cutoff, no side channel writes a DailyRun; restart must deliver the overdue durable timer with its original date and cutoff",
+    "the original execution daemon remains alive, reconnects after Server restart, and the missed-cutoff DailyRun completes exactly once"
+  ],
   "non_claims": [
     "the controlled origin does not represent third-party latency, rate limits, CDN behavior, or site availability",
     "this workload does not measure Browser or authenticated Profile execution",

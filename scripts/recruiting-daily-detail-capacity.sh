@@ -4,6 +4,7 @@ set -euo pipefail
 level="${RECRUITING_DAILY_DETAIL_CAPACITY_LEVEL:-D0}"
 failure_matrix="${RECRUITING_DAILY_DETAIL_FAILURE_MATRIX:-0}"
 artifact_recovery="${RECRUITING_DAILY_ARTIFACT_RECOVERY:-0}"
+server_cutoff_recovery="${RECRUITING_DAILY_SERVER_CUTOFF_RECOVERY:-0}"
 case "${level}" in
   D0|D1|D2|D3) ;;
   *)
@@ -19,8 +20,12 @@ if [[ "${artifact_recovery}" != "0" && "${artifact_recovery}" != "1" ]]; then
   echo "recruiting daily Detail capacity: RECRUITING_DAILY_ARTIFACT_RECOVERY must be 0 or 1" >&2
   exit 2
 fi
-if [[ "${failure_matrix}" == "1" && "${artifact_recovery}" == "1" ]]; then
-  echo "recruiting daily Detail capacity: failure matrix and Artifact recovery are separate fault axes" >&2
+if [[ "${server_cutoff_recovery}" != "0" && "${server_cutoff_recovery}" != "1" ]]; then
+  echo "recruiting daily Detail capacity: RECRUITING_DAILY_SERVER_CUTOFF_RECOVERY must be 0 or 1" >&2
+  exit 2
+fi
+if (( failure_matrix + artifact_recovery + server_cutoff_recovery > 1 )); then
+  echo "recruiting daily Detail capacity: failure matrix, Artifact recovery, and Server cutoff recovery are separate fault axes" >&2
   exit 2
 fi
 if [[ "${failure_matrix}" == "1" && "${level}" != "D0" ]]; then
@@ -29,6 +34,10 @@ if [[ "${failure_matrix}" == "1" && "${level}" != "D0" ]]; then
 fi
 if [[ "${artifact_recovery}" == "1" && "${level}" != "D0" ]]; then
   echo "recruiting daily Detail capacity: Artifact recovery uses the bounded D0 workload" >&2
+  exit 2
+fi
+if [[ "${server_cutoff_recovery}" == "1" && "${level}" != "D0" ]]; then
+  echo "recruiting daily Detail capacity: Server cutoff recovery uses the bounded D0 workload" >&2
   exit 2
 fi
 if [[ "${level}" == "D2" && "${RECRUITING_DAILY_DETAIL_CAPACITY_LARGE_ACK:-}" != "isolated-daily-detail-large-load" ]]; then
@@ -122,11 +131,15 @@ fi
 if [[ "${artifact_recovery}" == "1" ]]; then
   test_name='TestRecruitingScheduledDailyArtifactProviderRecoveryThroughRealDataPlanes'
 fi
-echo "recruiting daily Detail capacity: level=${level} failure_matrix=${failure_matrix} artifact_recovery=${artifact_recovery} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} listing_latency_ms=${listing_latency_ms} executors=${executors} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
+if [[ "${server_cutoff_recovery}" == "1" ]]; then
+  test_name='TestRecruitingScheduledDailyServerCutoffRecoveryThroughRealDataPlanes'
+fi
+echo "recruiting daily Detail capacity: level=${level} failure_matrix=${failure_matrix} artifact_recovery=${artifact_recovery} server_cutoff_recovery=${server_cutoff_recovery} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} listing_latency_ms=${listing_latency_ms} executors=${executors} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
 set +e
 ATOLL_RECRUITING_DAILY_DETAIL_CAPACITY=1 \
 ATOLL_RECRUITING_DAILY_DETAIL_FAILURE_MATRIX="${failure_matrix}" \
 ATOLL_RECRUITING_DAILY_ARTIFACT_RECOVERY="${artifact_recovery}" \
+ATOLL_RECRUITING_DAILY_SERVER_CUTOFF_RECOVERY="${server_cutoff_recovery}" \
 RECRUITING_DAILY_DETAIL_CAPACITY_ITEMS="${items}" \
 RECRUITING_DAILY_DETAIL_CAPACITY_PAYLOAD_BYTES="${payload_bytes}" \
 RECRUITING_DAILY_DETAIL_CAPACITY_EXECUTORS="${executors}" \

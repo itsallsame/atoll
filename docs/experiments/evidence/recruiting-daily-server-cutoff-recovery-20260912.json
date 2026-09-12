@@ -1,0 +1,91 @@
+{
+  "schema": "recruiting.daily-server-cutoff-recovery-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "72636d2d",
+  "workload_manifest": "docs/experiments/workloads/recruiting-daily-detail-capacity-v1.json#D0+server-cutoff-recovery",
+  "entrypoint": "make recruiting-daily-server-cutoff-recovery",
+  "test": "TestRecruitingScheduledDailyServerCutoffRecoveryThroughRealDataPlanes",
+  "feature_under_test": "an exact persisted daily cutoff and its first execution dispatch survive an Atoll Server outage that crosses the cutoff before the execution daemon reconnects",
+  "environment": {
+    "origin": "Docker --internal 11.253.x.x controlled HTTP service",
+    "mysql": "ephemeral MySQL 8.4 with separate non-root migration and runtime accounts",
+    "workload": {"sources": 1, "listing_pages": 1, "detail_items": 20, "detail_payload_bytes": 1024, "executors": 2},
+    "processes": ["Atoll Server process restarted in place", "one execution daemon OS process kept alive"]
+  },
+  "fault_cut": {
+    "cutoff_delay_seconds": 15,
+    "cut": "kill Atoll Server after the Recruiting Actor is ready and before cutoff; wait until two seconds after cutoff; verify MySQL still has zero DailyRuns; pause the surviving daemon while Server restarts",
+    "post_restart_pre_daemon_gate": "the overdue timer creates the original DailyRun and a Listing dispatch; that dispatch is pending with at least one delivery attempt while recruiting_attempts remains empty",
+    "resume": "continue the same daemon OS process and require configured-fleet presence to accelerate the pending dispatch",
+    "server_outage_and_executor_recovery_ms": 30619
+  },
+  "first_run_finding": {
+    "status": "failed before configured-fleet presence tracking",
+    "journey_seconds": 221.93,
+    "facts": "the original DailyRun and SourceOccurrence existed, but the Listing Work stayed open with zero Attempts; its dispatch had one delivery attempt, last_error_class awaiting_completion, and next_attempt_at about 15 minutes later",
+    "root_cause": "presence tracking only knew Executors that had already claimed an Attempt; the first post-cutoff dispatch had no Attempt, so the daemon's later arrival could not invoke the existing durable-dispatch acceleration path"
+  },
+  "authoritative_result": {
+    "status": "passed",
+    "daily_runs": 1,
+    "source_occurrences": 1,
+    "original_schedule_date_preserved": true,
+    "original_cutoff_timestamp_preserved": true,
+    "daily_runs_written_while_server_offline": 0,
+    "listing_dispatch_delivery_attempts_minimum": 2,
+    "listing_requests": 1,
+    "detail_requests": 20,
+    "detail_succeeded": 20,
+    "detail_waiting_human": 0,
+    "response_artifacts": 20,
+    "response_bytes_verified": 20480,
+    "active_permits_after_settlement": 0,
+    "pending_execution_dispatches_after_settlement": 0,
+    "business_completion_after_executor_recovery_ms": 1527,
+    "outbox_drain_ms": 1731,
+    "final_server_restart_ms": 3344,
+    "journey_total_ms": 49936,
+    "offer_to_accept_ms": {"p50": 255, "p95": 272},
+    "successful_start_to_terminal_ms": {"p50": 600, "p95": 643},
+    "ledger_messages": 435,
+    "ledger_payload_bytes": 277818,
+    "ledger_events": 96,
+    "recruiting_ledger_events": 93
+  },
+  "invariants": [
+    "the daily timer is persisted before the fault and no application side channel runs while Server is offline",
+    "the overdue timer retains its original schedule date, cutoff, window, policy version, and deterministic DailyRun identity",
+    "DailyRun and SourceOccurrence are each created exactly once",
+    "the first post-outage dispatch is observed pending and already posted while there is no Attempt",
+    "the configured Executor's concrete incarnation becomes a bounded presence observation and accelerates the existing pending dispatch",
+    "the same daemon process then completes one Listing, twenty Details, twenty response Resources, and the DailyRun",
+    "a final normal Server restart preserves the summary and Resource read"
+  ],
+  "regressions": {
+    "normal_daily_D0": {"status": "passed"},
+    "browser_server_BF2": {"status": "passed", "fault_outage_ms": 14006, "journey_total_ms": 36886},
+    "browser_joint_process_BF1": {"status": "passed", "fault_outage_ms": 599, "journey_total_ms": 23334}
+  },
+  "implementation": {
+    "production_driver_test_hook_added": false,
+    "actor_classes_added": 0,
+    "worker_types_added": 0,
+    "atoll_core_modified": false,
+    "changed_production_scope": ["drivers/tools/recruiting/actor_executor_presence.go"],
+    "scaling_bound": "configured Executor bases and the Atoll actor catalog are indexed in O(fleet+catalog), with the existing configuration limit of 10000 targets",
+    "reused_mechanism": "existing concrete-incarnation presence transition, AccelerateExecutorDispatches transaction, idempotent dispatch identity, Offer receipt and Attempt fence"
+  },
+  "non_claims": [
+    "simultaneous Atoll Server and MySQL failure",
+    "multiple missed calendar days during an extended outage",
+    "20K simultaneous Listing occurrences or 400K Detail completion",
+    "remote Artifact storage, third-party latency, rate limits, or site availability",
+    "complete P9 production readiness"
+  ],
+  "acceptance": {
+    "gate": "P9 Atoll unavailable across the daily cutoff with execution fleet reconnecting later",
+    "status": "passed",
+    "scenario": "S07/S25",
+    "scenario_status_changed": false
+  }
+}

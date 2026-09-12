@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
@@ -59,11 +60,42 @@ func reconcileExecutorPresence(sys actorbase.Sys, cfg Config, state *storedState
 		return executorPresenceReconcileResult{}, fmt.Errorf("executor presence returned an invalid terminal")
 	}
 	result := executorPresenceReconcileResult{}
+	trackConfiguredExecutorMembers(state, wire.Catalog, cfg.Executors)
 	observeExecutorPresence(state, wire.Catalog, calledAt, &result)
 	if err := sweepInvalidExecutorAttempts(sys.Life(), state, repository, cfg.AttemptRecoveryLimit, now.UTC(), &result); err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+// trackConfiguredExecutorMembers adds the current concrete incarnation of a
+// configured fleet target before presence transitions are evaluated. Without
+// this, a dispatch posted before that Executor ever claimed Work can inherit a
+// long acknowledgement deadline while the daemon is offline, and its later
+// arrival cannot accelerate the wake. Concrete IDs remain the authority for
+// attempt fencing; the configured base ID is only a bounded discovery hint.
+func trackConfiguredExecutorMembers(state *storedState, catalog introspect.Catalog, targets []ExecutorTargetConfig) {
+	if len(targets) == 0 || len(catalog.Actors) == 0 {
+		return
+	}
+	bases := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		bases[string(target.ActorID)] = struct{}{}
+	}
+	for _, member := range catalog.Actors {
+		if _, tracked := state.ExecutorPresence[member.ID]; tracked {
+			continue
+		}
+		_, configured := bases[member.ID]
+		if !configured {
+			if separator := strings.LastIndexByte(member.ID, ':'); separator > 0 {
+				_, configured = bases[member.ID[:separator]]
+			}
+		}
+		if configured {
+			state.ExecutorPresence[member.ID] = executorPresenceObservation{}
+		}
+	}
 }
 
 func observeExecutorPresence(state *storedState, catalog introspect.Catalog, observedAt time.Time,

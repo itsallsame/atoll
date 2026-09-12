@@ -48,6 +48,8 @@ S25/P9 补充（2026-09-12，事务批处理）：Recruiting 扩展把同一批�
 
 S25/P9 补充（2026-09-12，Atoll Server 在途恢复）：BF2 在真实 Chrome 请求已进入 origin 且尚无 Artifact 时杀 Server，原执行 daemon OS 进程全程存活。首次运行观察 211 秒后仍有 running Attempt，反向发现周期 reconcile timer 在“fire 已出队、后继 ID 未持久化”的 crash cut 会断链。Recruiting Actor 现仅在 body 启动时替换周期 reconcile timer；每日 cutoff/work/close timer 保留其精确持久 deadline，Atoll core 零修改。加强后的权威复跑证明同一 Executor Actor 以新 incarnation 重连、旧 Attempt expired 且零 accepted Artifact、新 Attempt 唯一完成 DOM、trace 和 BackfillOutput，Permit/dispatch 清零并可再次重启回读；BF1、BF0、B0、D0 均回归通过。该证据关闭 Server 单点在途 Browser 切点，但不覆盖跨每日 cutoff、Server/MySQL 联合故障、远程 Artifact 或生产 SLO，S25 状态仍为部分完成。证据为 `recruiting-browser-server-recovery-20260912.json`。
 
+S07/S25/P9 补充（2026-09-12，每日 cutoff 跨 Server 故障）：DF0 在每日 timer 已持久、cutoff 尚未来临时杀 Server，跨过 cutoff 后确认 MySQL 零旁路 DailyRun；恢复后旧 timer 的原日期、cutoff、window 和 policy 创建唯一 DailyRun/Occurrence。首次 221.93 秒失败定位到“首次 dispatch 已 post、Executor 尚无 Attempt、15 分钟 acknowledgement deadline 无法被后续 presence 提前”；Recruiting 现以 O(fleet+catalog) 把明确配置的 fleet 映射到具体 incarnation，复用已有 dispatch acceleration，不新增 Worker、不改 Atoll core。强化旅程先暂停原 daemon，证明 dispatch pending/已 post 且 Attempt 为零，再恢复同一进程并要求至少两次 delivery；20/20 Detail、20,480 字节 Resource、日报和再次重启均通过。该证据关闭单日 cutoff 的 Server 单点与 Server 先于 Executor 恢复切点，但不覆盖多日停机、Server/MySQL 联合故障或生产规模，S25 仍为部分完成。证据为 recruiting-daily-server-cutoff-recovery-20260912.json。
+
 ## 当前实施顺序
 
 1. S12/S25/P9：在授权部署环境完成真实登录、出站隔离、执行吞吐、联合恢复和长期监控。
