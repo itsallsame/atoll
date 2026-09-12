@@ -163,6 +163,33 @@ func TestSubmitExecutionResultBatchRetriesAmbiguousResponseWithExactPayload(t *t
 	}
 }
 
+func TestSubmitExecutionResultBatchRetriesTemporaryControlUnavailability(t *testing.T) {
+	unavailable := map[string]any{"status": message.StatusFailed, "error_code": "internal_unavailable", "detail": "database connection reset"}
+	response := executioncontract.ResultBatchResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-batch-reconnected", RequestedBy: "executor-1", SupplyBatchID: "supply-reconnected",
+		AcceptedItems: 1, ContinuationDispatchID: "dispatch-after-reconnect"}
+	caller := &callerSequenceStub{pending: []*pendingStub{
+		{response: controlResponse(t, executioncontract.TypeResultBatch, unavailable)},
+		{response: controlResponse(t, executioncontract.TypeResultBatch, unavailable)},
+		{response: controlResponse(t, executioncontract.TypeResultBatch, response)},
+	}}
+	request := executioncontract.ResultBatchRequest{SupplyBatchID: "supply-reconnected", Items: []executioncontract.ResultBatchItem{{
+		ResultKind: "detail", Payload: json.RawMessage(`{"command_id":"detail-reconnected","attempt_id":"attempt-reconnected"}`),
+	}}}
+	continuation, err := submitExecutionResultBatch(context.Background(), caller, message.Root(), "control-1", "executor-1", request, time.Second)
+	if err != nil || continuation != "dispatch-after-reconnect" {
+		t.Fatalf("temporary batch retry continuation=%q err=%v", continuation, err)
+	}
+	if len(caller.operations) != 3 {
+		t.Fatalf("temporary batch result retries=%d, want 3", len(caller.operations))
+	}
+	for index := range caller.payloads {
+		if !reflect.DeepEqual(caller.payloads[index], request) {
+			t.Fatalf("temporary batch result retry %d changed immutable payload: %#v", index, caller.payloads[index])
+		}
+	}
+}
+
 func TestTransitionExecutionChecksReturnedAttempt(t *testing.T) {
 	attempt := model.Attempt{AttemptID: "attempt-1", WorkID: "work-1", Status: model.AttemptAccepted,
 		ExecutorActorID: "executor-1", ExecutorIncarnation: "boot-1"}
@@ -273,6 +300,33 @@ func TestMessageExecutionControlRetriesAmbiguousResultResponseWithExactCommand(t
 	}
 	if !reflect.DeepEqual(caller.payloads[0], payload) || !reflect.DeepEqual(caller.payloads[1], payload) {
 		t.Fatalf("result retry changed immutable payload: %#v %#v", caller.payloads[0], caller.payloads[1])
+	}
+}
+
+func TestMessageExecutionControlRetriesTemporaryControlUnavailabilityWithoutChangingResult(t *testing.T) {
+	unavailable := map[string]any{"status": message.StatusFailed, "error_code": "internal_unavailable", "detail": "database connection reset"}
+	response := executioncontract.ResultResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-result-reconnected", RequestedBy: "executor-1",
+		Detail: json.RawMessage(`{"content_changed":true,"replayed":false}`)}
+	caller := &callerSequenceStub{pending: []*pendingStub{
+		{response: controlResponse(t, executioncontract.TypeResult, unavailable)},
+		{response: controlResponse(t, executioncontract.TypeResult, unavailable)},
+		{response: controlResponse(t, executioncontract.TypeResult, response)},
+	}}
+	control := messageExecutionControl{caller: caller, cause: message.Root(), controlActor: "control-1",
+		executorActorID: "executor-1", wait: time.Second}
+	payload := executioncontract.DetailResult{CommandID: "detail-result-connection-reset", ResultKind: "detail",
+		AttemptID: "attempt-connection-reset", ExecutorIncarnation: "boot-1"}
+	if err := control.Submit(context.Background(), payload.ResultKind, payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(caller.operations) != 3 {
+		t.Fatalf("temporary result retries=%d, want 3", len(caller.operations))
+	}
+	for index := range caller.payloads {
+		if !reflect.DeepEqual(caller.payloads[index], payload) {
+			t.Fatalf("temporary result retry %d changed immutable payload: %#v", index, caller.payloads[index])
+		}
 	}
 }
 

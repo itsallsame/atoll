@@ -1,0 +1,87 @@
+{
+  "schema": "recruiting.browser-mysql-connection-recovery-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "74e4682e",
+  "workload_manifest": "docs/experiments/workloads/recruiting-browser-capacity-v1.json#BF4",
+  "entrypoint": "make recruiting-browser-mysql-connection-recovery",
+  "test": "TestRecruitingBrowserMySQLConnectionRecoveryThroughRealDataPlanes",
+  "feature_under_test": "MySQL TCP connections are forcibly closed and temporarily refused while a real-Chrome request is in flight",
+  "environment": {
+    "chrome": "/usr/bin/google-chrome",
+    "origin": "Docker --internal 11.254.x.x controlled HTTP service",
+    "origin_latency_ms": 5000,
+    "mysql": "ephemeral MySQL 8.4 with separate non-root migration and runtime accounts",
+    "fault_proxy": "test-process transparent TCP proxy between all Recruiting runtime clients and MySQL",
+    "data_planes": ["Recruiting MySQL", "Atoll Channel ledger", "daemon File Resources"]
+  },
+  "fault_cut": {
+    "browser_state_before_cut": "Attempt running, no Artifact persisted, and controlled origin accepted exactly one document request",
+    "cut": "close every existing proxied MySQL TCP connection, refuse new connections for seven seconds, then resume forwarding to the same database",
+    "connection_outage_ms": 7003,
+    "server_confirmed_alive_during_outage": true,
+    "execution_daemon_confirmed_alive_during_outage": true
+  },
+  "first_run_finding": {
+    "status": "failed before the fix",
+    "observation_seconds": 200.68,
+    "facts": "the website was requested once, but the original Attempt and Work remained running with zero Artifacts and the originating dispatch waited on its fifteen-minute acknowledgement deadline",
+    "root_cause": "the Executor retried only ambiguous Call/Wait transport outcomes; the control Actor's explicit internal_unavailable response after a database connection reset was treated as terminal, so the already-produced immutable result was abandoned",
+    "fix_scope": "Recruiting Executor control client only: replay the identical result operation and payload on internal_unavailable or channel_unavailable with bounded exponential backoff; business rejection and protocol errors remain terminal"
+  },
+  "authoritative_result": {
+    "status": "passed",
+    "backfill_items": 1,
+    "browser_document_requests": 1,
+    "robots_requests": 1,
+    "attempts": 1,
+    "succeeded_attempts": 1,
+    "attempt_recovery_dispatches": 0,
+    "response_artifacts": 1,
+    "trace_artifacts": 1,
+    "backfill_outputs": 1,
+    "response_bytes_verified": 4081,
+    "active_permits_after_settlement": 0,
+    "pending_execution_dispatches_after_settlement": 0,
+    "business_completion_ms": 8175,
+    "outbox_drain_ms": 8480,
+    "final_server_restart_ms": 3124,
+    "journey_total_ms": 24150,
+    "offer_to_accept_ms": {"p50": 47, "p95": 47},
+    "accept_to_start_ms": {"p50": 29, "p95": 29},
+    "start_to_terminal_ms": {"p50": 7580, "p95": 7580},
+    "ledger_messages": 187,
+    "ledger_payload_bytes": 64168,
+    "ledger_events": 49,
+    "recruiting_ledger_events": 47
+  },
+  "invariants": [
+    "all Recruiting runtime database traffic uses the non-root staircase_runtime account through the fault proxy",
+    "the fault closes established TCP connections and rejects new connections only after the Attempt is running, the request reached the origin, and no Artifact exists",
+    "the result command ID, result operation, Attempt identity, Executor incarnation and payload remain byte-stable across retries",
+    "temporary internal_unavailable and channel_unavailable responses use bounded exponential backoff; business rejection and protocol errors are never retried",
+    "the original Attempt succeeds without a replacement Attempt, recovery dispatch, or second website request",
+    "single-result and batch-result control clients share the same retry rule",
+    "all Permits and dispatches settle, and final Server restart preserves the completed state and both Resources"
+  ],
+  "implementation": {
+    "production_driver_test_hook_added": false,
+    "actor_classes_added": 0,
+    "worker_types_added": 0,
+    "atoll_core_modified": false,
+    "changed_production_scope": ["drivers/tools/recruitingexecutor/control_client.go"],
+    "retry_policy": "immediate single replay for ambiguous delivery; 250ms exponential backoff capped at 2s for explicit internal_unavailable/channel_unavailable, bounded by control_wait_ms"
+  },
+  "non_claims": [
+    "MySQL primary/replica failover, data loss, or transaction recovery after database process death",
+    "remote-network latency, packet reordering, partial packet corruption, or a long outage beyond control_wait_ms",
+    "simultaneous Atoll Server and MySQL failure",
+    "remote Artifact storage or third-party site availability",
+    "complete P9 production readiness"
+  ],
+  "acceptance": {
+    "gate": "P9 MySQL connection reset during an in-flight real-Chrome request",
+    "status": "passed",
+    "scenario": "S25",
+    "scenario_status_changed": false
+  }
+}

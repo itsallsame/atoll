@@ -52,6 +52,8 @@ S07/S25/P9 补充（2026-09-12，每日 cutoff 跨 Server 故障）：DF0 在每
 
 S25/P9 补充（2026-09-12，MySQL 在途停顿）：BF3 在 Browser Attempt running、真实 Chrome 请求已进入 origin 且零 Artifact 时暂停本次测试的非 root MySQL 8.4 容器 7.048 秒，Server 与执行 daemon 全程存活；页面完成后的 Chrome 子进程寿命不作为本门断言。恢复后仍由原 Attempt 唯一完成 DOM、trace 和 BackfillOutput，网站请求精确一次，没有新 Attempt 或 `attempt_recovered` dispatch；Permit/outbox、ledger、最终 Server 重启与 Resource 回读均通过。该证据关闭连接保持下的本地短时数据库 stall，但不代表连接重置、MySQL failover、远程数据库、长停机或 Server/MySQL 联合故障，S25 状态不变。证据为 `recruiting-browser-mysql-recovery-20260912.json`。
 
+S25/P9 补充（2026-09-12，MySQL 连接重置）：BF4 透明代理在 Browser running/no-evidence 切点关闭全部既有 MySQL TCP 连接并拒绝新连接 7.003 秒。首次有效运行观察 200.68 秒，原 Attempt/Work 仍 running 且零 Artifact，证明明确的 `internal_unavailable` 会让 Executor 放弃已经生成的结果。修复只在 Recruiting Executor：单项和 batch 结果均用不变 command/operation/payload，在 `control_wait_ms` 内对临时不可用做有界指数退避，业务拒绝不重试。权威复跑由原 Attempt 完成唯一 DOM、trace 和 BackfillOutput，网站请求仍精确一次，Permit/dispatch、ledger 和重启回读通过。它不代表 MySQL failover、进程死亡、远程网络、长停机或 Server/MySQL 联合故障，S25 状态不变。证据为 `recruiting-browser-mysql-connection-recovery-20260912.json`。
+
 ## 当前实施顺序
 
 1. S12/S25/P9：在授权部署环境完成真实登录、出站隔离、执行吞吐、联合恢复和长期监控。

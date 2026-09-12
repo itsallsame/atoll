@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 
 .PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope recruiting-boundary-check recruiting-live-smoke recruiting-live-nightly recruiting-live-weekly recruiting-mysql-stress recruiting-capacity recruiting-process-capacity recruiting-artifact-capacity recruiting-http-capacity recruiting-daily-detail-capacity recruiting-daily-detail-failure-matrix recruiting-daily-artifact-recovery recruiting-daily-server-cutoff-recovery recruiting-browser-capacity recruiting-browser-artifact-recovery recruiting-browser-joint-process-recovery recruiting-browser-server-recovery recruiting-backup-restore recruiting-joint-restore recruiting-security-audit recruiting-extension-test recruiting-extension-live-test recruiting-extension-bundle-test dev clean e2e-loop
-.PHONY: recruiting-browser-mysql-recovery
+.PHONY: recruiting-browser-mysql-recovery recruiting-browser-mysql-connection-recovery
 
 # server/daemon ship namespaced (atoll-server / atoll-daemon); the entry
 # command itself is plain `atoll` — its own name IS the namespace.
@@ -216,6 +216,9 @@ recruiting-browser-server-recovery:
 
 recruiting-browser-mysql-recovery:
 	RECRUITING_BROWSER_MYSQL_RECOVERY=1 RECRUITING_BROWSER_CAPACITY_LEVEL=BF3 ./scripts/recruiting-browser-capacity.sh
+
+recruiting-browser-mysql-connection-recovery:
+	RECRUITING_BROWSER_MYSQL_CONNECTION_RECOVERY=1 RECRUITING_BROWSER_CAPACITY_LEVEL=BF4 ./scripts/recruiting-browser-capacity.sh
 
 recruiting-backup-restore:
 	./scripts/recruiting-backup-restore.sh

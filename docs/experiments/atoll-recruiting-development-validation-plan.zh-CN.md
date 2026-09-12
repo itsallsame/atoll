@@ -683,6 +683,8 @@ Atoll 暂时不可用进展（2026-09-12）：新增 BF2 `make recruiting-browse
 
 MySQL 在途停顿进展（2026-09-12）：新增 `make recruiting-browser-mysql-recovery` 和 BF3。真实 Browser Attempt running、Chrome 文档请求已进入无出站受控 origin 且数据库中零 Artifact 后，测试用 `docker pause` 令独立非 root MySQL 8.4 停顿 7.048 秒，同时持续确认 Server 和执行 daemon 未退出；页面完成后的 Chrome 子进程寿命不作为本门断言。恢复后原 Attempt 成功写入唯一 DOM response、effect trace 与 BackfillOutput，origin 始终只有一次文档请求，Attempt 精确一份且没有 `attempt_recovered` dispatch；Permit/dispatch 清零，Channel ledger 和最终 Server 重启回读通过。业务完成 7.767 秒，总旅程 24.436 秒。该门没有增加生产 hook 或修改任何生产代码，只证明连接保持下的有界数据库 stall；TCP 连接重置、MySQL failover、远程数据库、长停机和 Server/MySQL 联合故障仍须分别验证。证据见 `evidence/recruiting-browser-mysql-recovery-20260912.json`。
 
+MySQL 连接重置进展（2026-09-12）：新增 `make recruiting-browser-mysql-connection-recovery` 和 BF4。测试内透明 TCP 代理承载全部 `staircase_runtime` 流量，在相同 running/no-evidence 切点关闭既有连接并拒绝新连接七秒，再恢复到原 MySQL。首次有效注入观察 200.68 秒仍见 Attempt/Work running、零 Artifact 和 15 分钟 dispatch deadline，定位到 Executor 只重放模糊 Call/Wait，而把控制 Actor 因数据库失败返回的明确 `internal_unavailable` 当成终态。Recruiting Executor 现以不变 command/operation/payload 在 `control_wait_ms` 内对 `internal_unavailable|channel_unavailable` 做 250 ms 起步、2 秒封顶的指数退避；单项和 batch 结果共用该规则，业务拒绝/协议错误仍只调用一次。权威复跑断连 7.003 秒，原 Attempt 在 8.175 秒内完成，origin 请求精确一次，DOM/trace/BackfillOutput 各一，Permit/dispatch 清零，Server 重启回读通过。没有新增 Worker 或改 Atoll core；主从切换、数据库进程死亡、远程网络和长停机仍是独立门。证据见 `evidence/recruiting-browser-mysql-connection-recovery-20260912.json`。
+
 ## 16. 自动测试命令与 CI 分层
 
 计划在实现过程中提供以下稳定入口：

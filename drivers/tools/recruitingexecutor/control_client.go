@@ -42,15 +42,6 @@ func (c messageExecutionControl) Failed(ctx context.Context, offer executioncont
 }
 
 func (c messageExecutionControl) Submit(ctx context.Context, kind string, payload any) error {
-	err := submitExecutionResult(ctx, c.caller, c.cause, c.controlActor, c.executorActorID, kind, payload, c.wait)
-	if err == nil || ctx.Err() != nil || !isAmbiguousControlDelivery(err) {
-		return err
-	}
-	// Result command identities are deterministic and the control plane stores
-	// their response receipt in the same transaction as the business facts. A
-	// lost response is therefore safe to retry once with the exact payload: the
-	// retry either obtains that receipt or leaves the dispatch pending for its
-	// normal durable redelivery path.
 	return submitExecutionResult(ctx, c.caller, c.cause, c.controlActor, c.executorActorID, kind, payload, c.wait)
 }
 
@@ -84,6 +75,12 @@ func (e *ambiguousControlDeliveryError) Unwrap() error { return e.cause }
 func isAmbiguousControlDelivery(err error) bool {
 	var ambiguous *ambiguousControlDeliveryError
 	return errors.As(err, &ambiguous)
+}
+
+func isTemporarilyUnavailableControl(err error) bool {
+	var failure *controlFailure
+	return errors.As(err, &failure) &&
+		(failure.Code == "internal_unavailable" || failure.Code == "channel_unavailable")
 }
 
 func (e *controlFailure) Error() string {
@@ -171,10 +168,8 @@ func claimExecutionBatch(ctx context.Context, caller executionCallFace, cause me
 
 func submitExecutionResultBatch(ctx context.Context, caller executionCallFace, cause message.Cause, controlActor actor.ActorID,
 	executorActorID string, request executioncontract.ResultBatchRequest, wait time.Duration) (string, error) {
-	response, err := callExecutionControl(ctx, caller, cause, controlActor, executioncontract.TypeResultBatch, request, wait)
-	if err != nil && ctx.Err() == nil && isAmbiguousControlDelivery(err) {
-		response, err = callExecutionControl(ctx, caller, cause, controlActor, executioncontract.TypeResultBatch, request, wait)
-	}
+	response, err := callExecutionResultControl(ctx, caller, cause, controlActor,
+		executioncontract.TypeResultBatch, request, wait)
 	if err != nil {
 		return "", err
 	}
@@ -221,7 +216,8 @@ func submitExecutionResult(ctx context.Context, caller executionCallFace, cause 
 	default:
 		return fmt.Errorf("unsupported execution result kind %q", resultKind)
 	}
-	response, err := callExecutionControl(ctx, caller, cause, controlActor, executioncontract.TypeResult, payload, wait)
+	response, err := callExecutionResultControl(ctx, caller, cause, controlActor,
+		executioncontract.TypeResult, payload, wait)
 	if err != nil {
 		return err
 	}
@@ -252,6 +248,43 @@ func submitExecutionResult(ctx context.Context, caller executionCallFace, cause 
 		}
 	}
 	return nil
+}
+
+func callExecutionResultControl(ctx context.Context, caller executionCallFace, cause message.Cause,
+	controlActor actor.ActorID, operation string, request any, wait time.Duration) (actorbase.Msg, error) {
+	deadline := time.Now().Add(wait)
+	callWithAmbiguousReplay := func(callWait time.Duration) (actorbase.Msg, error) {
+		response, err := callExecutionControl(ctx, caller, cause, controlActor, operation, request, callWait)
+		if err == nil || ctx.Err() != nil || !isAmbiguousControlDelivery(err) {
+			return response, err
+		}
+		// Result command identities are deterministic and their response receipt
+		// commits with the business facts. An unknown delivery outcome is safe
+		// to replay immediately with the exact operation and payload.
+		return callExecutionControl(ctx, caller, cause, controlActor, operation, request, callWait)
+	}
+	response, err := callWithAmbiguousReplay(wait)
+	retryDelay := 250 * time.Millisecond
+	for err != nil && ctx.Err() == nil && isTemporarilyUnavailableControl(err) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return actorbase.Msg{}, err
+		}
+		timer := time.NewTimer(min(retryDelay, remaining))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return actorbase.Msg{}, ctx.Err()
+		case <-timer.C:
+		}
+		remaining = time.Until(deadline)
+		if remaining <= 0 {
+			return actorbase.Msg{}, err
+		}
+		response, err = callWithAmbiguousReplay(min(wait, remaining))
+		retryDelay = min(2*time.Second, retryDelay*2)
+	}
+	return response, err
 }
 
 func callExecutionControl(ctx context.Context, caller executionCallFace, cause message.Cause, controlActor actor.ActorID,

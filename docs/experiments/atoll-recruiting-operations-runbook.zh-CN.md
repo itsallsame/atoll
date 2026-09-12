@@ -111,6 +111,8 @@ Server 单点入口为 `make recruiting-browser-server-recovery`。BF2 在真实
 
 MySQL 短时停顿入口为 `make recruiting-browser-mysql-recovery`。BF3 在真实 Chrome 请求已经进入 origin、Attempt running 且零 Artifact 时暂停本次测试专属 MySQL 容器七秒；Server 和执行 daemon 必须保持存活，页面完成后的 Chrome 子进程寿命不作为本门断言。恢复后应由同一 Attempt 完成，origin 文档请求、Attempt、DOM、trace 和 BackfillOutput 各一份，且不存在 `attempt_recovered` dispatch。不要把数据库停顿当成网站失败而手工重抓，也不要修改 Attempt、Permit 或 outbox。本入口只验证连接保持下的短停顿；连接重置、主从切换、远程数据库、长停机及 Server/MySQL 联合故障必须独立演练。
 
+MySQL 连接重置入口为 `make recruiting-browser-mysql-connection-recovery`。BF4 用透明 TCP 代理关闭已有数据库连接、七秒内拒绝新连接，再恢复到同一 MySQL；不需要也不得给业务运行账号增加管理权限。Executor 必须用同一结果 command 和 payload 在 `control_wait_ms` 内指数退避，不得重新执行 Recipe 或重抓网站。验收要求原 Attempt、网站请求、DOM、trace 和 BackfillOutput 各一份，且没有恢复 dispatch；明确的 fence、权限、版本或 payload 拒绝不得重试。若停机超过控制等待窗口，现有 Attempt 将按统一 TTL/dispatch 恢复，不能手改数据库。本入口不替代 MySQL failover、进程死亡、远程网络和 Server/MySQL 联合故障。
+
 共享修复的标准顺序：
 
 ```text

@@ -8,7 +8,8 @@
     "BF0": {"items": 1, "payload_bytes": 4096, "origin_latency_ms": 5000, "executors": 1, "timeout_seconds": 180, "fault": "kill the separate Artifact provider after the real Chrome document request starts"},
     "BF1": {"items": 1, "payload_bytes": 4096, "origin_latency_ms": 5000, "executors": 1, "timeout_seconds": 180, "fault": "kill both the Chrome execution daemon and separate Artifact provider after the document request starts"},
     "BF2": {"items": 1, "payload_bytes": 4096, "origin_latency_ms": 5000, "executors": 1, "timeout_seconds": 180, "fault": "kill Atoll Server after the real Chrome document request starts while keeping the execution daemon alive"},
-    "BF3": {"items": 1, "payload_bytes": 4096, "origin_latency_ms": 5000, "executors": 1, "timeout_seconds": 180, "fault": "pause the isolated MySQL container after the real Chrome document request starts while keeping Atoll Server and the execution daemon alive"}
+    "BF3": {"items": 1, "payload_bytes": 4096, "origin_latency_ms": 5000, "executors": 1, "timeout_seconds": 180, "fault": "pause the isolated MySQL container after the real Chrome document request starts while keeping Atoll Server and the execution daemon alive"},
+    "BF4": {"items": 1, "payload_bytes": 4096, "origin_latency_ms": 5000, "executors": 1, "timeout_seconds": 180, "fault": "close all existing connections in the transparent MySQL TCP fault proxy after the real Chrome document request starts, refuse new connections for seven seconds, then resume forwarding to the same database"}
   },
   "correctness_gates": [
     "the production Browser Driver and real Chrome reach the isolated public-shaped address without a private-network bypass",
@@ -28,12 +29,14 @@
     "BF1 additionally requires the control Actor to expire the old Attempt while both execution-side daemons are absent, then deliver recovery only after both devices reconnect",
     "BF2 requires the same daemon process to survive the carrier outage, reconnect with a new Executor incarnation, fence the pre-outage Attempt, and complete with a fresh Attempt",
     "BF3 pauses MySQL only after the Browser Attempt is running, the origin has accepted exactly one document request, and no Artifact exists",
-    "BF3 requires Atoll Server and the execution daemon to remain alive, then the original Attempt must commit exactly one DOM, one trace, and one BackfillOutput after MySQL resumes without a recovery dispatch or website refetch"
+    "BF3 requires Atoll Server and the execution daemon to remain alive, then the original Attempt must commit exactly one DOM, one trace, and one BackfillOutput after MySQL resumes without a recovery dispatch or website refetch",
+    "BF4 severs the database network endpoint at the same running/no-evidence cut, requires Server and daemon to survive, and requires the original Attempt to complete exactly once after network reconnection without refetch"
   ],
   "non_claims": [
     "the controlled origin does not represent third-party JavaScript complexity, latency, rate limits, bot defenses, authentication, or site availability",
     "B0/B1/B2 do not substitute for an authorized third-party canary, production egress isolation, or long-window SLO",
     "Browser tasks remain on the single-item execution protocol until independent batch safety is demonstrated",
-    "BF3 demonstrates a bounded local database stall and connection resumption, not MySQL failover, connection reset, a remote database, or a Server/MySQL joint outage"
+    "BF3 demonstrates a bounded local database stall and connection resumption, not MySQL failover, connection reset, a remote database, or a Server/MySQL joint outage",
+    "BF4 demonstrates a bounded local network endpoint disconnect and reconnect, not primary/replica failover, remote-network behavior, data loss, or a long outage"
   ]
 }
