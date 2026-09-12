@@ -261,18 +261,30 @@ FROM recruiting_artifacts WHERE artifact_kind = 'response' AND attempt_id IS NOT
 		int(nestedNumberField(t, view, "backfill", "succeeded_items")) != input.items {
 		t.Fatalf("completed HTTP Backfill did not recover after restart=%v", view)
 	}
+	statusResponse := recovered.request(homeID, "recruiting.system.status", controlID, map[string]any{})
+	status, _ := statusResponse["system_status"].(map[string]any)
+	health, _ := status["execution_health"].(map[string]any)
+	for _, field := range []string{
+		"offer_to_accept_observed_latency", "accept_to_start_observed_latency", "start_to_terminal_observed_latency",
+	} {
+		summary, _ := health[field].(map[string]any)
+		if int(numberField(t, summary, "samples")) != input.items {
+			t.Fatalf("public execution health %s omitted HTTP phase samples: %v", field, statusResponse)
+		}
+	}
 	if body := httpReadFile(t, recoveredOperator, h.base, recovered, homeID, firstResponseAddress); len(body) != input.payloadBytes {
 		t.Fatal("HTTP response Resource was unavailable after Server restart")
 	}
 	restartDuration := time.Since(restartStarted)
 
-	t.Logf("HTTP capacity passed: items=%d payload_bytes=%d executors=%d used_executors=%d response_bytes=%d preview_ms=%d complete_ms=%d drain_ms=%d restart_ms=%d origin_jobs=%d origin_robots=%d queue_p50_ms=%d queue_p95_ms=%d queue_p99_ms=%d queue_max_ms=%d execute_p50_ms=%d execute_p95_ms=%d execute_p99_ms=%d execute_max_ms=%d submit_p50_ms=%d submit_p95_ms=%d submit_p99_ms=%d submit_max_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
+	t.Logf("HTTP capacity passed: items=%d payload_bytes=%d executors=%d used_executors=%d response_bytes=%d preview_ms=%d complete_ms=%d drain_ms=%d restart_ms=%d origin_jobs=%d origin_robots=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d offer_accept_p99_ms=%d offer_accept_max_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d accept_start_p99_ms=%d accept_start_max_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d start_terminal_p99_ms=%d start_terminal_max_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d terminal_next_offer_p99_ms=%d terminal_next_offer_max_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
 		input.items, input.payloadBytes, input.executors, usedExecutors, totalResponseBytes,
 		previewDuration.Milliseconds(), completedDuration.Milliseconds(), drainedDuration.Milliseconds(),
 		restartDuration.Milliseconds(), metrics.JobRequests, metrics.RobotsRequests,
-		latency.Queue.P50, latency.Queue.P95, latency.Queue.P99, latency.Queue.Max,
-		latency.Execute.P50, latency.Execute.P95, latency.Execute.P99, latency.Execute.Max,
-		latency.Submit.P50, latency.Submit.P95, latency.Submit.P99, latency.Submit.Max, ledgerMessages,
+		latency.OfferToAccept.P50, latency.OfferToAccept.P95, latency.OfferToAccept.P99, latency.OfferToAccept.Max,
+		latency.AcceptToStart.P50, latency.AcceptToStart.P95, latency.AcceptToStart.P99, latency.AcceptToStart.Max,
+		latency.StartToTerminal.P50, latency.StartToTerminal.P95, latency.StartToTerminal.P99, latency.StartToTerminal.Max,
+		latency.TerminalToOffer.P50, latency.TerminalToOffer.P95, latency.TerminalToOffer.P99, latency.TerminalToOffer.Max, ledgerMessages,
 		ledgerPayloadBytes, ledgerEvents, recruitingLedgerEvents, time.Since(testStarted).Milliseconds())
 }
 
@@ -506,41 +518,58 @@ type latencySummary struct {
 }
 
 type httpCapacityLatency struct {
-	Queue   latencySummary
-	Execute latencySummary
-	Submit  latencySummary
+	OfferToAccept   latencySummary
+	AcceptToStart   latencySummary
+	StartToTerminal latencySummary
+	TerminalToOffer latencySummary
 }
 
 func readHTTPCapacityLatency(t *testing.T, db *sql.DB, want int) httpCapacityLatency {
 	t.Helper()
-	rows, err := db.Query(`SELECT
-  TIMESTAMPDIFF(MICROSECOND, work.created_at, attempt.created_at) DIV 1000,
-  TIMESTAMPDIFF(MICROSECOND, attempt.created_at, artifact.created_at) DIV 1000,
-  TIMESTAMPDIFF(MICROSECOND, artifact.created_at, attempt.updated_at) DIV 1000
+	rows, err := db.Query(`SELECT attempt.executor_actor_id,
+  attempt.offered_observed_at, attempt.terminal_observed_at,
+  TIMESTAMPDIFF(MICROSECOND, attempt.offered_observed_at, attempt.accepted_observed_at) DIV 1000,
+  TIMESTAMPDIFF(MICROSECOND, attempt.accepted_observed_at, attempt.started_observed_at) DIV 1000,
+  TIMESTAMPDIFF(MICROSECOND, attempt.started_observed_at, attempt.terminal_observed_at) DIV 1000
 FROM recruiting_attempts attempt
-JOIN recruiting_works work ON work.work_id = attempt.work_id
-JOIN recruiting_artifacts artifact ON artifact.attempt_id = attempt.attempt_id
-  AND artifact.artifact_kind = 'response' AND artifact.rejected = FALSE
-WHERE attempt.capability = 'http.fetch' AND attempt.attempt_status = 'succeeded'`)
+WHERE attempt.capability = 'http.fetch' AND attempt.attempt_status = 'succeeded'
+  AND attempt.offered_observed_at IS NOT NULL AND attempt.accepted_observed_at IS NOT NULL
+  AND attempt.started_observed_at IS NOT NULL AND attempt.terminal_observed_at IS NOT NULL
+ORDER BY attempt.executor_actor_id, attempt.offered_observed_at`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	queue, execute, submit := make([]int64, 0, want), make([]int64, 0, want), make([]int64, 0, want)
+	offerToAccept := make([]int64, 0, want)
+	acceptToStart := make([]int64, 0, want)
+	startToTerminal := make([]int64, 0, want)
+	terminalToOffer := make([]int64, 0, want)
+	previousTerminal := map[string]time.Time{}
 	for rows.Next() {
-		var queueMS, executeMS, submitMS int64
-		if err := rows.Scan(&queueMS, &executeMS, &submitMS); err != nil {
+		var executorID string
+		var offeredAt, terminalAt time.Time
+		var offerToAcceptMS, acceptToStartMS, startToTerminalMS int64
+		if err := rows.Scan(&executorID, &offeredAt, &terminalAt, &offerToAcceptMS, &acceptToStartMS, &startToTerminalMS); err != nil {
 			t.Fatal(err)
 		}
-		queue, execute, submit = append(queue, queueMS), append(execute, executeMS), append(submit, submitMS)
+		if previous, found := previousTerminal[executorID]; found && offeredAt.After(previous) {
+			terminalToOffer = append(terminalToOffer, offeredAt.Sub(previous).Milliseconds())
+		}
+		previousTerminal[executorID] = terminalAt
+		offerToAccept = append(offerToAccept, offerToAcceptMS)
+		acceptToStart = append(acceptToStart, acceptToStartMS)
+		startToTerminal = append(startToTerminal, startToTerminalMS)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(queue) != want {
-		t.Fatalf("HTTP latency samples=%d want=%d", len(queue), want)
+	if len(offerToAccept) != want {
+		t.Fatalf("HTTP observed latency samples=%d want=%d", len(offerToAccept), want)
 	}
-	return httpCapacityLatency{Queue: summarizeLatency(queue), Execute: summarizeLatency(execute), Submit: summarizeLatency(submit)}
+	return httpCapacityLatency{
+		OfferToAccept: summarizeLatency(offerToAccept), AcceptToStart: summarizeLatency(acceptToStart),
+		StartToTerminal: summarizeLatency(startToTerminal), TerminalToOffer: summarizeLatency(terminalToOffer),
+	}
 }
 
 func summarizeLatency(values []int64) latencySummary {

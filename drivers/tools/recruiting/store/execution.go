@@ -1859,8 +1859,13 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 	state, _ := json.Marshal(attempt)
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_attempts
-SET attempt_status = ?, state_json = ?, updated_at = ?
-WHERE attempt_id = ? AND attempt_status = ?`, attempt.Status, state, businessAt.UTC(), attempt.AttemptID, previousAttemptStatus)
+SET attempt_status = ?, state_json = ?,
+    accepted_observed_at = IF(? = 'accepted', COALESCE(accepted_observed_at, UTC_TIMESTAMP(6)), accepted_observed_at),
+    started_observed_at = IF(? = 'running', COALESCE(started_observed_at, UTC_TIMESTAMP(6)), started_observed_at),
+    terminal_observed_at = IF(? IN ('succeeded','failed','expired','rejected'), COALESCE(terminal_observed_at, UTC_TIMESTAMP(6)), terminal_observed_at),
+    updated_at = ?
+WHERE attempt_id = ? AND attempt_status = ?`, attempt.Status, state, attempt.Status, attempt.Status, attempt.Status,
+		businessAt.UTC(), attempt.AttemptID, previousAttemptStatus)
 	if err != nil {
 		return model.Attempt{}, fmt.Errorf("transition execution attempt: %w", err)
 	}

@@ -229,6 +229,7 @@ func TestExecutionTransitionCommandsReplayAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	var receipts, artifacts, events, dispatches int
+	var observedPhases int
 	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id LIKE 'execution-command-%'").Scan(&receipts); err != nil {
 		t.Fatal(err)
 	}
@@ -244,11 +245,19 @@ func TestExecutionTransitionCommandsReplayAtomically(t *testing.T) {
 		offer.Attempt.ExecutorActorID, command.CommandID).Scan(&dispatches); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_attempts
+WHERE attempt_id = ? AND offered_observed_at IS NOT NULL AND accepted_observed_at IS NOT NULL
+  AND started_observed_at IS NOT NULL AND terminal_observed_at IS NOT NULL
+  AND offered_observed_at <= accepted_observed_at AND accepted_observed_at <= started_observed_at
+  AND started_observed_at <= terminal_observed_at`, offer.Attempt.AttemptID).Scan(&observedPhases); err != nil {
+		t.Fatal(err)
+	}
 	storedAttempt, _ := repository.GetAttempt(ctx, offer.Attempt.AttemptID)
 	work, _ := repository.GetWork(ctx, offer.Work.WorkID)
-	if receipts != 3 || artifacts != 2 || events != 1 || dispatches != 2 || storedAttempt.Status != model.AttemptFailed || work.Status != model.WorkWaitingRetry {
-		t.Fatalf("execution command facts receipts=%d artifacts=%d events=%d dispatches=%d attempt=%s work=%s",
-			receipts, artifacts, events, dispatches, storedAttempt.Status, work.Status)
+	if receipts != 3 || artifacts != 2 || events != 1 || dispatches != 2 || observedPhases != 1 ||
+		storedAttempt.Status != model.AttemptFailed || work.Status != model.WorkWaitingRetry {
+		t.Fatalf("execution command facts receipts=%d artifacts=%d events=%d dispatches=%d observed=%d attempt=%s work=%s",
+			receipts, artifacts, events, dispatches, observedPhases, storedAttempt.Status, work.Status)
 	}
 }
 

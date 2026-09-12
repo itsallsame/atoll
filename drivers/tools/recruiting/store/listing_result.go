@@ -777,8 +777,12 @@ func getCheckpointForUpdate(ctx context.Context, tx *sql.Tx, sourceID string) (m
 func updateAttemptStatusTx(ctx context.Context, tx *sql.Tx, expected model.AttemptStatus, attempt model.Attempt, resultState json.RawMessage, at time.Time) error {
 	state, _ := json.Marshal(attempt)
 	result, err := tx.ExecContext(ctx, `
-UPDATE recruiting_attempts SET attempt_status = ?, state_json = ?, execution_result_json = ?, updated_at = ?
-WHERE attempt_id = ? AND attempt_status = ?`, attempt.Status, state, nullableJSON(resultState), at.UTC(), attempt.AttemptID, expected)
+UPDATE recruiting_attempts
+SET attempt_status = ?, state_json = ?, execution_result_json = ?,
+    terminal_observed_at = IF(? IN ('succeeded','failed','expired','rejected'), COALESCE(terminal_observed_at, UTC_TIMESTAMP(6)), terminal_observed_at),
+    updated_at = ?
+WHERE attempt_id = ? AND attempt_status = ?`, attempt.Status, state, nullableJSON(resultState), attempt.Status,
+		at.UTC(), attempt.AttemptID, expected)
 	if err != nil {
 		return err
 	}

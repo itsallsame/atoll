@@ -301,8 +301,8 @@ INSERT INTO recruiting_attempts(
   capability, acceptance_version, company_version, company_configuration_version, company_execution_fence,
   source_version, source_configuration_version, source_execution_fence, assignment_version,
   recipe_id, recipe_version, checkpoint_version, refresh_generation, profile_id,
-  profile_version, batch_version, state_json, execution_offer_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  profile_version, batch_version, state_json, execution_offer_json, offered_observed_at, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6), ?, ?)`,
 		attempt.AttemptID, attempt.WorkID, attempt.Status, nullableString(attempt.ExecutorActorID),
 		nullableString(attempt.ExecutorIncarnation), nullableString(attempt.Capability), attempt.AcceptanceVersion,
 		nullableUint(attempt.CompanyVersion), nullableUint(attempt.CompanyConfigurationVersion), nullableUint(attempt.CompanyExecutionFence),
@@ -351,10 +351,15 @@ func (r *Repository) UpdateAttemptCAS(ctx context.Context, expected model.Attemp
 	result, err := r.db.ExecContext(ctx, `
 UPDATE recruiting_attempts
 SET attempt_status = ?, executor_actor_id = ?, executor_incarnation = ?, capability = ?,
-    state_json = ?, updated_at = ?
+    state_json = ?,
+    accepted_observed_at = IF(? = 'accepted', COALESCE(accepted_observed_at, UTC_TIMESTAMP(6)), accepted_observed_at),
+    started_observed_at = IF(? = 'running', COALESCE(started_observed_at, UTC_TIMESTAMP(6)), started_observed_at),
+    terminal_observed_at = IF(? IN ('succeeded','failed','expired','rejected'), COALESCE(terminal_observed_at, UTC_TIMESTAMP(6)), terminal_observed_at),
+    updated_at = ?
 WHERE attempt_id = ? AND attempt_status = ?`,
 		attempt.Status, nullableString(attempt.ExecutorActorID), nullableString(attempt.ExecutorIncarnation),
-		nullableString(attempt.Capability), state, businessAt.UTC(), attempt.AttemptID, expected)
+		nullableString(attempt.Capability), state, attempt.Status, attempt.Status, attempt.Status,
+		businessAt.UTC(), attempt.AttemptID, expected)
 	if err != nil {
 		return fmt.Errorf("update attempt: %w", err)
 	}

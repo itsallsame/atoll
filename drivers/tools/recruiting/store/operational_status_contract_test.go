@@ -55,9 +55,12 @@ VALUES ('capability', 'status.http.fetch', 3, 1, ?)`, now); err != nil {
 	} {
 		if _, err := db.ExecContext(ctx, `
 INSERT INTO recruiting_attempts(
-  attempt_id, work_id, attempt_status, acceptance_version, state_json, created_at, updated_at
-) VALUES (?, ?, ?, 1, JSON_OBJECT('attempt_id', ?, 'work_id', ?, 'attempt_status', ?), ?, ?)`,
-			attempt.id, attempt.workID, attempt.status, attempt.id, attempt.workID, attempt.status, attempt.createdAt, attempt.updatedAt); err != nil {
+  attempt_id, work_id, attempt_status, executor_actor_id, acceptance_version, state_json,
+  offered_observed_at, accepted_observed_at, started_observed_at, terminal_observed_at, created_at, updated_at
+) VALUES (?, ?, ?, 'status-executor', 1, JSON_OBJECT('attempt_id', ?, 'work_id', ?, 'attempt_status', ?), ?, ?, ?, ?, ?, ?)`,
+			attempt.id, attempt.workID, attempt.status, attempt.id, attempt.workID, attempt.status,
+			attempt.createdAt, attempt.createdAt.Add(time.Second), attempt.createdAt.Add(2*time.Second), attempt.updatedAt,
+			attempt.createdAt, attempt.updatedAt); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -83,6 +86,10 @@ INSERT INTO recruiting_artifacts(
 		health.AttemptsScanned != 3 || health.AttemptsTruncated || health.AttemptResults["expired"] != 1 ||
 		health.AttemptResults["succeeded"] != 1 || health.AttemptResults["failed"] != 1 ||
 		health.TerminalLatency.Samples != 3 || health.TerminalLatency.P50MS != uint64((10*time.Minute).Milliseconds()) ||
+		health.OfferToAcceptLatency.Samples != 3 || health.OfferToAcceptLatency.P50MS != 1_000 ||
+		health.AcceptToStartLatency.Samples != 3 || health.AcceptToStartLatency.P50MS != 1_000 ||
+		health.StartToTerminalLatency.Samples != 3 || health.StartToTerminalLatency.P50MS != 598_000 ||
+		health.TerminalToNextOfferLatency.Samples != 2 || health.TerminalToNextOfferLatency.P50MS != 120_000 ||
 		health.ExpiredAttempts != 1 || health.RecoveredExpiredAttempts != 1 ||
 		health.RecoveryLatency.P50MS != uint64((20*time.Minute).Milliseconds()) ||
 		health.RejectedArtifactsScanned != 2 || health.RejectedArtifactsTruncated {

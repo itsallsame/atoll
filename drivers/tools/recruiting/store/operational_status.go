@@ -48,6 +48,10 @@ type ExecutionHealth struct {
 	AttemptsScanned            uint64            `json:"attempts_scanned"`
 	AttemptsTruncated          bool              `json:"attempts_truncated"`
 	TerminalLatency            LatencySummary    `json:"terminal_latency"`
+	OfferToAcceptLatency       LatencySummary    `json:"offer_to_accept_observed_latency"`
+	AcceptToStartLatency       LatencySummary    `json:"accept_to_start_observed_latency"`
+	StartToTerminalLatency     LatencySummary    `json:"start_to_terminal_observed_latency"`
+	TerminalToNextOfferLatency LatencySummary    `json:"terminal_to_next_offer_observed_latency"`
 	ExpiredAttempts            uint64            `json:"expired_attempts"`
 	RecoveredExpiredAttempts   uint64            `json:"recovered_expired_attempts"`
 	RecoveryLatency            LatencySummary    `json:"recovery_latency"`
@@ -135,10 +139,15 @@ WHERE recovery_pending = 1`).Scan(&status.RepairRecoveryQueue); err != nil {
 }
 
 type recentAttempt struct {
-	workID    string
-	status    string
-	createdAt time.Time
-	updatedAt time.Time
+	workID             string
+	status             string
+	executorActorID    string
+	createdAt          time.Time
+	updatedAt          time.Time
+	offeredObservedAt  sql.NullTime
+	acceptedObservedAt sql.NullTime
+	startedObservedAt  sql.NullTime
+	terminalObservedAt sql.NullTime
 }
 
 func executionHealth(ctx context.Context, tx *sql.Tx, asOf time.Time, window time.Duration, limit int) (ExecutionHealth, error) {
@@ -151,7 +160,8 @@ func executionHealth(ctx context.Context, tx *sql.Tx, asOf time.Time, window tim
 		AttemptResults: map[string]uint64{},
 	}
 	rows, err := tx.QueryContext(ctx, `
-SELECT work_id, attempt_status, created_at, updated_at
+SELECT work_id, attempt_status, COALESCE(executor_actor_id, ''), created_at, updated_at,
+       offered_observed_at, accepted_observed_at, started_observed_at, terminal_observed_at
 FROM recruiting_attempts FORCE INDEX (ix_recruiting_attempt_recent)
 WHERE updated_at >= ? AND updated_at <= ?
 ORDER BY updated_at DESC, attempt_id DESC
@@ -162,7 +172,8 @@ LIMIT ?`, start, asOf, limit+1)
 	attempts := make([]recentAttempt, 0, limit)
 	for rows.Next() {
 		var item recentAttempt
-		if err := rows.Scan(&item.workID, &item.status, &item.createdAt, &item.updatedAt); err != nil {
+		if err := rows.Scan(&item.workID, &item.status, &item.executorActorID, &item.createdAt, &item.updatedAt,
+			&item.offeredObservedAt, &item.acceptedObservedAt, &item.startedObservedAt, &item.terminalObservedAt); err != nil {
 			_ = rows.Close()
 			return ExecutionHealth{}, err
 		}
@@ -182,8 +193,21 @@ LIMIT ?`, start, asOf, limit+1)
 	health.AttemptsScanned = uint64(len(attempts))
 	terminalLatencies := make([]uint64, 0, len(attempts))
 	recoveryLatencies := make([]uint64, 0)
+	offerToAcceptLatencies := make([]uint64, 0, len(attempts))
+	acceptToStartLatencies := make([]uint64, 0, len(attempts))
+	startToTerminalLatencies := make([]uint64, 0, len(attempts))
+	terminalToNextOfferLatencies := make([]uint64, 0, len(attempts))
 	latestSuccess := map[string]time.Time{}
 	for _, item := range attempts {
+		if item.offeredObservedAt.Valid && item.acceptedObservedAt.Valid {
+			offerToAcceptLatencies = append(offerToAcceptLatencies, elapsedMilliseconds(item.offeredObservedAt.Time, item.acceptedObservedAt.Time))
+		}
+		if item.acceptedObservedAt.Valid && item.startedObservedAt.Valid {
+			acceptToStartLatencies = append(acceptToStartLatencies, elapsedMilliseconds(item.acceptedObservedAt.Time, item.startedObservedAt.Time))
+		}
+		if item.startedObservedAt.Valid && item.terminalObservedAt.Valid {
+			startToTerminalLatencies = append(startToTerminalLatencies, elapsedMilliseconds(item.startedObservedAt.Time, item.terminalObservedAt.Time))
+		}
 		switch item.status {
 		case "succeeded", "failed", "expired", "rejected":
 			terminalLatencies = append(terminalLatencies, elapsedMilliseconds(item.createdAt, item.updatedAt))
@@ -199,7 +223,29 @@ LIMIT ?`, start, asOf, limit+1)
 			}
 		}
 	}
+	attemptsByExecutor := map[string][]recentAttempt{}
+	for _, item := range attempts {
+		if item.executorActorID != "" && item.offeredObservedAt.Valid {
+			attemptsByExecutor[item.executorActorID] = append(attemptsByExecutor[item.executorActorID], item)
+		}
+	}
+	for _, executorAttempts := range attemptsByExecutor {
+		sort.Slice(executorAttempts, func(left, right int) bool {
+			return executorAttempts[left].offeredObservedAt.Time.Before(executorAttempts[right].offeredObservedAt.Time)
+		})
+		for index := 1; index < len(executorAttempts); index++ {
+			previous, current := executorAttempts[index-1], executorAttempts[index]
+			if previous.terminalObservedAt.Valid && current.offeredObservedAt.Time.After(previous.terminalObservedAt.Time) {
+				terminalToNextOfferLatencies = append(terminalToNextOfferLatencies,
+					elapsedMilliseconds(previous.terminalObservedAt.Time, current.offeredObservedAt.Time))
+			}
+		}
+	}
 	health.TerminalLatency = summarizeLatencies(terminalLatencies)
+	health.OfferToAcceptLatency = summarizeLatencies(offerToAcceptLatencies)
+	health.AcceptToStartLatency = summarizeLatencies(acceptToStartLatencies)
+	health.StartToTerminalLatency = summarizeLatencies(startToTerminalLatencies)
+	health.TerminalToNextOfferLatency = summarizeLatencies(terminalToNextOfferLatencies)
 	health.RecoveryLatency = summarizeLatencies(recoveryLatencies)
 	rows, err = tx.QueryContext(ctx, `
 SELECT artifact_id

@@ -162,7 +162,7 @@ Company 合规物理擦除不得使用普通 archive 或直接执行 SQL：
 
 - 已通过的 Women’s Aid 活动倒序/更新置顶真实纵向样本仍需纳入 Nightly/Weekly 持续监测；单次通过不代表第三方契约永久不变；
 - 生产 OS/container 级出站隔离和真实授权登录站点 canary；
-- H2 已通过正确性但 8 Executor 只有 5.93 response/s，与 H1 四 Executor 的 6.03/s 持平，必须先定位扩容平台并达到冻结的参考环境窗口目标；随后仍需 Browser response capture、第三方 HTTP/Browser 延迟与限流分布、5 倍执行峰值、20K Listing + 400K Detail 完成吞吐与全部故障注入矩阵；本地 derived 与受控 HTTP response 基线不得外推为远程对象存储或第三方吞吐；
+- H2 已通过正确性但 8 Executor 只有 5.88 response/s，与 H1 四 Executor 的 5.99/s 持平；数据库观察时间表明四段逐岗位控制/补给 P50 从 H1 合计约 610 ms 膨胀到 H2 约 1.283 秒。必须先以 Recruiting 扩展的紧凑 batch envelope 降低每岗位消息往返并达到冻结的参考环境窗口目标；随后仍需 Browser response capture、第三方 HTTP/Browser 延迟与限流分布、5 倍执行峰值、20K Listing + 400K Detail 完成吞吐与全部故障注入矩阵；本地 derived 与受控 HTTP response 基线不得外推为远程对象存储或第三方吞吐；
 - 生产数据量的 RTO/RPO、binlog PITR、加密异地保留，以及远程 MySQL/ledger/Artifact 联合恢复；
 - 仓库级非 Recruiting 核心 E2E blocker 的上游修复。
 
