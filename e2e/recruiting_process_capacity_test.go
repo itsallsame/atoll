@@ -138,7 +138,7 @@ func TestRecruitingProcessCapacityThroughRealDataPlanes(t *testing.T) {
 			t.Fatalf("started import %s=%v", batch.importID, started)
 		}
 	}
-	waitProcessCapacityImportStatus(t, ws, db, homeID, controlID, daemon, h.server,
+	waitProcessCapacityImportStatus(t, db, daemon, h.server,
 		"previewed", input.imports, input.timeout, daemonLog, h.server.logPath)
 	previewDuration := time.Since(executionStarted)
 
@@ -154,10 +154,11 @@ func TestRecruitingProcessCapacityThroughRealDataPlanes(t *testing.T) {
 			t.Fatalf("confirmed import %s=%v", batch.importID, confirmed)
 		}
 	}
-	waitProcessCapacityImportStatus(t, ws, db, homeID, controlID, daemon, h.server,
+	discardCapacityFeed(ws)
+	waitProcessCapacityImportStatus(t, db, daemon, h.server,
 		"completed", input.imports, input.timeout, daemonLog, h.server.logPath)
 	completedDuration := time.Since(executionStarted)
-	drainRecruitingProcessOutboxes(t, ws, db, homeID, controlID, input.timeout)
+	drainRecruitingProcessOutboxes(t, db, input.timeout)
 	drainedDuration := time.Since(executionStarted)
 
 	totalRows := input.imports * input.rowsPerImport
@@ -316,8 +317,8 @@ func processCapacityCSV(importIndex, rows int) []byte {
 	return content.Bytes()
 }
 
-func waitProcessCapacityImportStatus(t *testing.T, ws *wsClient, db *sql.DB, homeID, controlID string,
-	process *proc, server *proc, status string, want int, timeout time.Duration, logs ...string) {
+func waitProcessCapacityImportStatus(t *testing.T, db *sql.DB, process *proc, server *proc,
+	status string, want int, timeout time.Duration, logs ...string) {
 	t.Helper()
 	ctx := context.Background()
 	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
@@ -332,15 +333,13 @@ func waitProcessCapacityImportStatus(t *testing.T, ws *wsClient, db *sql.DB, hom
 			t.Fatalf("process capacity exited while waiting for %s: daemon=%s server=%s", status,
 				tailLog(logs[0], 160), tailLog(logs[1], 160))
 		}
-		ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 500})
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("process capacity imports did not all reach %s: daemon=%s server=%s", status,
 		tailLog(logs[0], 160), tailLog(logs[1], 160))
 }
 
-func drainRecruitingProcessOutboxes(t *testing.T, ws *wsClient, db *sql.DB,
-	homeID, controlID string, timeout time.Duration) {
+func drainRecruitingProcessOutboxes(t *testing.T, db *sql.DB, timeout time.Duration) {
 	t.Helper()
 	ctx := context.Background()
 	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
@@ -354,7 +353,7 @@ func drainRecruitingProcessOutboxes(t *testing.T, ws *wsClient, db *sql.DB,
 		if pendingEvents == 0 && pendingDispatches == 0 {
 			return
 		}
-		ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 500})
+		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatal("process capacity outboxes did not drain before measurement")
 }

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -155,10 +156,11 @@ func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
 	if nestedStringField(t, confirmed, "backfill", "status") != "running" {
 		t.Fatalf("confirm HTTP capacity Backfill=%v", confirmed)
 	}
+	discardCapacityFeed(ws)
 	waitArtifactCapacityBackfill(t, ws, db, homeID, controlID, daemon, h.server,
 		backfillID, "completed", input.items, input.timeout, daemonLog, h.server.logPath)
 	completedDuration := time.Since(executionStarted)
-	drainRecruitingProcessOutboxes(t, ws, db, homeID, controlID, input.timeout)
+	drainRecruitingProcessOutboxes(t, db, input.timeout)
 	drainedDuration := time.Since(executionStarted)
 
 	var backfillItems, succeededItems, outputs, responseArtifacts, succeededAttempts int
@@ -236,6 +238,7 @@ FROM recruiting_artifacts WHERE artifact_kind = 'response' AND attempt_id IS NOT
 	}
 	ledgerMessages, ledgerPayloadBytes, ledgerEvents, recruitingLedgerEvents :=
 		assertRecruitingDomainEventsInLedger(t, db, h.serverHome, homeID, controlID)
+	latency := readHTTPCapacityLatency(t, db, input.items)
 
 	restartStarted := time.Now()
 	h.restartServer()
@@ -263,10 +266,13 @@ FROM recruiting_artifacts WHERE artifact_kind = 'response' AND attempt_id IS NOT
 	}
 	restartDuration := time.Since(restartStarted)
 
-	t.Logf("HTTP capacity passed: items=%d payload_bytes=%d executors=%d used_executors=%d response_bytes=%d preview_ms=%d complete_ms=%d drain_ms=%d restart_ms=%d origin_jobs=%d origin_robots=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
+	t.Logf("HTTP capacity passed: items=%d payload_bytes=%d executors=%d used_executors=%d response_bytes=%d preview_ms=%d complete_ms=%d drain_ms=%d restart_ms=%d origin_jobs=%d origin_robots=%d queue_p50_ms=%d queue_p95_ms=%d queue_p99_ms=%d queue_max_ms=%d execute_p50_ms=%d execute_p95_ms=%d execute_p99_ms=%d execute_max_ms=%d submit_p50_ms=%d submit_p95_ms=%d submit_p99_ms=%d submit_max_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
 		input.items, input.payloadBytes, input.executors, usedExecutors, totalResponseBytes,
 		previewDuration.Milliseconds(), completedDuration.Milliseconds(), drainedDuration.Milliseconds(),
-		restartDuration.Milliseconds(), metrics.JobRequests, metrics.RobotsRequests, ledgerMessages,
+		restartDuration.Milliseconds(), metrics.JobRequests, metrics.RobotsRequests,
+		latency.Queue.P50, latency.Queue.P95, latency.Queue.P99, latency.Queue.Max,
+		latency.Execute.P50, latency.Execute.P95, latency.Execute.P99, latency.Execute.Max,
+		latency.Submit.P50, latency.Submit.P95, latency.Submit.P99, latency.Submit.Max, ledgerMessages,
 		ledgerPayloadBytes, ledgerEvents, recruitingLedgerEvents, time.Since(testStarted).Milliseconds())
 }
 
@@ -490,4 +496,61 @@ func readControlledOriginMetrics(t *testing.T, origin string) controlledOriginMe
 		t.Fatalf("decode controlled origin metrics: body=%q err=%v", body, err)
 	}
 	return metrics
+}
+
+type latencySummary struct {
+	P50 int64
+	P95 int64
+	P99 int64
+	Max int64
+}
+
+type httpCapacityLatency struct {
+	Queue   latencySummary
+	Execute latencySummary
+	Submit  latencySummary
+}
+
+func readHTTPCapacityLatency(t *testing.T, db *sql.DB, want int) httpCapacityLatency {
+	t.Helper()
+	rows, err := db.Query(`SELECT
+  TIMESTAMPDIFF(MICROSECOND, work.created_at, attempt.created_at) DIV 1000,
+  TIMESTAMPDIFF(MICROSECOND, attempt.created_at, artifact.created_at) DIV 1000,
+  TIMESTAMPDIFF(MICROSECOND, artifact.created_at, attempt.updated_at) DIV 1000
+FROM recruiting_attempts attempt
+JOIN recruiting_works work ON work.work_id = attempt.work_id
+JOIN recruiting_artifacts artifact ON artifact.attempt_id = attempt.attempt_id
+  AND artifact.artifact_kind = 'response' AND artifact.rejected = FALSE
+WHERE attempt.capability = 'http.fetch' AND attempt.attempt_status = 'succeeded'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	queue, execute, submit := make([]int64, 0, want), make([]int64, 0, want), make([]int64, 0, want)
+	for rows.Next() {
+		var queueMS, executeMS, submitMS int64
+		if err := rows.Scan(&queueMS, &executeMS, &submitMS); err != nil {
+			t.Fatal(err)
+		}
+		queue, execute, submit = append(queue, queueMS), append(execute, executeMS), append(submit, submitMS)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(queue) != want {
+		t.Fatalf("HTTP latency samples=%d want=%d", len(queue), want)
+	}
+	return httpCapacityLatency{Queue: summarizeLatency(queue), Execute: summarizeLatency(execute), Submit: summarizeLatency(submit)}
+}
+
+func summarizeLatency(values []int64) latencySummary {
+	sort.Slice(values, func(left, right int) bool { return values[left] < values[right] })
+	at := func(percentile int) int64 {
+		index := (len(values)*percentile + 99) / 100
+		if index < 1 {
+			index = 1
+		}
+		return values[index-1]
+	}
+	return latencySummary{P50: at(50), P95: at(95), P99: at(99), Max: values[len(values)-1]}
 }

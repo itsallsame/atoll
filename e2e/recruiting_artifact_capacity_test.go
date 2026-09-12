@@ -167,10 +167,11 @@ func TestRecruitingArtifactRecomputeCapacityThroughRealDataPlanes(t *testing.T) 
 	if nestedStringField(t, confirmed, "backfill", "status") != "running" {
 		t.Fatalf("confirm artifact capacity backfill=%v", confirmed)
 	}
+	discardCapacityFeed(ws)
 	waitArtifactCapacityBackfill(t, ws, db, homeID, controlID, daemon, h.server,
 		backfillID, "completed", input.items, input.timeout, daemonLog, h.server.logPath)
 	completedDuration := time.Since(executionStarted)
-	drainRecruitingProcessOutboxes(t, ws, db, homeID, controlID, input.timeout)
+	drainRecruitingProcessOutboxes(t, db, input.timeout)
 	drainedDuration := time.Since(executionStarted)
 
 	var backfillItems, completedItems, outputs, responseArtifacts, derivedArtifacts, succeededAttempts int
@@ -434,22 +435,28 @@ func waitArtifactCapacityBackfill(t *testing.T, ws *wsClient, db *sql.DB, homeID
 	daemon, server *proc, backfillID, status string, wantItems int, timeout time.Duration, logs ...string) map[string]any {
 	t.Helper()
 	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
-		view := ws.request(homeID, "recruiting.backfill.get", controlID, map[string]any{"backfill_id": backfillID})
-		if nestedStringField(t, view, "backfill", "status") == status {
-			backfill := view["backfill"].(map[string]any)
-			if status == "previewed" && int(numberField(t, backfill, "previewed_items")) == wantItems {
-				return view
+		var storedStatus string
+		var previewed, succeeded int
+		err := db.QueryRow(`SELECT backfill_status, previewed_items, succeeded_items
+FROM recruiting_backfills WHERE backfill_id = ?`, backfillID).Scan(&storedStatus, &previewed, &succeeded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if storedStatus == status && status == "completed" && succeeded == wantItems {
+			return nil
+		}
+		if storedStatus == status && status == "previewed" && previewed == wantItems {
+			view := ws.request(homeID, "recruiting.backfill.get", controlID, map[string]any{"backfill_id": backfillID})
+			if nestedStringField(t, view, "backfill", "status") != status {
+				t.Fatalf("public Backfill status disagrees with stored terminal status: %v", view)
 			}
-			if status == "completed" && int(numberField(t, backfill, "succeeded_items")) == wantItems {
-				return view
-			}
+			return view
 		}
 		if daemon.exited() || server.exited() {
 			t.Fatalf("Artifact capacity process exited while waiting for %s: daemon=%s server=%s", status,
 				tailLog(logs[0], 160), tailLog(logs[1], 160))
 		}
-		ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 500})
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	var dbStatus string
 	var items, outputs int
@@ -538,4 +545,20 @@ func expectedCompactedMaterializeDispatches(items, executors, pageLimit int) int
 		dispatches += pageDispatches
 	}
 	return dispatches
+}
+
+// Capacity assertions use the persisted Channel ledger rather than an
+// in-memory live feed. Consume that feed after all interactive confirmation
+// steps so a deliberately small wsClient test buffer cannot backpressure the
+// socket reader and hide later Resource receipts.
+func discardCapacityFeed(client *wsClient) {
+	go func() {
+		for {
+			select {
+			case <-client.feed:
+			case <-client.done:
+				return
+			}
+		}
+	}()
 }
