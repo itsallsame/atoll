@@ -5,10 +5,11 @@ level="${RECRUITING_BROWSER_CAPACITY_LEVEL:-B0}"
 artifact_recovery="${RECRUITING_BROWSER_ARTIFACT_RECOVERY:-0}"
 joint_process_recovery="${RECRUITING_BROWSER_JOINT_PROCESS_RECOVERY:-0}"
 server_recovery="${RECRUITING_BROWSER_SERVER_RECOVERY:-0}"
+mysql_recovery="${RECRUITING_BROWSER_MYSQL_RECOVERY:-0}"
 case "${level}" in
-  B0|B1|B2|BF0|BF1|BF2) ;;
+  B0|B1|B2|BF0|BF1|BF2|BF3) ;;
   *)
-    echo "recruiting Browser capacity: level must be one of B0, B1, B2, BF0, BF1, BF2" >&2
+    echo "recruiting Browser capacity: level must be one of B0, B1, B2, BF0, BF1, BF2, BF3" >&2
     exit 2
     ;;
 esac
@@ -24,15 +25,20 @@ if [[ "${server_recovery}" != "0" && "${server_recovery}" != "1" ]]; then
   echo "recruiting Browser capacity: RECRUITING_BROWSER_SERVER_RECOVERY must be 0 or 1" >&2
   exit 2
 fi
+if [[ "${mysql_recovery}" != "0" && "${mysql_recovery}" != "1" ]]; then
+  echo "recruiting Browser capacity: RECRUITING_BROWSER_MYSQL_RECOVERY must be 0 or 1" >&2
+  exit 2
+fi
 if [[ "${artifact_recovery}" == "0" && "${joint_process_recovery}" == "1" ]]; then
   echo "recruiting Browser capacity: joint process recovery also requires Artifact recovery" >&2
   exit 2
 fi
-if [[ "${level}" == "BF0" && ( "${artifact_recovery}" != "1" || "${joint_process_recovery}" != "0" || "${server_recovery}" != "0" ) ]] ||
-   [[ "${level}" == "BF1" && ( "${artifact_recovery}" != "1" || "${joint_process_recovery}" != "1" || "${server_recovery}" != "0" ) ]] ||
-   [[ "${level}" == "BF2" && ( "${artifact_recovery}" != "0" || "${joint_process_recovery}" != "0" || "${server_recovery}" != "1" ) ]] ||
-   [[ "${level}" != "BF0" && "${level}" != "BF1" && "${level}" != "BF2" && ( "${artifact_recovery}" != "0" || "${joint_process_recovery}" != "0" || "${server_recovery}" != "0" ) ]]; then
-  echo "recruiting Browser capacity: B0-B2 are normal, BF0 is provider-only, BF1 is joint-process, and BF2 is Server recovery" >&2
+if [[ "${level}" == "BF0" && ( "${artifact_recovery}" != "1" || "${joint_process_recovery}" != "0" || "${server_recovery}" != "0" || "${mysql_recovery}" != "0" ) ]] ||
+   [[ "${level}" == "BF1" && ( "${artifact_recovery}" != "1" || "${joint_process_recovery}" != "1" || "${server_recovery}" != "0" || "${mysql_recovery}" != "0" ) ]] ||
+   [[ "${level}" == "BF2" && ( "${artifact_recovery}" != "0" || "${joint_process_recovery}" != "0" || "${server_recovery}" != "1" || "${mysql_recovery}" != "0" ) ]] ||
+   [[ "${level}" == "BF3" && ( "${artifact_recovery}" != "0" || "${joint_process_recovery}" != "0" || "${server_recovery}" != "0" || "${mysql_recovery}" != "1" ) ]] ||
+   [[ "${level}" != "BF0" && "${level}" != "BF1" && "${level}" != "BF2" && "${level}" != "BF3" && ( "${artifact_recovery}" != "0" || "${joint_process_recovery}" != "0" || "${server_recovery}" != "0" || "${mysql_recovery}" != "0" ) ]]; then
+  echo "recruiting Browser capacity: B0-B2 are normal, BF0 is provider-only, BF1 is joint-process, BF2 is Server recovery, and BF3 is MySQL recovery" >&2
   exit 2
 fi
 if [[ "${level}" == "B2" && "${RECRUITING_BROWSER_CAPACITY_LARGE_ACK:-}" != "isolated-browser-large-load" ]]; then
@@ -122,13 +128,17 @@ fi
 if [[ "${server_recovery}" == "1" ]]; then
   test_name='TestRecruitingBrowserServerRecoveryThroughRealDataPlanes'
 fi
-echo "recruiting Browser capacity: level=${level} artifact_recovery=${artifact_recovery} joint_process_recovery=${joint_process_recovery} server_recovery=${server_recovery} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} executors=${executors} chrome=${chrome_bin} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
+if [[ "${mysql_recovery}" == "1" ]]; then
+  test_name='TestRecruitingBrowserMySQLRecoveryThroughRealDataPlanes'
+fi
+echo "recruiting Browser capacity: level=${level} artifact_recovery=${artifact_recovery} joint_process_recovery=${joint_process_recovery} server_recovery=${server_recovery} mysql_recovery=${mysql_recovery} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} executors=${executors} chrome=${chrome_bin} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
 set +e
 ATOLL_RECRUITING_HTTP_CAPACITY=1 \
 ATOLL_RECRUITING_BROWSER_CAPACITY=1 \
 ATOLL_RECRUITING_BROWSER_ARTIFACT_RECOVERY="${artifact_recovery}" \
 ATOLL_RECRUITING_BROWSER_JOINT_PROCESS_RECOVERY="${joint_process_recovery}" \
 ATOLL_RECRUITING_BROWSER_SERVER_RECOVERY="${server_recovery}" \
+ATOLL_RECRUITING_BROWSER_MYSQL_RECOVERY="${mysql_recovery}" \
 RECRUITING_CHROME_BIN="${chrome_bin}" \
 RECRUITING_HTTP_CAPACITY_ITEMS="${items}" \
 RECRUITING_HTTP_CAPACITY_PAYLOAD_BYTES="${payload_bytes}" \

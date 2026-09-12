@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -40,7 +41,7 @@ func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
 	if os.Getenv("ATOLL_RECRUITING_BROWSER_CAPACITY") == "1" {
 		t.Skip("HTTP wrapper is disabled during the opt-in Browser capacity run")
 	}
-	runRecruitingResponseCapacity(t, false, false, false, false)
+	runRecruitingResponseCapacity(t, false, false, false, false, false)
 }
 
 func TestRecruitingBrowserResponseCapacityThroughRealDataPlanes(t *testing.T) {
@@ -48,10 +49,11 @@ func TestRecruitingBrowserResponseCapacityThroughRealDataPlanes(t *testing.T) {
 		t.Skip("set ATOLL_RECRUITING_BROWSER_CAPACITY=1 through the isolated Browser capacity runner")
 	}
 	if os.Getenv("ATOLL_RECRUITING_BROWSER_ARTIFACT_RECOVERY") == "1" ||
-		os.Getenv("ATOLL_RECRUITING_BROWSER_SERVER_RECOVERY") == "1" {
+		os.Getenv("ATOLL_RECRUITING_BROWSER_SERVER_RECOVERY") == "1" ||
+		os.Getenv("ATOLL_RECRUITING_BROWSER_MYSQL_RECOVERY") == "1" {
 		t.Skip("Browser capacity case is disabled during a recovery run")
 	}
-	runRecruitingResponseCapacity(t, true, false, false, false)
+	runRecruitingResponseCapacity(t, true, false, false, false, false)
 }
 
 func TestRecruitingBrowserArtifactProviderRecoveryThroughRealDataPlanes(t *testing.T) {
@@ -62,7 +64,7 @@ func TestRecruitingBrowserArtifactProviderRecoveryThroughRealDataPlanes(t *testi
 	if os.Getenv("ATOLL_RECRUITING_BROWSER_JOINT_PROCESS_RECOVERY") == "1" {
 		t.Skip("provider-only case is disabled during joint process recovery")
 	}
-	runRecruitingResponseCapacity(t, true, true, false, false)
+	runRecruitingResponseCapacity(t, true, true, false, false, false)
 }
 
 func TestRecruitingBrowserJointProcessRecoveryThroughRealDataPlanes(t *testing.T) {
@@ -71,7 +73,7 @@ func TestRecruitingBrowserJointProcessRecoveryThroughRealDataPlanes(t *testing.T
 		os.Getenv("ATOLL_RECRUITING_BROWSER_JOINT_PROCESS_RECOVERY") != "1" {
 		t.Skip("use the isolated Browser joint-process recovery runner")
 	}
-	runRecruitingResponseCapacity(t, true, true, true, false)
+	runRecruitingResponseCapacity(t, true, true, true, false, false)
 }
 
 func TestRecruitingBrowserServerRecoveryThroughRealDataPlanes(t *testing.T) {
@@ -79,10 +81,18 @@ func TestRecruitingBrowserServerRecoveryThroughRealDataPlanes(t *testing.T) {
 		os.Getenv("ATOLL_RECRUITING_BROWSER_SERVER_RECOVERY") != "1" {
 		t.Skip("use the isolated Browser Server recovery runner")
 	}
-	runRecruitingResponseCapacity(t, true, false, false, true)
+	runRecruitingResponseCapacity(t, true, false, false, true, false)
 }
 
-func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, jointProcessRecovery, serverRecovery bool) {
+func TestRecruitingBrowserMySQLRecoveryThroughRealDataPlanes(t *testing.T) {
+	if os.Getenv("ATOLL_RECRUITING_BROWSER_CAPACITY") != "1" ||
+		os.Getenv("ATOLL_RECRUITING_BROWSER_MYSQL_RECOVERY") != "1" {
+		t.Skip("use the isolated Browser MySQL recovery runner")
+	}
+	runRecruitingResponseCapacity(t, true, false, false, false, true)
+}
+
+func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, jointProcessRecovery, serverRecovery, mysqlRecovery bool) {
 	if artifactRecovery && !browser {
 		t.Fatal("Artifact recovery fixture requires the real Browser path")
 	}
@@ -91,6 +101,9 @@ func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, join
 	}
 	if serverRecovery && (!browser || artifactRecovery || jointProcessRecovery) {
 		t.Fatal("Server recovery is an independent real Browser fault axis")
+	}
+	if mysqlRecovery && (!browser || artifactRecovery || jointProcessRecovery || serverRecovery) {
+		t.Fatal("MySQL recovery is an independent real Browser fault axis")
 	}
 	executionBatchSize := 32
 	capability, capacityKind, artifactDirectory := "http.fetch", "HTTP", "http-capacity-responses"
@@ -101,7 +114,8 @@ func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, join
 	input := httpCapacityFromEnv(t)
 	testStarted := time.Now()
 	h := newHarnessShell(t)
-	runtimeDSN := startRecruitingMySQL(t)
+	mysql := startRecruitingMySQLInstance(t)
+	runtimeDSN := mysql.RuntimeDSN
 	h.env = append(h.env, "ATOLL_RECRUITING_MYSQL_DSN="+runtimeDSN)
 	h.startServer()
 
@@ -282,7 +296,7 @@ func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, join
 		faultOutageDuration = time.Since(outageStarted)
 	}
 	if serverRecovery {
-		failedArtifactAttemptID = waitBrowserExecutionAtServerCut(t, runtimeDSN, input.origin, input.timeout,
+		failedArtifactAttemptID = waitBrowserExecutionAtFaultCut(t, runtimeDSN, input.origin, input.timeout,
 			daemon, h.server, daemonLog, h.server.logPath)
 		outageStarted := time.Now()
 		h.server.kill9(t)
@@ -302,6 +316,32 @@ func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, join
 		}
 		waitArtifactAttemptExpiredWithoutAcceptedEvidence(t, runtimeDSN, failedArtifactAttemptID, input.timeout,
 			daemon, h.server, daemonLog, h.server.logPath)
+		faultOutageDuration = time.Since(outageStarted)
+	}
+	mysqlAttemptID := ""
+	if mysqlRecovery {
+		mysqlAttemptID = waitBrowserExecutionAtFaultCut(t, runtimeDSN, input.origin, input.timeout,
+			daemon, h.server, daemonLog, h.server.logPath)
+		mysqlPaused := false
+		t.Cleanup(func() {
+			if mysqlPaused {
+				_ = exec.Command("docker", "unpause", mysql.ContainerName).Run()
+			}
+		})
+		outageStarted := time.Now()
+		if output, err := exec.Command("docker", "pause", mysql.ContainerName).CombinedOutput(); err != nil {
+			t.Fatalf("pause MySQL container: %v\n%s", err, output)
+		}
+		mysqlPaused = true
+		time.Sleep(7 * time.Second)
+		if daemon.exited() || h.server.exited() {
+			t.Fatalf("process exited during the MySQL outage: executor=%s server=%s",
+				tailLog(daemonLog, 160), tailLog(h.server.logPath, 160))
+		}
+		if output, err := exec.Command("docker", "unpause", mysql.ContainerName).CombinedOutput(); err != nil {
+			t.Fatalf("unpause MySQL container: %v\n%s", err, output)
+		}
+		mysqlPaused = false
 		faultOutageDuration = time.Since(outageStarted)
 	}
 	waitArtifactCapacityBackfill(t, ws, db, homeID, controlID, daemon, h.server,
@@ -349,6 +389,9 @@ func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, join
 	}
 	if artifactRecovery || serverRecovery {
 		assertBrowserArtifactProviderRecoveryFacts(t, db, failedArtifactAttemptID, serverRecovery)
+	}
+	if mysqlRecovery {
+		assertBrowserMySQLRecoveryFacts(t, db, mysqlAttemptID)
 	}
 	// Executor distribution is an observed capacity signal, not a correctness
 	// invariant: one fast executor may legally drain several bounded supply
@@ -533,8 +576,8 @@ FROM recruiting_artifacts WHERE artifact_kind = 'trace' AND attempt_id IS NOT NU
 	}
 	restartDuration := time.Since(restartStarted)
 
-	t.Logf("%s capacity passed: artifact_recovery=%t joint_process_recovery=%t server_recovery=%t fault_outage_ms=%d items=%d payload_bytes=%d executors=%d used_executors=%d response_bytes=%d preview_ms=%d complete_ms=%d drain_ms=%d restart_ms=%d origin_jobs=%d origin_robots=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d offer_accept_p99_ms=%d offer_accept_max_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d accept_start_p99_ms=%d accept_start_max_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d start_terminal_p99_ms=%d start_terminal_max_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d terminal_next_offer_p99_ms=%d terminal_next_offer_max_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
-		capacityKind, artifactRecovery, jointProcessRecovery, serverRecovery, faultOutageDuration.Milliseconds(), input.items, input.payloadBytes, input.executors, usedExecutors, totalResponseBytes,
+	t.Logf("%s capacity passed: artifact_recovery=%t joint_process_recovery=%t server_recovery=%t mysql_recovery=%t fault_outage_ms=%d items=%d payload_bytes=%d executors=%d used_executors=%d response_bytes=%d preview_ms=%d complete_ms=%d drain_ms=%d restart_ms=%d origin_jobs=%d origin_robots=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d offer_accept_p99_ms=%d offer_accept_max_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d accept_start_p99_ms=%d accept_start_max_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d start_terminal_p99_ms=%d start_terminal_max_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d terminal_next_offer_p99_ms=%d terminal_next_offer_max_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
+		capacityKind, artifactRecovery, jointProcessRecovery, serverRecovery, mysqlRecovery, faultOutageDuration.Milliseconds(), input.items, input.payloadBytes, input.executors, usedExecutors, totalResponseBytes,
 		previewDuration.Milliseconds(), completedDuration.Milliseconds(), drainedDuration.Milliseconds(),
 		restartDuration.Milliseconds(), metrics.JobRequests, metrics.RobotsRequests,
 		latency.OfferToAccept.P50, latency.OfferToAccept.P95, latency.OfferToAccept.P99, latency.OfferToAccept.Max,
@@ -575,7 +618,7 @@ ORDER BY a.created_at LIMIT 1`).Scan(&attemptID, &status, &artifacts)
 	return ""
 }
 
-func waitBrowserExecutionAtServerCut(t *testing.T, dsn, origin string, timeout time.Duration,
+func waitBrowserExecutionAtFaultCut(t *testing.T, dsn, origin string, timeout time.Duration,
 	daemon, server *proc, logPaths ...string) string {
 	t.Helper()
 	db, err := store.Open(dsn)
@@ -596,12 +639,12 @@ ORDER BY a.created_at LIMIT 1`).Scan(&attemptID, &status, &artifacts)
 			return attemptID
 		}
 		if daemon.exited() || server.exited() {
-			t.Fatalf("process exited before the live Browser/Server cut: executor=%s server=%s",
+			t.Fatalf("process exited before the live Browser fault cut: executor=%s server=%s",
 				tailLog(logPaths[0], 160), tailLog(logPaths[1], 160))
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	t.Fatalf("Browser did not enter the running/no-evidence Server cut: attempt=%q status=%q artifacts=%d err=%v\nexecutor:\n%s\nserver:\n%s",
+	t.Fatalf("Browser did not enter the running/no-evidence fault cut: attempt=%q status=%q artifacts=%d err=%v\nexecutor:\n%s\nserver:\n%s",
 		attemptID, status, artifacts, err, tailLog(logPaths[0], 160), tailLog(logPaths[1], 160))
 	return ""
 }
@@ -668,6 +711,28 @@ func assertBrowserArtifactProviderRecoveryFacts(t *testing.T, db *sql.DB, failed
 		failedExecutorIncarnation == succeededExecutorIncarnation) {
 		t.Fatalf("Browser Server recovery executor identity old=%s/%s new=%s/%s; expected the same Actor identity with a new incarnation",
 			failedExecutorActorID, failedExecutorIncarnation, succeededExecutorActorID, succeededExecutorIncarnation)
+	}
+}
+
+func assertBrowserMySQLRecoveryFacts(t *testing.T, db *sql.DB, attemptID string) {
+	t.Helper()
+	var status, dispatchStatus string
+	var artifacts, acceptedArtifacts, workAttempts, recoveryDispatches int
+	if err := db.QueryRow(`SELECT
+  (SELECT attempt_status FROM recruiting_attempts WHERE attempt_id = ?),
+  (SELECT COUNT(*) FROM recruiting_artifacts WHERE attempt_id = ?),
+  (SELECT COUNT(*) FROM recruiting_artifacts WHERE attempt_id = ? AND rejected = FALSE),
+  (SELECT d.delivery_status FROM recruiting_attempts a JOIN recruiting_execution_dispatch_outbox d ON d.dispatch_id = a.dispatch_id WHERE a.attempt_id = ?),
+  (SELECT COUNT(*) FROM recruiting_attempts WHERE work_id = (SELECT work_id FROM recruiting_attempts WHERE attempt_id = ?)),
+  (SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE cause_kind = 'attempt_recovered' AND cause_id = ?)`,
+		attemptID, attemptID, attemptID, attemptID, attemptID, attemptID).Scan(&status, &artifacts,
+		&acceptedArtifacts, &dispatchStatus, &workAttempts, &recoveryDispatches); err != nil {
+		t.Fatal(err)
+	}
+	if status != string(model.AttemptSucceeded) || artifacts != 2 || acceptedArtifacts != 2 ||
+		dispatchStatus != "delivered" || workAttempts != 1 || recoveryDispatches != 0 {
+		t.Fatalf("Browser MySQL recovery attempt=%s status=%s artifacts=%d accepted=%d dispatch=%s work_attempts=%d recovery_dispatches=%d",
+			attemptID, status, artifacts, acceptedArtifacts, dispatchStatus, workAttempts, recoveryDispatches)
 	}
 }
 

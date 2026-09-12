@@ -1,0 +1,85 @@
+{
+  "schema": "recruiting.browser-mysql-recovery-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "d9883ef0",
+  "workload_manifest": "docs/experiments/workloads/recruiting-browser-capacity-v1.json#BF3",
+  "entrypoint": "make recruiting-browser-mysql-recovery",
+  "test": "TestRecruitingBrowserMySQLRecoveryThroughRealDataPlanes",
+  "feature_under_test": "bounded MySQL connection stall and resumption while a real-Chrome request is in flight",
+  "environment": {
+    "chrome": "/usr/bin/google-chrome",
+    "origin": "Docker --internal 11.254.x.x controlled HTTP service",
+    "origin_latency_ms": 5000,
+    "mysql": "ephemeral MySQL 8.4 with separate non-root migration and runtime accounts",
+    "processes": [
+      "one Atoll Server process kept alive throughout the injected database stall",
+      "one execution daemon kept alive throughout the injected database stall after its real Chrome request reached the origin"
+    ],
+    "data_planes": ["Recruiting MySQL", "Atoll Channel ledger", "daemon File Resources"]
+  },
+  "fault_cut": {
+    "browser_state_before_cut": "Attempt running, no Artifact persisted, and controlled origin accepted exactly one document request",
+    "cut": "docker pause the ephemeral MySQL container for seven seconds while Server and the execution daemon remain alive, then docker unpause it",
+    "mysql_outage_ms": 7048,
+    "server_confirmed_alive_during_outage": true,
+    "execution_daemon_confirmed_alive_during_outage": true,
+    "chrome_process_lifetime_not_claimed": true
+  },
+  "authoritative_result": {
+    "status": "passed",
+    "backfill_items": 1,
+    "browser_document_requests": 1,
+    "robots_requests": 1,
+    "attempts": 1,
+    "succeeded_attempts": 1,
+    "attempt_recovery_dispatches": 0,
+    "response_artifacts": 1,
+    "trace_artifacts": 1,
+    "backfill_outputs": 1,
+    "response_bytes_verified": 4081,
+    "active_permits_after_settlement": 0,
+    "pending_execution_dispatches_after_settlement": 0,
+    "business_completion_ms": 7767,
+    "outbox_drain_ms": 7969,
+    "final_server_restart_ms": 3313,
+    "journey_total_ms": 24436,
+    "offer_to_accept_ms": {"p50": 34, "p95": 34},
+    "accept_to_start_ms": {"p50": 22, "p95": 22},
+    "start_to_terminal_ms": {"p50": 7446, "p95": 7446},
+    "ledger_messages": 67,
+    "ledger_payload_bytes": 29775,
+    "ledger_events": 11,
+    "recruiting_ledger_events": 9
+  },
+  "invariants": [
+    "the database is paused only after the Attempt is running, the real request has reached the origin, and no Artifact exists",
+    "Server and the execution daemon survive the full database stall after a real Chrome request has reached the origin",
+    "the original Attempt resumes and succeeds after MySQL returns; no replacement Attempt or attempt_recovered dispatch is created",
+    "the controlled website receives exactly one document request, so database recovery does not become a refetch",
+    "the original Attempt persists exactly one DOM response, one effect trace and one BackfillOutput",
+    "all Permits and execution dispatches settle without manual database mutation",
+    "a final normal Server restart preserves both Resource reads and the completed state"
+  ],
+  "implementation": {
+    "production_driver_test_hook_added": false,
+    "actor_classes_added": 0,
+    "worker_types_added": 0,
+    "atoll_core_modified": false,
+    "changed_production_scope": [],
+    "fault_injection_scope": "process-level E2E infrastructure only"
+  },
+  "non_claims": [
+    "MySQL failover, primary/replica promotion, or a dropped and re-established TCP connection",
+    "a remote database or long database outage",
+    "simultaneous Atoll Server and MySQL failure",
+    "remote cloud or object-storage provider behavior",
+    "third-party JavaScript, authentication, anti-bot or availability behavior",
+    "complete P9 production readiness"
+  ],
+  "acceptance": {
+    "gate": "P9 MySQL unavailable during an in-flight real-Chrome request",
+    "status": "passed",
+    "scenario": "S25",
+    "scenario_status_changed": false
+  }
+}

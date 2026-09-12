@@ -680,6 +680,7 @@ func seedPublishedRecruitingRecipe(t *testing.T, dsn, recipeID, origin string, n
 }
 
 type recruitingMySQLInstance struct {
+	ContainerName       string
 	RuntimeDSN          string
 	MigrationDSN        string
 	RestoreRuntimeDSN   string
@@ -748,6 +749,7 @@ func startRecruitingMySQLInstance(t *testing.T) recruitingMySQLInstance {
 		t.Fatalf("migrate recruiting MySQL: %v\n%s", err, output)
 	}
 	return recruitingMySQLInstance{
+		ContainerName:       containerName,
 		RuntimeDSN:          fmt.Sprintf("staircase_runtime:%s@tcp(127.0.0.1:%s)/%s", runtimePassword, port, databaseName),
 		MigrationDSN:        migrationDSN,
 		RestoreRuntimeDSN:   fmt.Sprintf("staircase_runtime:%s@tcp(127.0.0.1:%s)/%s", runtimePassword, port, restoreDatabaseName),

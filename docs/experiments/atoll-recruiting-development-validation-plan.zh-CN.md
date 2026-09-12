@@ -681,6 +681,8 @@ Atoll 暂时不可用进展（2026-09-12）：新增 BF2 `make recruiting-browse
 
 每日 cutoff 跨 Server 故障进展（2026-09-12）：新增 make recruiting-daily-server-cutoff-recovery。DF0 在 Actor ready、cutoff 尚未来临时杀 Server，跨过 cutoff 两秒后确认 MySQL 仍是零 DailyRun；重启必须用旧 durable timer 的原 schedule date/cutoff/window/policy 创建唯一 DailyRun 和 Occurrence。首轮 221.93 秒失败并非 timer 丢失，而是 Listing dispatch 在 Executor 尚未重连时已 post、没有 Attempt，随后等待 15 分钟 acknowledgement deadline；原 presence 集合只包含曾经领取 Work 的具体 Executor，因此无法提前该 dispatch。修复让配置声明的最多 10,000 个 fleet base 与 catalog 以 O(fleet+catalog) 匹配并跟踪当前具体 incarnation，复用既有 presence transition、AccelerateExecutorDispatches、dispatch identity 和 Attempt fence。强化测试在 Server 恢复后暂停原 daemon，先观察一个已 post/pending dispatch 和零 Attempt，再继续同一进程，并要求终态 delivery attempts 至少为 2。权威旅程 49.33 秒通过，跨 cutoff/恢复窗口 30.619 秒，DailyRun/Occurrence 各一份、20/20 Detail 与 20,480 字节 Resource 完成；正常 D0、BF2、BF1 回归通过。该门仍不覆盖多日停机、Server/MySQL 联合故障或生产日负载。证据见 evidence/recruiting-daily-server-cutoff-recovery-20260912.json。
 
+MySQL 在途停顿进展（2026-09-12）：新增 `make recruiting-browser-mysql-recovery` 和 BF3。真实 Browser Attempt running、Chrome 文档请求已进入无出站受控 origin 且数据库中零 Artifact 后，测试用 `docker pause` 令独立非 root MySQL 8.4 停顿 7.048 秒，同时持续确认 Server 和执行 daemon 未退出；页面完成后的 Chrome 子进程寿命不作为本门断言。恢复后原 Attempt 成功写入唯一 DOM response、effect trace 与 BackfillOutput，origin 始终只有一次文档请求，Attempt 精确一份且没有 `attempt_recovered` dispatch；Permit/dispatch 清零，Channel ledger 和最终 Server 重启回读通过。业务完成 7.767 秒，总旅程 24.436 秒。该门没有增加生产 hook 或修改任何生产代码，只证明连接保持下的有界数据库 stall；TCP 连接重置、MySQL failover、远程数据库、长停机和 Server/MySQL 联合故障仍须分别验证。证据见 `evidence/recruiting-browser-mysql-recovery-20260912.json`。
+
 ## 16. 自动测试命令与 CI 分层
 
 计划在实现过程中提供以下稳定入口：

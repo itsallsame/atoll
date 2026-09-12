@@ -109,6 +109,8 @@ Server 单点入口为 `make recruiting-browser-server-recovery`。BF2 在真实
 
 跨每日 cutoff 的 Server 单点入口为 make recruiting-daily-server-cutoff-recovery。验收必须区分两个阶段：Server 离线跨过 cutoff 时 MySQL 不应被旁路写入；Server 恢复后应以原 timer payload 创建当天唯一 DailyRun/Occurrence。若首个 dispatch 在 Executor 尚未重连时为 pending，不要手工改 next_attempt_at：配置 fleet 的具体 incarnation 上线会通过 presence 边沿提前该 dispatch。检查 delivery attempts 增长、随后唯一 Attempt 领取并完成；禁止重新创建 DailyRun、重发人工命令或将 cutoff 改到次日。本入口只覆盖单日 Server 单点，不替代多日停机补偿和联合恢复。
 
+MySQL 短时停顿入口为 `make recruiting-browser-mysql-recovery`。BF3 在真实 Chrome 请求已经进入 origin、Attempt running 且零 Artifact 时暂停本次测试专属 MySQL 容器七秒；Server 和执行 daemon 必须保持存活，页面完成后的 Chrome 子进程寿命不作为本门断言。恢复后应由同一 Attempt 完成，origin 文档请求、Attempt、DOM、trace 和 BackfillOutput 各一份，且不存在 `attempt_recovered` dispatch。不要把数据库停顿当成网站失败而手工重抓，也不要修改 Attempt、Permit 或 outbox。本入口只验证连接保持下的短停顿；连接重置、主从切换、远程数据库、长停机及 Server/MySQL 联合故障必须独立演练。
+
 共享修复的标准顺序：
 
 ```text
