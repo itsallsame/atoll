@@ -3,14 +3,18 @@ set -euo pipefail
 
 level="${RECRUITING_HTTP_CAPACITY_LEVEL:-H0}"
 case "${level}" in
-  H0|H1|H2) ;;
+  H0|H1|H2|H3) ;;
   *)
-    echo "recruiting HTTP capacity: level must be one of H0, H1, H2" >&2
+    echo "recruiting HTTP capacity: level must be one of H0, H1, H2, H3" >&2
     exit 2
     ;;
 esac
 if [[ "${level}" == "H2" && "${RECRUITING_HTTP_CAPACITY_LARGE_ACK:-}" != "isolated-http-large-load" ]]; then
   echo "recruiting HTTP capacity: H2 captures 1,000 responses; set RECRUITING_HTTP_CAPACITY_LARGE_ACK=isolated-http-large-load" >&2
+  exit 2
+fi
+if [[ "${level}" == "H3" && "${RECRUITING_HTTP_CAPACITY_PEAK_ACK:-}" != "isolated-http-five-times-peak" ]]; then
+  echo "recruiting HTTP capacity: H3 captures 5,000 responses; set RECRUITING_HTTP_CAPACITY_PEAK_ACK=isolated-http-five-times-peak" >&2
   exit 2
 fi
 

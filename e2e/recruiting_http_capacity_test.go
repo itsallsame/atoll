@@ -357,13 +357,21 @@ FROM recruiting_artifacts WHERE artifact_kind = 'trace' AND attempt_id IS NOT NU
 	statusResponse := recovered.request(homeID, "recruiting.system.status", controlID, map[string]any{})
 	status, _ := statusResponse["system_status"].(map[string]any)
 	health, _ := status["execution_health"].(map[string]any)
+	expectedHealthSamples := input.items
+	if expectedHealthSamples > 1000 {
+		expectedHealthSamples = 1000
+	}
 	for _, field := range []string{
 		"offer_to_accept_observed_latency", "accept_to_start_observed_latency", "start_to_terminal_observed_latency",
 	} {
 		summary, _ := health[field].(map[string]any)
-		if int(numberField(t, summary, "samples")) != input.items {
-			t.Fatalf("public execution health %s omitted HTTP phase samples: %v", field, statusResponse)
+		if int(numberField(t, summary, "samples")) != expectedHealthSamples {
+			t.Fatalf("public execution health %s violated its bounded phase sample contract: %v", field, statusResponse)
 		}
+	}
+	truncated, _ := health["attempts_truncated"].(bool)
+	if int(numberField(t, health, "attempts_scanned")) != expectedHealthSamples || truncated != (input.items > expectedHealthSamples) {
+		t.Fatalf("public execution health did not expose bounded sampling: %v", statusResponse)
 	}
 	if body := httpReadFile(t, recoveredOperator, h.base, recovered, homeID, firstResponseAddress); len(body) == 0 || (!browser && len(body) != input.payloadBytes) {
 		t.Fatalf("%s response Resource was unavailable after Server restart", capacityKind)

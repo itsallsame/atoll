@@ -1160,6 +1160,8 @@ Review Queue 是 `status=waiting_human` 的 Work Center 视图，可再按结构
 
 Browser 不是 HTTP 的慢速配置，而是独立的执行容量域。真实 Chrome B0/B1/B2 证明同一 Work/Attempt/Permit/Recipe/Artifact/ledger 状态机可以复用，但资源曲线不同：B1 两 Executor 为 1.87 DOM/s，B2 四 Executor 仍只有 1.88 DOM/s，四核主机上的 start→terminal P50 从 754ms 增至 1,458ms。调度因此只把冻结 Recipe 明确要求 `browser.public`/`browser.recipe` 的 Source 放入 Browser capability 池，默认 Detail 保持 `http.fetch`；Browser 池按独立主机、Profile 安全域和站点预算水平扩容，不用增加 Worker 类型，也不把 HTTP batch 直接套到 Chrome。成功 Browser 结果包含一个业务主 DOM response 和有界 trace supporting Artifacts，全部与主结果事务、fence 和 replay hash 绑定；这条规则由真实 B0 首次发现的“单 Artifact 假设”缺口反修正，而不是为测试特判。受控静态 DOM 只关闭本机 Browser 数据面基线，第三方脚本复杂度、登录/验证码、反爬和生产出站隔离仍是独立准入门。
 
+H3 又把相同 HTTP batch 路径从 H2 的 1,000 项扩大到 5,000 项，作为受控 5 倍执行峰值而非数据库到期形状替身。8 个 Executor 完成 5,000/5,000 个 GET、Attempt、BackfillOutput 和 4 KiB response Artifact，20,480,000 字节逐对象校验，Permit 归零；10 个物化页产生 80 条初始唤醒，157 个 supply batch 产生 157 条 capacity-release，Server 重启后状态、receipt 和 Resource 仍可恢复。业务完成 490.119 秒，即 10.20/s；相对 H2 的 13.41/s 下降 23.9%，按该受控速率完成 400K Detail 约需 10.89 小时。近期执行健康投影按设计只扫描 1,000 个 Attempt，并明确返回 `attempts_truncated=true`，没有把有界样本冒充全量。结论不是继续增加 Worker 类型或修改 Atoll core，而是保持 capability、origin、Profile 和公平预算语义，在外部部署中验证多个隔离执行/控制分片及远程 Artifact；H3 关闭了本机受控 5 倍正确性门，但没有关闭生产吞吐、完整日负载或长期 SLO。
+
 ### 15.3 真实网站验收
 
 发现、Recipe、HTTP/API 和 Browser 以真实公开招聘网站验收。本地只注入不能安全施加给第三方的并发、重复、崩溃和数据库故障。

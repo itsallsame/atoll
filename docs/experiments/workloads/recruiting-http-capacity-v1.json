@@ -5,7 +5,8 @@
   "levels": {
     "H0": {"items": 20, "payload_bytes": 1024, "origin_latency_ms": 5, "executors": 2, "timeout_seconds": 120},
     "H1": {"items": 200, "payload_bytes": 4096, "origin_latency_ms": 5, "executors": 4, "timeout_seconds": 300},
-    "H2": {"items": 1000, "payload_bytes": 16384, "origin_latency_ms": 5, "executors": 8, "timeout_seconds": 900}
+    "H2": {"items": 1000, "payload_bytes": 16384, "origin_latency_ms": 5, "executors": 8, "timeout_seconds": 900},
+    "H3": {"items": 5000, "payload_bytes": 4096, "origin_latency_ms": 5, "executors": 8, "timeout_seconds": 1800}
   },
   "correctness_gates": [
     "the production HTTP Driver accepts the isolated public-shaped address without any private-network test bypass",
@@ -20,6 +21,6 @@
   "non_claims": [
     "the controlled origin does not represent third-party latency, rate limits, CDN behavior, or site availability",
     "this is HTTP JSON response capture and does not measure Browser execution",
-    "H0/H1/H2 do not substitute for 20K Listing plus 400K Detail daily completion or long-window SLO"
+    "H0/H1/H2/H3 do not substitute for 20K Listing plus 400K Detail daily completion or long-window SLO"
   ]
 }
