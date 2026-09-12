@@ -325,6 +325,48 @@ WHERE attempt_id = ? AND accepted_observed_at IS NOT NULL AND started_observed_a
 	}
 }
 
+func TestAttemptSupplyBatchMembersVerifyAsOneBoundedEnvelope(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	offerAt, _ := prepareListingExecutionWork(t, ctx, repository, "execution-supply-members", 2)
+	const supplyBatchID = "execution-supply-members-batch"
+	attemptIDs := make([]string, 0, 2)
+	for index := 0; index < 2; index++ {
+		offer, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
+			AttemptID:       fmt.Sprintf("execution-supply-members-attempt-%d", index),
+			ExecutorActorID: "execution-supply-members-executor", ExecutorIncarnation: "execution-supply-members-boot",
+			Capability: "http.fetch", OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(), SupplyBatchID: supplyBatchID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		attemptIDs = append(attemptIDs, offer.Attempt.AttemptID)
+	}
+	if err := repository.VerifyAttemptSupplyBatchMembers(ctx, attemptIDs, supplyBatchID,
+		"execution-supply-members-executor", "execution-supply-members-boot"); err != nil {
+		t.Fatalf("verify complete supply batch: %v", err)
+	}
+	if err := repository.VerifyAttemptSupplyBatchMembers(ctx, append(attemptIDs, "missing-attempt"), supplyBatchID,
+		"execution-supply-members-executor", "execution-supply-members-boot"); !errors.Is(err, ErrAttemptConflict) {
+		t.Fatalf("verify batch with missing Attempt = %v", err)
+	}
+	if err := repository.VerifyAttemptSupplyBatchMembers(ctx, []string{attemptIDs[0], attemptIDs[0]}, supplyBatchID,
+		"execution-supply-members-executor", "execution-supply-members-boot"); err == nil {
+		t.Fatal("duplicate Attempt IDs were accepted")
+	}
+}
+
 func TestClassifiedFailureBackoffIsBoundedAndRepairStopsAutomaticOffers(t *testing.T) {
 	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
 	if dsn == "" {

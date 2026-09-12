@@ -349,17 +349,40 @@ func (r *Repository) GetAttempt(ctx context.Context, attemptID string) (model.At
 
 func (r *Repository) VerifyAttemptSupplyBatch(ctx context.Context, attemptID, supplyBatchID,
 	executorActorID, executorIncarnation string) error {
-	if strings.TrimSpace(attemptID) == "" || strings.TrimSpace(supplyBatchID) == "" ||
+	return r.VerifyAttemptSupplyBatchMembers(ctx, []string{attemptID}, supplyBatchID, executorActorID, executorIncarnation)
+}
+
+// VerifyAttemptSupplyBatchMembers checks one bounded envelope with one indexed
+// query. Individual Attempt transitions still own their transactions and
+// receipts; this only removes redundant preflight round trips and rejects a
+// cross-batch envelope before any member transition is applied.
+func (r *Repository) VerifyAttemptSupplyBatchMembers(ctx context.Context, attemptIDs []string, supplyBatchID,
+	executorActorID, executorIncarnation string) error {
+	if len(attemptIDs) < 1 || len(attemptIDs) > 32 || strings.TrimSpace(supplyBatchID) == "" ||
 		strings.TrimSpace(executorActorID) == "" || strings.TrimSpace(executorIncarnation) == "" {
 		return fmt.Errorf("Attempt supply batch verification requires complete identity")
 	}
+	seen := make(map[string]struct{}, len(attemptIDs))
+	args := make([]any, 0, 3+len(attemptIDs))
+	args = append(args, supplyBatchID, executorActorID, executorIncarnation)
+	for _, attemptID := range attemptIDs {
+		if strings.TrimSpace(attemptID) == "" || strings.TrimSpace(attemptID) != attemptID {
+			return fmt.Errorf("Attempt supply batch verification requires normalized Attempt IDs")
+		}
+		if _, duplicate := seen[attemptID]; duplicate {
+			return fmt.Errorf("Attempt supply batch verification requires unique Attempt IDs")
+		}
+		seen[attemptID] = struct{}{}
+		args = append(args, attemptID)
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(attemptIDs)), ",")
 	var matched int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_attempts
-WHERE attempt_id = ? AND supply_batch_id = ? AND executor_actor_id = ? AND executor_incarnation = ?`,
-		attemptID, supplyBatchID, executorActorID, executorIncarnation).Scan(&matched); err != nil {
+	query := `SELECT COUNT(*) FROM recruiting_attempts
+WHERE supply_batch_id = ? AND executor_actor_id = ? AND executor_incarnation = ? AND attempt_id IN (` + placeholders + `)`
+	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&matched); err != nil {
 		return fmt.Errorf("verify Attempt supply batch: %w", err)
 	}
-	if matched != 1 {
+	if matched != len(attemptIDs) {
 		return ErrAttemptConflict
 	}
 	return nil

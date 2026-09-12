@@ -1162,6 +1162,8 @@ Browser 不是 HTTP 的慢速配置，而是独立的执行容量域。真实 Ch
 
 H3 又把相同 HTTP batch 路径从 H2 的 1,000 项扩大到 5,000 项，作为受控 5 倍执行峰值而非数据库到期形状替身。8 个 Executor 完成 5,000/5,000 个 GET、Attempt、BackfillOutput 和 4 KiB response Artifact，20,480,000 字节逐对象校验，Permit 归零；10 个物化页产生 80 条初始唤醒，157 个 supply batch 产生 157 条 capacity-release，Server 重启后状态、receipt 和 Resource 仍可恢复。业务完成 490.119 秒，即 10.20/s；相对 H2 的 13.41/s 下降 23.9%，按该受控速率完成 400K Detail 约需 10.89 小时。近期执行健康投影按设计只扫描 1,000 个 Attempt，并明确返回 `attempts_truncated=true`，没有把有界样本冒充全量。结论不是继续增加 Worker 类型或修改 Atoll core，而是保持 capability、origin、Profile 和公平预算语义，在外部部署中验证多个隔离执行/控制分片及远程 Artifact；H3 关闭了本机受控 5 倍正确性门，但没有关闭生产吞吐、完整日负载或长期 SLO。
 
+批量优化也必须服从证据。整批身份预检将 claim/result 的归属检查从每 Attempt 一次查询收敛为最多 32 个主键的一次查询，并让所有 payload、重复 ID 和 incarnation 在首个成员提交前通过；这提高了错误批次的拒绝边界，但 H2 实测只改善 0.85%，不能宣传为容量突破。把每次 wake 连续处理批次数从 4 提到 8 的 H3 对照只改善 0.02%，该配置已撤回。后续不再沿用无效调参，而应针对批次内部逐 Attempt offer、claim 和 result 的事务往返建立新的原子批处理，同时保留每个 Attempt 独立状态、receipt、fence、Permit、Artifact 和失败处置。
+
 ### 15.3 真实网站验收
 
 发现、Recipe、HTTP/API 和 Browser 以真实公开招聘网站验收。本地只注入不能安全施加给第三方的并发、重复、崩溃和数据库故障。

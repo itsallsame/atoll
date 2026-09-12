@@ -1,0 +1,59 @@
+{
+  "schema": "recruiting.batch-preflight-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "f29297f5",
+  "feature_under_test": "bounded supply-batch identity preflight for claim and result envelopes",
+  "implementation": {
+    "maximum_attempts_per_query": 32,
+    "claim_identity_queries_before": "one per Attempt",
+    "claim_identity_queries_after": "one per supply batch",
+    "result_identity_queries_before": "one per Attempt",
+    "result_identity_queries_after": "one per supply batch",
+    "attempt_transition_transactions_changed": false,
+    "attempt_receipts_changed": false,
+    "attempt_fences_changed": false,
+    "artifact_transactions_changed": false,
+    "core_architecture_modified": false
+  },
+  "correctness": {
+    "all_claim_member_shapes_checked_before_first_transition": true,
+    "all_result_payloads_decoded_before_first_result_transition": true,
+    "duplicate_attempt_ids_rejected": true,
+    "mixed_executor_incarnations_rejected": true,
+    "missing_or_cross_batch_attempt_rejected_by_bounded_database_query": true,
+    "single_attempt_compatibility_entrypoint_preserved": true
+  },
+  "verification": {
+    "targeted_non_root_mysql_command": "RECRUITING_MYSQL_TEST_RUN='^(TestAttemptSupplyBatchMembersVerifyAsOneBoundedEnvelope|TestExecutionClaimCommandAtomicallyAcceptsAndStarts)$' RECRUITING_MYSQL_ACTOR_TEST_RUN='^TestExecutionBatch' RECRUITING_MYSQL_TEST_VERBOSE=1 make recruiting-mysql-test",
+    "targeted_non_root_mysql_passed": true,
+    "full_store_race_seconds": 232.562,
+    "full_actor_race_seconds": 3.026,
+    "http_h0_real_process_passed": true,
+    "http_h2_real_process": {
+      "items_succeeded": 1000,
+      "response_bytes": 16384000,
+      "completion_ms": 73953,
+      "responses_per_second": 13.52,
+      "baseline_completion_ms": 74583,
+      "baseline_responses_per_second": 13.41,
+      "interpretation": "the measured 0.85 percent completion-time change is too small to claim a throughput improvement"
+    },
+    "race_packages_passed": true,
+    "go_vet_passed": true,
+    "security_audit_passed": true,
+    "core_boundary_from_a94d2b8d_passed": true
+  },
+  "rejected_experiment": {
+    "hypothesis": "raising maximum consecutive supply batches per wake from 4 to 8 would remove the H3 plateau",
+    "baseline_h3_completion_ms": 490119,
+    "experimental_h3_completion_ms": 490034,
+    "relative_change_percent": 0.02,
+    "decision": "reverted because the difference is noise and the extra configuration has no demonstrated product value"
+  },
+  "remaining_bottleneck": "offer creation, claim transitions, and business result acceptance still persist each Attempt in separate transactions inside every supply batch",
+  "acceptance": {
+    "scenario": "S25",
+    "status": "partial",
+    "reason": "batch preflight is safer and uses fewer database round trips, but it does not materially change sustained throughput or close the production execution gate"
+  }
+}
