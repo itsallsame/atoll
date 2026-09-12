@@ -1,0 +1,83 @@
+{
+  "schema": "recruiting.batch-candidate-query-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "8f7d02e6",
+  "feature_under_test": "supply-batch-specific runnable candidate query for detail and historical backfill Work",
+  "implementation": {
+    "supply_batch_purposes": ["detail_sync", "historical_backfill_item"],
+    "removed_from_candidate_query": [
+      "listing occurrence and standalone run branches",
+      "source discovery branches",
+      "source and Recipe validation branches",
+      "baseline and Profile control branches",
+      "company import branches"
+    ],
+    "unchanged_after_candidate_selection": [
+      "primary-key Work lock",
+      "active Attempt check",
+      "Company and Source scope authorization",
+      "Detail or Backfill domain fence",
+      "Profile device authorization",
+      "budget Permit acquisition",
+      "immutable offer and Attempt persistence"
+    ],
+    "general_single_offer_query_changed": false,
+    "core_architecture_modified": false
+  },
+  "verification": {
+    "non_root_mysql_contracts": [
+      "TestDetailExecutionReturnsToBatchOnlyCandidateQuery",
+      "TestAttemptSupplyBatchMembersVerifyAsOneBoundedEnvelope"
+    ],
+    "full_store_race_seconds": 239.918,
+    "full_actor_race_seconds": 3.518,
+    "race_packages_passed": true,
+    "go_vet_passed": true,
+    "security_audit_passed": true,
+    "core_boundary_from_a94d2b8d_passed": true,
+    "http_h0_real_process_passed": true,
+    "http_h2_runs": [
+      {"items_succeeded": 1000, "response_bytes": 16384000, "completion_ms": 72620},
+      {"items_succeeded": 1000, "response_bytes": 16384000, "completion_ms": 72620}
+    ],
+    "http_h3_run": {
+      "items_succeeded": 5000,
+      "response_bytes": 20480000,
+      "completion_ms": 474554,
+      "outbox_drain_ms": 480323,
+      "restart_recovery_ms": 3919,
+      "ledger_messages": 7683,
+      "ledger_events": 5273,
+      "recruiting_ledger_events": 5264,
+      "offer_to_accept_ms": {"p50": 7676, "p95": 13801, "p99": 15670, "max": 16601},
+      "start_to_terminal_ms": {"p50": 5741, "p95": 7803, "p99": 8263, "max": 8804},
+      "terminal_to_next_offer_ms": {"p50": 8424, "p95": 13478, "p99": 14863, "max": 15607}
+    }
+  },
+  "capacity_assessment": {
+    "baseline_h2_completion_ms": 74583,
+    "optimized_h2_completion_ms": 72620,
+    "optimized_h2_responses_per_second": 13.77,
+    "h2_completion_improvement_percent": 2.63,
+    "h2_remaining_gap_to_400k_in_8h_percent": 0.85,
+    "baseline_h3_completion_ms": 490119,
+    "optimized_h3_completion_ms": 474554,
+    "optimized_h3_responses_per_second": 10.54,
+    "h3_completion_improvement_percent": 3.18,
+    "detail_400k_projected_hours_at_optimized_h3_rate": 10.55,
+    "h3_remaining_gap_to_400k_in_8h_percent": 24.14,
+    "interpretation": "the purpose-specific candidate plan yields a small repeatable improvement and lowers offer latency at H3, but most sustained cost remains in per-Attempt fence, transition, and result persistence"
+  },
+  "non_claims": [
+    "production throughput readiness",
+    "third-party or remote Artifact performance",
+    "full 20K Listing plus 400K Detail execution",
+    "long-window SLO",
+    "general single-offer query improvement"
+  ],
+  "acceptance": {
+    "scenario": "S25",
+    "status": "partial",
+    "reason": "the specialized query is correct and measurably faster, but optimized H3 remains 24.14 percent below the arithmetic 8-hour reference"
+  }
+}

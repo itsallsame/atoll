@@ -131,6 +131,30 @@ func TestDetailExecutionFailureReturnsWorkToGenericOffer(t *testing.T) {
 	}
 }
 
+func TestDetailExecutionReturnsToBatchOnlyCandidateQuery(t *testing.T) {
+	repository, _, ctx, cleanup := detailContractRepository(t)
+	defer cleanup()
+	now := time.Date(2026, 9, 8, 7, 30, 0, 0, time.UTC)
+	fixture := createDetailFixture(t, ctx, repository, "detail-batch-retry", now)
+	defer pauseExecutionSource(t, ctx, repository, fixture.source.SourceID, now.Add(10*time.Minute))
+	if _, err := repository.FailListingExecution(ctx, fixture.attempt.AttemptID, fixture.attempt.ExecutorActorID,
+		fixture.attempt.ExecutorIncarnation, "upstream_timeout", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := repository.OfferExecution(ctx, ListingOfferRequest{
+		AttemptID: "detail-batch-retry-attempt-2", ExecutorActorID: "executor-b", ExecutorIncarnation: "incarnation-b",
+		Capability: "http.fetch", Origin: "https://detail-batch-retry.example.com", OfferedAt: now.Add(2 * time.Minute),
+		BudgetPolicy: testExecutionBudgetPolicy(), SupplyBatchID: "detail-batch-retry-supply", SupplyBatchOnly: true,
+	})
+	if err != nil || retry.Kind != "detail" || retry.Work.WorkID != fixture.work.WorkID || retry.Detail == nil {
+		t.Fatalf("batch-only detail offer = %+v err=%v", retry, err)
+	}
+	if err := repository.VerifyAttemptSupplyBatch(ctx, retry.Attempt.AttemptID, "detail-batch-retry-supply",
+		"executor-b", "incarnation-b"); err != nil {
+		t.Fatalf("batch-only detail Attempt did not retain supply identity: %v", err)
+	}
+}
+
 type detailFixture struct {
 	source  model.RecruitmentSource
 	job     model.SourceJob

@@ -92,7 +92,56 @@ func (r *Repository) offerExecution(ctx context.Context, request ListingOfferReq
 	// rows one by one. A locking range query with ORDER BY/EXISTS can make
 	// MySQL lock or skip every examined candidate rather than just LIMIT 1,
 	// collapsing concurrent executors onto a false empty result.
-	rows, err := tx.QueryContext(ctx, `
+	var rows *sql.Rows
+	if request.SupplyBatchOnly {
+		rows, err = tx.QueryContext(ctx, `
+SELECT w.work_id
+FROM recruiting_works w
+WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
+  AND w.purpose IN ('detail_sync', 'historical_backfill_item')
+  AND w.not_before <= ? AND (w.deadline_at IS NULL OR w.deadline_at > ?)
+  AND (? = '' OR w.origin = ?) AND (? = '' OR w.profile_id = ?)
+  AND (w.profile_id IS NULL OR EXISTS (
+    SELECT 1 FROM recruiting_profiles eligible_profile
+    WHERE eligible_profile.profile_id = w.profile_id AND eligible_profile.auth_status = 'ready'
+  ))
+  AND (w.company_id IS NULL OR EXISTS (
+    SELECT 1 FROM recruiting_companies eligible_company
+    WHERE eligible_company.company_id = w.company_id AND eligible_company.control_status = 'active'
+  ) OR EXISTS (
+    SELECT 1 FROM recruiting_scope_control_operations company_control
+    JOIN recruiting_scope_control_roots company_root ON company_root.operation_id = company_control.operation_id
+    WHERE company_control.scope_type = 'company' AND company_control.scope_id = w.company_id
+      AND company_control.operation_status = 'applying' AND company_control.pause_mode = 'finish_causal_chain'
+      AND company_root.root_work_id = w.root_work_id AND company_root.root_status = 'active'
+  ))
+  AND (w.source_id IS NULL OR EXISTS (
+    SELECT 1 FROM recruiting_sources eligible_source
+    WHERE eligible_source.source_id = w.source_id AND eligible_source.control_status = 'active'
+  ) OR EXISTS (
+    SELECT 1 FROM recruiting_scope_control_operations source_control
+    JOIN recruiting_scope_control_roots source_root ON source_root.operation_id = source_control.operation_id
+    WHERE source_control.scope_type = 'source' AND source_control.scope_id = w.source_id
+      AND source_control.operation_status = 'applying' AND source_control.pause_mode = 'finish_causal_chain'
+      AND source_root.root_work_id = w.root_work_id AND source_root.root_status = 'active'
+  ))
+  AND ((w.purpose = 'detail_sync' AND EXISTS (
+    SELECT 1 FROM recruiting_source_jobs j
+    WHERE j.job_id = w.target_id AND j.job_status IN ('detail_pending', 'update_pending')
+  )) OR (w.purpose = 'historical_backfill_item' AND EXISTS (
+    SELECT 1 FROM recruiting_backfill_items item
+    JOIN recruiting_backfills backfill ON backfill.backfill_id = item.backfill_id
+    WHERE item.work_id = w.work_id AND item.item_status = 'queued' AND backfill.backfill_status = 'running'
+  )))
+  AND NOT EXISTS (
+    SELECT 1 FROM recruiting_attempts a
+    WHERE a.work_id = w.work_id AND a.attempt_status IN ('offered', 'accepted', 'running')
+  )
+ORDER BY w.priority DESC, w.not_before, w.work_id
+LIMIT 100`, request.Capability, request.OfferedAt.UTC(), request.OfferedAt.UTC(),
+			request.Origin, request.Origin, request.ProfileID, request.ProfileID)
+	} else {
+		rows, err = tx.QueryContext(ctx, `
 SELECT w.work_id
 FROM recruiting_works w
 	WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
@@ -217,8 +266,9 @@ FROM recruiting_works w
   )
 ORDER BY w.priority DESC, w.not_before, w.work_id
 LIMIT 100`, request.Capability, requiredPurpose, requiredPurpose, request.SupplyBatchOnly,
-		request.OfferedAt.UTC(), request.OfferedAt.UTC(),
-		request.Origin, request.Origin, request.ProfileID, request.ProfileID)
+			request.OfferedAt.UTC(), request.OfferedAt.UTC(),
+			request.Origin, request.Origin, request.ProfileID, request.ProfileID)
+	}
 	if err != nil {
 		return ExecutionOffer{}, fmt.Errorf("discover runnable execution work: %w", err)
 	}
