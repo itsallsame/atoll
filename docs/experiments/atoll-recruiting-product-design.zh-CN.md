@@ -1186,6 +1186,8 @@ H3 又把相同 HTTP batch 路径从 H2 的 1,000 项扩大到 5,000 项，作�
 
 BF5 再把故障从连接层推进到数据库进程：同一 running/no-evidence 切点先阻断稳定运行端点，再对 MySQL 容器发送 `SIGKILL`，停机七秒后以同一数据卷启动并完成 crash recovery。Docker 随机发布端口会在 restart 后变化，因此测试透明代理保持 Actor DSN 不变、只把上游改到新端口；这属于测试拓扑校准，不是生产重配置。实测停机与恢复共 9.498 秒，Server、daemon、数据库中既有 Work/Attempt/Recipe/Job/receipt/outbox 全部保留，BF4 的不可变结果退避使原 Attempt 完成，origin 仍只有一次请求，DOM、trace、BackfillOutput 各一。该切片没有新生产实现，也没有增加 Worker 或改 Atoll core；它证明同节点进程死亡与原数据重启，但不能替代主从晋升、PITR、存储损坏、换节点或地域灾难恢复。
 
+BF6 验证本地控制面两个依赖同时消失，而不是把 BF2 与 BF5 的结果分别外推。真实 Chrome 已进入 origin、Attempt running 且零 Artifact 时，稳定数据库端点先阻断，Atoll Server 与 MySQL 随即同时 `SIGKILL`，执行 daemon 保持同一 OS 进程；七秒后先恢复同一 MySQL 数据并在 Server 尚未启动时验证连接，再恢复 Server。原 Attempt 因没有可接受证据而 expired，来源 dispatch 与 Permit 收口；同一 Executor Actor 以新 incarnation 重连，`attempt_recovered` dispatch 创建一个新 Attempt并完成唯一 DOM、trace 和 BackfillOutput。实测联合故障恢复 14.579 秒、业务完成 21.016 秒、总旅程 40.530 秒。origin 文档请求为两次是当前语义的必要结果：Server 丢失期间 daemon 没有持久本地结果 spool，系统选择重新执行并用接受围栏保证唯一有效事实，而不伪称零重抓。该切片不修改生产代码、Atoll core 或 Worker 类型，也不证明远程主从、quorum、PITR、地域灾难或零重抓恢复。
+
 ### 15.3 真实网站验收
 
 发现、Recipe、HTTP/API 和 Browser 以真实公开招聘网站验收。本地只注入不能安全施加给第三方的并发、重复、崩溃和数据库故障。

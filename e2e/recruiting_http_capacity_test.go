@@ -44,7 +44,7 @@ func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
 	if os.Getenv("ATOLL_RECRUITING_BROWSER_CAPACITY") == "1" {
 		t.Skip("HTTP wrapper is disabled during the opt-in Browser capacity run")
 	}
-	runRecruitingResponseCapacity(t, false, false, false, false, false, false, false)
+	runRecruitingResponseCapacity(t, false, false, false, false, false, false, false, false)
 }
 
 func TestRecruitingBrowserResponseCapacityThroughRealDataPlanes(t *testing.T) {
@@ -55,10 +55,11 @@ func TestRecruitingBrowserResponseCapacityThroughRealDataPlanes(t *testing.T) {
 		os.Getenv("ATOLL_RECRUITING_BROWSER_SERVER_RECOVERY") == "1" ||
 		os.Getenv("ATOLL_RECRUITING_BROWSER_MYSQL_RECOVERY") == "1" ||
 		os.Getenv("ATOLL_RECRUITING_BROWSER_MYSQL_CONNECTION_RECOVERY") == "1" ||
-		os.Getenv("ATOLL_RECRUITING_BROWSER_MYSQL_PROCESS_RECOVERY") == "1" {
+		os.Getenv("ATOLL_RECRUITING_BROWSER_MYSQL_PROCESS_RECOVERY") == "1" ||
+		os.Getenv("ATOLL_RECRUITING_BROWSER_CONTROL_PLANE_RECOVERY") == "1" {
 		t.Skip("Browser capacity case is disabled during a recovery run")
 	}
-	runRecruitingResponseCapacity(t, true, false, false, false, false, false, false)
+	runRecruitingResponseCapacity(t, true, false, false, false, false, false, false, false)
 }
 
 func TestRecruitingBrowserArtifactProviderRecoveryThroughRealDataPlanes(t *testing.T) {
@@ -69,7 +70,7 @@ func TestRecruitingBrowserArtifactProviderRecoveryThroughRealDataPlanes(t *testi
 	if os.Getenv("ATOLL_RECRUITING_BROWSER_JOINT_PROCESS_RECOVERY") == "1" {
 		t.Skip("provider-only case is disabled during joint process recovery")
 	}
-	runRecruitingResponseCapacity(t, true, true, false, false, false, false, false)
+	runRecruitingResponseCapacity(t, true, true, false, false, false, false, false, false)
 }
 
 func TestRecruitingBrowserJointProcessRecoveryThroughRealDataPlanes(t *testing.T) {
@@ -78,7 +79,7 @@ func TestRecruitingBrowserJointProcessRecoveryThroughRealDataPlanes(t *testing.T
 		os.Getenv("ATOLL_RECRUITING_BROWSER_JOINT_PROCESS_RECOVERY") != "1" {
 		t.Skip("use the isolated Browser joint-process recovery runner")
 	}
-	runRecruitingResponseCapacity(t, true, true, true, false, false, false, false)
+	runRecruitingResponseCapacity(t, true, true, true, false, false, false, false, false)
 }
 
 func TestRecruitingBrowserServerRecoveryThroughRealDataPlanes(t *testing.T) {
@@ -86,7 +87,7 @@ func TestRecruitingBrowserServerRecoveryThroughRealDataPlanes(t *testing.T) {
 		os.Getenv("ATOLL_RECRUITING_BROWSER_SERVER_RECOVERY") != "1" {
 		t.Skip("use the isolated Browser Server recovery runner")
 	}
-	runRecruitingResponseCapacity(t, true, false, false, true, false, false, false)
+	runRecruitingResponseCapacity(t, true, false, false, true, false, false, false, false)
 }
 
 func TestRecruitingBrowserMySQLRecoveryThroughRealDataPlanes(t *testing.T) {
@@ -94,7 +95,7 @@ func TestRecruitingBrowserMySQLRecoveryThroughRealDataPlanes(t *testing.T) {
 		os.Getenv("ATOLL_RECRUITING_BROWSER_MYSQL_RECOVERY") != "1" {
 		t.Skip("use the isolated Browser MySQL recovery runner")
 	}
-	runRecruitingResponseCapacity(t, true, false, false, false, true, false, false)
+	runRecruitingResponseCapacity(t, true, false, false, false, true, false, false, false)
 }
 
 func TestRecruitingBrowserMySQLConnectionRecoveryThroughRealDataPlanes(t *testing.T) {
@@ -102,7 +103,7 @@ func TestRecruitingBrowserMySQLConnectionRecoveryThroughRealDataPlanes(t *testin
 		os.Getenv("ATOLL_RECRUITING_BROWSER_MYSQL_CONNECTION_RECOVERY") != "1" {
 		t.Skip("use the isolated Browser MySQL connection recovery runner")
 	}
-	runRecruitingResponseCapacity(t, true, false, false, false, false, true, false)
+	runRecruitingResponseCapacity(t, true, false, false, false, false, true, false, false)
 }
 
 func TestRecruitingBrowserMySQLProcessRecoveryThroughRealDataPlanes(t *testing.T) {
@@ -110,10 +111,18 @@ func TestRecruitingBrowserMySQLProcessRecoveryThroughRealDataPlanes(t *testing.T
 		os.Getenv("ATOLL_RECRUITING_BROWSER_MYSQL_PROCESS_RECOVERY") != "1" {
 		t.Skip("use the isolated Browser MySQL process recovery runner")
 	}
-	runRecruitingResponseCapacity(t, true, false, false, false, false, false, true)
+	runRecruitingResponseCapacity(t, true, false, false, false, false, false, true, false)
 }
 
-func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, jointProcessRecovery, serverRecovery, mysqlRecovery, mysqlConnectionRecovery, mysqlProcessRecovery bool) {
+func TestRecruitingBrowserControlPlaneRecoveryThroughRealDataPlanes(t *testing.T) {
+	if os.Getenv("ATOLL_RECRUITING_BROWSER_CAPACITY") != "1" ||
+		os.Getenv("ATOLL_RECRUITING_BROWSER_CONTROL_PLANE_RECOVERY") != "1" {
+		t.Skip("use the isolated Browser control-plane recovery runner")
+	}
+	runRecruitingResponseCapacity(t, true, false, false, false, false, false, false, true)
+}
+
+func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, jointProcessRecovery, serverRecovery, mysqlRecovery, mysqlConnectionRecovery, mysqlProcessRecovery, controlPlaneRecovery bool) {
 	if artifactRecovery && !browser {
 		t.Fatal("Artifact recovery fixture requires the real Browser path")
 	}
@@ -132,6 +141,9 @@ func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, join
 	if mysqlProcessRecovery && (!browser || artifactRecovery || jointProcessRecovery || serverRecovery || mysqlRecovery || mysqlConnectionRecovery) {
 		t.Fatal("MySQL process recovery is an independent real Browser fault axis")
 	}
+	if controlPlaneRecovery && (!browser || artifactRecovery || jointProcessRecovery || serverRecovery || mysqlRecovery || mysqlConnectionRecovery || mysqlProcessRecovery) {
+		t.Fatal("joint control-plane recovery is an independent real Browser fault axis")
+	}
 	executionBatchSize := 32
 	capability, capacityKind, artifactDirectory := "http.fetch", "HTTP", "http-capacity-responses"
 	var firstTraceAddress string
@@ -144,7 +156,7 @@ func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, join
 	mysql := startRecruitingMySQLInstance(t)
 	runtimeDSN := mysql.RuntimeDSN
 	var mysqlProxy *recruitingTCPFaultProxy
-	if mysqlConnectionRecovery || mysqlProcessRecovery {
+	if mysqlConnectionRecovery || mysqlProcessRecovery || controlPlaneRecovery {
 		runtimeDSN, mysqlProxy = startRecruitingTCPFaultProxy(t, runtimeDSN)
 	}
 	h.env = append(h.env, "ATOLL_RECRUITING_MYSQL_DSN="+runtimeDSN)
@@ -204,7 +216,7 @@ func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, join
 	}
 	const controlName = "http-capacity-control"
 	attemptStaleAfterMS := 900_000
-	if artifactRecovery || serverRecovery {
+	if artifactRecovery || serverRecovery || controlPlaneRecovery {
 		attemptStaleAfterMS = 30_000
 	}
 	registrarRequest(t, ws, homeID, systemActor, "system.actor.template.create", map[string]any{
@@ -349,6 +361,40 @@ func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, join
 			daemon, h.server, daemonLog, h.server.logPath)
 		faultOutageDuration = time.Since(outageStarted)
 	}
+	if controlPlaneRecovery {
+		failedArtifactAttemptID = waitBrowserExecutionAtFaultCut(t, runtimeDSN, input.origin, input.timeout,
+			daemon, h.server, daemonLog, h.server.logPath)
+		outageStarted := time.Now()
+		mysqlProxy.Disconnect()
+		h.server.kill9(t)
+		if output, err := exec.Command("docker", "kill", "--signal", "KILL", mysql.ContainerName).CombinedOutput(); err != nil {
+			t.Fatalf("kill MySQL during joint control-plane outage: %v\n%s", err, output)
+		}
+		time.Sleep(7 * time.Second)
+		if daemon.exited() {
+			t.Fatalf("execution daemon exited during the joint control-plane outage: %s", tailLog(daemonLog, 160))
+		}
+		if output, err := exec.Command("docker", "start", mysql.ContainerName).CombinedOutput(); err != nil {
+			t.Fatalf("restart MySQL during joint control-plane recovery: %v\n%s", err, output)
+		}
+		mysqlProxy.SetTarget(recruitingMySQLContainerAddress(t, mysql.ContainerName))
+		mysqlProxy.Resume()
+		waitMySQLConnectionRecoveredWhileServerDown(t, db, 30*time.Second, mysql.ContainerName, daemon, daemonLog)
+
+		h.startServer()
+		operator = newAPIClient(t, h.base)
+		if login := operator.login("http-capacity@example.test", "operator-local-password"); login["id"] != "http-capacity-operator" {
+			t.Fatalf("HTTP-capacity operator login after joint control-plane outage=%v", login)
+		}
+		ws = dialWS(t, h.base, operator.cookieHeader(), map[string]int64{homeID: 0})
+		waitRecruitingReady(t, ws, homeID, controlID, h.server)
+		for _, executorID := range executorIDs {
+			waitActorPresenceInChannel(t, ws, homeID, executorID, daemon, daemonLog)
+		}
+		waitArtifactAttemptExpiredWithoutAcceptedEvidence(t, runtimeDSN, failedArtifactAttemptID, input.timeout,
+			daemon, h.server, daemonLog, h.server.logPath)
+		faultOutageDuration = time.Since(outageStarted)
+	}
 	if serverRecovery {
 		failedArtifactAttemptID = waitBrowserExecutionAtFaultCut(t, runtimeDSN, input.origin, input.timeout,
 			daemon, h.server, daemonLog, h.server.logPath)
@@ -440,7 +486,7 @@ func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, join
 	expectedMaterializeDispatches := expectedCompactedMaterializeDispatches(input.items, input.executors, 500)
 	expectedReleaseDispatches := (input.items + executionBatchSize - 1) / executionBatchSize
 	expectedRecoveryDispatches := 0
-	if artifactRecovery || serverRecovery {
+	if artifactRecovery || serverRecovery || controlPlaneRecovery {
 		expectedRecoveryDispatches = 1
 	}
 	expectedTraceArtifacts := 0
@@ -455,8 +501,8 @@ func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery, join
 			backfillItems, input.items, succeededItems, outputs, responseArtifacts, traceArtifacts, succeededAttempts,
 			deliveredDispatches, materializeDispatches, releaseDispatches, activeBudget)
 	}
-	if artifactRecovery || serverRecovery {
-		assertBrowserArtifactProviderRecoveryFacts(t, db, failedArtifactAttemptID, serverRecovery)
+	if artifactRecovery || serverRecovery || controlPlaneRecovery {
+		assertBrowserArtifactProviderRecoveryFacts(t, db, failedArtifactAttemptID, serverRecovery || controlPlaneRecovery)
 	}
 	if mysqlRecovery || mysqlConnectionRecovery || mysqlProcessRecovery {
 		assertBrowserMySQLRecoveryFacts(t, db, mysqlAttemptID)
@@ -567,7 +613,7 @@ FROM recruiting_artifacts WHERE artifact_kind = 'trace' AND attempt_id IS NOT NU
 	metrics := readControlledOriginMetrics(t, input.origin)
 	maxRobotsRequests := input.executors
 	expectedJobRequests := input.items
-	if artifactRecovery || serverRecovery {
+	if artifactRecovery || serverRecovery || controlPlaneRecovery {
 		expectedJobRequests++
 	}
 	if browser {
@@ -609,7 +655,7 @@ FROM recruiting_artifacts WHERE artifact_kind = 'trace' AND attempt_id IS NOT NU
 	status, _ := statusResponse["system_status"].(map[string]any)
 	health, _ := status["execution_health"].(map[string]any)
 	expectedAttemptsScanned := input.items
-	if artifactRecovery || serverRecovery {
+	if artifactRecovery || serverRecovery || controlPlaneRecovery {
 		expectedAttemptsScanned++
 	}
 	if expectedAttemptsScanned > 1000 {
@@ -628,7 +674,7 @@ FROM recruiting_artifacts WHERE artifact_kind = 'trace' AND attempt_id IS NOT NU
 	}
 	truncated, _ := health["attempts_truncated"].(bool)
 	totalAttempts := input.items
-	if artifactRecovery || serverRecovery {
+	if artifactRecovery || serverRecovery || controlPlaneRecovery {
 		totalAttempts++
 	}
 	if int(numberField(t, health, "attempts_scanned")) != expectedAttemptsScanned || truncated != (totalAttempts > expectedAttemptsScanned) {
@@ -644,8 +690,8 @@ FROM recruiting_artifacts WHERE artifact_kind = 'trace' AND attempt_id IS NOT NU
 	}
 	restartDuration := time.Since(restartStarted)
 
-	t.Logf("%s capacity passed: artifact_recovery=%t joint_process_recovery=%t server_recovery=%t mysql_recovery=%t mysql_connection_recovery=%t mysql_process_recovery=%t fault_outage_ms=%d items=%d payload_bytes=%d executors=%d used_executors=%d response_bytes=%d preview_ms=%d complete_ms=%d drain_ms=%d restart_ms=%d origin_jobs=%d origin_robots=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d offer_accept_p99_ms=%d offer_accept_max_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d accept_start_p99_ms=%d accept_start_max_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d start_terminal_p99_ms=%d start_terminal_max_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d terminal_next_offer_p99_ms=%d terminal_next_offer_max_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
-		capacityKind, artifactRecovery, jointProcessRecovery, serverRecovery, mysqlRecovery, mysqlConnectionRecovery, mysqlProcessRecovery, faultOutageDuration.Milliseconds(), input.items, input.payloadBytes, input.executors, usedExecutors, totalResponseBytes,
+	t.Logf("%s capacity passed: artifact_recovery=%t joint_process_recovery=%t server_recovery=%t mysql_recovery=%t mysql_connection_recovery=%t mysql_process_recovery=%t control_plane_recovery=%t fault_outage_ms=%d items=%d payload_bytes=%d executors=%d used_executors=%d response_bytes=%d preview_ms=%d complete_ms=%d drain_ms=%d restart_ms=%d origin_jobs=%d origin_robots=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d offer_accept_p99_ms=%d offer_accept_max_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d accept_start_p99_ms=%d accept_start_max_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d start_terminal_p99_ms=%d start_terminal_max_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d terminal_next_offer_p99_ms=%d terminal_next_offer_max_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
+		capacityKind, artifactRecovery, jointProcessRecovery, serverRecovery, mysqlRecovery, mysqlConnectionRecovery, mysqlProcessRecovery, controlPlaneRecovery, faultOutageDuration.Milliseconds(), input.items, input.payloadBytes, input.executors, usedExecutors, totalResponseBytes,
 		previewDuration.Milliseconds(), completedDuration.Milliseconds(), drainedDuration.Milliseconds(),
 		restartDuration.Milliseconds(), metrics.JobRequests, metrics.RobotsRequests,
 		latency.OfferToAccept.P50, latency.OfferToAccept.P95, latency.OfferToAccept.P99, latency.OfferToAccept.Max,
@@ -958,6 +1004,29 @@ func waitMySQLConnectionRecovered(t *testing.T, db *sql.DB, timeout time.Duratio
 		"running={{.State.Running}} status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}", containerName).CombinedOutput()
 	containerLog, _ := exec.Command("docker", "logs", "--tail", "120", containerName).CombinedOutput()
 	t.Fatalf("MySQL connection did not recover within %s: %v\ncontainer: %s\n%s",
+		timeout, lastErr, containerState, containerLog)
+}
+
+func waitMySQLConnectionRecoveredWhileServerDown(t *testing.T, db *sql.DB, timeout time.Duration,
+	containerName string, daemon *proc, daemonLog string) {
+	t.Helper()
+	var lastErr error
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		lastErr = db.PingContext(ctx)
+		cancel()
+		if lastErr == nil {
+			return
+		}
+		if daemon.exited() {
+			t.Fatalf("execution daemon exited before MySQL recovered while Server was down: %s", tailLog(daemonLog, 160))
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	containerState, _ := exec.Command("docker", "inspect", "--format",
+		"running={{.State.Running}} status={{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}", containerName).CombinedOutput()
+	containerLog, _ := exec.Command("docker", "logs", "--tail", "120", containerName).CombinedOutput()
+	t.Fatalf("MySQL connection did not recover while Server was down within %s: %v\ncontainer: %s\n%s",
 		timeout, lastErr, containerState, containerLog)
 }
 

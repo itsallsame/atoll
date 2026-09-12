@@ -711,7 +711,8 @@ func startRecruitingMySQLInstance(t *testing.T) recruitingMySQLInstance {
 	}
 	dockerArgs := []string{"run", "-d", "--name", containerName,
 		"-p", "127.0.0.1::3306", "-e", "MYSQL_RANDOM_ROOT_PASSWORD=yes"}
-	if os.Getenv("ATOLL_RECRUITING_BROWSER_MYSQL_PROCESS_RECOVERY") != "1" {
+	if os.Getenv("ATOLL_RECRUITING_BROWSER_MYSQL_PROCESS_RECOVERY") != "1" &&
+		os.Getenv("ATOLL_RECRUITING_BROWSER_CONTROL_PLANE_RECOVERY") != "1" {
 		dockerArgs = append(dockerArgs, "--tmpfs", "/var/lib/mysql:rw,nosuid,size=2g")
 	}
 	dockerArgs = append(dockerArgs,

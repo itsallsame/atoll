@@ -8,10 +8,11 @@ server_recovery="${RECRUITING_BROWSER_SERVER_RECOVERY:-0}"
 mysql_recovery="${RECRUITING_BROWSER_MYSQL_RECOVERY:-0}"
 mysql_connection_recovery="${RECRUITING_BROWSER_MYSQL_CONNECTION_RECOVERY:-0}"
 mysql_process_recovery="${RECRUITING_BROWSER_MYSQL_PROCESS_RECOVERY:-0}"
+control_plane_recovery="${RECRUITING_BROWSER_CONTROL_PLANE_RECOVERY:-0}"
 case "${level}" in
-  B0|B1|B2|BF0|BF1|BF2|BF3|BF4|BF5) ;;
+  B0|B1|B2|BF0|BF1|BF2|BF3|BF4|BF5|BF6) ;;
   *)
-    echo "recruiting Browser capacity: level must be one of B0, B1, B2, BF0, BF1, BF2, BF3, BF4, BF5" >&2
+    echo "recruiting Browser capacity: level must be one of B0, B1, B2, BF0, BF1, BF2, BF3, BF4, BF5, BF6" >&2
     exit 2
     ;;
 esac
@@ -39,22 +40,27 @@ if [[ "${mysql_process_recovery}" != "0" && "${mysql_process_recovery}" != "1" ]
   echo "recruiting Browser capacity: RECRUITING_BROWSER_MYSQL_PROCESS_RECOVERY must be 0 or 1" >&2
   exit 2
 fi
+if [[ "${control_plane_recovery}" != "0" && "${control_plane_recovery}" != "1" ]]; then
+  echo "recruiting Browser capacity: RECRUITING_BROWSER_CONTROL_PLANE_RECOVERY must be 0 or 1" >&2
+  exit 2
+fi
 if [[ "${artifact_recovery}" == "0" && "${joint_process_recovery}" == "1" ]]; then
   echo "recruiting Browser capacity: joint process recovery also requires Artifact recovery" >&2
   exit 2
 fi
-actual_faults="${artifact_recovery}:${joint_process_recovery}:${server_recovery}:${mysql_recovery}:${mysql_connection_recovery}:${mysql_process_recovery}"
+actual_faults="${artifact_recovery}:${joint_process_recovery}:${server_recovery}:${mysql_recovery}:${mysql_connection_recovery}:${mysql_process_recovery}:${control_plane_recovery}"
 case "${level}" in
-  BF0) expected_faults="1:0:0:0:0:0" ;;
-  BF1) expected_faults="1:1:0:0:0:0" ;;
-  BF2) expected_faults="0:0:1:0:0:0" ;;
-  BF3) expected_faults="0:0:0:1:0:0" ;;
-  BF4) expected_faults="0:0:0:0:1:0" ;;
-  BF5) expected_faults="0:0:0:0:0:1" ;;
-  *) expected_faults="0:0:0:0:0:0" ;;
+  BF0) expected_faults="1:0:0:0:0:0:0" ;;
+  BF1) expected_faults="1:1:0:0:0:0:0" ;;
+  BF2) expected_faults="0:0:1:0:0:0:0" ;;
+  BF3) expected_faults="0:0:0:1:0:0:0" ;;
+  BF4) expected_faults="0:0:0:0:1:0:0" ;;
+  BF5) expected_faults="0:0:0:0:0:1:0" ;;
+  BF6) expected_faults="0:0:0:0:0:0:1" ;;
+  *) expected_faults="0:0:0:0:0:0:0" ;;
 esac
 if [[ "${actual_faults}" != "${expected_faults}" ]]; then
-  echo "recruiting Browser capacity: B0-B2 are normal; BF0/BF1/BF2/BF3/BF4/BF5 select provider, joint-process, Server, MySQL-stall, MySQL-connection, and MySQL-process recovery respectively" >&2
+  echo "recruiting Browser capacity: B0-B2 are normal; BF0-BF6 select provider, joint-process, Server, MySQL-stall, MySQL-connection, MySQL-process, and joint control-plane recovery respectively" >&2
   exit 2
 fi
 if [[ "${level}" == "B2" && "${RECRUITING_BROWSER_CAPACITY_LARGE_ACK:-}" != "isolated-browser-large-load" ]]; then
@@ -153,7 +159,10 @@ fi
 if [[ "${mysql_process_recovery}" == "1" ]]; then
   test_name='TestRecruitingBrowserMySQLProcessRecoveryThroughRealDataPlanes'
 fi
-echo "recruiting Browser capacity: level=${level} artifact_recovery=${artifact_recovery} joint_process_recovery=${joint_process_recovery} server_recovery=${server_recovery} mysql_recovery=${mysql_recovery} mysql_connection_recovery=${mysql_connection_recovery} mysql_process_recovery=${mysql_process_recovery} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} executors=${executors} chrome=${chrome_bin} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
+if [[ "${control_plane_recovery}" == "1" ]]; then
+  test_name='TestRecruitingBrowserControlPlaneRecoveryThroughRealDataPlanes'
+fi
+echo "recruiting Browser capacity: level=${level} artifact_recovery=${artifact_recovery} joint_process_recovery=${joint_process_recovery} server_recovery=${server_recovery} mysql_recovery=${mysql_recovery} mysql_connection_recovery=${mysql_connection_recovery} mysql_process_recovery=${mysql_process_recovery} control_plane_recovery=${control_plane_recovery} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} executors=${executors} chrome=${chrome_bin} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
 set +e
 ATOLL_RECRUITING_HTTP_CAPACITY=1 \
 ATOLL_RECRUITING_BROWSER_CAPACITY=1 \
@@ -163,6 +172,7 @@ ATOLL_RECRUITING_BROWSER_SERVER_RECOVERY="${server_recovery}" \
 ATOLL_RECRUITING_BROWSER_MYSQL_RECOVERY="${mysql_recovery}" \
 ATOLL_RECRUITING_BROWSER_MYSQL_CONNECTION_RECOVERY="${mysql_connection_recovery}" \
 ATOLL_RECRUITING_BROWSER_MYSQL_PROCESS_RECOVERY="${mysql_process_recovery}" \
+ATOLL_RECRUITING_BROWSER_CONTROL_PLANE_RECOVERY="${control_plane_recovery}" \
 RECRUITING_CHROME_BIN="${chrome_bin}" \
 RECRUITING_HTTP_CAPACITY_ITEMS="${items}" \
 RECRUITING_HTTP_CAPACITY_PAYLOAD_BYTES="${payload_bytes}" \

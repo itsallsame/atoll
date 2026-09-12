@@ -115,6 +115,8 @@ MySQL 连接重置入口为 `make recruiting-browser-mysql-connection-recovery`�
 
 MySQL 进程恢复入口为 `make recruiting-browser-mysql-process-recovery`。BF5 使用把本次测试库置于可重启的临时数据卷，在 running/no-evidence 切点阻断稳定 runtime endpoint 并 `SIGKILL` MySQL，七秒后重启同一容器和数据。Server/daemon 不得退出，Actor DSN、Attempt、结果 command/payload 不得变化，网站不得重抓；恢复后检查原 Attempt、唯一 DOM/trace/BackfillOutput、Permit/outbox 清零及 Server 重启回读。测试清理会删除临时容器和数据卷。本入口只代表同节点 crash recovery，不代表主从晋升、PITR、损坏存储、换节点或地域恢复。
 
+Server/MySQL 联合恢复入口为 `make recruiting-browser-control-plane-recovery`。BF6 在同一 running/no-evidence 切点同时强杀 Server 和 MySQL，执行 daemon 必须保持原 OS 进程；先恢复数据库并确认 runtime 连接，再启动 Server，禁止交换恢复次序来掩盖数据库不可用。恢复后检查旧 Attempt expired、零 accepted Artifact、来源 dispatch/Permit 已收口，同一 Executor Actor 用新 incarnation 承接唯一 `attempt_recovered` dispatch，最终只有一份有效 DOM、trace 和 BackfillOutput。当前没有 daemon 本地持久结果 spool，因此预计 origin 共收到两次文档请求；不要把第二次请求误判为重复有效结果，也不得手工重开 Attempt、改 TTL、Permit 或 outbox。该入口是本地同数据控制面恢复，不代表远程主从、quorum、PITR、地域灾难或零重抓保证。
+
 共享修复的标准顺序：
 
 ```text

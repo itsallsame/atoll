@@ -687,6 +687,8 @@ MySQL 连接重置进展（2026-09-12）：新增 `make recruiting-browser-mysql
 
 MySQL 进程死亡恢复进展（2026-09-12）：新增 `make recruiting-browser-mysql-process-recovery` 和 BF5。真实 Chrome 请求已到 origin 且 Attempt running/零 Artifact 后，测试阻断稳定 runtime endpoint、`SIGKILL` MySQL，七秒后重启同一容器与数据卷；透明代理吸收 Docker 随机宿主端口变化，Actor DSN 始终不变。MySQL crash recovery 后原 Work、Attempt、Recipe、Job、receipt 和 outbox 仍在，BF4 的不可变结果重送直接完成原 Attempt，没有重新执行 Recipe；停机与恢复 9.498 秒，业务完成 12.035 秒，网站请求、DOM、trace、BackfillOutput 各一，最终 Server 重启通过。该切片没有生产代码变化，只证明同节点进程死亡与原数据恢复；主从 failover、PITR、存储损坏、远程节点和长停机尚未关闭。证据见 `evidence/recruiting-browser-mysql-process-recovery-20260912.json`。
 
+Server/MySQL 联合恢复进展（2026-09-12）：新增 `make recruiting-browser-control-plane-recovery` 和 BF6，不用两个单故障用例拼接代替联合切点。真实 Chrome 请求进入 origin、Attempt running 且零 Artifact 后，测试阻断稳定数据库端点并同时 `SIGKILL` Server/MySQL，保持执行 daemon 存活；七秒后先恢复同一 MySQL 数据和连接，再恢复 Server。原 Attempt 在恢复后按统一 TTL expired 且没有 accepted Artifact，同一 Executor Actor 以新 incarnation 重连，由唯一 `attempt_recovered` dispatch 创建新 Attempt并完成一份 DOM、trace 与 BackfillOutput；Permit/outbox 清零，最终正常 Server 重启和 Resource 回读通过。联合恢复 14.579 秒、业务完成 21.016 秒、总旅程 40.530 秒。两次网站请求是没有 durable local result spool 时的明确恢复成本，接受围栏仍保证业务事实唯一；该门不宣称零重抓、远程 failover、quorum、PITR 或地域恢复。证据见 `evidence/recruiting-browser-control-plane-recovery-20260912.json`。
+
 ## 16. 自动测试命令与 CI 分层
 
 计划在实现过程中提供以下稳定入口：

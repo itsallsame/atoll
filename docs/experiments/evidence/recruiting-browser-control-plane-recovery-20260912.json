@@ -1,0 +1,81 @@
+{
+  "schema": "recruiting.browser-control-plane-recovery-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "df966856",
+  "workload_manifest": "docs/experiments/workloads/recruiting-browser-capacity-v1.json#BF6",
+  "entrypoint": "make recruiting-browser-control-plane-recovery",
+  "test": "TestRecruitingBrowserControlPlaneRecoveryThroughRealDataPlanes",
+  "feature_under_test": "joint Atoll Server and same-node MySQL process loss while a real-Chrome request is in flight",
+  "environment": {
+    "chrome": "/usr/bin/google-chrome",
+    "origin": "Docker --internal 11.254.x.x controlled HTTP service",
+    "origin_latency_ms": 5000,
+    "mysql": "ephemeral MySQL 8.4 with separate non-root staircase_migrator and staircase_runtime accounts",
+    "database_storage": "test-only restartable Docker data volume removed during cleanup",
+    "stable_runtime_endpoint": "test-process transparent TCP proxy retargeted to the restarted container's published port",
+    "data_planes": ["Recruiting MySQL", "Atoll Channel ledger", "daemon File Resources"]
+  },
+  "fault_cut": {
+    "browser_state_before_cut": "Attempt running, no Artifact persisted, and controlled origin accepted exactly one document request",
+    "cut": "block the stable runtime endpoint, SIGKILL Atoll Server and MySQL, hold both control-plane dependencies down for seven seconds, restart the same MySQL data first, verify database connectivity while Server is absent, then restart Server",
+    "joint_outage_and_recovery_ms": 14579,
+    "mysql_confirmed_recovered_before_server_restart": true,
+    "execution_daemon_confirmed_alive_during_outage": true
+  },
+  "authoritative_result": {
+    "status": "passed",
+    "backfill_items": 1,
+    "browser_document_requests": 2,
+    "robots_requests": 2,
+    "attempts": 2,
+    "expired_attempts": 1,
+    "succeeded_attempts": 1,
+    "attempt_recovery_dispatches": 1,
+    "response_artifacts": 1,
+    "trace_artifacts": 1,
+    "backfill_outputs": 1,
+    "response_bytes_verified": 4081,
+    "active_permits_after_settlement": 0,
+    "pending_execution_dispatches_after_settlement": 0,
+    "business_completion_ms": 21016,
+    "outbox_drain_ms": 21118,
+    "final_server_restart_ms": 3041,
+    "journey_total_ms": 40530,
+    "offer_to_accept_ms": {"p50": 34, "p95": 34},
+    "accept_to_start_ms": {"p50": 26, "p95": 26},
+    "start_to_terminal_ms": {"p50": 5412, "p95": 5412},
+    "ledger_messages": 224,
+    "ledger_payload_bytes": 75399,
+    "ledger_events": 52,
+    "recruiting_ledger_events": 50
+  },
+  "invariants": [
+    "Server and MySQL receive SIGKILL only after the Attempt is running, the request reached the origin, and no Artifact exists",
+    "the execution daemon remains the same OS process while both control-plane dependencies are absent",
+    "MySQL and its durable data recover before Atoll Server is restarted",
+    "the original Attempt expires without accepted evidence and its Permit and source dispatch settle",
+    "the same Executor Actor identity reconnects with a new incarnation and accepts exactly one recovery dispatch",
+    "the recovery Attempt produces exactly one accepted DOM response, one effect trace, and one BackfillOutput",
+    "all Permits and dispatches settle, and a final normal Server restart preserves state and both Resource reads"
+  ],
+  "implementation": {
+    "production_driver_test_hook_added": false,
+    "actor_classes_added": 0,
+    "worker_types_added": 0,
+    "atoll_core_modified": false,
+    "changed_production_scope": [],
+    "reused_production_behavior": "existing durable Attempt TTL, acceptance fence, source-dispatch settlement, attempt_recovered dispatch, daemon reconnect, and immutable result protocols"
+  },
+  "non_claims": [
+    "zero-refetch result spooling: two website requests are expected because the daemon has no durable local result spool after Server loss",
+    "primary/replica failover, multi-node quorum behavior, or remote-network recovery",
+    "point-in-time recovery, corrupted storage, data loss, or regional disaster recovery",
+    "complete P9 production readiness"
+  ],
+  "acceptance": {
+    "gate": "P9 joint local control-plane dependency loss during an in-flight real-Chrome request",
+    "status": "passed",
+    "scenario": "S25",
+    "scenario_status_changed": false
+  }
+}
