@@ -28,6 +28,7 @@ type Config struct {
 	TermsPolicyVersion      uint64        `json:"terms_policy_version,omitempty"`
 	TermsReviewedAt         string        `json:"terms_reviewed_at,omitempty"`
 	HTTPMaxConcurrency      int           `json:"http_max_concurrency,omitempty"`
+	ExecutionBatchSize      int           `json:"execution_batch_size,omitempty"`
 	HTTPMinOriginIntervalMS int           `json:"http_min_origin_interval_ms,omitempty"`
 	HTTPCircuitThreshold    int           `json:"http_circuit_threshold,omitempty"`
 	HTTPCircuitCooldownMS   int           `json:"http_circuit_cooldown_ms,omitempty"`
@@ -94,6 +95,10 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 				return Config{}, fmt.Errorf("recruiting executor config: invalid HTTP or robots policy")
 			}
 		}
+		if cfg.ExecutionBatchSize < 1 || cfg.ExecutionBatchSize > 32 ||
+			cfg.ExecutionBatchSize > 1 && cfg.Capability != "http.fetch" {
+			return Config{}, fmt.Errorf("recruiting executor config: execution_batch_size must be in [1,32] and batching is limited to http.fetch")
+		}
 		if (cfg.Capability == "browser.public" || cfg.Capability == "browser.recipe") && cfg.BrowserChromePath == "" {
 			return Config{}, fmt.Errorf("recruiting executor config: browser execution requires browser_chrome_path")
 		}
@@ -118,7 +123,7 @@ func parseConfig(raw json.RawMessage) (Config, error) {
 
 func defaultConfig() Config {
 	return Config{Capability: "fixture", ControlWaitMS: 30_000, ArtifactMaxBytes: 2 << 20,
-		HTTPMaxConcurrency: 4, HTTPMinOriginIntervalMS: 1_000, HTTPCircuitThreshold: 3, HTTPCircuitCooldownMS: 300_000,
+		HTTPMaxConcurrency: 4, ExecutionBatchSize: 1, HTTPMinOriginIntervalMS: 1_000, HTTPCircuitThreshold: 3, HTTPCircuitCooldownMS: 300_000,
 		RobotsTimeoutMS: 10_000, RobotsMaxBytes: 1 << 20, RobotsCacheTTLMS: 3_600_000,
 		BatchMaxBytes: 20 << 20, BatchChunkSize: 250, BrowserBrokerTimeoutMS: 900_000}
 }
@@ -141,6 +146,7 @@ const ConfigSchema = `{
     "terms_policy_version":{"type":"integer","minimum":1},
     "terms_reviewed_at":{"type":"string","minLength":1},
     "http_max_concurrency":{"type":"integer","minimum":1,"maximum":1000},
+    "execution_batch_size":{"type":"integer","minimum":1,"maximum":32},
     "http_min_origin_interval_ms":{"type":"integer","minimum":0,"maximum":3600000},
     "http_circuit_threshold":{"type":"integer","minimum":1,"maximum":100},
     "http_circuit_cooldown_ms":{"type":"integer","minimum":1000,"maximum":86400000},

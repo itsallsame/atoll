@@ -36,6 +36,7 @@ type httpCapacityInput struct {
 // service in an egress-less Docker network; the production Driver still
 // applies public-address, robots, terms, GET-only, budget, and Recipe checks.
 func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
+	const executionBatchSize = 32
 	input := httpCapacityFromEnv(t)
 	testStarted := time.Now()
 	h := newHarnessShell(t)
@@ -103,6 +104,7 @@ func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
 				"artifact_retention": "7d", "artifact_redaction": "raw", "artifact_max_bytes": 2 << 20,
 				"terms_policy_version": 1, "terms_reviewed_at": "2026-09-12T00:00:00Z",
 				"http_max_concurrency": 1, "http_min_origin_interval_ms": 0,
+				"execution_batch_size":   executionBatchSize,
 				"http_circuit_threshold": 3, "http_circuit_cooldown_ms": 60000,
 				"robots_timeout_ms": 10000, "robots_max_bytes": 65536, "robots_cache_ttl_ms": 600000,
 			}, "visibility": "private",
@@ -182,17 +184,18 @@ func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectedMaterializeDispatches := expectedCompactedMaterializeDispatches(input.items, input.executors, 500)
+	expectedReleaseDispatches := (input.items + executionBatchSize - 1) / executionBatchSize
 	if backfillItems != input.items || succeededItems != input.items || outputs != input.items ||
 		responseArtifacts != input.items || succeededAttempts != input.items ||
-		deliveredDispatches != input.items+expectedMaterializeDispatches ||
-		materializeDispatches != expectedMaterializeDispatches || releaseDispatches != input.items || activeBudget != 0 {
+		deliveredDispatches != expectedReleaseDispatches+expectedMaterializeDispatches ||
+		materializeDispatches != expectedMaterializeDispatches || releaseDispatches != expectedReleaseDispatches || activeBudget != 0 {
 		t.Fatalf("HTTP capacity facts items=%d/%d succeeded=%d outputs=%d responses=%d attempts=%d dispatches=%d materialize=%d release=%d budget=%d",
 			backfillItems, input.items, succeededItems, outputs, responseArtifacts, succeededAttempts,
 			deliveredDispatches, materializeDispatches, releaseDispatches, activeBudget)
 	}
-	if input.executors > 1 && usedExecutors < 2 {
-		t.Fatalf("configured %d HTTP Executors but successful Attempts used only %d", input.executors, usedExecutors)
-	}
+	// Executor distribution is an observed capacity signal, not a correctness
+	// invariant: one fast executor may legally drain several bounded supply
+	// batches before another targeted wake reaches the shared queue.
 
 	outputRows, err := db.Query(`SELECT artifact_id, object_ref, content_hash
 FROM recruiting_artifacts WHERE artifact_kind = 'response' AND attempt_id IS NOT NULL AND rejected = FALSE ORDER BY artifact_id`)
@@ -573,6 +576,9 @@ ORDER BY attempt.executor_actor_id, attempt.offered_observed_at`)
 }
 
 func summarizeLatency(values []int64) latencySummary {
+	if len(values) == 0 {
+		return latencySummary{}
+	}
 	sort.Slice(values, func(left, right int) bool { return values[left] < values[right] })
 	at := func(percentile int) int64 {
 		index := (len(values)*percentile + 99) / 100

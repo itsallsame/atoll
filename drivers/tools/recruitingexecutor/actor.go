@@ -4,6 +4,7 @@
 package recruitingexecutor
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -198,6 +199,10 @@ func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, in
 		_, _ = sys.Fail(msg, "payload_invalid", "command_id is required and must be at most 191 bytes")
 		return
 	}
+	if cfg.ExecutionBatchSize > 1 {
+		handleBatchWake(sys, cfg, production, incarnation, msg, payload)
+		return
+	}
 	offer, err := requestExecutionOffer(msg.Ctx(), sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()), executioncontract.OfferRequest{
 		CommandID: wakeOfferCommandID(incarnation, payload.CommandID, string(msg.ID)), ExecutorIncarnation: incarnation,
 		Capability: cfg.Capability, Origin: payload.Origin, ProfileID: payload.ProfileID,
@@ -238,6 +243,108 @@ func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, in
 		"work_id": offer.Work.WorkID, "kind": offer.Kind, "executor_incarnation": incarnation})
 }
 
+type preclaimedExecutionControl struct {
+	messageExecutionControl
+	claimed       map[string]struct{}
+	bufferedItems *[]executioncontract.ResultBatchItem
+}
+
+func (c preclaimedExecutionControl) Accept(_ context.Context, offer executioncontract.Offer) error {
+	_, found := c.claimed[offer.Attempt.AttemptID]
+	if !found {
+		return errors.New("execution offer was not claimed by this supply batch")
+	}
+	return nil
+}
+
+func (c preclaimedExecutionControl) Started(ctx context.Context, offer executioncontract.Offer) error {
+	return c.Accept(ctx, offer)
+}
+
+func (c preclaimedExecutionControl) Submit(_ context.Context, resultKind string, payload any) error {
+	if resultKind != "detail" && resultKind != "backfill" {
+		return fmt.Errorf("execution result kind %q is not batch-safe", resultKind)
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	*c.bufferedItems = append(*c.bufferedItems, executioncontract.ResultBatchItem{ResultKind: resultKind, Payload: raw})
+	return nil
+}
+
+func handleBatchWake(sys actorbase.Sys, cfg Config, production *productionRuntime, incarnation string,
+	msg actorbase.Msg, payload wakePayload) {
+	wait := time.Duration(cfg.ControlWaitMS) * time.Millisecond
+	nextDispatchID, deliveryToken := payload.CommandID, string(msg.ID)
+	totalHandled := 0
+	var first executioncontract.Offer
+	lastSupplyBatchID := ""
+	const maxBatchesPerWake = 4
+	for wave := 0; wave < maxBatchesPerWake; wave++ {
+		batchCommandID := wakeBatchOfferCommandID(incarnation, nextDispatchID, deliveryToken)
+		batch, err := requestExecutionOfferBatch(msg.Ctx(), sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()),
+			executioncontract.OfferBatchRequest{CommandID: batchCommandID, DispatchID: nextDispatchID,
+				ExecutorIncarnation: incarnation, Capability: cfg.Capability, Origin: payload.Origin,
+				ProfileID: payload.ProfileID, Limit: cfg.ExecutionBatchSize}, wait)
+		if err != nil {
+			_, _ = sys.Fail(msg, "channel_unavailable", err.Error())
+			return
+		}
+		if len(batch.Offers) == 0 {
+			if totalHandled == 0 {
+				_, _ = sys.Reply(msg, map[string]any{"status": "idle", "executor_incarnation": incarnation})
+			} else {
+				_, _ = sys.Reply(msg, map[string]any{"status": "handled", "attempt_id": first.Attempt.AttemptID,
+					"work_id": first.Work.WorkID, "kind": first.Kind, "executor_incarnation": incarnation,
+					"supply_batch_id": lastSupplyBatchID, "handled_count": totalHandled})
+			}
+			return
+		}
+		if totalHandled == 0 {
+			first = batch.Offers[0]
+		}
+		lastSupplyBatchID = batch.SupplyBatchID
+		attemptIDs := make([]string, len(batch.Offers))
+		claimed := make(map[string]struct{}, len(batch.Offers))
+		for index, offer := range batch.Offers {
+			attemptIDs[index] = offer.Attempt.AttemptID
+			claimed[offer.Attempt.AttemptID] = struct{}{}
+		}
+		if err := claimExecutionBatch(msg.Ctx(), sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()),
+			executioncontract.ClaimBatchRequest{CommandID: wakeBatchClaimCommandID(batch.SupplyBatchID),
+				SupplyBatchID: batch.SupplyBatchID, ExecutorIncarnation: incarnation, AttemptIDs: attemptIDs}, wait); err != nil {
+			_, _ = sys.Fail(msg, "channel_unavailable", err.Error())
+			return
+		}
+		bufferedItems := make([]executioncontract.ResultBatchItem, 0, len(batch.Offers))
+		control := preclaimedExecutionControl{messageExecutionControl: messageExecutionControl{caller: sys, cause: msg.Cause(),
+			controlActor: cfg.ControlActorID, executorActorID: string(sys.Self()), wait: wait}, claimed: claimed,
+			bufferedItems: &bufferedItems}
+		for _, offer := range batch.Offers {
+			if err := executeOffer(msg.Ctx(), control, sys.Resource(), production.driver, offer, production.options); err != nil {
+				_, _ = sys.Fail(msg, "runtime_failed", err.Error(), map[string]any{"attempt_id": offer.Attempt.AttemptID,
+					"work_id": offer.Work.WorkID, "supply_batch_id": batch.SupplyBatchID})
+				return
+			}
+		}
+		totalHandled += len(batch.Offers)
+		if len(bufferedItems) == 0 {
+			break
+		}
+		continuation, err := submitExecutionResultBatch(msg.Ctx(), sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()),
+			executioncontract.ResultBatchRequest{SupplyBatchID: batch.SupplyBatchID, Items: bufferedItems}, wait)
+		if err != nil {
+			_, _ = sys.Fail(msg, "result_unknown", err.Error(), map[string]any{"supply_batch_id": batch.SupplyBatchID})
+			return
+		}
+		nextDispatchID, deliveryToken = continuation, continuation
+	}
+	_, _ = sys.Reply(msg, map[string]any{"status": "handled", "attempt_id": first.Attempt.AttemptID,
+		"work_id": first.Work.WorkID, "kind": first.Kind, "executor_incarnation": incarnation,
+		"supply_batch_id": lastSupplyBatchID, "handled_count": totalHandled})
+}
+
 func completeWake(sys actorbase.Sys, controlActor actor.ActorID, msg actorbase.Msg, dispatchID, status, attemptID, workID string) error {
 	completion := executioncontract.WakeCompletion{DispatchID: dispatchID, DeliveryID: string(msg.ID), Status: status,
 		AttemptID: attemptID, WorkID: workID}
@@ -253,6 +360,16 @@ func completeWake(sys actorbase.Sys, controlActor actor.ActorID, msg actorbase.M
 func wakeOfferCommandID(incarnation, dispatchID, deliveryID string) string {
 	sum := sha256.Sum256([]byte("recruiting.execution.wake.v1\n" + incarnation + "\n" + dispatchID + "\n" + deliveryID))
 	return fmt.Sprintf("wake-offer-%x", sum[:16])
+}
+
+func wakeBatchOfferCommandID(incarnation, dispatchID, deliveryID string) string {
+	sum := sha256.Sum256([]byte("recruiting.execution.batch-wake.v1\n" + incarnation + "\n" + dispatchID + "\n" + deliveryID))
+	return fmt.Sprintf("wake-batch-%x", sum[:16])
+}
+
+func wakeBatchClaimCommandID(supplyBatchID string) string {
+	sum := sha256.Sum256([]byte("recruiting.execution.batch-claim.v1\n" + supplyBatchID))
+	return fmt.Sprintf("claim-batch-%x", sum[:16])
 }
 
 func stableWakeDigest(value string) string {

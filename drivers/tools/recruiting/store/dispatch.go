@@ -330,12 +330,55 @@ func dispatchDigest(value string) []byte {
 	return sum[:]
 }
 
+func SupplyBatchCapacityDispatchID(supplyBatchID string) (string, error) {
+	supplyBatchID = strings.TrimSpace(supplyBatchID)
+	if supplyBatchID == "" || len(supplyBatchID) > 191 {
+		return "", fmt.Errorf("supply batch ID is required and bounded")
+	}
+	return "dispatch-" + hex.EncodeToString(dispatchDigest("supply-batch\n" + supplyBatchID + "\ncapacity_released")[:16]), nil
+}
+
 func appendAttemptDispatch(ctx context.Context, tx *sql.Tx, attemptID, targetActorID, capability, profileID,
 	causeKind, causeID string, dueAt, createdAt time.Time) error {
-	dispatchID := "dispatch-" + hex.EncodeToString(dispatchDigest("attempt\n" + attemptID + "\n" + causeKind)[:16])
+	dispatchKey := "attempt\n" + attemptID + "\n" + causeKind
+	coalescedSupplyBatch := false
+	if causeKind == "capacity_released" {
+		var supplyBatchID sql.NullString
+		var batchOfferedAt time.Time
+		if err := tx.QueryRowContext(ctx, `SELECT supply_batch_id, created_at FROM recruiting_attempts WHERE attempt_id = ?`, attemptID).
+			Scan(&supplyBatchID, &batchOfferedAt); err != nil {
+			return fmt.Errorf("load Attempt supply batch: %w", err)
+		}
+		if supplyBatchID.Valid && strings.TrimSpace(supplyBatchID.String) != "" {
+			coalescedSupplyBatch = true
+			dispatchKey = "supply-batch\n" + supplyBatchID.String + "\n" + causeKind
+			causeID = supplyBatchID.String
+			// Every member was offered from the same Actor message and therefore
+			// has one frozen business timestamp. Reusing it makes the coalesced
+			// dispatch intent byte-identical regardless of result order or replay.
+			dueAt, createdAt = batchOfferedAt.UTC(), batchOfferedAt.UTC()
+		}
+	}
+	dispatchID := "dispatch-" + hex.EncodeToString(dispatchDigest(dispatchKey)[:16])
 	intent, err := NewExecutionDispatchIntent(dispatchID, targetActorID, capability, "", profileID, causeKind, causeID, dueAt)
 	if err != nil {
 		return err
 	}
-	return appendExecutionDispatch(ctx, tx, intent, createdAt)
+	err = appendExecutionDispatch(ctx, tx, intent, createdAt)
+	if !coalescedSupplyBatch || !errors.Is(err, ErrDispatchConflict) {
+		return err
+	}
+	// Delivery retry mutates next_attempt_at. A later member of the same
+	// supply batch must still recognize that row as the same coalesced wake;
+	// all immutable routing and cause fields remain exact.
+	existing, found, readErr := getExecutionDispatch(ctx, tx, dispatchID)
+	if readErr != nil || !found {
+		return err
+	}
+	if existing.Intent.TargetActorID == intent.TargetActorID && existing.Intent.Capability == intent.Capability &&
+		existing.Intent.Origin == intent.Origin && existing.Intent.ProfileID == intent.ProfileID &&
+		existing.Intent.CauseKind == intent.CauseKind && existing.Intent.CauseID == intent.CauseID {
+		return nil
+	}
+	return err
 }

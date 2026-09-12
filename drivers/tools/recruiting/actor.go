@@ -215,7 +215,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleStandaloneListingRun(sys, cfg, repository, msg, RunProduction)
 		case TypeDailyRunOccurrenceExclude:
 			handleDailyRunOccurrenceExclude(sys, repository, msg)
-		case TypeExecutionOffer, TypeExecutionAccept, TypeExecutionStarted, TypeExecutionFailed, TypeExecutionWakeCompleted:
+		case TypeExecutionOffer, TypeExecutionOfferBatch, TypeExecutionClaimBatch,
+			TypeExecutionAccept, TypeExecutionStarted, TypeExecutionFailed, TypeExecutionWakeCompleted:
 			handleExecutionControlMessage(sys, cfg, repository, state, msg)
 		case TypeSourceGet, TypeSourceList, TypeSourceEndpointHistory, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
 			TypeJobGet, TypeJobList, TypeJobCorrectionGet, TypeProfileGet, TypeWorkGet, TypeWorkList,
@@ -233,6 +234,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleStatus(sys, state, msg)
 		case TypeExecutionResult:
 			handleAnyExecutionResult(sys, cfg, repository, state, msg)
+		case TypeExecutionResultBatch:
+			handleExecutionResultBatch(sys, repository, msg)
 		default:
 			_, _ = sys.Fail(msg, "type_unsupported", fmt.Sprintf("recruiting actor does not answer %q", msg.Type))
 		}

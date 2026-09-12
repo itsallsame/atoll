@@ -174,7 +174,7 @@ VALUES ('backfill-observation', 'manual-history', ?, ?, ?, ?, ?, 'sha256:listing
 		offer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "backfill-attempt-" + item.ItemID,
 			ExecutorActorID: "tool:backfill-executor:one", ExecutorIncarnation: "backfill-incarnation",
 			Capability: "artifact.recompute", Origin: "https://backfill.example.com", OfferedAt: offerAt,
-			BudgetPolicy: backfillBudget})
+			BudgetPolicy: backfillBudget, SupplyBatchID: "backfill-supply-batch"})
 		if err != nil || offer.Kind != "backfill_artifact_recompute" || offer.Backfill == nil ||
 			offer.Backfill.Item.ItemID != item.ItemID || offer.Backfill.InputArtifact == nil ||
 			offer.Attempt.BatchVersion != storedConfirmed.ConfirmationVersion || offer.Budget.WorkloadClass != "backfill" {
@@ -217,6 +217,11 @@ VALUES ('backfill-observation', 'manual-history', ?, ?, ?, ?, ?, 'sha256:listing
 			t.Fatalf("historical backfill replay=%+v err=%v", replay, err)
 		}
 		assertBudgetUsage(t, ctx, db, "workload", "backfill", 0)
+	}
+	var compactCapacityDispatches int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox
+WHERE cause_kind = 'capacity_released' AND cause_id = 'backfill-supply-batch'`).Scan(&compactCapacityDispatches); err != nil || compactCapacityDispatches != 1 {
+		t.Fatalf("supply batch capacity dispatches=%d err=%v", compactCapacityDispatches, err)
 	}
 	completedHistorical, _ := repository.GetBackfill(ctx, historical.BackfillID)
 	completedHistoricalWork, _ := repository.GetWork(ctx, historical.WorkID)

@@ -116,6 +116,9 @@ const (
 	TypeExecutionStarted       = executioncontract.TypeStarted
 	TypeExecutionFailed        = executioncontract.TypeFailed
 	TypeExecutionWakeCompleted = executioncontract.TypeWakeCompleted
+	TypeExecutionOfferBatch    = executioncontract.TypeOfferBatch
+	TypeExecutionClaimBatch    = executioncontract.TypeClaimBatch
+	TypeExecutionResultBatch   = executioncontract.TypeResultBatch
 
 	TypeDailyRunGet               = "recruiting.daily_run.get"
 	TypeDailyRunList              = "recruiting.daily_run.list"

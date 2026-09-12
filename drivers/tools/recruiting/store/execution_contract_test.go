@@ -261,6 +261,70 @@ WHERE attempt_id = ? AND offered_observed_at IS NOT NULL AND accepted_observed_a
 	}
 }
 
+func TestExecutionClaimCommandAtomicallyAcceptsAndStarts(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	offerAt, _ := prepareListingExecutionWork(t, ctx, repository, "execution-claim-command", 1)
+	offer, err := repository.OfferListingExecution(ctx, ListingOfferRequest{
+		AttemptID: "execution-claim-attempt", ExecutorActorID: "execution-claim-executor", ExecutorIncarnation: "execution-claim-boot",
+		Capability: "http.fetch", Origin: "https://execution-claim-command.example.com", SupplyBatchID: "execution-supply-1",
+		OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedBatchRequest := ListingOfferRequest{
+		AttemptID: offer.Attempt.AttemptID, ExecutorActorID: offer.Attempt.ExecutorActorID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation,
+		Capability: offer.Attempt.Capability, Origin: "https://execution-claim-command.example.com", SupplyBatchID: "execution-supply-other",
+		OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(),
+	}
+	if _, err := repository.OfferListingExecution(ctx, changedBatchRequest); !errors.Is(err, ErrAttemptConflict) {
+		t.Fatalf("changed supply batch replay = %v", err)
+	}
+	command := ExecutionTransitionCommand{CommandID: "execution-command-claim", Word: executioncontract.TypeClaimBatch,
+		RequestHash: "sha256:claim", CorrelationID: "correlation-claim", RequestedBy: offer.Attempt.ExecutorActorID,
+		AttemptID: offer.Attempt.AttemptID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Action: "claim"}
+	first, err := repository.ApplyExecutionTransitionCommand(ctx, command, offerAt.Add(time.Second))
+	if err != nil || first.Replayed {
+		t.Fatalf("claim command: result=%+v err=%v", first, err)
+	}
+	replay, err := repository.ApplyExecutionTransitionCommand(ctx, command, offerAt.Add(2*time.Second))
+	if err != nil || !replay.Replayed || !reflect.DeepEqual(first.Response, replay.Response) {
+		t.Fatalf("claim replay: first=%+v replay=%+v err=%v", first, replay, err)
+	}
+	storedAttempt, err := repository.GetAttempt(ctx, offer.Attempt.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, err := repository.GetWork(ctx, offer.Work.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipts, observed int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id = ?", command.CommandID).Scan(&receipts); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_attempts
+WHERE attempt_id = ? AND accepted_observed_at IS NOT NULL AND started_observed_at IS NOT NULL
+  AND accepted_observed_at <= started_observed_at`, offer.Attempt.AttemptID).Scan(&observed); err != nil {
+		t.Fatal(err)
+	}
+	if storedAttempt.Status != model.AttemptRunning || work.Status != model.WorkRunning || receipts != 1 || observed != 1 {
+		t.Fatalf("claim facts attempt=%s work=%s receipts=%d observed=%d", storedAttempt.Status, work.Status, receipts, observed)
+	}
+}
+
 func TestClassifiedFailureBackoffIsBoundedAndRepairStopsAutomaticOffers(t *testing.T) {
 	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
 	if dsn == "" {

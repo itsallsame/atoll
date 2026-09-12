@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -99,6 +100,116 @@ func handleAnyExecutionResult(sys actorbase.Sys, cfg Config, repository *store.R
 	default:
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "unknown execution result_kind")
 	}
+}
+
+func handleExecutionResultBatch(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	if repository == nil {
+		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
+		return
+	}
+	if msg.Sender.Kind != actor.KindTool || msg.Sender.ID == "" {
+		_, _ = sys.Fail(msg, ErrorUnauthorizedExecutor, "execution result batch requires an authenticated tool actor")
+		return
+	}
+	var payload executioncontract.ResultBatchRequest
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.SupplyBatchID = strings.TrimSpace(payload.SupplyBatchID)
+	if payload.SupplyBatchID == "" || len(payload.SupplyBatchID) > 191 || len(payload.Items) < 1 || len(payload.Items) > maxExecutionSupplyBatch {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "supply batch and 1..32 result items are required")
+		return
+	}
+	executorID := string(msg.Sender.ID)
+	accepted := 0
+	seenAttempts := make(map[string]struct{}, len(payload.Items))
+	for _, item := range payload.Items {
+		item.ResultKind = strings.TrimSpace(item.ResultKind)
+		requestHash := executionBatchResultHash(executorID, item.ResultKind, item.Payload)
+		switch item.ResultKind {
+		case "backfill":
+			var result backfillResultPayload
+			if err := decodeExecutionBatchItem(item.Payload, &result); err != nil || result.ResultKind != item.ResultKind || strings.TrimSpace(result.CommandID) == "" {
+				_, _ = sys.Fail(msg, ErrorPayloadInvalid, "invalid backfill result batch item")
+				return
+			}
+			if _, duplicate := seenAttempts[result.AttemptID]; duplicate {
+				_, _ = sys.Fail(msg, ErrorPayloadInvalid, "result batch Attempt IDs must be unique")
+				return
+			}
+			seenAttempts[result.AttemptID] = struct{}{}
+			if err := repository.VerifyAttemptSupplyBatch(msg.Ctx(), result.AttemptID, payload.SupplyBatchID, executorID, result.ExecutorIncarnation); err != nil {
+				failStoreError(sys, msg, err)
+				return
+			}
+			if _, err := repository.AcceptBackfillResult(msg.Ctx(), store.BackfillResult{
+				CommandID: result.CommandID, RequestHash: requestHash, AttemptID: result.AttemptID,
+				ExecutorActorID: executorID, ExecutorIncarnation: result.ExecutorIncarnation,
+				Artifact: result.Artifact, NormalizedContentHash: result.NormalizedContentHash,
+				OutputJSON: result.Output, CompletedAt: time.UnixMilli(msg.TS).UTC(),
+			}); err != nil {
+				failStoreError(sys, msg, err)
+				return
+			}
+		case "detail":
+			var result detailResultPayload
+			if err := decodeExecutionBatchItem(item.Payload, &result); err != nil || result.ResultKind != item.ResultKind || strings.TrimSpace(result.CommandID) == "" {
+				_, _ = sys.Fail(msg, ErrorPayloadInvalid, "invalid detail result batch item")
+				return
+			}
+			if _, duplicate := seenAttempts[result.AttemptID]; duplicate {
+				_, _ = sys.Fail(msg, ErrorPayloadInvalid, "result batch Attempt IDs must be unique")
+				return
+			}
+			seenAttempts[result.AttemptID] = struct{}{}
+			if err := repository.VerifyAttemptSupplyBatch(msg.Ctx(), result.AttemptID, payload.SupplyBatchID, executorID, result.ExecutorIncarnation); err != nil {
+				failStoreError(sys, msg, err)
+				return
+			}
+			if _, err := repository.AcceptDetailResult(msg.Ctx(), store.DetailResult{
+				AttemptID: result.AttemptID, ExecutorActorID: executorID, ExecutorIncarnation: result.ExecutorIncarnation,
+				Artifact: result.Artifact, DetailVersionID: result.DetailVersionID,
+				NormalizedContentHash: result.NormalizedContentHash, DetailJSON: result.Detail,
+				ObservedAt: time.UnixMilli(msg.TS).UTC(), CauseCommandID: result.CommandID, RequestHash: requestHash,
+			}); err != nil {
+				failStoreError(sys, msg, err)
+				return
+			}
+		default:
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "result batch only accepts single-result detail and backfill execution")
+			return
+		}
+		accepted++
+	}
+	continuationDispatchID, err := store.SupplyBatchCapacityDispatchID(payload.SupplyBatchID)
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorInternalUnavailable, err.Error())
+		return
+	}
+	_, _ = sys.Reply(msg, executioncontract.ResultBatchResponse{ContractVersion: executioncontract.Version,
+		CorrelationID: string(msg.CorrelationID), RequestedBy: executorID, SupplyBatchID: payload.SupplyBatchID,
+		AcceptedItems: accepted, ContinuationDispatchID: continuationDispatchID})
+}
+
+func decodeExecutionBatchItem(raw json.RawMessage, target any) error {
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
+func executionBatchResultHash(executorID, resultKind string, payload json.RawMessage) string {
+	sum := sha256.Sum256([]byte(executioncontract.TypeResultBatch + "\n" + executorID + "\n" + resultKind + "\n" + string(payload)))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func handleBackfillResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
@@ -441,11 +552,129 @@ func handleExecutionControlMessage(sys actorbase.Sys, cfg Config, repository *st
 		handleListingOffer(sys, cfg, repository, state, msg)
 		return
 	}
+	if msg.Type == TypeExecutionOfferBatch {
+		handleExecutionOfferBatch(sys, cfg, repository, state, msg)
+		return
+	}
+	if msg.Type == TypeExecutionClaimBatch {
+		handleExecutionClaimBatch(sys, cfg, repository, msg)
+		return
+	}
 	if msg.Type == TypeExecutionWakeCompleted {
 		handleExecutionWakeCompleted(sys, repository, msg)
 		return
 	}
 	handleExecutionTransition(sys, cfg, repository, msg)
+}
+
+const maxExecutionSupplyBatch = 32
+
+func handleExecutionOfferBatch(sys actorbase.Sys, cfg Config, repository *store.Repository, state *storedState, msg actorbase.Msg) {
+	var payload executioncontract.OfferBatchRequest
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.CommandID = strings.TrimSpace(payload.CommandID)
+	payload.DispatchID = strings.TrimSpace(payload.DispatchID)
+	payload.ExecutorIncarnation = strings.TrimSpace(payload.ExecutorIncarnation)
+	payload.Capability = strings.TrimSpace(payload.Capability)
+	payload.Origin = strings.TrimSpace(payload.Origin)
+	payload.ProfileID = strings.TrimSpace(payload.ProfileID)
+	if payload.CommandID == "" || len(payload.CommandID) > 191 || payload.DispatchID == "" || len(payload.DispatchID) > 191 ||
+		payload.ExecutorIncarnation == "" ||
+		payload.Capability == "" || payload.Limit < 2 || payload.Limit > maxExecutionSupplyBatch {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "bounded batch command, incarnation, capability, and limit in [2,32] are required")
+		return
+	}
+	executorID := string(msg.Sender.ID)
+	supplyBatchID := executionSupplyBatchID(executorID, payload.CommandID)
+	offers := make([]executioncontract.Offer, 0, payload.Limit)
+	for index := 0; index < payload.Limit; index++ {
+		offer, err := repository.OfferExecution(msg.Ctx(), store.ListingOfferRequest{
+			AttemptID: executionBatchAttemptID(executorID, supplyBatchID, index), ExecutorActorID: executorID,
+			ExecutorIncarnation: payload.ExecutorIncarnation, Capability: payload.Capability, Origin: payload.Origin,
+			ProfileID: payload.ProfileID, OfferedAt: time.UnixMilli(msg.TS).UTC(), BudgetPolicy: cfg.executionBudgetPolicy(),
+			CompanyImportLimit: cfg.CompanyImportApplyLimit, SupplyBatchID: supplyBatchID,
+			SupplyBatchOnly: true,
+		})
+		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrBudgetBlocked) {
+			break
+		}
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+		offers = append(offers, offer)
+	}
+	if err := repository.CompleteExecutionDispatch(msg.Ctx(), payload.DispatchID, executorID, time.UnixMilli(msg.TS).UTC()); err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	if state != nil && len(offers) != 0 {
+		if state.ExecutorPresence == nil {
+			state.ExecutorPresence = map[string]executorPresenceObservation{}
+		}
+		if _, tracked := state.ExecutorPresence[executorID]; !tracked {
+			state.ExecutorPresence[executorID] = executorPresenceObservation{}
+			_ = persist(sys, state)
+		}
+	}
+	_, _ = sys.Reply(msg, executioncontract.OfferBatchResponse{ContractVersion: executioncontract.Version,
+		CorrelationID: string(msg.CorrelationID), RequestedBy: executorID, SupplyBatchID: supplyBatchID, Offers: offers})
+}
+
+func handleExecutionClaimBatch(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
+	var payload executioncontract.ClaimBatchRequest
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.CommandID = strings.TrimSpace(payload.CommandID)
+	payload.SupplyBatchID = strings.TrimSpace(payload.SupplyBatchID)
+	payload.ExecutorIncarnation = strings.TrimSpace(payload.ExecutorIncarnation)
+	if payload.CommandID == "" || len(payload.CommandID) > 191 || payload.SupplyBatchID == "" || len(payload.SupplyBatchID) > 191 ||
+		payload.ExecutorIncarnation == "" || len(payload.AttemptIDs) < 1 || len(payload.AttemptIDs) > maxExecutionSupplyBatch {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "bounded claim command, supply batch, incarnation, and 1..32 Attempts are required")
+		return
+	}
+	executorID := string(msg.Sender.ID)
+	seen := make(map[string]struct{}, len(payload.AttemptIDs))
+	attempts := make([]model.Attempt, 0, len(payload.AttemptIDs))
+	businessAt := time.UnixMilli(msg.TS).UTC()
+	for _, attemptID := range payload.AttemptIDs {
+		attemptID = strings.TrimSpace(attemptID)
+		if attemptID == "" || len(attemptID) > 191 {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "claim batch Attempt IDs must be normalized and bounded")
+			return
+		}
+		if _, duplicate := seen[attemptID]; duplicate {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "claim batch Attempt IDs must be unique")
+			return
+		}
+		seen[attemptID] = struct{}{}
+		if err := repository.VerifyAttemptSupplyBatch(msg.Ctx(), attemptID, payload.SupplyBatchID, executorID, payload.ExecutorIncarnation); err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+		commandID := executionBatchTransitionCommandID(payload.CommandID, "claim", attemptID)
+		result, err := repository.ApplyExecutionTransitionCommand(msg.Ctx(), store.ExecutionTransitionCommand{
+			CommandID: commandID, Word: executioncontract.TypeClaimBatch,
+			RequestHash:   executionBatchTransitionHash(payload.SupplyBatchID, "claim", attemptID),
+			CorrelationID: string(msg.CorrelationID), RequestedBy: executorID, AttemptID: attemptID,
+			ExecutorIncarnation: payload.ExecutorIncarnation, Action: "claim", FailurePolicy: cfg.executionFailurePolicy(),
+		}, businessAt)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+		var response executioncontract.TransitionResponse
+		if json.Unmarshal(result.Response, &response) != nil || response.Attempt == nil {
+			_, _ = sys.Fail(msg, ErrorInternalUnavailable, "stored batch claim response is invalid")
+			return
+		}
+		attempts = append(attempts, *response.Attempt)
+	}
+	_, _ = sys.Reply(msg, executioncontract.ClaimBatchResponse{ContractVersion: executioncontract.Version,
+		CorrelationID: string(msg.CorrelationID), RequestedBy: executorID, SupplyBatchID: payload.SupplyBatchID, Attempts: attempts})
 }
 
 func handleExecutionWakeCompleted(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
@@ -601,4 +830,24 @@ func executionCommandRequestHash(msg actorbase.Msg) string {
 func executionAttemptID(executorActorID, commandID string) string {
 	sum := sha256.Sum256([]byte("recruiting.execution.offer.v1\n" + executorActorID + "\n" + commandID))
 	return "attempt-" + hex.EncodeToString(sum[:16])
+}
+
+func executionSupplyBatchID(executorActorID, commandID string) string {
+	sum := sha256.Sum256([]byte("recruiting.execution.supply-batch.v1\n" + executorActorID + "\n" + commandID))
+	return "supply-" + hex.EncodeToString(sum[:16])
+}
+
+func executionBatchAttemptID(executorActorID, supplyBatchID string, index int) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("recruiting.execution.batch-attempt.v1\n%s\n%s\n%d", executorActorID, supplyBatchID, index)))
+	return "attempt-" + hex.EncodeToString(sum[:16])
+}
+
+func executionBatchTransitionCommandID(batchCommandID, action, attemptID string) string {
+	sum := sha256.Sum256([]byte("recruiting.execution.batch-transition.v1\n" + batchCommandID + "\n" + action + "\n" + attemptID))
+	return "batch-" + action + "-" + hex.EncodeToString(sum[:16])
+}
+
+func executionBatchTransitionHash(supplyBatchID, action, attemptID string) string {
+	sum := sha256.Sum256([]byte("recruiting.execution.batch-transition-request.v1\n" + supplyBatchID + "\n" + action + "\n" + attemptID))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }

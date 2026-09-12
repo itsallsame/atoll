@@ -31,11 +31,11 @@ func TestParseConfigRequiresExplicitProductionSafetyInputs(t *testing.T) {
 		"capability":"http.fetch","execution_enabled":true,"control_actor_id":"tool:control",
 		"artifact_device_name":"worker-a","artifact_channel_name":"recruiting","artifact_directory":"artifacts",
 		"artifact_access_scope":"operators","artifact_retention":"30d","artifact_redaction":"raw",
-		"terms_policy_version":3,"terms_reviewed_at":"2026-09-08T00:00:00Z"
+		"terms_policy_version":3,"terms_reviewed_at":"2026-09-08T00:00:00Z","execution_batch_size":32
 	}`)
 	cfg, err := parseConfig(raw)
 	if err != nil || !cfg.ExecutionEnabled || cfg.ControlWaitMS != 30_000 || cfg.ArtifactMaxBytes != 2<<20 ||
-		cfg.HTTPMaxConcurrency != 4 || cfg.RobotsCacheTTLMS != 3_600_000 {
+		cfg.HTTPMaxConcurrency != 4 || cfg.ExecutionBatchSize != 32 || cfg.RobotsCacheTTLMS != 3_600_000 {
 		t.Fatalf("production config = %+v err=%v", cfg, err)
 	}
 	if _, err := newProductionRuntime(cfg); err != nil {
@@ -46,6 +46,7 @@ func TestParseConfigRequiresExplicitProductionSafetyInputs(t *testing.T) {
 		json.RawMessage(`{"capability":"http.fetch","execution_enabled":true,"control_actor_id":"control"}`),
 		json.RawMessage(`{"capability":"browser.recipe","execution_enabled":true,"control_actor_id":"tool:control"}`),
 		json.RawMessage(`{"capability":"http.fetch","execution_enabled":true,"control_actor_id":"tool:control","artifact_device_name":"worker-a","artifact_channel_name":"recruiting","artifact_directory":"artifacts","artifact_access_scope":"operators","artifact_retention":"30d","artifact_redaction":"unknown","terms_policy_version":3,"terms_reviewed_at":"2026-09-08T00:00:00Z"}`),
+		json.RawMessage(`{"capability":"artifact.recompute","execution_enabled":true,"control_actor_id":"tool:control","artifact_device_name":"worker-a","artifact_channel_name":"recruiting","artifact_directory":"artifacts","artifact_access_scope":"operators","artifact_retention":"30d","artifact_redaction":"raw","execution_batch_size":2}`),
 	} {
 		if _, err := parseConfig(invalid); err == nil {
 			t.Fatalf("unsafe production config was accepted: %s", invalid)

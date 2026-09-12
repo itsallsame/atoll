@@ -46,6 +46,8 @@ type ListingOfferRequest struct {
 	OfferedAt           time.Time
 	BudgetPolicy        ExecutionBudgetPolicy
 	CompanyImportLimit  int
+	SupplyBatchID       string
+	SupplyBatchOnly     bool
 }
 
 // OfferListingExecution claims one runnable listing Work and creates its
@@ -64,7 +66,8 @@ func (r *Repository) OfferExecution(ctx context.Context, request ListingOfferReq
 func (r *Repository) offerExecution(ctx context.Context, request ListingOfferRequest, requiredPurpose string) (ExecutionOffer, error) {
 	if strings.TrimSpace(request.AttemptID) == "" || strings.TrimSpace(request.ExecutorActorID) == "" ||
 		strings.TrimSpace(request.ExecutorIncarnation) == "" || strings.TrimSpace(request.Capability) == "" || request.OfferedAt.IsZero() ||
-		request.BudgetPolicy.validate() != nil || request.CompanyImportLimit < 0 || request.CompanyImportLimit > 500 {
+		request.BudgetPolicy.validate() != nil || request.CompanyImportLimit < 0 || request.CompanyImportLimit > 500 ||
+		len(strings.TrimSpace(request.SupplyBatchID)) > 191 || strings.TrimSpace(request.SupplyBatchID) != request.SupplyBatchID {
 		return ExecutionOffer{}, fmt.Errorf("execution offer requires attempt, executor identity, incarnation, capability, and time")
 	}
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
@@ -92,8 +95,9 @@ func (r *Repository) offerExecution(ctx context.Context, request ListingOfferReq
 	rows, err := tx.QueryContext(ctx, `
 SELECT w.work_id
 FROM recruiting_works w
-WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
+	WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
 	  AND (? = '' OR w.purpose = ?)
+	  AND (? = FALSE OR w.purpose IN ('detail_sync', 'historical_backfill_item'))
 	  AND w.not_before <= ? AND (w.deadline_at IS NULL OR w.deadline_at > ?)
   AND (? = '' OR w.origin = ?) AND (? = '' OR w.profile_id = ?)
 	  AND (w.profile_id IS NULL OR EXISTS (
@@ -212,7 +216,8 @@ WHERE w.capability = ? AND w.status IN ('open', 'waiting_retry')
     WHERE a.work_id = w.work_id AND a.attempt_status IN ('offered', 'accepted', 'running')
   )
 ORDER BY w.priority DESC, w.not_before, w.work_id
-LIMIT 100`, request.Capability, requiredPurpose, requiredPurpose, request.OfferedAt.UTC(), request.OfferedAt.UTC(),
+LIMIT 100`, request.Capability, requiredPurpose, requiredPurpose, request.SupplyBatchOnly,
+		request.OfferedAt.UTC(), request.OfferedAt.UTC(),
 		request.Origin, request.Origin, request.ProfileID, request.ProfileID)
 	if err != nil {
 		return ExecutionOffer{}, fmt.Errorf("discover runnable execution work: %w", err)
@@ -511,7 +516,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	if err != nil {
 		return ExecutionOffer{}, err
 	}
-	if err := insertAttempt(ctx, tx, attempt, offerState, request.OfferedAt); err != nil {
+	if err := insertAttempt(ctx, tx, attempt, offerState, request.SupplyBatchID, request.OfferedAt); err != nil {
 		return ExecutionOffer{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -632,9 +637,10 @@ func executionWorkloadClassTx(ctx context.Context, tx *sql.Tx, work model.Work) 
 
 func getExecutionOfferReplay(ctx context.Context, tx *sql.Tx, request ListingOfferRequest, requiredPurpose string) (ExecutionOffer, bool, error) {
 	var attemptState, offerState []byte
+	var supplyBatchID sql.NullString
 	err := tx.QueryRowContext(ctx, `
-SELECT state_json, execution_offer_json
-FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE`, request.AttemptID).Scan(&attemptState, &offerState)
+SELECT state_json, execution_offer_json, supply_batch_id
+FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE`, request.AttemptID).Scan(&attemptState, &offerState, &supplyBatchID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ExecutionOffer{}, false, nil
 	}
@@ -645,9 +651,13 @@ FROM recruiting_attempts WHERE attempt_id = ? FOR UPDATE`, request.AttemptID).Sc
 	if err := json.Unmarshal(attemptState, &attempt); err != nil {
 		return ExecutionOffer{}, false, err
 	}
+	storedSupplyBatchID := ""
+	if supplyBatchID.Valid {
+		storedSupplyBatchID = supplyBatchID.String
+	}
 	if attempt.ExecutorActorID != strings.TrimSpace(request.ExecutorActorID) ||
 		attempt.ExecutorIncarnation != strings.TrimSpace(request.ExecutorIncarnation) ||
-		attempt.Capability != strings.TrimSpace(request.Capability) || len(offerState) == 0 {
+		attempt.Capability != strings.TrimSpace(request.Capability) || storedSupplyBatchID != request.SupplyBatchID || len(offerState) == 0 {
 		return ExecutionOffer{}, false, fmt.Errorf("%w: attempt ID reused with different execution request", ErrAttemptConflict)
 	}
 	var offer ExecutionOffer
@@ -1424,6 +1434,10 @@ func (r *Repository) ApplyExecutionTransitionCommand(ctx context.Context, comman
 		if command.Word != executioncontract.TypeStarted || command.Failure != nil || strings.TrimSpace(command.Reason) != "" {
 			return CommandResult{}, fmt.Errorf("start execution command shape is invalid")
 		}
+	case "claim":
+		if command.Word != executioncontract.TypeClaimBatch || command.Failure != nil || strings.TrimSpace(command.Reason) != "" {
+			return CommandResult{}, fmt.Errorf("claim execution command shape is invalid")
+		}
 	case "fail":
 		if command.Word != executioncontract.TypeFailed || strings.TrimSpace(command.Reason) == "" || command.Failure == nil {
 			return CommandResult{}, fmt.Errorf("failed execution command shape is invalid")
@@ -1706,8 +1720,13 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 	switch action {
 	case "accept":
 		attempt, err = attempt.Accept()
-	case "start":
-		attempt, err = attempt.Start()
+	case "start", "claim":
+		if action == "claim" {
+			attempt, err = attempt.Accept()
+		}
+		if err == nil {
+			attempt, err = attempt.Start()
+		}
 		if err == nil {
 			previousWorkVersion := work.Version
 			work, err = work.Start(work.Version)
@@ -1860,11 +1879,11 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 	result, err := tx.ExecContext(ctx, `
 UPDATE recruiting_attempts
 SET attempt_status = ?, state_json = ?,
-    accepted_observed_at = IF(? = 'accepted', COALESCE(accepted_observed_at, UTC_TIMESTAMP(6)), accepted_observed_at),
+    accepted_observed_at = IF(? = 'accepted' OR ? = 'claim', COALESCE(accepted_observed_at, UTC_TIMESTAMP(6)), accepted_observed_at),
     started_observed_at = IF(? = 'running', COALESCE(started_observed_at, UTC_TIMESTAMP(6)), started_observed_at),
     terminal_observed_at = IF(? IN ('succeeded','failed','expired','rejected'), COALESCE(terminal_observed_at, UTC_TIMESTAMP(6)), terminal_observed_at),
     updated_at = ?
-WHERE attempt_id = ? AND attempt_status = ?`, attempt.Status, state, attempt.Status, attempt.Status, attempt.Status,
+WHERE attempt_id = ? AND attempt_status = ?`, attempt.Status, state, attempt.Status, action, attempt.Status, attempt.Status,
 		businessAt.UTC(), attempt.AttemptID, previousAttemptStatus)
 	if err != nil {
 		return model.Attempt{}, fmt.Errorf("transition execution attempt: %w", err)

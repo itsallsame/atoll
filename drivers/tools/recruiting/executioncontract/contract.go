@@ -21,6 +21,9 @@ const (
 	TypeResult        = "recruiting.execution.result"
 	TypeWake          = "recruiting.execution.wake"
 	TypeWakeCompleted = "recruiting.execution.wake.completed"
+	TypeOfferBatch    = "recruiting.execution.offer.batch"
+	TypeClaimBatch    = "recruiting.execution.claim.batch"
+	TypeResultBatch   = "recruiting.execution.result.batch"
 )
 
 // ValidToolTarget accepts either a stable two-segment Atoll address
@@ -84,6 +87,33 @@ type OfferRequest struct {
 	Capability          string `json:"capability"`
 	Origin              string `json:"origin,omitempty"`
 	ProfileID           string `json:"profile_id,omitempty"`
+}
+
+type OfferBatchRequest struct {
+	CommandID           string `json:"command_id"`
+	DispatchID          string `json:"dispatch_id"`
+	ExecutorIncarnation string `json:"executor_incarnation"`
+	Capability          string `json:"capability"`
+	Origin              string `json:"origin,omitempty"`
+	ProfileID           string `json:"profile_id,omitempty"`
+	Limit               int    `json:"limit"`
+}
+
+type ClaimBatchRequest struct {
+	CommandID           string   `json:"command_id"`
+	SupplyBatchID       string   `json:"supply_batch_id"`
+	ExecutorIncarnation string   `json:"executor_incarnation"`
+	AttemptIDs          []string `json:"attempt_ids"`
+}
+
+type ResultBatchItem struct {
+	ResultKind string          `json:"result_kind"`
+	Payload    json.RawMessage `json:"payload"`
+}
+
+type ResultBatchRequest struct {
+	SupplyBatchID string            `json:"supply_batch_id"`
+	Items         []ResultBatchItem `json:"items"`
 }
 
 type TransitionRequest struct {
@@ -264,6 +294,37 @@ type OfferResponse struct {
 	RequestedBy     string `json:"requested_by"`
 	Available       bool   `json:"available,omitempty"`
 	Offer           *Offer `json:"offer,omitempty"`
+}
+
+type OfferBatchResponse struct {
+	Status          string  `json:"status"`
+	Reason          string  `json:"reason,omitempty"`
+	ContractVersion string  `json:"contract_version"`
+	CorrelationID   string  `json:"correlation_id"`
+	RequestedBy     string  `json:"requested_by"`
+	SupplyBatchID   string  `json:"supply_batch_id"`
+	Offers          []Offer `json:"offers"`
+}
+
+type ClaimBatchResponse struct {
+	Status          string          `json:"status"`
+	Reason          string          `json:"reason,omitempty"`
+	ContractVersion string          `json:"contract_version"`
+	CorrelationID   string          `json:"correlation_id"`
+	RequestedBy     string          `json:"requested_by"`
+	SupplyBatchID   string          `json:"supply_batch_id"`
+	Attempts        []model.Attempt `json:"attempts"`
+}
+
+type ResultBatchResponse struct {
+	Status                 string `json:"status"`
+	Reason                 string `json:"reason,omitempty"`
+	ContractVersion        string `json:"contract_version"`
+	CorrelationID          string `json:"correlation_id"`
+	RequestedBy            string `json:"requested_by"`
+	SupplyBatchID          string `json:"supply_batch_id"`
+	AcceptedItems          int    `json:"accepted_items"`
+	ContinuationDispatchID string `json:"continuation_dispatch_id"`
 }
 
 type TransitionResponse struct {

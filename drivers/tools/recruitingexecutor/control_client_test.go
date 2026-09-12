@@ -99,6 +99,70 @@ func TestRequestExecutionOfferRepresentsNoWorkWithoutAnError(t *testing.T) {
 	}
 }
 
+func TestBatchExecutionControlChecksOfferAndClaimBindings(t *testing.T) {
+	now := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	first, _, _ := listingExecutionOffer(t, now)
+	second := first
+	second.Attempt.AttemptID = "attempt-2"
+	second.Work.WorkID = "work-2"
+	response := executioncontract.OfferBatchResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-batch-offer", RequestedBy: "executor-1", SupplyBatchID: "supply-1",
+		Offers: []executioncontract.Offer{first, second}}
+	caller := &callerStub{pending: &pendingStub{response: controlResponse(t, executioncontract.TypeOfferBatch, response)}}
+	request := executioncontract.OfferBatchRequest{CommandID: "offer-batch-1", DispatchID: "dispatch-1",
+		ExecutorIncarnation: "boot-1", Capability: "http.public", Limit: 2}
+	got, err := requestExecutionOfferBatch(context.Background(), caller, message.Root(), "control-1", "executor-1", request, time.Second)
+	if err != nil || got.SupplyBatchID != response.SupplyBatchID || len(got.Offers) != 2 {
+		t.Fatalf("request batch offer: got=%+v err=%v", got, err)
+	}
+
+	response.Offers[1].Attempt.AttemptID = response.Offers[0].Attempt.AttemptID
+	caller.pending.response = controlResponse(t, executioncontract.TypeOfferBatch, response)
+	if _, err := requestExecutionOfferBatch(context.Background(), caller, message.Root(), "control-1", "executor-1", request, time.Second); err == nil {
+		t.Fatal("expected duplicate batch Attempt rejection")
+	}
+
+	claimedFirst, _ := first.Attempt.Accept()
+	claimedFirst, _ = claimedFirst.Start()
+	claimedSecond, _ := second.Attempt.Accept()
+	claimedSecond, _ = claimedSecond.Start()
+	claimResponse := executioncontract.ClaimBatchResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-batch-claim", RequestedBy: "executor-1", SupplyBatchID: "supply-1",
+		Attempts: []model.Attempt{claimedFirst, claimedSecond}}
+	caller.pending.response = controlResponse(t, executioncontract.TypeClaimBatch, claimResponse)
+	claim := executioncontract.ClaimBatchRequest{CommandID: "claim-batch-1", SupplyBatchID: "supply-1",
+		ExecutorIncarnation: "boot-1", AttemptIDs: []string{"attempt-1", "attempt-2"}}
+	if err := claimExecutionBatch(context.Background(), caller, message.Root(), "control-1", "executor-1", claim, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	claimResponse.Attempts[1].AttemptID = "attempt-other"
+	caller.pending.response = controlResponse(t, executioncontract.TypeClaimBatch, claimResponse)
+	if err := claimExecutionBatch(context.Background(), caller, message.Root(), "control-1", "executor-1", claim, time.Second); err == nil {
+		t.Fatal("expected reordered or cross-Attempt batch claim rejection")
+	}
+}
+
+func TestSubmitExecutionResultBatchRetriesAmbiguousResponseWithExactPayload(t *testing.T) {
+	first := &pendingStub{err: errors.New("connection closed after batch request delivery")}
+	response := executioncontract.ResultBatchResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-batch-result", RequestedBy: "executor-1", SupplyBatchID: "supply-1",
+		AcceptedItems: 1, ContinuationDispatchID: "dispatch-next"}
+	caller := &callerSequenceStub{pending: []*pendingStub{first,
+		{response: controlResponse(t, executioncontract.TypeResultBatch, response)}}}
+	request := executioncontract.ResultBatchRequest{SupplyBatchID: "supply-1", Items: []executioncontract.ResultBatchItem{{
+		ResultKind: "detail", Payload: json.RawMessage(`{"command_id":"detail-1","attempt_id":"attempt-1"}`),
+	}}}
+	continuation, err := submitExecutionResultBatch(context.Background(), caller, message.Root(), "control-1", "executor-1", request, time.Second)
+	if err != nil || continuation != "dispatch-next" {
+		t.Fatalf("submit result batch: continuation=%q err=%v", continuation, err)
+	}
+	if !first.cancelled || len(caller.operations) != 2 || caller.operations[0] != executioncontract.TypeResultBatch ||
+		caller.operations[1] != executioncontract.TypeResultBatch || !reflect.DeepEqual(caller.payloads[0], request) ||
+		!reflect.DeepEqual(caller.payloads[1], request) {
+		t.Fatalf("ambiguous batch retry calls=%v first_cancelled=%v payloads=%#v", caller.operations, first.cancelled, caller.payloads)
+	}
+}
+
 func TestTransitionExecutionChecksReturnedAttempt(t *testing.T) {
 	attempt := model.Attempt{AttemptID: "attempt-1", WorkID: "work-1", Status: model.AttemptAccepted,
 		ExecutorActorID: "executor-1", ExecutorIncarnation: "boot-1"}

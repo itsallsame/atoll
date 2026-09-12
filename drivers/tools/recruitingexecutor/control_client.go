@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/lib/actorbase"
 	"github.com/wanpengxie/atoll/protocol/actor"
 	"github.com/wanpengxie/atoll/protocol/message"
@@ -114,6 +115,79 @@ func requestExecutionOffer(ctx context.Context, caller executionCallFace, cause 
 		return nil, errors.New("recruiting control returned an offer bound to another executor")
 	}
 	return decoded.Offer, nil
+}
+
+func requestExecutionOfferBatch(ctx context.Context, caller executionCallFace, cause message.Cause, controlActor actor.ActorID,
+	executorActorID string, request executioncontract.OfferBatchRequest, wait time.Duration) (executioncontract.OfferBatchResponse, error) {
+	response, err := callExecutionControl(ctx, caller, cause, controlActor, executioncontract.TypeOfferBatch, request, wait)
+	if err != nil {
+		return executioncontract.OfferBatchResponse{}, err
+	}
+	var decoded executioncontract.OfferBatchResponse
+	if err := decodeCompletedControl(response, executioncontract.TypeOfferBatch, &decoded); err != nil {
+		return executioncontract.OfferBatchResponse{}, err
+	}
+	if decoded.ContractVersion != executioncontract.Version || strings.TrimSpace(decoded.CorrelationID) == "" ||
+		decoded.RequestedBy != strings.TrimSpace(executorActorID) || decoded.SupplyBatchID == "" || len(decoded.Offers) > request.Limit {
+		return executioncontract.OfferBatchResponse{}, errors.New("recruiting control returned an inconsistent execution offer batch")
+	}
+	seen := make(map[string]struct{}, len(decoded.Offers))
+	for _, offer := range decoded.Offers {
+		if offer.Attempt.ExecutorActorID != strings.TrimSpace(executorActorID) ||
+			offer.Attempt.ExecutorIncarnation != strings.TrimSpace(request.ExecutorIncarnation) {
+			return executioncontract.OfferBatchResponse{}, errors.New("recruiting control returned a batch offer bound to another executor")
+		}
+		if _, duplicate := seen[offer.Attempt.AttemptID]; duplicate {
+			return executioncontract.OfferBatchResponse{}, errors.New("recruiting control returned duplicate batch Attempt IDs")
+		}
+		seen[offer.Attempt.AttemptID] = struct{}{}
+	}
+	return decoded, nil
+}
+
+func claimExecutionBatch(ctx context.Context, caller executionCallFace, cause message.Cause, controlActor actor.ActorID,
+	executorActorID string, request executioncontract.ClaimBatchRequest, wait time.Duration) error {
+	response, err := callExecutionControl(ctx, caller, cause, controlActor, executioncontract.TypeClaimBatch, request, wait)
+	if err != nil {
+		return err
+	}
+	var decoded executioncontract.ClaimBatchResponse
+	if err := decodeCompletedControl(response, executioncontract.TypeClaimBatch, &decoded); err != nil {
+		return err
+	}
+	if decoded.ContractVersion != executioncontract.Version || strings.TrimSpace(decoded.CorrelationID) == "" ||
+		decoded.RequestedBy != strings.TrimSpace(executorActorID) || decoded.SupplyBatchID != request.SupplyBatchID ||
+		len(decoded.Attempts) != len(request.AttemptIDs) {
+		return errors.New("recruiting control returned an inconsistent execution claim batch")
+	}
+	for index, attempt := range decoded.Attempts {
+		if attempt.AttemptID != request.AttemptIDs[index] || attempt.ExecutorActorID != strings.TrimSpace(executorActorID) ||
+			attempt.ExecutorIncarnation != request.ExecutorIncarnation || attempt.Status != model.AttemptRunning {
+			return errors.New("recruiting control returned an invalid claimed Attempt")
+		}
+	}
+	return nil
+}
+
+func submitExecutionResultBatch(ctx context.Context, caller executionCallFace, cause message.Cause, controlActor actor.ActorID,
+	executorActorID string, request executioncontract.ResultBatchRequest, wait time.Duration) (string, error) {
+	response, err := callExecutionControl(ctx, caller, cause, controlActor, executioncontract.TypeResultBatch, request, wait)
+	if err != nil && ctx.Err() == nil && isAmbiguousControlDelivery(err) {
+		response, err = callExecutionControl(ctx, caller, cause, controlActor, executioncontract.TypeResultBatch, request, wait)
+	}
+	if err != nil {
+		return "", err
+	}
+	var decoded executioncontract.ResultBatchResponse
+	if err := decodeCompletedControl(response, executioncontract.TypeResultBatch, &decoded); err != nil {
+		return "", err
+	}
+	if decoded.ContractVersion != executioncontract.Version || strings.TrimSpace(decoded.CorrelationID) == "" ||
+		decoded.RequestedBy != strings.TrimSpace(executorActorID) || decoded.SupplyBatchID != request.SupplyBatchID ||
+		decoded.AcceptedItems != len(request.Items) || strings.TrimSpace(decoded.ContinuationDispatchID) == "" {
+		return "", errors.New("recruiting control returned an inconsistent execution result batch")
+	}
+	return decoded.ContinuationDispatchID, nil
 }
 
 func transitionExecution(ctx context.Context, caller executionCallFace, cause message.Cause, controlActor actor.ActorID,
