@@ -1,0 +1,23 @@
+{
+  "version": "recruiting.browser-capacity-workload.v1",
+  "description": "Production Browser Driver DOM capture against a controlled public-shaped origin in an egress-less Docker network; every item launches the configured real Chrome broker path.",
+  "levels": {
+    "B0": {"items": 4, "payload_bytes": 4096, "origin_latency_ms": 5, "executors": 1, "timeout_seconds": 180},
+    "B1": {"items": 20, "payload_bytes": 8192, "origin_latency_ms": 20, "executors": 2, "timeout_seconds": 600},
+    "B2": {"items": 100, "payload_bytes": 16384, "origin_latency_ms": 50, "executors": 4, "timeout_seconds": 1800}
+  },
+  "correctness_gates": [
+    "the production Browser Driver and real Chrome reach the isolated public-shaped address without a private-network bypass",
+    "the controlled origin has no external network route and publishes an allowing robots policy",
+    "a normal user previews and confirms the exact immutable live_refetch Backfill",
+    "every job receives exactly one document request and every successful Attempt writes one bounded DOM response Artifact, trace Artifact, and BackfillOutput",
+    "all DOM Resource hashes match MySQL metadata and contain the expected extracted job identity",
+    "all effect attestations allow only GET or HEAD, same-origin documents, no forms, downloads, popups, or writes",
+    "all domain event intents reach the Channel ledger and restart preserves state, replay, presence, and Resource reads"
+  ],
+  "non_claims": [
+    "the controlled origin does not represent third-party JavaScript complexity, latency, rate limits, bot defenses, authentication, or site availability",
+    "B0/B1/B2 do not substitute for an authorized third-party canary, production egress isolation, or long-window SLO",
+    "Browser tasks remain on the single-item execution protocol until independent batch safety is demonstrated"
+  ]
+}

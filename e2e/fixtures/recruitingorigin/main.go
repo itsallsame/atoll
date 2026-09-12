@@ -45,6 +45,18 @@ func main() {
 		response.Header().Set("Cache-Control", "no-store")
 		_, _ = response.Write(body)
 	})
+	mux.HandleFunc("/browser-jobs/", func(response http.ResponseWriter, request *http.Request) {
+		id := strings.TrimPrefix(request.URL.Path, "/browser-jobs/")
+		if id == "" || strings.Contains(id, "/") {
+			http.NotFound(response, request)
+			return
+		}
+		jobRequests.Add(1)
+		time.Sleep(latency)
+		response.Header().Set("Content-Type", "text/html; charset=utf-8")
+		response.Header().Set("Cache-Control", "no-store")
+		_, _ = response.Write(browserResponseBody(id, payloadBytes))
+	})
 	server := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	log.Printf("recruiting controlled origin listening on %s payload_bytes=%d latency_ms=%d",
 		server.Addr, payloadBytes, latency.Milliseconds())
@@ -67,6 +79,16 @@ func responseBody(id string, targetBytes int) []byte {
 	prefix := fmt.Sprintf(`{"id":%q,"title":%q,"url":%q,"padding":"`, id,
 		"HTTP Capacity Role "+id, "http://controlled-origin.invalid/jobs/"+id)
 	suffix := `"}`
+	padding := targetBytes - len(prefix) - len(suffix)
+	if padding < 0 {
+		padding = 0
+	}
+	return []byte(prefix + strings.Repeat("x", padding) + suffix)
+}
+
+func browserResponseBody(id string, targetBytes int) []byte {
+	prefix := fmt.Sprintf(`<!doctype html><html><head><meta charset="utf-8"><title>Browser Capacity</title></head><body><main class="job"><span class="job-id" data-id="browser-job-%s"></span><h1 class="title">Browser Capacity Role %s</h1><a class="job-url" href="/browser-jobs/%s">Role</a><div class="padding">`, id, id, id)
+	suffix := `</div></main></body></html>`
 	padding := targetBytes - len(prefix) - len(suffix)
 	if padding < 0 {
 		padding = 0

@@ -145,7 +145,7 @@ func handleExecutionResultBatch(sys actorbase.Sys, repository *store.Repository,
 			if _, err := repository.AcceptBackfillResult(msg.Ctx(), store.BackfillResult{
 				CommandID: result.CommandID, RequestHash: requestHash, AttemptID: result.AttemptID,
 				ExecutorActorID: executorID, ExecutorIncarnation: result.ExecutorIncarnation,
-				Artifact: result.Artifact, NormalizedContentHash: result.NormalizedContentHash,
+				Artifact: result.Artifact, SupportingArtifacts: result.SupportingArtifacts, NormalizedContentHash: result.NormalizedContentHash,
 				OutputJSON: result.Output, CompletedAt: time.UnixMilli(msg.TS).UTC(),
 			}); err != nil {
 				failStoreError(sys, msg, err)
@@ -168,7 +168,7 @@ func handleExecutionResultBatch(sys actorbase.Sys, repository *store.Repository,
 			}
 			if _, err := repository.AcceptDetailResult(msg.Ctx(), store.DetailResult{
 				AttemptID: result.AttemptID, ExecutorActorID: executorID, ExecutorIncarnation: result.ExecutorIncarnation,
-				Artifact: result.Artifact, DetailVersionID: result.DetailVersionID,
+				Artifact: result.Artifact, SupportingArtifacts: result.SupportingArtifacts, DetailVersionID: result.DetailVersionID,
 				NormalizedContentHash: result.NormalizedContentHash, DetailJSON: result.Detail,
 				ObservedAt: time.UnixMilli(msg.TS).UTC(), CauseCommandID: result.CommandID, RequestHash: requestHash,
 			}); err != nil {
@@ -224,7 +224,7 @@ func handleBackfillResult(sys actorbase.Sys, repository *store.Repository, msg a
 	outcome, err := repository.AcceptBackfillResult(msg.Ctx(), store.BackfillResult{
 		CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), AttemptID: payload.AttemptID,
 		ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
-		Artifact: payload.Artifact, NormalizedContentHash: payload.NormalizedContentHash,
+		Artifact: payload.Artifact, SupportingArtifacts: payload.SupportingArtifacts, NormalizedContentHash: payload.NormalizedContentHash,
 		OutputJSON: payload.Output, CompletedAt: time.UnixMilli(msg.TS).UTC(),
 	})
 	if err != nil {
@@ -472,7 +472,7 @@ func handleDetailResult(sys actorbase.Sys, repository *store.Repository, msg act
 	}
 	outcome, err := repository.AcceptDetailResult(msg.Ctx(), store.DetailResult{
 		AttemptID: payload.AttemptID, ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
-		Artifact: payload.Artifact, DetailVersionID: payload.DetailVersionID,
+		Artifact: payload.Artifact, SupportingArtifacts: payload.SupportingArtifacts, DetailVersionID: payload.DetailVersionID,
 		NormalizedContentHash: payload.NormalizedContentHash, DetailJSON: payload.Detail,
 		ObservedAt: time.UnixMilli(msg.TS).UTC(), CauseCommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg),
 	})

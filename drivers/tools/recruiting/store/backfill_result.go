@@ -21,6 +21,7 @@ type BackfillResult struct {
 	ExecutorActorID       string
 	ExecutorIncarnation   string
 	Artifact              model.ArtifactMetadata
+	SupportingArtifacts   []model.ArtifactMetadata
 	NormalizedContentHash string
 	OutputJSON            json.RawMessage
 	CompletedAt           time.Time
@@ -49,6 +50,9 @@ func (r *Repository) AcceptBackfillResult(ctx context.Context, input BackfillRes
 	if err := validateOptionalResultCommand(input.CommandID, input.RequestHash); err != nil {
 		return BackfillResultOutcome{}, err
 	}
+	if err := validateSupportingResultArtifacts(input.Artifact, input.SupportingArtifacts, input.AttemptID); err != nil {
+		return BackfillResultOutcome{}, err
+	}
 	validatedArtifact, err := model.NewArtifactMetadata(input.Artifact.ArtifactID, input.Artifact.Kind,
 		input.Artifact.ContentHash, input.Artifact.ObjectRef, input.Artifact.WorkID, input.Artifact.AttemptID,
 		input.Artifact.AccessScope, input.Artifact.Retention, input.Artifact.Redacted)
@@ -65,7 +69,7 @@ func (r *Repository) AcceptBackfillResult(ctx context.Context, input BackfillRes
 		return BackfillResultOutcome{}, err
 	}
 	if fenceErr != nil {
-		if err := r.saveRejectedArtifact(ctx, input.Artifact, input.CompletedAt); err != nil {
+		if err := r.saveRejectedResultArtifacts(ctx, input.Artifact, input.SupportingArtifacts, input.CompletedAt); err != nil {
 			return BackfillResultOutcome{}, fmt.Errorf("%w; also failed to retain rejected Artifact: %v", fenceErr, err)
 		}
 		return BackfillResultOutcome{}, fmt.Errorf("%w: %v", ErrResultFenced, fenceErr)
@@ -132,6 +136,11 @@ func (r *Repository) acceptBackfillResultTransaction(ctx context.Context,
 	}
 	if err := insertArtifact(ctx, tx, input.Artifact, false, input.CompletedAt); err != nil {
 		return BackfillResultOutcome{}, nil, err
+	}
+	for _, artifact := range input.SupportingArtifacts {
+		if err := insertArtifact(ctx, tx, artifact, false, input.CompletedAt); err != nil {
+			return BackfillResultOutcome{}, nil, err
+		}
 	}
 	if err := insertBackfillOutputTx(ctx, tx, output, input.OutputJSON, input.CompletedAt); err != nil {
 		return BackfillResultOutcome{}, nil, err
@@ -260,10 +269,11 @@ func backfillResultInputHash(input BackfillResult) string {
 	value, _ := json.Marshal(struct {
 		AttemptID, ExecutorActorID, ExecutorIncarnation string
 		Artifact                                        model.ArtifactMetadata
+		SupportingArtifacts                             []model.ArtifactMetadata `json:",omitempty"`
 		NormalizedContentHash                           string
 		OutputJSON                                      json.RawMessage
 		CommandID                                       string
-	}{input.AttemptID, input.ExecutorActorID, input.ExecutorIncarnation, input.Artifact,
+	}{input.AttemptID, input.ExecutorActorID, input.ExecutorIncarnation, input.Artifact, input.SupportingArtifacts,
 		input.NormalizedContentHash, input.OutputJSON, input.CommandID})
 	sum := sha256.Sum256(value)
 	return fmt.Sprintf("sha256:%x", sum[:])

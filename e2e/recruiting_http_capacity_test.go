@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -36,7 +37,25 @@ type httpCapacityInput struct {
 // service in an egress-less Docker network; the production Driver still
 // applies public-address, robots, terms, GET-only, budget, and Recipe checks.
 func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
-	const executionBatchSize = 32
+	if os.Getenv("ATOLL_RECRUITING_BROWSER_CAPACITY") == "1" {
+		t.Skip("HTTP wrapper is disabled during the opt-in Browser capacity run")
+	}
+	runRecruitingResponseCapacity(t, false)
+}
+
+func TestRecruitingBrowserResponseCapacityThroughRealDataPlanes(t *testing.T) {
+	if os.Getenv("ATOLL_RECRUITING_BROWSER_CAPACITY") != "1" {
+		t.Skip("set ATOLL_RECRUITING_BROWSER_CAPACITY=1 through the isolated Browser capacity runner")
+	}
+	runRecruitingResponseCapacity(t, true)
+}
+
+func runRecruitingResponseCapacity(t *testing.T, browser bool) {
+	executionBatchSize := 32
+	capability, capacityKind, artifactDirectory := "http.fetch", "HTTP", "http-capacity-responses"
+	if browser {
+		executionBatchSize, capability, capacityKind, artifactDirectory = 1, "browser.public", "Browser", "browser-capacity-responses"
+	}
 	input := httpCapacityFromEnv(t)
 	testStarted := time.Now()
 	h := newHarnessShell(t)
@@ -62,7 +81,7 @@ func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
 		"--name", deviceName, "--home", filepath.Join(h.root, "http-capacity-daemon"),
 	}, h.env, filepath.Join(h.root, "work"), daemonLog)
 
-	spec := httpCapacityRecipe()
+	spec := responseCapacityRecipe(browser, input.payloadBytes)
 	const recipeRef = "recipe://http-capacity-detail-v1"
 	recipeRaw, err := json.Marshal(spec)
 	if err != nil {
@@ -73,13 +92,13 @@ func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
 	executorTargets := make([]map[string]any, 0, input.executors)
 	for index := 0; index < input.executors; index++ {
 		executorTargets = append(executorTargets, map[string]any{
-			"actor_id": fmt.Sprintf("tool:http-capacity-executor-%02d", index), "capability": "http.fetch",
+			"actor_id": fmt.Sprintf("tool:http-capacity-executor-%02d", index), "capability": capability,
 		})
 	}
 	const controlName = "http-capacity-control"
 	registrarRequest(t, ws, homeID, systemActor, "system.actor.template.create", map[string]any{
 		"id": controlName, "name": controlName, "class": "recruiting",
-		"description": "Recruiting controlled-origin HTTP response capacity control.",
+		"description": "Recruiting controlled-origin " + capacityKind + " response capacity control.",
 		"config": map[string]any{
 			"executor_id": "tool:http-capacity-executor-00", "executors": executorTargets,
 			"reconcile_interval_ms": 200, "daily_schedule_enabled": false, "backfill_materialize_limit": 500,
@@ -94,20 +113,24 @@ func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
 	executorIDs := make([]string, 0, input.executors)
 	for index := 0; index < input.executors; index++ {
 		name := fmt.Sprintf("http-capacity-executor-%02d", index)
+		executorConfig := map[string]any{
+			"capability": capability, "execution_enabled": true, "control_actor_id": "tool:" + controlName,
+			"control_wait_ms": 30000, "artifact_device_name": deviceName, "artifact_channel_name": qualifiedChannel,
+			"artifact_directory": artifactDirectory, "artifact_access_scope": "operators",
+			"artifact_retention": "7d", "artifact_redaction": "raw", "artifact_max_bytes": 2 << 20,
+			"terms_policy_version": 1, "terms_reviewed_at": "2026-09-12T00:00:00Z",
+			"http_max_concurrency": 1, "http_min_origin_interval_ms": 0,
+			"execution_batch_size":   executionBatchSize,
+			"http_circuit_threshold": 3, "http_circuit_cooldown_ms": 60000,
+			"robots_timeout_ms": 10000, "robots_max_bytes": 65536, "robots_cache_ttl_ms": 600000,
+		}
+		if browser {
+			executorConfig["browser_chrome_path"] = os.Getenv("RECRUITING_CHROME_BIN")
+		}
 		registrarRequest(t, ws, homeID, systemActor, "system.actor.template.create", map[string]any{
 			"id": name, "name": name, "class": "recruiting-executor",
-			"description": "Recruiting controlled-origin HTTP capacity Executor.",
-			"config": map[string]any{
-				"capability": "http.fetch", "execution_enabled": true, "control_actor_id": "tool:" + controlName,
-				"control_wait_ms": 30000, "artifact_device_name": deviceName, "artifact_channel_name": qualifiedChannel,
-				"artifact_directory": "http-capacity-responses", "artifact_access_scope": "operators",
-				"artifact_retention": "7d", "artifact_redaction": "raw", "artifact_max_bytes": 2 << 20,
-				"terms_policy_version": 1, "terms_reviewed_at": "2026-09-12T00:00:00Z",
-				"http_max_concurrency": 1, "http_min_origin_interval_ms": 0,
-				"execution_batch_size":   executionBatchSize,
-				"http_circuit_threshold": 3, "http_circuit_cooldown_ms": 60000,
-				"robots_timeout_ms": 10000, "robots_max_bytes": 65536, "robots_cache_ttl_ms": 600000,
-			}, "visibility": "private",
+			"description": "Recruiting controlled-origin " + capacityKind + " capacity Executor.",
+			"config":      executorConfig, "visibility": "private",
 		})
 		intro := ws.request(homeID, "system.member.create", systemActor,
 			map[string]any{"decl_id": name, "desired_host": deviceID})
@@ -128,8 +151,8 @@ func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
 	}
 	defer db.Close()
 	now := time.Now().UTC()
-	seedHTTPResponseCapacity(t, db, spec, recipeRef, input.origin, listingAddress,
-		"sha256:"+hex.EncodeToString(listingDigest[:]), input.items, now)
+	seedResponseCapacity(t, db, spec, recipeRef, input.origin, listingAddress,
+		"sha256:"+hex.EncodeToString(listingDigest[:]), input.items, now, browser)
 
 	const backfillID = "http-capacity-backfill"
 	rangeStart, rangeEnd := now.Add(-time.Hour).Format(time.RFC3339), now.Add(time.Hour).Format(time.RFC3339)
@@ -138,7 +161,7 @@ func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
 		"target_type": "source", "target_id": "http-capacity-source", "mode": "live_refetch",
 		"range_start": rangeStart, "range_end": rangeEnd, "fields": []string{"id", "title", "url"},
 		"recipe_id": "http-capacity-detail", "recipe_version": 1, "policy_version": 1,
-		"reason": "measure production HTTP response capture against the controlled compliant origin",
+		"reason": "measure production " + capacityKind + " response capture against the controlled compliant origin",
 	}
 	executionStarted := time.Now()
 	created := ws.request(homeID, "recruiting.backfill.create", controlID, createPayload)
@@ -153,7 +176,7 @@ func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
 		"expected_version":      nestedNumberField(t, preview, "backfill", "version"),
 		"expected_work_version": nestedNumberField(t, preview, "work", "version"),
 		"preview_hash":          nestedStringField(t, preview, "backfill", "preview_hash"),
-		"reason":                "confirm the exact controlled-origin HTTP preview",
+		"reason":                "confirm the exact controlled-origin " + capacityKind + " preview",
 	})
 	if nestedStringField(t, confirmed, "backfill", "status") != "running" {
 		t.Fatalf("confirm HTTP capacity Backfill=%v", confirmed)
@@ -165,32 +188,37 @@ func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
 	drainRecruitingProcessOutboxes(t, db, input.timeout)
 	drainedDuration := time.Since(executionStarted)
 
-	var backfillItems, succeededItems, outputs, responseArtifacts, succeededAttempts int
+	var backfillItems, succeededItems, outputs, responseArtifacts, traceArtifacts, succeededAttempts int
 	var deliveredDispatches, materializeDispatches, releaseDispatches, usedExecutors, activeBudget int
 	if err := db.QueryRow(`SELECT
   (SELECT COUNT(*) FROM recruiting_backfill_items WHERE backfill_id = ?),
   (SELECT COUNT(*) FROM recruiting_backfill_items WHERE backfill_id = ? AND item_status = 'succeeded'),
   (SELECT COUNT(*) FROM recruiting_backfill_outputs WHERE backfill_id = ?),
   (SELECT COUNT(*) FROM recruiting_artifacts WHERE artifact_kind = 'response' AND attempt_id IS NOT NULL AND rejected = FALSE),
-  (SELECT COUNT(*) FROM recruiting_attempts WHERE attempt_status = 'succeeded' AND capability = 'http.fetch'),
+  (SELECT COUNT(*) FROM recruiting_artifacts WHERE artifact_kind = 'trace' AND attempt_id IS NOT NULL AND rejected = FALSE),
+  (SELECT COUNT(*) FROM recruiting_attempts WHERE attempt_status = 'succeeded' AND capability = ?),
   (SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE delivery_status = 'delivered'),
   (SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE delivery_status = 'delivered' AND cause_kind = 'work_materialized'),
   (SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE delivery_status = 'delivered' AND cause_kind = 'capacity_released'),
-  (SELECT COUNT(DISTINCT executor_actor_id) FROM recruiting_attempts WHERE attempt_status = 'succeeded' AND capability = 'http.fetch'),
+  (SELECT COUNT(DISTINCT executor_actor_id) FROM recruiting_attempts WHERE attempt_status = 'succeeded' AND capability = ?),
   (SELECT COALESCE(SUM(active_count), 0) FROM recruiting_budget_usage)`,
-		backfillID, backfillID, backfillID).Scan(&backfillItems, &succeededItems, &outputs,
-		&responseArtifacts, &succeededAttempts, &deliveredDispatches, &materializeDispatches,
+		backfillID, backfillID, backfillID, capability, capability).Scan(&backfillItems, &succeededItems, &outputs,
+		&responseArtifacts, &traceArtifacts, &succeededAttempts, &deliveredDispatches, &materializeDispatches,
 		&releaseDispatches, &usedExecutors, &activeBudget); err != nil {
 		t.Fatal(err)
 	}
 	expectedMaterializeDispatches := expectedCompactedMaterializeDispatches(input.items, input.executors, 500)
 	expectedReleaseDispatches := (input.items + executionBatchSize - 1) / executionBatchSize
+	expectedTraceArtifacts := 0
+	if browser {
+		expectedTraceArtifacts = input.items
+	}
 	if backfillItems != input.items || succeededItems != input.items || outputs != input.items ||
-		responseArtifacts != input.items || succeededAttempts != input.items ||
+		responseArtifacts != input.items || traceArtifacts != expectedTraceArtifacts || succeededAttempts != input.items ||
 		deliveredDispatches != expectedReleaseDispatches+expectedMaterializeDispatches ||
 		materializeDispatches != expectedMaterializeDispatches || releaseDispatches != expectedReleaseDispatches || activeBudget != 0 {
-		t.Fatalf("HTTP capacity facts items=%d/%d succeeded=%d outputs=%d responses=%d attempts=%d dispatches=%d materialize=%d release=%d budget=%d",
-			backfillItems, input.items, succeededItems, outputs, responseArtifacts, succeededAttempts,
+		t.Fatalf("%s capacity facts items=%d/%d succeeded=%d outputs=%d responses=%d traces=%d attempts=%d dispatches=%d materialize=%d release=%d budget=%d", capacityKind,
+			backfillItems, input.items, succeededItems, outputs, responseArtifacts, traceArtifacts, succeededAttempts,
 			deliveredDispatches, materializeDispatches, releaseDispatches, activeBudget)
 	}
 	// Executor distribution is an observed capacity signal, not a correctness
@@ -213,14 +241,21 @@ FROM recruiting_artifacts WHERE artifact_kind = 'response' AND attempt_id IS NOT
 		}
 		body := httpReadFile(t, operator, h.base, ws, homeID, address)
 		digest := sha256.Sum256(body)
-		if len(body) != input.payloadBytes || "sha256:"+hex.EncodeToString(digest[:]) != wantHash {
+		if (!browser && len(body) != input.payloadBytes) || "sha256:"+hex.EncodeToString(digest[:]) != wantHash {
 			_ = outputRows.Close()
-			t.Fatalf("HTTP response Artifact %s bytes=%d/%d hash mismatch", artifactID, len(body), input.payloadBytes)
+			t.Fatalf("%s response Artifact %s bytes=%d target=%d hash mismatch", capacityKind, artifactID, len(body), input.payloadBytes)
 		}
-		var response map[string]any
-		if err := json.Unmarshal(body, &response); err != nil || response["id"] == nil || response["padding"] == nil {
-			_ = outputRows.Close()
-			t.Fatalf("HTTP response Artifact %s body is invalid: %v", artifactID, err)
+		if browser {
+			if !bytes.Contains(body, []byte(`class="job"`)) || !bytes.Contains(body, []byte(`data-id="browser-job-`)) {
+				_ = outputRows.Close()
+				t.Fatalf("Browser response Artifact %s DOM is invalid", artifactID)
+			}
+		} else {
+			var response map[string]any
+			if err := json.Unmarshal(body, &response); err != nil || response["id"] == nil || response["padding"] == nil {
+				_ = outputRows.Close()
+				t.Fatalf("HTTP response Artifact %s body is invalid: %v", artifactID, err)
+			}
 		}
 		if firstResponseAddress == "" {
 			firstResponseAddress = address
@@ -231,17 +266,72 @@ FROM recruiting_artifacts WHERE artifact_kind = 'response' AND attempt_id IS NOT
 	if err := outputRows.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if verifiedResponses != input.items || totalResponseBytes != input.items*input.payloadBytes {
-		t.Fatalf("verified HTTP responses=%d/%d bytes=%d/%d", verifiedResponses, input.items,
+	if verifiedResponses != input.items || (!browser && totalResponseBytes != input.items*input.payloadBytes) {
+		t.Fatalf("verified %s responses=%d/%d bytes=%d target=%d", capacityKind, verifiedResponses, input.items,
 			totalResponseBytes, input.items*input.payloadBytes)
 	}
+	if browser {
+		traceRows, err := db.Query(`SELECT artifact_id, object_ref, content_hash
+FROM recruiting_artifacts WHERE artifact_kind = 'trace' AND attempt_id IS NOT NULL AND rejected = FALSE ORDER BY artifact_id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifiedTraces := 0
+		for traceRows.Next() {
+			var artifactID, address, wantHash string
+			if err := traceRows.Scan(&artifactID, &address, &wantHash); err != nil {
+				_ = traceRows.Close()
+				t.Fatal(err)
+			}
+			body := httpReadFile(t, operator, h.base, ws, homeID, address)
+			digest := sha256.Sum256(body)
+			var trace struct {
+				FinalURL    string `json:"final_url"`
+				Attestation struct {
+					DocumentNavigations            int      `json:"document_navigations"`
+					ObservedMethods                []string `json:"observed_methods"`
+					AllowedWriteRequests           int      `json:"allowed_write_requests"`
+					CrossOriginDocumentNavigations int      `json:"cross_origin_document_navigations"`
+					FormSubmissions                int      `json:"form_submissions"`
+					Downloads                      int      `json:"downloads"`
+					Popups                         int      `json:"popups"`
+					PublicEndpoint                 bool     `json:"public_endpoint"`
+					RobotsAllowed                  bool     `json:"robots_allowed"`
+					TermsPolicyVersion             uint64   `json:"terms_policy_version"`
+				} `json:"attestation"`
+			}
+			if "sha256:"+hex.EncodeToString(digest[:]) != wantHash || json.Unmarshal(body, &trace) != nil ||
+				!strings.HasPrefix(trace.FinalURL, input.origin+"/browser-jobs/") ||
+				trace.Attestation.DocumentNavigations != 1 || trace.Attestation.AllowedWriteRequests != 0 ||
+				trace.Attestation.CrossOriginDocumentNavigations != 0 || trace.Attestation.FormSubmissions != 0 ||
+				trace.Attestation.Downloads != 0 || trace.Attestation.Popups != 0 ||
+				!trace.Attestation.PublicEndpoint || !trace.Attestation.RobotsAllowed || trace.Attestation.TermsPolicyVersion != 1 {
+				_ = traceRows.Close()
+				t.Fatalf("Browser trace Artifact %s failed hash or effect attestation validation", artifactID)
+			}
+			for _, method := range trace.Attestation.ObservedMethods {
+				if method != http.MethodGet && method != http.MethodHead {
+					_ = traceRows.Close()
+					t.Fatalf("Browser trace Artifact %s observed unsafe method %q", artifactID, method)
+				}
+			}
+			verifiedTraces++
+		}
+		if err := traceRows.Close(); err != nil || verifiedTraces != input.items {
+			t.Fatalf("verified Browser traces=%d/%d err=%v", verifiedTraces, input.items, err)
+		}
+	}
 	metrics := readControlledOriginMetrics(t, input.origin)
-	if metrics.JobRequests != uint64(input.items) || metrics.RobotsRequests < 1 || metrics.RobotsRequests > uint64(input.executors) {
-		t.Fatalf("controlled origin metrics=%+v want jobs=%d robots in [1,%d]", metrics, input.items, input.executors)
+	maxRobotsRequests := input.executors
+	if browser {
+		maxRobotsRequests = input.items
+	}
+	if metrics.JobRequests != uint64(input.items) || metrics.RobotsRequests < 1 || metrics.RobotsRequests > uint64(maxRobotsRequests) {
+		t.Fatalf("controlled origin metrics=%+v want jobs=%d robots in [1,%d]", metrics, input.items, maxRobotsRequests)
 	}
 	ledgerMessages, ledgerPayloadBytes, ledgerEvents, recruitingLedgerEvents :=
 		assertRecruitingDomainEventsInLedger(t, db, h.serverHome, homeID, controlID)
-	latency := readHTTPCapacityLatency(t, db, input.items)
+	latency := readHTTPCapacityLatency(t, db, capability, input.items)
 
 	restartStarted := time.Now()
 	h.restartServer()
@@ -275,13 +365,13 @@ FROM recruiting_artifacts WHERE artifact_kind = 'response' AND attempt_id IS NOT
 			t.Fatalf("public execution health %s omitted HTTP phase samples: %v", field, statusResponse)
 		}
 	}
-	if body := httpReadFile(t, recoveredOperator, h.base, recovered, homeID, firstResponseAddress); len(body) != input.payloadBytes {
-		t.Fatal("HTTP response Resource was unavailable after Server restart")
+	if body := httpReadFile(t, recoveredOperator, h.base, recovered, homeID, firstResponseAddress); len(body) == 0 || (!browser && len(body) != input.payloadBytes) {
+		t.Fatalf("%s response Resource was unavailable after Server restart", capacityKind)
 	}
 	restartDuration := time.Since(restartStarted)
 
-	t.Logf("HTTP capacity passed: items=%d payload_bytes=%d executors=%d used_executors=%d response_bytes=%d preview_ms=%d complete_ms=%d drain_ms=%d restart_ms=%d origin_jobs=%d origin_robots=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d offer_accept_p99_ms=%d offer_accept_max_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d accept_start_p99_ms=%d accept_start_max_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d start_terminal_p99_ms=%d start_terminal_max_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d terminal_next_offer_p99_ms=%d terminal_next_offer_max_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
-		input.items, input.payloadBytes, input.executors, usedExecutors, totalResponseBytes,
+	t.Logf("%s capacity passed: items=%d payload_bytes=%d executors=%d used_executors=%d response_bytes=%d preview_ms=%d complete_ms=%d drain_ms=%d restart_ms=%d origin_jobs=%d origin_robots=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d offer_accept_p99_ms=%d offer_accept_max_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d accept_start_p99_ms=%d accept_start_max_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d start_terminal_p99_ms=%d start_terminal_max_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d terminal_next_offer_p99_ms=%d terminal_next_offer_max_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
+		capacityKind, input.items, input.payloadBytes, input.executors, usedExecutors, totalResponseBytes,
 		previewDuration.Milliseconds(), completedDuration.Milliseconds(), drainedDuration.Milliseconds(),
 		restartDuration.Milliseconds(), metrics.JobRequests, metrics.RobotsRequests,
 		latency.OfferToAccept.P50, latency.OfferToAccept.P95, latency.OfferToAccept.P99, latency.OfferToAccept.Max,
@@ -320,7 +410,23 @@ func httpCapacityFromEnv(t *testing.T) httpCapacityInput {
 	return input
 }
 
-func httpCapacityRecipe() recipeabi.Spec {
+func responseCapacityRecipe(browser bool, payloadBytes int) recipeabi.Spec {
+	if browser {
+		plan := recipeabi.BrowserPlan{Version: recipeabi.BrowserPlanVersion,
+			Actions:        []recipeabi.BrowserAction{{Kind: recipeabi.BrowserActionWaitSelector, Selector: ".job", TimeoutMS: 5_000}},
+			MaxNavigations: 1, MaxDOMBytes: int64(payloadBytes + 4096)}
+		return recipeabi.Spec{
+			ABIVersion: recipeabi.Version, Kind: recipeabi.KindDetail, RequiredCapability: "browser.public",
+			Transport: recipeabi.TransportBrowser,
+			Request: recipeabi.ReadRequest{Method: "GET", Headers: map[string]string{"Accept-Language": "en"},
+				TimeoutMS: 30_000, MaxResponseBytes: int64(payloadBytes + 4096), MaxRedirects: 0,
+				UserAgent: "Atoll-Recruiting-Browser-Capacity/1"},
+			Extraction: recipeabi.Extraction{Collection: ".job", Fields: map[string]string{
+				"id": ".job-id", "title": ".title", "url": "a.job-url",
+			}, Attributes: map[string]string{"id": "data-id", "url": "href"}},
+			BrowserPlan: &plan,
+		}
+	}
 	return recipeabi.Spec{
 		ABIVersion: recipeabi.Version, Kind: recipeabi.KindDetail, RequiredCapability: "http.fetch",
 		Transport: recipeabi.TransportHTTPJSON,
@@ -331,8 +437,8 @@ func httpCapacityRecipe() recipeabi.Spec {
 	}
 }
 
-func seedHTTPResponseCapacity(t *testing.T, db *sql.DB, spec recipeabi.Spec, recipeRef, origin,
-	listingAddress, listingHash string, items int, now time.Time) {
+func seedResponseCapacity(t *testing.T, db *sql.DB, spec recipeabi.Spec, recipeRef, origin,
+	listingAddress, listingHash string, items int, now time.Time, browser bool) {
 	t.Helper()
 	repository, _ := store.NewRepository(db)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -421,10 +527,15 @@ func seedHTTPResponseCapacity(t *testing.T, db *sql.DB, spec recipeabi.Spec, rec
 	if err != nil {
 		t.Fatal(err)
 	}
+	detailTransport := model.RecipeTransportHTTPJSON
+	detailPath := "/jobs/"
+	if browser {
+		detailTransport, detailPath = model.RecipeTransportBrowser, "/browser-jobs/"
+	}
 	detailRecipe, err := model.NewRecipe("http-capacity-detail", model.RecipeDetail,
 		parsedOrigin.Hostname(), 1, contentHash, contractHash,
 		model.RecipeExecution{ABIVersion: model.RecipeABIVersion, ContentRef: recipeRef,
-			RequiredCapability: "http.fetch", Transport: model.RecipeTransportHTTPJSON})
+			RequiredCapability: spec.RequiredCapability, Transport: detailTransport})
 	if err == nil {
 		detailRecipe, err = detailRecipe.BeginValidation(detailRecipe.StateVersion)
 	}
@@ -460,7 +571,7 @@ VALUES ('http-capacity-listing-artifact', 'page', ?, ?, ?, NULL, 'operators', '7
 	for index := 0; index < items; index++ {
 		id := fmt.Sprintf("%06d", index)
 		job, err := model.NewSourceJob("http-capacity-job-"+id, source.SourceID, "http-capacity-job-"+id,
-			origin+"/jobs/"+id)
+			origin+detailPath+id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -527,7 +638,7 @@ type httpCapacityLatency struct {
 	TerminalToOffer latencySummary
 }
 
-func readHTTPCapacityLatency(t *testing.T, db *sql.DB, want int) httpCapacityLatency {
+func readHTTPCapacityLatency(t *testing.T, db *sql.DB, capability string, want int) httpCapacityLatency {
 	t.Helper()
 	rows, err := db.Query(`SELECT attempt.executor_actor_id,
   attempt.offered_observed_at, attempt.terminal_observed_at,
@@ -535,10 +646,10 @@ func readHTTPCapacityLatency(t *testing.T, db *sql.DB, want int) httpCapacityLat
   TIMESTAMPDIFF(MICROSECOND, attempt.accepted_observed_at, attempt.started_observed_at) DIV 1000,
   TIMESTAMPDIFF(MICROSECOND, attempt.started_observed_at, attempt.terminal_observed_at) DIV 1000
 FROM recruiting_attempts attempt
-WHERE attempt.capability = 'http.fetch' AND attempt.attempt_status = 'succeeded'
+WHERE attempt.capability = ? AND attempt.attempt_status = 'succeeded'
   AND attempt.offered_observed_at IS NOT NULL AND attempt.accepted_observed_at IS NOT NULL
   AND attempt.started_observed_at IS NOT NULL AND attempt.terminal_observed_at IS NOT NULL
-ORDER BY attempt.executor_actor_id, attempt.offered_observed_at`)
+ORDER BY attempt.executor_actor_id, attempt.offered_observed_at`, capability)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,7 +678,7 @@ ORDER BY attempt.executor_actor_id, attempt.offered_observed_at`)
 		t.Fatal(err)
 	}
 	if len(offerToAccept) != want {
-		t.Fatalf("HTTP observed latency samples=%d want=%d", len(offerToAccept), want)
+		t.Fatalf("%s observed latency samples=%d want=%d", capability, len(offerToAccept), want)
 	}
 	return httpCapacityLatency{
 		OfferToAccept: summarizeLatency(offerToAccept), AcceptToStart: summarizeLatency(acceptToStart),

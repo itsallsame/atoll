@@ -19,6 +19,7 @@ type DetailResult struct {
 	ExecutorActorID       string
 	ExecutorIncarnation   string
 	Artifact              model.ArtifactMetadata
+	SupportingArtifacts   []model.ArtifactMetadata
 	DetailVersionID       string
 	NormalizedContentHash string
 	DetailJSON            json.RawMessage
@@ -51,6 +52,9 @@ func (r *Repository) AcceptDetailResult(ctx context.Context, input DetailResult)
 	if err := validateResultArtifact(input.Artifact, input.AttemptID, model.ArtifactResponse); err != nil {
 		return DetailResultOutcome{}, err
 	}
+	if err := validateSupportingResultArtifacts(input.Artifact, input.SupportingArtifacts, input.AttemptID); err != nil {
+		return DetailResultOutcome{}, err
+	}
 	if err := validateOptionalResultCommand(input.CauseCommandID, input.RequestHash); err != nil {
 		return DetailResultOutcome{}, err
 	}
@@ -59,7 +63,7 @@ func (r *Repository) AcceptDetailResult(ctx context.Context, input DetailResult)
 		return DetailResultOutcome{}, err
 	}
 	if fenceErr != nil {
-		if err := r.saveRejectedArtifact(ctx, input.Artifact, input.ObservedAt); err != nil {
+		if err := r.saveRejectedResultArtifacts(ctx, input.Artifact, input.SupportingArtifacts, input.ObservedAt); err != nil {
 			return DetailResultOutcome{}, fmt.Errorf("%w; also failed to retain rejected artifact: %v", fenceErr, err)
 		}
 		return DetailResultOutcome{}, fmt.Errorf("%w: %v", ErrResultFenced, fenceErr)
@@ -148,6 +152,11 @@ func (r *Repository) acceptDetailResultTransaction(ctx context.Context, input De
 	if err := insertArtifact(ctx, tx, input.Artifact, false, input.ObservedAt); err != nil {
 		return DetailResultOutcome{}, nil, err
 	}
+	for _, artifact := range input.SupportingArtifacts {
+		if err := insertArtifact(ctx, tx, artifact, false, input.ObservedAt); err != nil {
+			return DetailResultOutcome{}, nil, err
+		}
+	}
 	if err := updateJob(ctx, tx, acceptance.Job, job.Version, input.ObservedAt); err != nil {
 		return DetailResultOutcome{}, nil, err
 	}
@@ -226,11 +235,12 @@ func detailResultInputHash(input DetailResult) string {
 		ExecutorActorID       string
 		ExecutorIncarnation   string
 		Artifact              model.ArtifactMetadata
+		SupportingArtifacts   []model.ArtifactMetadata `json:",omitempty"`
 		DetailVersionID       string
 		NormalizedContentHash string
 		DetailJSON            json.RawMessage
 		CauseCommandID        string
-	}{input.AttemptID, input.ExecutorActorID, input.ExecutorIncarnation, input.Artifact, input.DetailVersionID,
+	}{input.AttemptID, input.ExecutorActorID, input.ExecutorIncarnation, input.Artifact, input.SupportingArtifacts, input.DetailVersionID,
 		input.NormalizedContentHash, input.DetailJSON, input.CauseCommandID})
 	sum := sha256.Sum256(value)
 	return fmt.Sprintf("sha256:%x", sum[:])
@@ -304,6 +314,39 @@ func (r *Repository) saveRejectedArtifact(ctx context.Context, artifact model.Ar
 		return nil
 	}
 	return err
+}
+
+func validateSupportingResultArtifacts(primary model.ArtifactMetadata, supporting []model.ArtifactMetadata, attemptID string) error {
+	if len(supporting) > 9 {
+		return errors.New("successful result supporting Artifacts must be bounded to 9")
+	}
+	seen := map[string]struct{}{primary.ArtifactID: {}}
+	for _, artifact := range supporting {
+		if artifact.WorkID != primary.WorkID {
+			return errors.New("successful result Artifacts must belong to one Work")
+		}
+		if _, duplicate := seen[artifact.ArtifactID]; duplicate {
+			return errors.New("successful result Artifact IDs must be unique")
+		}
+		seen[artifact.ArtifactID] = struct{}{}
+		if err := validateResultArtifact(artifact, attemptID, model.ArtifactTrace); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Repository) saveRejectedResultArtifacts(ctx context.Context, primary model.ArtifactMetadata,
+	supporting []model.ArtifactMetadata, at time.Time) error {
+	if err := r.saveRejectedArtifact(ctx, primary, at); err != nil {
+		return err
+	}
+	for _, artifact := range supporting {
+		if err := r.saveRejectedArtifact(ctx, artifact, at); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Repository) saveRejectedArtifacts(ctx context.Context, artifacts []model.ArtifactMetadata, at time.Time) error {

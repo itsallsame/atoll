@@ -207,6 +207,9 @@ VALUES ('backfill-observation', 'manual-history', ?, ?, ?, ?, ?, 'sha256:listing
 			RequestHash: "sha256:backfill-result-" + item.ItemID, AttemptID: running.AttemptID,
 			ExecutorActorID: running.ExecutorActorID, ExecutorIncarnation: running.ExecutorIncarnation,
 			Artifact: artifact, NormalizedContentHash: contentHash, OutputJSON: outputJSON, CompletedAt: offerAt.Add(time.Second)}
+		result.SupportingArtifacts = []model.ArtifactMetadata{
+			mustResultArtifact(t, "backfill-trace-"+item.ItemID, model.ArtifactTrace, offer.Work.WorkID, running.AttemptID),
+		}
 		outcome, err := repository.AcceptBackfillResult(ctx, result)
 		if err != nil || outcome.Replayed || outcome.Item.Status != model.BackfillItemSucceeded ||
 			outcome.Output.InputArtifactID != item.InputArtifactID || !outcome.Output.ClaimsHistoricalSnapshot {
@@ -222,6 +225,11 @@ VALUES ('backfill-observation', 'manual-history', ?, ?, ?, ?, ?, 'sha256:listing
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox
 WHERE cause_kind = 'capacity_released' AND cause_id = 'backfill-supply-batch'`).Scan(&compactCapacityDispatches); err != nil || compactCapacityDispatches != 1 {
 		t.Fatalf("supply batch capacity dispatches=%d err=%v", compactCapacityDispatches, err)
+	}
+	var supportingArtifacts int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_artifacts
+WHERE artifact_kind = 'trace' AND attempt_id LIKE 'backfill-attempt-%' AND rejected = FALSE`).Scan(&supportingArtifacts); err != nil || supportingArtifacts != 2 {
+		t.Fatalf("backfill supporting Artifacts=%d err=%v", supportingArtifacts, err)
 	}
 	completedHistorical, _ := repository.GetBackfill(ctx, historical.BackfillID)
 	completedHistoricalWork, _ := repository.GetWork(ctx, historical.WorkID)

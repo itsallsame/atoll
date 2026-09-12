@@ -36,6 +36,9 @@ INSERT INTO recruiting_checkpoints(
 		t.Fatal(err)
 	}
 	result := fixture.result("detail-artifact-accepted")
+	result.SupportingArtifacts = []model.ArtifactMetadata{
+		mustResultArtifact(t, "detail-trace-accepted", model.ArtifactTrace, fixture.work.WorkID, fixture.attempt.AttemptID),
+	}
 	outcome, err := repository.AcceptDetailResult(ctx, result)
 	if err != nil || outcome.Replayed || !outcome.ContentChanged || outcome.Job.Status != model.JobAvailable || outcome.Job.DetailVersion != 1 {
 		t.Fatalf("detail acceptance = %+v %v", outcome, err)
@@ -72,7 +75,7 @@ INSERT INTO recruiting_checkpoints(
 		fixture.attempt.ExecutorActorID, result.CauseCommandID).Scan(&dispatches); err != nil {
 		t.Fatal(err)
 	}
-	if details != 1 || artifacts != 1 || events != 1 || receipts != 1 || dispatches != 1 {
+	if details != 1 || artifacts != 2 || events != 1 || receipts != 1 || dispatches != 1 {
 		t.Fatalf("detail facts=%d artifacts=%d events=%d receipts=%d dispatches=%d", details, artifacts, events, receipts, dispatches)
 	}
 }

@@ -22,3 +22,23 @@ func TestDetailResultRejectsUnboundedStructuredPayloadBeforeDatabase(t *testing.
 		t.Fatal("oversized detail result reached repository transaction")
 	}
 }
+
+func TestSuccessfulResultSupportingArtifactsAreTraceOnlyAndBounded(t *testing.T) {
+	primary, _ := model.NewArtifactMetadata("response", model.ArtifactResponse, "sha256:raw", "artifact://detail/response",
+		"work", "attempt", "operators", "30d", true)
+	trace, _ := model.NewArtifactMetadata("trace", model.ArtifactTrace, "sha256:trace", "artifact://detail/trace",
+		"work", "attempt", "operators", "30d", true)
+	if err := validateSupportingResultArtifacts(primary, []model.ArtifactMetadata{trace}, "attempt"); err != nil {
+		t.Fatal(err)
+	}
+	for _, supporting := range [][]model.ArtifactMetadata{
+		{primary},
+		{func() model.ArtifactMetadata { value := trace; value.WorkID = "other-work"; return value }()},
+		{func() model.ArtifactMetadata { value := trace; value.Kind = model.ArtifactFailure; return value }()},
+		make([]model.ArtifactMetadata, 10),
+	} {
+		if err := validateSupportingResultArtifacts(primary, supporting, "attempt"); err == nil {
+			t.Fatalf("unsafe supporting Artifacts were accepted: %+v", supporting)
+		}
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/httpdriver"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
@@ -21,8 +22,10 @@ func TestPrepareDetailSubmissionBindsArtifactJobGenerationAndRecipe(t *testing.T
 	sum := sha256.Sum256(detail)
 	ref := recipeabi.ArtifactRef{ArtifactID: "response-1", ContentHash: "sha256:" + sixtyFourZeros,
 		ObjectRef: "daemon://worker-a/recruiting/artifacts/response-1.bin"}
+	trace := recipeabi.ArtifactRef{ArtifactID: "trace-1", ContentHash: "sha256:" + sixtyFourZeros,
+		ObjectRef: "daemon://worker-a/recruiting/artifacts/trace-1.bin", Kind: "trace"}
 	run := httpdriver.DetailRunResult{Output: recipeabi.RunOutput{AttemptID: offer.Attempt.AttemptID,
-		Artifacts: []recipeabi.ArtifactRef{ref}, Result: detail}, ResponseArtifact: ref,
+		Artifacts: []recipeabi.ArtifactRef{ref, trace}, Result: detail}, ResponseArtifact: ref,
 		NormalizedContentHash: fmt.Sprintf("sha256:%x", sum), Detail: detail}
 	result, err := prepareDetailSubmission(offer, run, sink)
 	if err != nil {
@@ -30,6 +33,7 @@ func TestPrepareDetailSubmissionBindsArtifactJobGenerationAndRecipe(t *testing.T
 	}
 	if result.AttemptID != offer.Attempt.AttemptID || result.ExecutorIncarnation != offer.Attempt.ExecutorIncarnation ||
 		result.Artifact.WorkID != offer.Work.WorkID || result.Artifact.AttemptID != offer.Attempt.AttemptID ||
+		len(result.SupportingArtifacts) != 1 || result.SupportingArtifacts[0].Kind != model.ArtifactTrace ||
 		result.DetailVersionID == "" || result.NormalizedContentHash != run.NormalizedContentHash || string(result.Detail) != string(detail) {
 		t.Fatalf("unexpected detail submission: %+v", result)
 	}

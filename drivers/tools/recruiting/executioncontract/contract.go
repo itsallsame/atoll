@@ -412,24 +412,26 @@ type CompanyImportApplyResult struct {
 }
 
 type DetailResult struct {
-	CommandID             string                 `json:"command_id"`
-	ResultKind            string                 `json:"result_kind"`
-	AttemptID             string                 `json:"attempt_id"`
-	ExecutorIncarnation   string                 `json:"executor_incarnation"`
-	Artifact              model.ArtifactMetadata `json:"artifact"`
-	DetailVersionID       string                 `json:"detail_version_id"`
-	NormalizedContentHash string                 `json:"normalized_content_hash"`
-	Detail                json.RawMessage        `json:"detail"`
+	CommandID             string                   `json:"command_id"`
+	ResultKind            string                   `json:"result_kind"`
+	AttemptID             string                   `json:"attempt_id"`
+	ExecutorIncarnation   string                   `json:"executor_incarnation"`
+	Artifact              model.ArtifactMetadata   `json:"artifact"`
+	SupportingArtifacts   []model.ArtifactMetadata `json:"supporting_artifacts,omitempty"`
+	DetailVersionID       string                   `json:"detail_version_id"`
+	NormalizedContentHash string                   `json:"normalized_content_hash"`
+	Detail                json.RawMessage          `json:"detail"`
 }
 
 type BackfillResult struct {
-	CommandID             string                 `json:"command_id"`
-	ResultKind            string                 `json:"result_kind"`
-	AttemptID             string                 `json:"attempt_id"`
-	ExecutorIncarnation   string                 `json:"executor_incarnation"`
-	Artifact              model.ArtifactMetadata `json:"artifact"`
-	NormalizedContentHash string                 `json:"normalized_content_hash"`
-	Output                json.RawMessage        `json:"output"`
+	CommandID             string                   `json:"command_id"`
+	ResultKind            string                   `json:"result_kind"`
+	AttemptID             string                   `json:"attempt_id"`
+	ExecutorIncarnation   string                   `json:"executor_incarnation"`
+	Artifact              model.ArtifactMetadata   `json:"artifact"`
+	SupportingArtifacts   []model.ArtifactMetadata `json:"supporting_artifacts,omitempty"`
+	NormalizedContentHash string                   `json:"normalized_content_hash"`
+	Output                json.RawMessage          `json:"output"`
 }
 
 // RecipeSampleValidationResult proves that a candidate Recipe executed against

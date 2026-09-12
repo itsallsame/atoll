@@ -22,19 +22,20 @@ import (
 func prepareLiveBackfillSubmission(offer executioncontract.Offer, run httpdriver.DetailRunResult,
 	sink *atollArtifactSink) (executioncontract.BackfillResult, error) {
 	if offer.Kind != "backfill_live_refetch" || offer.Backfill == nil || sink == nil || run.Output.Failure != nil ||
-		run.Output.AttemptID != offer.Attempt.AttemptID || len(run.Output.Artifacts) != 1 ||
-		run.Output.Artifacts[0] != run.ResponseArtifact || len(run.Detail) == 0 || !json.Valid(run.Detail) {
+		run.Output.AttemptID != offer.Attempt.AttemptID || len(run.Detail) == 0 || !json.Valid(run.Detail) {
 		return executioncontract.BackfillResult{}, errors.New("successful live backfill run, response Artifact, and sink are required")
+	}
+	metadata, supporting, err := successfulResultArtifacts(run.Output.Artifacts, run.ResponseArtifact, sink)
+	if err != nil {
+		return executioncontract.BackfillResult{}, err
 	}
 	filtered, contentHash, err := selectBackfillFields(run.Detail, offer.Backfill.Backfill.Fields)
 	if err != nil {
 		return executioncontract.BackfillResult{}, err
 	}
-	metadata, err := sink.metadata(run.ResponseArtifact, model.ArtifactResponse)
-	if err != nil {
-		return executioncontract.BackfillResult{}, err
-	}
-	return newBackfillResult(offer, metadata, contentHash, filtered), nil
+	result := newBackfillResult(offer, metadata, contentHash, filtered)
+	result.SupportingArtifacts = supporting
+	return result, nil
 }
 
 func prepareArtifactBackfillSubmission(ctx context.Context, resources executionResourceAccess,
