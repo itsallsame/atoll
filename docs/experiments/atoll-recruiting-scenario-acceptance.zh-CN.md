@@ -36,6 +36,8 @@
 | S24 重试/人工结案 | 完成 | Work retry/resolve、baseline accepted gap、D0—D6、人工修复 E2E | — |
 | S25 10K/20K 日常运行 | 部分完成 | L0—L4 数据库计划/物化容量、5 倍到期形状、400K Detail Work；P1 四 Executor/1,000 Company；A1 200 历史 response/derived；H1/H2 受控 HTTP response capture 正确性到 1,000×16 KiB。扩展内 32 项 batch envelope 保留逐 Attempt 状态机/Permit/receipt/Artifact，把 H2 从 5.88/s 提升至 13.41/s（+128.1%）。H3 完成 5,000/5,000 个 4 KiB response 的受控 Backfill 峰值；专用候选查询及 O(n) 父聚合后为 10.65/s。新增每日真实数据面 D0—D3，不再用 Backfill 替代：durable cutoff→SourceOccurrence→10 页 Listing→5,000 Detail GET/Attempt/JobDetailVersion/response Resource→日报结算→Server 重启全部通过；D3 为 11.80/s，20,480,000 字节逐对象校验，证据为 `recruiting-daily-detail-capacity-20260912.json`。真实 Chrome B0/B1/B2 已到 100 DOM + 100 trace；B1 2 Executor 1.87/s、B2 4 Executor 1.88/s，确认 Browser 主机饱和且需独立水平池 | 第三方 HTTP/Browser 延迟、限流和脚本复杂度，授权登录 canary，远程 Artifact，多个隔离执行/控制分片，20K Listing + 400K Detail 完成、长期指标与生产 SLO；每日 D3 持续吞吐仍低于 400K/8h 算术参考约 15.05% |
 
+S25/P9 补充（2026-09-12）：真实每日进程矩阵已固定注入一次 503、一次带 `Retry-After` 的 429 和持续 403，证明前两项有界自动恢复、403 单飞进入人工修复且日报按 19 success/1 exception 结算；证据为 `recruiting-daily-detail-http-failure-matrix-20260912.json`。它关闭 HTTP 状态码故障注入项，但不改变 S25 的“部分完成”状态。
+
 ## 当前实施顺序
 
 1. S12/S25/P9：在授权部署环境完成真实登录、出站隔离、执行吞吐、联合恢复和长期监控。

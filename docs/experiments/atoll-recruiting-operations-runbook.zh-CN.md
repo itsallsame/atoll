@@ -96,6 +96,8 @@ durable timer 到达 cutoff 时冻结当日 eligible Source roster，形成不�
 | event/dispatch outbox 积压 | Server/daemon presence、最后错误、重放次数 | 运行/等待有界 reconcile；确认稳定 ID 收口 | 删除 outbox 行或伪造 delivered |
 | DailyRun uncovered | occurrence 终态、失败 Incident、window close | 修复后创建唯一 production recovery | 改写历史 DailyRun summary |
 
+受控验收入口 `make recruiting-daily-detail-failure-matrix` 会在隔离 origin 中固定注入一次 503、一次 429 和持续 403：前两项必须自动恢复，403 必须只产生一个共享人工修复事件，不能把 403 改成无限重试。该入口用于发布前回归，不用于探测或压测第三方网站。
+
 共享修复的标准顺序：
 
 ```text

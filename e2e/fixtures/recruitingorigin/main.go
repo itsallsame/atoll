@@ -17,10 +17,16 @@ func main() {
 	latency := time.Duration(positiveEnv("RECRUITING_ORIGIN_LATENCY_MS", 5)) * time.Millisecond
 	listingItems := positiveEnv("RECRUITING_ORIGIN_LISTING_ITEMS", 1)
 	activityUnix := int64(positiveEnv("RECRUITING_ORIGIN_ACTIVITY_UNIX", int(time.Now().UTC().Unix())))
+	failureMatrix := strings.TrimSpace(os.Getenv("RECRUITING_ORIGIN_FAILURE_MATRIX")) == "1"
 	var jobRequests atomic.Uint64
 	var listingRequests atomic.Uint64
 	var listedItems atomic.Uint64
 	var robotsRequests atomic.Uint64
+	var unavailableAttempts atomic.Uint64
+	var throttledAttempts atomic.Uint64
+	var unavailableRequests atomic.Uint64
+	var throttledRequests atomic.Uint64
+	var forbiddenRequests atomic.Uint64
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(response http.ResponseWriter, _ *http.Request) {
 		response.WriteHeader(http.StatusNoContent)
@@ -35,6 +41,8 @@ func main() {
 		_ = json.NewEncoder(response).Encode(map[string]uint64{
 			"job_requests": jobRequests.Load(), "listing_requests": listingRequests.Load(),
 			"listing_items": listedItems.Load(), "robots_requests": robotsRequests.Load(),
+			"injected_503": unavailableRequests.Load(), "injected_429": throttledRequests.Load(),
+			"injected_403": forbiddenRequests.Load(),
 		})
 	})
 	mux.HandleFunc("/listing", func(response http.ResponseWriter, request *http.Request) {
@@ -64,6 +72,27 @@ func main() {
 		}
 		jobRequests.Add(1)
 		time.Sleep(latency)
+		if failureMatrix {
+			switch id {
+			case "000000":
+				if unavailableAttempts.Add(1) == 1 {
+					unavailableRequests.Add(1)
+					writeInjectedFailure(response, http.StatusServiceUnavailable, "temporary upstream outage")
+					return
+				}
+			case "000001":
+				if throttledAttempts.Add(1) == 1 {
+					throttledRequests.Add(1)
+					response.Header().Set("Retry-After", "1")
+					writeInjectedFailure(response, http.StatusTooManyRequests, "temporary origin throttle")
+					return
+				}
+			case "000002":
+				forbiddenRequests.Add(1)
+				writeInjectedFailure(response, http.StatusForbidden, "persistent access denial")
+				return
+			}
+		}
 		body := responseBody(id, payloadBytes)
 		response.Header().Set("Content-Type", "application/json")
 		response.Header().Set("Cache-Control", "no-store")
@@ -85,6 +114,13 @@ func main() {
 	log.Printf("recruiting controlled origin listening on %s payload_bytes=%d latency_ms=%d listing_items=%d",
 		server.Addr, payloadBytes, latency.Milliseconds(), listingItems)
 	log.Fatal(server.ListenAndServe())
+}
+
+func writeInjectedFailure(response http.ResponseWriter, status int, detail string) {
+	response.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	response.Header().Set("Cache-Control", "no-store")
+	response.WriteHeader(status)
+	_, _ = response.Write([]byte(detail))
 }
 
 func positiveQuery(request *http.Request, name string, fallback int) (int, error) {

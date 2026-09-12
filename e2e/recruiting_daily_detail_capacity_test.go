@@ -36,6 +36,20 @@ type dailyDetailCapacityInput struct {
 // Works, and captures every response through Server, daemon, Resource, MySQL,
 // and ledger. The wrapper gives it an egress-less controlled HTTP origin.
 func TestRecruitingScheduledDailyDetailCapacityThroughRealDataPlanes(t *testing.T) {
+	if os.Getenv("ATOLL_RECRUITING_DAILY_DETAIL_FAILURE_MATRIX") == "1" {
+		t.Skip("capacity case is disabled during the failure-matrix run")
+	}
+	runRecruitingScheduledDailyDetail(t, false)
+}
+
+func TestRecruitingScheduledDailyDetailFailureMatrixThroughRealDataPlanes(t *testing.T) {
+	if os.Getenv("ATOLL_RECRUITING_DAILY_DETAIL_FAILURE_MATRIX") != "1" {
+		t.Skip("set ATOLL_RECRUITING_DAILY_DETAIL_FAILURE_MATRIX=1 through the isolated failure-matrix runner")
+	}
+	runRecruitingScheduledDailyDetail(t, true)
+}
+
+func runRecruitingScheduledDailyDetail(t *testing.T, failureMatrix bool) {
 	input := dailyDetailCapacityFromEnv(t)
 	testStarted := time.Now()
 	h := newHarnessShell(t)
@@ -98,7 +112,9 @@ func TestRecruitingScheduledDailyDetailCapacityThroughRealDataPlanes(t *testing.
 			"budget_max_per_capability": input.items + 100, "budget_max_per_origin": input.items + 100,
 			"budget_max_per_company": input.items + 100, "budget_max_per_profile": input.items + 100,
 			"budget_max_baseline_active": input.items + 100, "budget_max_calibration_active": input.items + 100,
-			"budget_max_backfill_active": input.items + 100,
+			"budget_max_backfill_active":   input.items + 100,
+			"retry_max_automatic_attempts": 3, "retry_base_delay_ms": 1000,
+			"retry_max_delay_ms": 2000, "retry_throttled_delay_ms": 1000,
 		}, "visibility": "private",
 	})
 	controlIntro := ws.request(homeID, "system.member.create", systemActor, map[string]any{"decl_id": controlName})
@@ -118,7 +134,7 @@ func TestRecruitingScheduledDailyDetailCapacityThroughRealDataPlanes(t *testing.
 				"artifact_retention": "7d", "artifact_redaction": "raw", "artifact_max_bytes": 2 << 20,
 				"terms_policy_version": 1, "terms_reviewed_at": "2026-09-12T00:00:00Z",
 				"http_max_concurrency": 1, "http_min_origin_interval_ms": 0, "execution_batch_size": 32,
-				"http_circuit_threshold": 3, "http_circuit_cooldown_ms": 60000,
+				"http_circuit_threshold": 10, "http_circuit_cooldown_ms": 60000,
 				"robots_timeout_ms": 10000, "robots_max_bytes": 65536, "robots_cache_ttl_ms": 600000,
 			}, "visibility": "private",
 		})
@@ -133,8 +149,16 @@ func TestRecruitingScheduledDailyDetailCapacityThroughRealDataPlanes(t *testing.
 	// ticket acknowledgements while thousands of domain events arrive.
 	discardCapacityFeed(ws)
 
+	expectedSucceeded, expectedWaitingHuman, expectedJobRequests, expectedAttempts := input.items, 0, input.items, input.items+1
+	expectedRunStatus := model.DailyRunCompleted
+	if failureMatrix {
+		expectedSucceeded, expectedWaitingHuman = input.items-1, 1
+		expectedJobRequests, expectedAttempts = input.items+2, input.items+3
+		expectedRunStatus = model.DailyRunCompletedWithExceptions
+	}
 	executionStarted := time.Now()
-	dailyRunID, occurrenceID := waitDailyDetailCapacity(t, runtimeDSN, sourceID, input.items, input.timeout,
+	dailyRunID, occurrenceID := waitDailyDetailCapacity(t, runtimeDSN, sourceID, input.items,
+		expectedSucceeded, expectedWaitingHuman, input.timeout,
 		daemon, h.server, daemonLog, h.server.logPath)
 	completedDuration := time.Since(executionStarted)
 
@@ -146,18 +170,23 @@ func TestRecruitingScheduledDailyDetailCapacityThroughRealDataPlanes(t *testing.
 	drainRecruitingProcessOutboxes(t, db, input.timeout)
 	drainedDuration := time.Since(executionStarted)
 
-	assertDailyDetailCapacityFacts(t, db, sourceID, dailyRunID, occurrenceID, input)
-	firstResponseAddress, totalResponseBytes := verifyDailyDetailResponseResources(t, db, operator, ws, h.base, homeID, input)
+	assertDailyDetailCapacityFacts(t, db, sourceID, dailyRunID, occurrenceID, input,
+		expectedSucceeded, expectedWaitingHuman, expectedAttempts, failureMatrix)
+	firstResponseAddress, totalResponseBytes := verifyDailyDetailResponseResources(t, db, operator, ws, h.base,
+		homeID, input, expectedSucceeded)
 	metrics := readDailyDetailOriginMetrics(t, input.origin)
 	wantPages := (input.items + 499) / 500
-	if metrics.JobRequests != uint64(input.items) || metrics.ListingRequests != uint64(wantPages) ||
+	if metrics.JobRequests != uint64(expectedJobRequests) || metrics.ListingRequests != uint64(wantPages) ||
 		metrics.ListingItems != uint64(input.items) {
 		t.Fatalf("controlled origin metrics=%+v want jobs=%d listing requests=%d items=%d",
-			metrics, input.items, wantPages, input.items)
+			metrics, expectedJobRequests, wantPages, input.items)
+	}
+	if failureMatrix && (metrics.Injected503 != 1 || metrics.Injected429 != 1 || metrics.Injected403 != 1) {
+		t.Fatalf("controlled origin did not inject the exact failure matrix: %+v", metrics)
 	}
 	ledgerMessages, ledgerPayloadBytes, ledgerEvents, recruitingLedgerEvents :=
 		assertRecruitingDomainEventsInLedger(t, db, h.serverHome, homeID, controlID)
-	latency := readHTTPCapacityLatency(t, db, "http.fetch", input.items+1)
+	latency := readHTTPCapacityLatency(t, db, "http.fetch", expectedSucceeded+1)
 
 	repository, _ := store.NewRepository(db)
 	run, _, err := repository.GetDailyRunProgress(context.Background(), dailyRunID)
@@ -170,8 +199,9 @@ func TestRecruitingScheduledDailyDetailCapacityThroughRealDataPlanes(t *testing.
 	}
 	closed, err := repository.CloseDailyRunAtWindow(context.Background(), dailyRunID, windowEnd,
 		"daily-detail-capacity-close-"+dailyRunID)
-	if err != nil || closed.Run.Status != model.DailyRunCompleted || closed.Run.Summary.ListingSucceeded != 1 ||
-		closed.Run.Summary.DetailExpected != input.items || closed.Run.Summary.DetailSucceeded != input.items {
+	if err != nil || closed.Run.Status != expectedRunStatus || closed.Run.Summary.ListingSucceeded != 1 ||
+		closed.Run.Summary.DetailExpected != input.items || closed.Run.Summary.DetailSucceeded != expectedSucceeded ||
+		closed.Run.Summary.DetailExceptions != expectedWaitingHuman {
 		t.Fatalf("daily close=%+v err=%v", closed, err)
 	}
 	// Close uses the immutable future window end as its business timestamp. Its
@@ -197,7 +227,7 @@ WHERE aggregate_type = 'daily_run' AND aggregate_id = ? AND event_kind = 'daily_
 	}
 	summary := recovered.request(homeID, "recruiting.daily_run.summary", controlID,
 		map[string]any{"id": dailyRunID, "limit": 10})
-	if nestedStringField(t, summary, "daily_run", "daily_run_status") != string(model.DailyRunCompleted) {
+	if nestedStringField(t, summary, "daily_run", "daily_run_status") != string(expectedRunStatus) {
 		t.Fatalf("daily run did not recover after restart=%v", summary)
 	}
 	if body := httpReadFile(t, recoveredOperator, h.base, recovered, homeID, firstResponseAddress); len(body) != input.payloadBytes {
@@ -205,8 +235,9 @@ WHERE aggregate_type = 'daily_run' AND aggregate_id = ? AND event_kind = 'daily_
 	}
 	restartDuration := time.Since(restartStarted)
 
-	t.Logf("daily Detail capacity passed: items=%d payload_bytes=%d executors=%d response_bytes=%d complete_ms=%d drain_ms=%d restart_ms=%d listing_requests=%d detail_requests=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
-		input.items, input.payloadBytes, input.executors, totalResponseBytes, completedDuration.Milliseconds(),
+	t.Logf("daily Detail journey passed: failure_matrix=%t items=%d succeeded=%d waiting_human=%d payload_bytes=%d executors=%d response_bytes=%d complete_ms=%d drain_ms=%d restart_ms=%d listing_requests=%d detail_requests=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
+		failureMatrix, input.items, expectedSucceeded, expectedWaitingHuman, input.payloadBytes, input.executors,
+		totalResponseBytes, completedDuration.Milliseconds(),
 		drainedDuration.Milliseconds(), restartDuration.Milliseconds(), metrics.ListingRequests, metrics.JobRequests,
 		latency.OfferToAccept.P50, latency.OfferToAccept.P95, latency.AcceptToStart.P50, latency.AcceptToStart.P95,
 		latency.StartToTerminal.P50, latency.StartToTerminal.P95, latency.TerminalToOffer.P50, latency.TerminalToOffer.P95,
@@ -394,7 +425,7 @@ func activeDailyDetailRecipe(t *testing.T, id string, kind model.RecipeKind, sco
 	return recipe
 }
 
-func waitDailyDetailCapacity(t *testing.T, dsn, sourceID string, items int, timeout time.Duration,
+func waitDailyDetailCapacity(t *testing.T, dsn, sourceID string, items, succeeded, waitingHuman int, timeout time.Duration,
 	daemon, server *proc, logPaths ...string) (string, string) {
 	t.Helper()
 	db, err := store.Open(dsn)
@@ -403,7 +434,7 @@ func waitDailyDetailCapacity(t *testing.T, dsn, sourceID string, items int, time
 	}
 	defer db.Close()
 	var dailyRunID, occurrenceID string
-	var occurrences, completedListing, completedDetails, availableJobs, detailVersions int
+	var occurrences, completedListing, completedDetails, waitingDetails, availableJobs, detailVersions int
 	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
 		err = db.QueryRow(`SELECT
   COALESCE((SELECT daily_run_id FROM recruiting_source_occurrences WHERE source_id = ? ORDER BY created_at DESC LIMIT 1), ''),
@@ -411,11 +442,13 @@ func waitDailyDetailCapacity(t *testing.T, dsn, sourceID string, items int, time
   (SELECT COUNT(*) FROM recruiting_source_occurrences WHERE source_id = ? AND status = 'completed'),
   (SELECT COUNT(*) FROM recruiting_works WHERE target_id = ? AND purpose = 'listing_sync' AND status = 'completed' AND resolution = 'succeeded'),
   (SELECT COUNT(*) FROM recruiting_works WHERE purpose = 'detail_sync' AND status = 'completed' AND resolution = 'succeeded'),
+	  (SELECT COUNT(*) FROM recruiting_works WHERE purpose = 'detail_sync' AND status = 'waiting_human'),
   (SELECT COUNT(*) FROM recruiting_source_jobs WHERE source_id = ? AND job_status = 'available'),
   (SELECT COUNT(*) FROM recruiting_job_detail_versions)`, sourceID, sourceID, sourceID, sourceID, sourceID).
-			Scan(&dailyRunID, &occurrenceID, &occurrences, &completedListing, &completedDetails, &availableJobs, &detailVersions)
+			Scan(&dailyRunID, &occurrenceID, &occurrences, &completedListing, &completedDetails, &waitingDetails, &availableJobs, &detailVersions)
 		if err == nil && dailyRunID != "" && occurrenceID != "" && occurrences == 1 && completedListing == 1 &&
-			completedDetails == items && availableJobs == items && detailVersions == items {
+			completedDetails == succeeded && waitingDetails == waitingHuman && completedDetails+waitingDetails == items &&
+			availableJobs == succeeded && detailVersions == succeeded {
 			return dailyRunID, occurrenceID
 		}
 		if daemon.exited() || server.exited() {
@@ -427,42 +460,55 @@ func waitDailyDetailCapacity(t *testing.T, dsn, sourceID string, items int, time
 	for _, path := range logPaths {
 		logs += "\n" + path + ":\n" + tailLog(path, 160)
 	}
-	t.Fatalf("daily capacity timed out: run=%q occurrence=%q occurrences=%d listing=%d details=%d/%d jobs=%d versions=%d err=%v%s",
-		dailyRunID, occurrenceID, occurrences, completedListing, completedDetails, items, availableJobs, detailVersions, err, logs)
+	t.Fatalf("daily capacity timed out: run=%q occurrence=%q occurrences=%d listing=%d details_succeeded=%d/%d waiting_human=%d/%d jobs=%d versions=%d err=%v%s",
+		dailyRunID, occurrenceID, occurrences, completedListing, completedDetails, succeeded, waitingDetails, waitingHuman,
+		availableJobs, detailVersions, err, logs)
 	return "", ""
 }
 
 func assertDailyDetailCapacityFacts(t *testing.T, db *sql.DB, sourceID, dailyRunID, occurrenceID string,
-	input dailyDetailCapacityInput) {
+	input dailyDetailCapacityInput, succeeded, waitingHuman, attempts int, failureMatrix bool) {
 	t.Helper()
-	var listingWorks, detailWorks, succeededAttempts, detailArtifacts, detailVersions, observations int
+	var listingWorks, detailWorks, succeededDetailWorks, waitingDetailWorks int
+	var succeededAttempts, failedAttempts, detailArtifacts, failureArtifacts, detailVersions, observations int
 	var permits, pendingDispatches, materializeDispatches int
 	if err := db.QueryRow(`SELECT
   (SELECT COUNT(*) FROM recruiting_works WHERE target_id = ? AND purpose = 'listing_sync' AND status = 'completed'),
-  (SELECT COUNT(*) FROM recruiting_works d JOIN recruiting_works p ON p.work_id = d.parent_work_id JOIN recruiting_source_occurrences o ON o.listing_work_id = p.work_id WHERE o.daily_run_id = ? AND d.purpose = 'detail_sync' AND d.status = 'completed'),
+  (SELECT COUNT(*) FROM recruiting_works d JOIN recruiting_works p ON p.work_id = d.parent_work_id JOIN recruiting_source_occurrences o ON o.listing_work_id = p.work_id WHERE o.daily_run_id = ? AND d.purpose = 'detail_sync'),
+  (SELECT COUNT(*) FROM recruiting_works WHERE purpose = 'detail_sync' AND status = 'completed' AND resolution = 'succeeded'),
+  (SELECT COUNT(*) FROM recruiting_works WHERE purpose = 'detail_sync' AND status = 'waiting_human'),
   (SELECT COUNT(*) FROM recruiting_attempts WHERE attempt_status = 'succeeded'),
+  (SELECT COUNT(*) FROM recruiting_attempts WHERE attempt_status = 'failed'),
   (SELECT COUNT(*) FROM recruiting_artifacts a JOIN recruiting_works w ON w.work_id = a.work_id WHERE w.purpose = 'detail_sync' AND a.artifact_kind = 'response' AND a.rejected = FALSE),
+  (SELECT COUNT(*) FROM recruiting_artifacts a JOIN recruiting_works w ON w.work_id = a.work_id WHERE w.purpose = 'detail_sync' AND a.artifact_kind = 'failure' AND a.rejected = FALSE),
   (SELECT COUNT(*) FROM recruiting_job_detail_versions),
   (SELECT COUNT(*) FROM recruiting_listing_observations WHERE occurrence_id = ?),
   (SELECT COUNT(*) FROM recruiting_budget_permits WHERE permit_status = 'active'),
   (SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE delivery_status <> 'delivered'),
   (SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox WHERE cause_kind = 'work_materialized')`,
-		sourceID, dailyRunID, occurrenceID).Scan(&listingWorks, &detailWorks, &succeededAttempts, &detailArtifacts,
-		&detailVersions, &observations, &permits, &pendingDispatches, &materializeDispatches); err != nil {
+		sourceID, dailyRunID, occurrenceID).Scan(&listingWorks, &detailWorks, &succeededDetailWorks, &waitingDetailWorks,
+		&succeededAttempts, &failedAttempts, &detailArtifacts, &failureArtifacts, &detailVersions, &observations,
+		&permits, &pendingDispatches, &materializeDispatches); err != nil {
 		t.Fatal(err)
 	}
+	expectedFailed := attempts - (succeeded + 1)
 	wantMaxMaterialize := ((input.items+499)/500)*input.executors + input.executors
-	if listingWorks != 1 || detailWorks != input.items || succeededAttempts != input.items+1 ||
-		detailArtifacts != input.items || detailVersions != input.items || observations != input.items ||
+	if listingWorks != 1 || detailWorks != input.items || succeededDetailWorks != succeeded || waitingDetailWorks != waitingHuman ||
+		succeededAttempts != succeeded+1 || failedAttempts != expectedFailed || detailArtifacts != succeeded ||
+		failureArtifacts != expectedFailed || detailVersions != succeeded || observations != input.items ||
 		permits != 0 || pendingDispatches != 0 || materializeDispatches < 1 || materializeDispatches > wantMaxMaterialize {
-		t.Fatalf("daily facts listing=%d details=%d attempts=%d artifacts=%d versions=%d observations=%d permits=%d pending_dispatches=%d materialize_dispatches=%d max=%d",
-			listingWorks, detailWorks, succeededAttempts, detailArtifacts, detailVersions, observations,
-			permits, pendingDispatches, materializeDispatches, wantMaxMaterialize)
+		t.Fatalf("daily facts listing=%d details=%d succeeded_works=%d waiting_works=%d succeeded_attempts=%d failed_attempts=%d response_artifacts=%d failure_artifacts=%d versions=%d observations=%d permits=%d pending_dispatches=%d materialize_dispatches=%d max=%d",
+			listingWorks, detailWorks, succeededDetailWorks, waitingDetailWorks, succeededAttempts, failedAttempts,
+			detailArtifacts, failureArtifacts, detailVersions, observations, permits, pendingDispatches,
+			materializeDispatches, wantMaxMaterialize)
+	}
+	if failureMatrix {
+		assertDailyDetailFailureFacts(t, db)
 	}
 }
 
 func verifyDailyDetailResponseResources(t *testing.T, db *sql.DB, operator *apiClient, ws *wsClient,
-	base, homeID string, input dailyDetailCapacityInput) (string, int) {
+	base, homeID string, input dailyDetailCapacityInput, succeeded int) (string, int) {
 	t.Helper()
 	rows, err := db.Query(`SELECT a.artifact_id, a.object_ref, a.content_hash
 FROM recruiting_artifacts a JOIN recruiting_works w ON w.work_id = a.work_id
@@ -492,11 +538,50 @@ WHERE w.purpose = 'detail_sync' AND a.artifact_kind = 'response' AND a.rejected 
 		verified++
 		totalBytes += len(body)
 	}
-	if err := rows.Err(); err != nil || verified != input.items || totalBytes != input.items*input.payloadBytes {
-		t.Fatalf("verified Detail responses=%d/%d bytes=%d/%d err=%v", verified, input.items,
-			totalBytes, input.items*input.payloadBytes, err)
+	if err := rows.Err(); err != nil || verified != succeeded || totalBytes != succeeded*input.payloadBytes {
+		t.Fatalf("verified Detail responses=%d/%d bytes=%d/%d err=%v", verified, succeeded,
+			totalBytes, succeeded*input.payloadBytes, err)
 	}
 	return firstAddress, totalBytes
+}
+
+func assertDailyDetailFailureFacts(t *testing.T, db *sql.DB) {
+	t.Helper()
+	wants := map[string]struct {
+		status model.WorkStatus
+		class  string
+	}{
+		"000000": {status: model.WorkCompleted, class: "upstream_5xx"},
+		"000001": {status: model.WorkCompleted, class: "throttled"},
+		"000002": {status: model.WorkWaitingHuman, class: "forbidden"},
+	}
+	for key, want := range wants {
+		var state []byte
+		if err := db.QueryRow(`SELECT w.state_json FROM recruiting_works w
+JOIN recruiting_source_jobs j ON j.job_id = w.target_id
+WHERE w.purpose = 'detail_sync' AND j.source_job_key = ?`, key).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		var work model.Work
+		if err := json.Unmarshal(state, &work); err != nil {
+			t.Fatal(err)
+		}
+		if work.Status != want.status || work.LastFailureClass != want.class || work.AutomaticAttempts != 1 {
+			t.Fatalf("failure-matrix Work key=%s status=%s class=%s attempts=%d want status=%s class=%s attempts=1",
+				key, work.Status, work.LastFailureClass, work.AutomaticAttempts, want.status, want.class)
+		}
+	}
+	var incidents, affected, repairWorks int
+	if err := db.QueryRow(`SELECT
+  (SELECT COUNT(*) FROM recruiting_repair_incidents WHERE repair_status = 'open' AND failure_signature = 'forbidden'),
+  (SELECT COUNT(*) FROM recruiting_repair_affected_works),
+	  (SELECT COUNT(*) FROM recruiting_works WHERE purpose = 'repair' AND status = 'open')`).
+		Scan(&incidents, &affected, &repairWorks); err != nil {
+		t.Fatal(err)
+	}
+	if incidents != 1 || affected != 1 || repairWorks != 1 {
+		t.Fatalf("failure-matrix repair facts incidents=%d affected=%d repair_works=%d", incidents, affected, repairWorks)
+	}
 }
 
 type dailyDetailOriginMetrics struct {
@@ -504,6 +589,9 @@ type dailyDetailOriginMetrics struct {
 	ListingRequests uint64 `json:"listing_requests"`
 	ListingItems    uint64 `json:"listing_items"`
 	RobotsRequests  uint64 `json:"robots_requests"`
+	Injected503     uint64 `json:"injected_503"`
+	Injected429     uint64 `json:"injected_429"`
+	Injected403     uint64 `json:"injected_403"`
 }
 
 func readDailyDetailOriginMetrics(t *testing.T, origin string) dailyDetailOriginMetrics {

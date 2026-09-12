@@ -1,0 +1,59 @@
+{
+  "schema": "recruiting.daily-detail-http-failure-matrix-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "a1279016",
+  "test": "TestRecruitingScheduledDailyDetailFailureMatrixThroughRealDataPlanes",
+  "environment": {
+    "origin": "Docker --internal 11.253.x.x controlled HTTP service",
+    "mysql": "ephemeral MySQL 8.4 with separate non-root migration and runtime accounts",
+    "data_planes": ["Atoll Server", "daemon", "two recruiting-executor instances", "File Resources", "Channel ledger"]
+  },
+  "injections": [
+    {"job_key": "000000", "behavior": "first request returns 503, retry returns 200", "expected_class": "upstream_5xx", "expected_route": "automatic retry"},
+    {"job_key": "000001", "behavior": "first request returns 429 with Retry-After: 1, retry returns 200", "expected_class": "throttled", "expected_route": "automatic retry"},
+    {"job_key": "000002", "behavior": "every request returns 403", "expected_class": "forbidden", "expected_route": "waiting_human plus shared RepairIncident"}
+  ],
+  "result": {
+    "listing_items": 20,
+    "listing_requests": 1,
+    "detail_requests": 22,
+    "detail_succeeded": 19,
+    "detail_waiting_human": 1,
+    "successful_attempts_including_listing": 20,
+    "failed_attempts": 3,
+    "failure_artifacts": 3,
+    "response_artifacts": 19,
+    "response_bytes_verified": 19456,
+    "open_repair_incidents": 1,
+    "repair_affected_works": 1,
+    "active_permits_after_settlement": 0,
+    "pending_execution_dispatches_after_settlement": 0,
+    "daily_run_status": "completed_with_exceptions",
+    "business_completion_ms": 12299,
+    "outbox_drain_ms": 12401,
+    "server_restart_ms": 3379,
+    "ledger_messages": 299,
+    "ledger_events": 81,
+    "recruiting_ledger_events": 78
+  },
+  "invariants": [
+    "the 503 and 429 failures each advance automatic_attempts exactly once and retain their failure class after successful retry",
+    "the 403 failure creates exactly one human-waiting Detail Work and one open shared RepairIncident",
+    "unrelated Detail Works complete while the forbidden Work remains isolated",
+    "each failed Attempt retains one bounded failure Artifact and no failed response becomes a JobDetailVersion",
+    "the immutable Checkpoint and SourceOccurrence complete independently of one Detail exception",
+    "logical daily close counts 20 expected, 19 succeeded, and one exception",
+    "all due events reach the Channel ledger and Server restart preserves the exception summary and response Resources"
+  ],
+  "non_claims": [
+    "third-party failure distribution or Retry-After values",
+    "origin circuit-open recovery because the test deliberately keeps the threshold above the three injected failures",
+    "Browser, authenticated Profile, or remote Artifact failures",
+    "complete P9 production readiness"
+  ],
+  "acceptance": {
+    "gate": "P9 HTTP 429/403/5xx process fault injection",
+    "status": "passed",
+    "scenario_status_changed": false
+  }
+}

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 level="${RECRUITING_DAILY_DETAIL_CAPACITY_LEVEL:-D0}"
+failure_matrix="${RECRUITING_DAILY_DETAIL_FAILURE_MATRIX:-0}"
 case "${level}" in
   D0|D1|D2|D3) ;;
   *)
@@ -9,6 +10,14 @@ case "${level}" in
     exit 2
     ;;
 esac
+if [[ "${failure_matrix}" != "0" && "${failure_matrix}" != "1" ]]; then
+  echo "recruiting daily Detail capacity: RECRUITING_DAILY_DETAIL_FAILURE_MATRIX must be 0 or 1" >&2
+  exit 2
+fi
+if [[ "${failure_matrix}" == "1" && "${level}" != "D0" ]]; then
+  echo "recruiting daily Detail capacity: the failure matrix uses the bounded D0 workload" >&2
+  exit 2
+fi
 if [[ "${level}" == "D2" && "${RECRUITING_DAILY_DETAIL_CAPACITY_LARGE_ACK:-}" != "isolated-daily-detail-large-load" ]]; then
   echo "recruiting daily Detail capacity: D2 captures 1,000 responses; set RECRUITING_DAILY_DETAIL_CAPACITY_LARGE_ACK=isolated-daily-detail-large-load" >&2
   exit 2
@@ -70,6 +79,7 @@ docker run -d --rm --read-only --cap-drop ALL --security-opt no-new-privileges \
   -e RECRUITING_ORIGIN_PAYLOAD_BYTES="${payload_bytes}" \
   -e RECRUITING_ORIGIN_LATENCY_MS="${latency_ms}" \
   -e RECRUITING_ORIGIN_LISTING_ITEMS="${items}" \
+  -e RECRUITING_ORIGIN_FAILURE_MATRIX="${failure_matrix}" \
   -e RECRUITING_ORIGIN_ACTIVITY_UNIX="${activity_unix}" mysql:8.4 >/dev/null
 ready=false
 for _ in $(seq 1 80); do
@@ -85,16 +95,21 @@ if [[ "${ready}" != "true" ]]; then
   exit 1
 fi
 
-echo "recruiting daily Detail capacity: level=${level} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} executors=${executors} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
+test_name='TestRecruitingScheduledDailyDetailCapacityThroughRealDataPlanes'
+if [[ "${failure_matrix}" == "1" ]]; then
+  test_name='TestRecruitingScheduledDailyDetailFailureMatrixThroughRealDataPlanes'
+fi
+echo "recruiting daily Detail capacity: level=${level} failure_matrix=${failure_matrix} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} executors=${executors} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
 set +e
 ATOLL_RECRUITING_DAILY_DETAIL_CAPACITY=1 \
+ATOLL_RECRUITING_DAILY_DETAIL_FAILURE_MATRIX="${failure_matrix}" \
 RECRUITING_DAILY_DETAIL_CAPACITY_ITEMS="${items}" \
 RECRUITING_DAILY_DETAIL_CAPACITY_PAYLOAD_BYTES="${payload_bytes}" \
 RECRUITING_DAILY_DETAIL_CAPACITY_EXECUTORS="${executors}" \
 RECRUITING_DAILY_DETAIL_CAPACITY_TIMEOUT_SECONDS="${timeout_seconds}" \
 RECRUITING_DAILY_DETAIL_CAPACITY_ORIGIN="${origin_url}" \
 RECRUITING_DAILY_DETAIL_CAPACITY_ACTIVITY_UNIX="${activity_unix}" \
-  go test ./e2e -run '^TestRecruitingScheduledDailyDetailCapacityThroughRealDataPlanes$' -count=1 -v \
+  go test ./e2e -run "^${test_name}$" -count=1 -v \
   -timeout "$((timeout_seconds+120))s"
 test_status=$?
 set -e

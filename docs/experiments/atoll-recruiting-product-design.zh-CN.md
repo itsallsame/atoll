@@ -958,6 +958,8 @@ Recruiting Actor 只做短时、确定性的校验与领域事务，不在 Actor
 | 确定性数据错误 | 进入修复，不盲目重试 |
 | 多轮不收敛 | `waiting_human` |
 
+该分类必须在真实控制/数据面成立，不能只依赖 Driver 单元测试。受控每日故障矩阵固定让一个岗位首次返回 503、一个首次返回带 `Retry-After` 的 429、一个持续返回 403；前两项各生成一份 Failure Artifact 并按冻结策略延迟后由新 Attempt 成功，403 只生成一个 `waiting_human` Detail 和一个共享 RepairIncident，其他岗位继续完成。日报在窗口末以 20 expected、19 succeeded、1 exception 结算，Checkpoint 不因单个详情异常回退。该 fixture 证明状态映射和隔离，不代表第三方故障分布，也不刻意触发 origin circuit；熔断阈值和生产退避仍须依据真实 canary 调整。
+
 失败按 `origin | recipe_version | profile | single_target` 归入故障域。相同 `failure_signature` 只允许一个活动 Repair Work，受影响 Work 通过 `blocked_by_repair_work_id` 关联；修复成功后由现有 Recruiting reconcile 每次自动开放一个、至多 100 个 Work 的批次，按最久未处理的 Incident 轮转。是否仍需恢复不是运行时遍历历史 Incident 推测，而是 resolve/恢复事务维护的显式 `recovery_pending` 队列事实和专用索引；每批提交后，大 Incident 排到队尾，最终批次原子清除队列标志。每个批次仍有确定 command receipt、版本围栏、一个聚合事件和每种 capability 至多一个初始 wake，真正领取继续受全局、站点、公司和 Profile 预算约束；人工 `repair.recover` 保留为可审计的运维兜底，并与自动协调竞争同一版本，不能形成双重恢复。`auth_expired`/`captcha` 进入 Profile 故障域时还必须原子熔断其接受版本，派发查询和领取时都只允许 `ready` Profile；`budget_revoked` 即使按 Profile 聚合也只是预算/策略故障，不能把认证状态误改为失效。重试策略版本、Attempt 计数和预算耗尽原因随 Work 保存；人工重试不能绕过站点或 Profile 安全预算。
 
 ## 11. 一致性与恢复
