@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope recruiting-boundary-check recruiting-live-smoke recruiting-live-nightly recruiting-live-weekly recruiting-mysql-stress recruiting-capacity recruiting-process-capacity recruiting-artifact-capacity recruiting-http-capacity recruiting-daily-detail-capacity recruiting-daily-detail-failure-matrix recruiting-daily-artifact-recovery recruiting-browser-capacity recruiting-browser-artifact-recovery recruiting-browser-joint-process-recovery recruiting-backup-restore recruiting-joint-restore recruiting-security-audit recruiting-extension-test recruiting-extension-live-test recruiting-extension-bundle-test dev clean e2e-loop
+.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope recruiting-boundary-check recruiting-live-smoke recruiting-live-nightly recruiting-live-weekly recruiting-mysql-stress recruiting-capacity recruiting-process-capacity recruiting-artifact-capacity recruiting-http-capacity recruiting-daily-detail-capacity recruiting-daily-detail-failure-matrix recruiting-daily-artifact-recovery recruiting-browser-capacity recruiting-browser-artifact-recovery recruiting-browser-joint-process-recovery recruiting-browser-server-recovery recruiting-backup-restore recruiting-joint-restore recruiting-security-audit recruiting-extension-test recruiting-extension-live-test recruiting-extension-bundle-test dev clean e2e-loop
 
 # server/daemon ship namespaced (atoll-server / atoll-daemon); the entry
 # command itself is plain `atoll` — its own name IS the namespace.
@@ -206,6 +206,9 @@ recruiting-browser-artifact-recovery:
 
 recruiting-browser-joint-process-recovery:
 	RECRUITING_BROWSER_ARTIFACT_RECOVERY=1 RECRUITING_BROWSER_JOINT_PROCESS_RECOVERY=1 RECRUITING_BROWSER_CAPACITY_LEVEL=BF1 ./scripts/recruiting-browser-capacity.sh
+
+recruiting-browser-server-recovery:
+	RECRUITING_BROWSER_SERVER_RECOVERY=1 RECRUITING_BROWSER_CAPACITY_LEVEL=BF2 ./scripts/recruiting-browser-capacity.sh
 
 recruiting-backup-restore:
 	./scripts/recruiting-backup-restore.sh

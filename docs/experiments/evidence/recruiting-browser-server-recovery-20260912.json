@@ -1,0 +1,103 @@
+{
+  "schema": "recruiting.browser-server-recovery-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "b129bb46",
+  "workload_manifest": "docs/experiments/workloads/recruiting-browser-capacity-v1.json#BF2",
+  "entrypoint": "make recruiting-browser-server-recovery",
+  "test": "TestRecruitingBrowserServerRecoveryThroughRealDataPlanes",
+  "feature_under_test": "Atoll Server loss and recovery while a real-Chrome request is in flight and its execution daemon remains alive",
+  "environment": {
+    "chrome": "/usr/bin/google-chrome",
+    "origin": "Docker --internal 11.254.x.x controlled HTTP service",
+    "origin_latency_ms": 5000,
+    "mysql": "ephemeral MySQL 8.4 with separate non-root migration and runtime accounts",
+    "processes": [
+      "Atoll Server process restarted in place",
+      "one execution daemon process kept alive throughout the injected Server outage"
+    ],
+    "data_planes": ["Recruiting MySQL", "Atoll Channel ledger", "daemon File Resources"]
+  },
+  "fault_cut": {
+    "browser_state_before_cut": "Attempt running, no Artifact persisted, and controlled origin accepted exactly one document request",
+    "cut": "SIGKILL Atoll Server, keep the execution daemon and its real Chrome child alive, hold the outage for at least 7 seconds, then restart Server",
+    "execution_daemon_confirmed_alive_during_outage": true,
+    "server_outage_and_recovery_ms": 16086,
+    "recovery_trigger": "Recruiting Actor startup replaces its periodic reconcile timer, then the existing Attempt TTL, source-dispatch settlement and attempt_recovered dispatch recover the Work"
+  },
+  "first_run_finding": {
+    "status": "failed before the fix",
+    "observation_seconds": 211,
+    "facts": "the same daemon reconnected, the old Attempt remained running, and zero Artifacts were accepted",
+    "root_cause": "Server could exit after a one-shot reconcile fire was dequeued but before its successor timer ID was persisted; startup retained the stale ID and therefore left the recurring chain without a future wake",
+    "fix_scope": "Recruiting Actor only: replace the periodic reconcile timer on every Actor-body startup; preserve the persisted daily cutoff/work/close timers and do not modify Atoll core"
+  },
+  "authoritative_result": {
+    "status": "passed",
+    "backfill_items": 1,
+    "browser_document_requests": 2,
+    "robots_requests": 2,
+    "attempts": 2,
+    "expired_attempts": 1,
+    "succeeded_attempts": 1,
+    "accepted_artifacts_on_expired_attempt": 0,
+    "same_executor_actor_identity": true,
+    "different_executor_incarnation_after_server_restart": true,
+    "response_artifacts": 1,
+    "trace_artifacts": 1,
+    "backfill_outputs": 1,
+    "response_bytes_verified": 4081,
+    "active_permits_after_settlement": 0,
+    "pending_execution_dispatches_after_settlement": 0,
+    "old_dispatch_status": "delivered",
+    "recovery_dispatch_status": "delivered",
+    "business_completion_ms": 22651,
+    "outbox_drain_ms": 22854,
+    "final_server_restart_ms": 2481,
+    "journey_total_ms": 37861,
+    "offer_to_accept_ms": {"p50": 38, "p95": 38},
+    "accept_to_start_ms": {"p50": 28, "p95": 28},
+    "successful_start_to_terminal_ms": {"p50": 5502, "p95": 5502},
+    "ledger_messages": 310,
+    "ledger_payload_bytes": 99975,
+    "ledger_events": 69,
+    "recruiting_ledger_events": 67
+  },
+  "invariants": [
+    "the execution daemon OS process remains alive throughout the injected Server outage",
+    "the daemon reconnects as the same Executor Actor identity with a different incarnation",
+    "the expired Attempt produces no accepted Artifact or BackfillOutput and releases its Permit",
+    "the originating dispatch is durably settled and attempt_recovered creates a fresh dispatch identity",
+    "the fresh Attempt persists exactly one DOM response, one effect trace and one BackfillOutput",
+    "all Permits and execution dispatches settle without manual database mutation",
+    "a final normal Server restart preserves both Resource reads and the completed state"
+  ],
+  "regressions": {
+    "joint_process_BF1": {"status": "passed", "fault_outage_ms": 616, "journey_total_ms": 23411},
+    "provider_only_BF0": {"status": "passed", "fault_outage_ms": 29876, "journey_total_ms": 53037},
+    "normal_browser_B0": {"status": "passed", "items": 4, "response_bytes_verified": 16324, "journey_total_ms": 18120},
+    "scheduled_daily_D0": {"status": "passed", "items": 20, "succeeded": 20, "response_bytes_verified": 20480, "journey_total_ms": 28483}
+  },
+  "implementation": {
+    "production_driver_test_hook_added": false,
+    "actor_classes_added": 0,
+    "worker_types_added": 0,
+    "atoll_core_modified": false,
+    "changed_production_scope": ["drivers/tools/recruiting/actor.go"],
+    "periodic_timer_rule": "arm a new reconcile timer, persist its ID, then best-effort cancel the superseded timer; a late old fire is rejected by the persisted-ID fence",
+    "daily_timer_rule": "do not replace persisted daily cutoff/work/close timers on startup because their exact deadlines and payloads must survive an outage crossing the business cutoff"
+  },
+  "non_claims": [
+    "an outage crossing the exact daily cutoff has not yet been fault-injected",
+    "simultaneous Atoll Server and MySQL failure",
+    "remote cloud or object-storage provider behavior",
+    "third-party JavaScript, authentication, anti-bot or availability behavior",
+    "Browser throughput or long-window production SLO",
+    "complete P9 production readiness"
+  ],
+  "acceptance": {
+    "gate": "P9 Atoll Server unavailable during an in-flight real-Chrome request",
+    "status": "passed",
+    "scenario": "S25",
+    "scenario_status_changed": false
+  }
+}

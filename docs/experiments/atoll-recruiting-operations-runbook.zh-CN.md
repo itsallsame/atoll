@@ -105,6 +105,8 @@ durable timer 到达 cutoff 时冻结当日 eligible Source roster，形成不�
 
 双进程入口为 `make recruiting-browser-joint-process-recovery`。BF1 在相同切点同时杀执行 daemon 进程组和 provider；控制面必须在两端缺席时独立收口旧 Attempt，随后只在两台设备恢复、Executor 取得新 incarnation 后执行恢复 dispatch。操作员不得手工重开 Attempt、复制 Artifact 或修改数据库。以上本地入口均不替代远程对象存储、Server/MySQL 联合故障或第三方授权站点演练。
 
+Server 单点入口为 `make recruiting-browser-server-recovery`。BF2 在真实 Chrome 请求已到 origin、Attempt running 且零 Artifact 时杀 Server，执行 daemon 必须保持同一 OS 进程存活。Server 恢复后 daemon 应以同一 Actor 身份和新 incarnation 重连；Recruiting Actor 会重新建立周期 reconcile 链，旧 Attempt 必须 expired 且不接受证据，`attempt_recovered` 新 dispatch 才能产生唯一 DOM、trace 和 BackfillOutput。不得因重启手工修改 timer ID、Attempt、Permit 或 dispatch。周期 reconcile 可以在 Actor body 启动时安全换链；每日 cutoff/work/close timer 不得照此替换，否则停机跨过 cutoff 时可能跳过当日运行。BF2 不替代跨 cutoff 故障、Server/MySQL 联合故障或完整灾难恢复演练。
+
 共享修复的标准顺序：
 
 ```text

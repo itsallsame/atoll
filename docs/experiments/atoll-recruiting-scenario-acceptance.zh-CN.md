@@ -46,6 +46,8 @@ S25/P9 补充（2026-09-12，Browser 联合进程恢复）：BF1 在同一精确
 
 S25/P9 补充（2026-09-12，事务批处理）：Recruiting 扩展把同一批最多 32 个 Detail 的 Offer、Claim、Result 从“协议批量、数据库逐项事务”收敛为有界事务快速路径，并将共享预算维度按批聚合加减；每个 Attempt、Work、Permit、command receipt、Artifact、结果状态和幂等键仍独立持久化。异常快速路径整体回滚后再走既有逐项语义，Offer 遇到容量或无候选时只提交有效前缀；Listing、Browser 和多结果任务不进入该路径。每日 D2 从 77.079 秒降至 60.645 秒；D3 从 423.655 秒降至 351.175 秒，即 14.24 Detail/s，按该本机受控速率推算 400K 为 7.80 小时。它越过 13.89/s 算术参考，但没有实际执行 400K、20K 同时 Listing、第三方网络、远程 Artifact、多分片或长期 SLO，因此 S25 仍为部分完成。证据为 `recruiting-daily-detail-transaction-batching-20260912.json`。
 
+S25/P9 补充（2026-09-12，Atoll Server 在途恢复）：BF2 在真实 Chrome 请求已进入 origin 且尚无 Artifact 时杀 Server，原执行 daemon OS 进程全程存活。首次运行观察 211 秒后仍有 running Attempt，反向发现周期 reconcile timer 在“fire 已出队、后继 ID 未持久化”的 crash cut 会断链。Recruiting Actor 现仅在 body 启动时替换周期 reconcile timer；每日 cutoff/work/close timer 保留其精确持久 deadline，Atoll core 零修改。加强后的权威复跑证明同一 Executor Actor 以新 incarnation 重连、旧 Attempt expired 且零 accepted Artifact、新 Attempt 唯一完成 DOM、trace 和 BackfillOutput，Permit/dispatch 清零并可再次重启回读；BF1、BF0、B0、D0 均回归通过。该证据关闭 Server 单点在途 Browser 切点，但不覆盖跨每日 cutoff、Server/MySQL 联合故障、远程 Artifact 或生产 SLO，S25 状态仍为部分完成。证据为 `recruiting-browser-server-recovery-20260912.json`。
+
 ## 当前实施顺序
 
 1. S12/S25/P9：在授权部署环境完成真实登录、出站隔离、执行吞吐、联合恢复和长期监控。

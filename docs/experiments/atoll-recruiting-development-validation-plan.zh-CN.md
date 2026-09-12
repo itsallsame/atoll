@@ -677,6 +677,8 @@ Browser 联合进程恢复进展（2026-09-12）：`make recruiting-browser-join
 
 “历史岗位更新后重新置顶”不得通过修改第三方网站强制制造。只有观察到真实更新、站点提供正式契约，或在获授权的测试租户中完成可控实验后，才能从 unverified 变成 verified；在此之前该 Source 不进入“严格可靠增量”集合。
 
+Atoll 暂时不可用进展（2026-09-12）：新增 BF2 `make recruiting-browser-server-recovery`，在 Browser Attempt running、真实 Chrome 请求已到 origin 且零 Artifact 时 `SIGKILL` Server，同时明确保持原执行 daemon OS 进程存活。首次运行持续观察 211 秒仍见旧 Attempt running，暴露一次性 reconcile fire 已出队但后继 timer 尚未持久化时崩溃会丢失周期链。修复仅调整 Recruiting Actor 启动：无条件建立并持久化新的周期 reconcile timer，随后尽力取消旧 timer；处理器仍只接受 state 中当前 ID，因此迟到 fire 不会扩成长链。Daily cutoff/work/close 的持久 timer 保持原条件启动，防止 Server 停机跨过业务截点时被“下一个截点”替换。加强后的测试同时核对 daemon 未退出、恢复前后 Executor Actor 身份相同而 incarnation 不同、旧 Attempt 零 accepted Artifact、新 Attempt 与恢复 dispatch 唯一、Permit/dispatch 清零和最终重启 Resource 回读。权威 BF2 38.11 秒通过，故障与恢复窗口 16.086 秒；BF1、BF0、B0 和每日 D0 回归通过。它关闭 P9 的 Server 单点在途 Browser 切点，但不关闭每日 cutoff 精确跨越、Server/MySQL 联合故障、远程 Artifact 或生产 SLO。证据见 `evidence/recruiting-browser-server-recovery-20260912.json`。
+
 ## 16. 自动测试命令与 CI 分层
 
 计划在实现过程中提供以下稳定入口：

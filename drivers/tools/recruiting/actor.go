@@ -117,10 +117,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 		if err := bootstrapExecutorPresence(sys, state, repository); err != nil {
 			return fmt.Errorf("recruiting: bootstrap executor presence: %w", err)
 		}
-	}
-	if repository != nil && state.ReconcileTimerID == "" {
-		if err := armReconcileTimer(sys, cfg, state); err != nil {
-			return err
+		if err := rearmReconcileTimerOnStartup(sys, cfg, state); err != nil {
+			return fmt.Errorf("recruiting: rearm startup reconcile timer: %w", err)
 		}
 	}
 	if repository != nil && cfg.DailyScheduleEnabled && state.DailyTimerID == "" {
@@ -239,6 +237,29 @@ func run(sys actorbase.Sys, cfg Config) error {
 		default:
 			_, _ = sys.Fail(msg, "type_unsupported", fmt.Sprintf("recruiting actor does not answer %q", msg.Type))
 		}
+	}
+}
+
+// rearmReconcileTimerOnStartup replaces the periodic reconciliation chain
+// owned by the previous Actor body. A Server crash can happen after its
+// one-shot fire is dequeued but before the handler persists a successor ID;
+// retaining that old ID would leave durable database work without another
+// wake. A late fire is harmless because the handler accepts only the currently
+// persisted ID. Daily cutoff/work/close timers are not replaced here: unlike a
+// periodic sweep, their exact persisted deadline and payload must survive a
+// Server outage that crosses the business cutoff.
+func rearmReconcileTimerOnStartup(sys actorbase.Sys, cfg Config, state *storedState) error {
+	previous := state.ReconcileTimerID
+	if err := armReconcileTimer(sys, cfg, state); err != nil {
+		return err
+	}
+	cancelSupersededTimer(sys, previous, state.ReconcileTimerID)
+	return nil
+}
+
+func cancelSupersededTimer(sys actorbase.Sys, previous, current string) {
+	if previous != "" && previous != current {
+		_ = sys.CancelTimer(schedule.TimerID(previous))
 	}
 }
 
