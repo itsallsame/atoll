@@ -137,6 +137,15 @@ func (e listingResultExecution) currentFence(ctx context.Context, tx *sql.Tx, pr
 // observations and derived detail Work visible. Checkpoint advancement is
 // deliberately reserved for AcceptListingCompletion.
 func (r *Repository) AcceptListingPage(ctx context.Context, input ListingPageResult) (ListingPageOutcome, error) {
+	return r.AcceptListingPageWithDispatchTargets(ctx, input, nil)
+}
+
+// AcceptListingPageWithDispatchTargets atomically publishes normal Detail
+// Work and a compact capability wake for the configured Executor pool. The
+// compatibility entry point above keeps Repository callers that do not own
+// dispatch topology side-effect free.
+func (r *Repository) AcceptListingPageWithDispatchTargets(ctx context.Context, input ListingPageResult,
+	targets []ExecutionDispatchTarget) (ListingPageOutcome, error) {
 	if input.AttemptID == "" || input.ExecutorActorID == "" || input.ExecutorIncarnation == "" ||
 		input.PageSequence == 0 || len(input.Observations) > listingPageMaxItems || input.ObservedAt.IsZero() {
 		return ListingPageOutcome{}, fmt.Errorf("listing page result requires execution identity, sequence, bounded observations, and time")
@@ -148,7 +157,7 @@ func (r *Repository) AcceptListingPage(ctx context.Context, input ListingPageRes
 		return ListingPageOutcome{}, err
 	}
 	for attempt := 0; attempt < 3; attempt++ {
-		outcome, fenceErr, err := r.acceptListingPageOnce(ctx, input)
+		outcome, fenceErr, err := r.acceptListingPageOnce(ctx, input, targets)
 		if isRetryableTransactionError(err) {
 			continue
 		}
@@ -166,7 +175,8 @@ func (r *Repository) AcceptListingPage(ctx context.Context, input ListingPageRes
 	return ListingPageOutcome{}, fmt.Errorf("listing page acceptance exhausted transaction retries")
 }
 
-func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPageResult) (ListingPageOutcome, error, error) {
+func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPageResult,
+	targets []ExecutionDispatchTarget) (ListingPageOutcome, error, error) {
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return ListingPageOutcome{}, nil, err
@@ -247,6 +257,7 @@ func (r *Repository) acceptListingPageOnce(ctx context.Context, input ListingPag
 	}
 	items := make([]ListingIngestResult, 0, len(input.Observations))
 	profileDetailWorks := 0
+	queuedByCapability := make(map[string]int)
 	for _, observation := range input.Observations {
 		validatedObservation, err := model.NewListingObservation(observation)
 		if err != nil {
@@ -282,8 +293,12 @@ ON DUPLICATE KEY UPDATE attempt_id = VALUES(attempt_id), observation_id = VALUES
 				return ListingPageOutcome{}, nil, err
 			}
 			items = append(items, result)
-			if result.DetailWork != nil && detailProfileID != "" {
-				profileDetailWorks++
+			if result.DetailWork != nil {
+				if detailProfileID != "" {
+					profileDetailWorks++
+				} else {
+					queuedByCapability[capability]++
+				}
 			}
 		}
 	}
@@ -306,12 +321,17 @@ INSERT INTO recruiting_listing_page_progress(
 	if err := reserveResultReceipt(ctx, tx, input.CommandID, executioncontract.TypeResult, input.RequestHash, outcome, input.ObservedAt); err != nil {
 		return ListingPageOutcome{}, nil, err
 	}
+	causeID := "listing-page-" + fmt.Sprintf("%x", dispatchDigest(fmt.Sprintf("%s\n%d", attempt.AttemptID, input.PageSequence))[:16])
 	if profileDetailWorks != 0 {
-		causeID := "listing-page-" + fmt.Sprintf("%x", dispatchDigest(fmt.Sprintf("%s\n%d", attempt.AttemptID, input.PageSequence))[:16])
 		if _, err := appendProfileDispatches(ctx, tx, []profileDispatchDemand{{
 			Capability: capability, ProfileID: detailProfileID, Count: profileDetailWorks,
 		}}, causeID, input.ObservedAt); err != nil {
 			return ListingPageOutcome{}, nil, fmt.Errorf("dispatch Profile detail work: %w", err)
+		}
+	}
+	if len(queuedByCapability) != 0 {
+		if _, err := appendCapabilityDispatches(ctx, tx, targets, queuedByCapability, causeID, input.ObservedAt); err != nil {
+			return ListingPageOutcome{}, nil, fmt.Errorf("dispatch detail work: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {

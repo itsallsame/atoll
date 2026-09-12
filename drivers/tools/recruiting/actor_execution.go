@@ -74,7 +74,7 @@ func handleAnyExecutionResult(sys actorbase.Sys, cfg Config, repository *store.R
 	}
 	switch discriminator.ResultKind {
 	case "listing_page":
-		handleListingPageResult(sys, repository, msg)
+		handleListingPageResult(sys, cfg, repository, msg)
 	case "listing_completion":
 		handleListingCompletionResult(sys, repository, msg)
 	case "diagnostic", "source_validation", "recipe_validation":
@@ -531,7 +531,7 @@ func handleDetailResult(sys actorbase.Sys, repository *store.Repository, msg act
 	_, _ = sys.Reply(msg, response)
 }
 
-func handleListingPageResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+func handleListingPageResult(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	var payload listingPageResultPayload
 	if !decode(sys, msg, &payload) {
 		return
@@ -540,12 +540,12 @@ func handleListingPageResult(sys actorbase.Sys, repository *store.Repository, ms
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "listing page command_id and result_kind are required")
 		return
 	}
-	outcome, err := repository.AcceptListingPage(msg.Ctx(), store.ListingPageResult{
+	outcome, err := repository.AcceptListingPageWithDispatchTargets(msg.Ctx(), store.ListingPageResult{
 		CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), AttemptID: payload.AttemptID,
 		ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
 		PageSequence: payload.PageSequence, ResumeCursor: payload.ResumeCursor, Terminal: payload.Terminal,
 		Artifact: payload.Artifact, Observations: payload.Observations, ObservedAt: time.UnixMilli(msg.TS).UTC(),
-	})
+	}, cfg.executionDispatchTargets())
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return

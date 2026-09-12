@@ -47,9 +47,13 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 		err     error
 	}
 	pageCalls := make(chan pageCall, 2)
+	detailTargets := []ExecutionDispatchTarget{
+		{ActorID: "tool:listing-result-detail-a", Capability: "http.fetch"},
+		{ActorID: "tool:listing-result-detail-b", Capability: "http.fetch"},
+	}
 	for range 2 {
 		go func() {
-			outcome, err := repository.AcceptListingPage(ctx, page)
+			outcome, err := repository.AcceptListingPageWithDispatchTargets(ctx, page, detailTargets)
 			pageCalls <- pageCall{outcome: outcome, err: err}
 		}()
 	}
@@ -69,13 +73,21 @@ func TestListingPageAndCompletionAcceptanceAreAtomicAndReplayable(t *testing.T) 
 	// immutable Artifact, progress row, observations and command receipt stay
 	// queryable in MySQL, but it must not amplify every page into the Channel
 	// ledger. The terminal completion below is the collaborative event.
-	var pageEvents int
+	var pageEvents, detailDispatches int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_event_outbox
 WHERE cause_command_id = ?`, page.CommandID).Scan(&pageEvents); err != nil {
 		t.Fatal(err)
 	}
 	if pageEvents != 0 {
 		t.Fatalf("high-frequency listing page created %d ledger event intents", pageEvents)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_execution_dispatch_outbox
+WHERE cause_kind = 'work_materialized' AND capability = 'http.fetch'
+  AND target_actor_id IN ('tool:listing-result-detail-a', 'tool:listing-result-detail-b')`).Scan(&detailDispatches); err != nil {
+		t.Fatal(err)
+	}
+	if detailDispatches != 1 {
+		t.Fatalf("one Detail Work produced %d compact capability dispatches", detailDispatches)
 	}
 	conflictingPage := page
 	conflictingPage.RequestHash = "sha256:listing-result-page-conflict"
