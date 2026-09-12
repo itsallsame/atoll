@@ -50,6 +50,14 @@
     "relative_change_percent": 0.02,
     "decision": "reverted because the difference is noise and the extra configuration has no demonstrated product value"
   },
+  "rejected_claim_transaction_experiment": {
+    "hypothesis": "persisting all claim transitions and receipts in one 1..32 member transaction would materially reduce H2 latency",
+    "baseline_h2_completion_ms": 74583,
+    "experimental_h2_completion_ms": 74150,
+    "relative_change_percent": 0.58,
+    "decision": "reverted because the difference is noise while the design holds up to 32 Work locks for the whole transaction",
+    "diagnostic_conclusion": "transaction begin and commit count is not the dominant claim cost; per-Attempt fence and state queries remain"
+  },
   "remaining_bottleneck": "offer creation, claim transitions, and business result acceptance still persist each Attempt in separate transactions inside every supply batch",
   "acceptance": {
     "scenario": "S25",
