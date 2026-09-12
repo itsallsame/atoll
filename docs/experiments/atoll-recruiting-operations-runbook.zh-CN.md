@@ -99,7 +99,9 @@ durable timer 到达 cutoff 时冻结当日 eligible Source roster，形成不�
 
 受控验收入口 `make recruiting-daily-detail-failure-matrix` 会在隔离 origin 中固定注入一次 503、一次 429 和持续 403：前两项必须自动恢复，403 必须只产生一个共享人工修复事件，不能把 403 改成无限重试。该入口用于发布前回归，不用于探测或压测第三方网站。
 
-独立 File provider 恢复入口为 `make recruiting-daily-artifact-recovery`。它会在 Listing 已开始访问网站后强杀 provider，等待旧 Attempt 按 TTL 失效，再用同一设备身份和持久目录恢复 provider；验收要求出现一个 expired 和一个 succeeded Listing Attempt、旧 Attempt 无 accepted Artifact、全部 Detail 完成且 Server 重启后 Resource 仍可读。该本地入口不替代远程对象存储或 Chrome/provider 组合故障演练。
+独立 File provider 恢复入口为 `make recruiting-daily-artifact-recovery`。它会在 Listing 已开始访问网站后强杀 provider，等待旧 Attempt 按 TTL 失效，再用同一设备身份和持久目录恢复 provider；验收要求出现一个 expired 和一个 succeeded Listing Attempt、旧 Attempt 无 accepted Artifact、全部 Detail 完成且 Server 重启后 Resource 仍可读。
+
+真实 Chrome 与 provider 的组合入口为 `make recruiting-browser-artifact-recovery`。固定 BF0 使用一个 Browser Work、一个执行 daemon 和一个独立 provider daemon；只有在 Attempt running、origin 已接受 Chrome 文档请求且数据库尚无 Artifact 后才杀 provider。验收要求旧 Attempt expired 且无 accepted Artifact，来源 dispatch 与恢复 dispatch 均 delivered，新 Attempt 只产生一份 DOM、trace 和 BackfillOutput，Permit/dispatch 清零，并在 Server 重启后分别回读 DOM 与 trace。两个本地入口都不替代远程对象存储、同时杀 Chrome/provider 或第三方授权站点演练。
 
 共享修复的标准顺序：
 

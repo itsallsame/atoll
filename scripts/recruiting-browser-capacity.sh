@@ -2,13 +2,22 @@
 set -euo pipefail
 
 level="${RECRUITING_BROWSER_CAPACITY_LEVEL:-B0}"
+artifact_recovery="${RECRUITING_BROWSER_ARTIFACT_RECOVERY:-0}"
 case "${level}" in
-  B0|B1|B2) ;;
+  B0|B1|B2|BF0) ;;
   *)
-    echo "recruiting Browser capacity: level must be one of B0, B1, B2" >&2
+    echo "recruiting Browser capacity: level must be one of B0, B1, B2, BF0" >&2
     exit 2
     ;;
 esac
+if [[ "${artifact_recovery}" != "0" && "${artifact_recovery}" != "1" ]]; then
+  echo "recruiting Browser capacity: RECRUITING_BROWSER_ARTIFACT_RECOVERY must be 0 or 1" >&2
+  exit 2
+fi
+if [[ "${artifact_recovery}" == "1" && "${level}" != "BF0" ]] || [[ "${artifact_recovery}" == "0" && "${level}" == "BF0" ]]; then
+  echo "recruiting Browser capacity: BF0 and RECRUITING_BROWSER_ARTIFACT_RECOVERY=1 must be selected together" >&2
+  exit 2
+fi
 if [[ "${level}" == "B2" && "${RECRUITING_BROWSER_CAPACITY_LARGE_ACK:-}" != "isolated-browser-large-load" ]]; then
   echo "recruiting Browser capacity: B2 launches 100 Chrome sessions; set RECRUITING_BROWSER_CAPACITY_LARGE_ACK=isolated-browser-large-load" >&2
   exit 2
@@ -86,17 +95,22 @@ if [[ "${ready}" != "true" ]]; then
   exit 1
 fi
 
-echo "recruiting Browser capacity: level=${level} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} executors=${executors} chrome=${chrome_bin} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
+test_name='TestRecruitingBrowserResponseCapacityThroughRealDataPlanes'
+if [[ "${artifact_recovery}" == "1" ]]; then
+  test_name='TestRecruitingBrowserArtifactProviderRecoveryThroughRealDataPlanes'
+fi
+echo "recruiting Browser capacity: level=${level} artifact_recovery=${artifact_recovery} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} executors=${executors} chrome=${chrome_bin} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
 set +e
 ATOLL_RECRUITING_HTTP_CAPACITY=1 \
 ATOLL_RECRUITING_BROWSER_CAPACITY=1 \
+ATOLL_RECRUITING_BROWSER_ARTIFACT_RECOVERY="${artifact_recovery}" \
 RECRUITING_CHROME_BIN="${chrome_bin}" \
 RECRUITING_HTTP_CAPACITY_ITEMS="${items}" \
 RECRUITING_HTTP_CAPACITY_PAYLOAD_BYTES="${payload_bytes}" \
 RECRUITING_HTTP_CAPACITY_EXECUTORS="${executors}" \
 RECRUITING_HTTP_CAPACITY_TIMEOUT_SECONDS="${timeout_seconds}" \
 RECRUITING_HTTP_CAPACITY_ORIGIN="${origin_url}" \
-  go test ./e2e -run '^TestRecruitingBrowserResponseCapacityThroughRealDataPlanes$' -count=1 -v \
+  go test ./e2e -run "^${test_name}$" -count=1 -v \
   -timeout "$((timeout_seconds+120))s"
 test_status=$?
 set -e

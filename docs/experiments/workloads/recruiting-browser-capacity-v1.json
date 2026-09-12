@@ -4,7 +4,8 @@
   "levels": {
     "B0": {"items": 4, "payload_bytes": 4096, "origin_latency_ms": 5, "executors": 1, "timeout_seconds": 180},
     "B1": {"items": 20, "payload_bytes": 8192, "origin_latency_ms": 20, "executors": 2, "timeout_seconds": 600},
-    "B2": {"items": 100, "payload_bytes": 16384, "origin_latency_ms": 50, "executors": 4, "timeout_seconds": 1800}
+    "B2": {"items": 100, "payload_bytes": 16384, "origin_latency_ms": 50, "executors": 4, "timeout_seconds": 1800},
+    "BF0": {"items": 1, "payload_bytes": 4096, "origin_latency_ms": 5000, "executors": 1, "timeout_seconds": 180, "fault": "kill the separate Artifact provider after the real Chrome document request starts"}
   },
   "correctness_gates": [
     "the production Browser Driver and real Chrome reach the isolated public-shaped address without a private-network bypass",
@@ -14,6 +15,13 @@
     "all DOM Resource hashes match MySQL metadata and contain the expected extracted job identity",
     "all effect attestations allow only GET or HEAD, same-origin documents, no forms, downloads, popups, or writes",
     "all domain event intents reach the Channel ledger and restart preserves state, replay, presence, and Resource reads"
+  ],
+  "fault_correctness_gates": [
+    "BF0 uses a real Chrome process on the execution daemon and a separately authenticated Artifact provider daemon",
+    "the provider is killed only after the Browser Attempt is running and the controlled origin has accepted the document request",
+    "the old Attempt expires without an accepted Artifact or business result and its originating dispatch is durably settled",
+    "provider recovery allows a fresh dispatch and distinct Attempt to persist one DOM response, one effect trace and one BackfillOutput",
+    "all Permits and execution dispatches settle, and Server restart preserves provider presence and both Resource reads"
   ],
   "non_claims": [
     "the controlled origin does not represent third-party JavaScript complexity, latency, rate limits, bot defenses, authentication, or site availability",

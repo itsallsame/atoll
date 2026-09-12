@@ -40,19 +40,34 @@ func TestRecruitingHTTPResponseCapacityThroughRealDataPlanes(t *testing.T) {
 	if os.Getenv("ATOLL_RECRUITING_BROWSER_CAPACITY") == "1" {
 		t.Skip("HTTP wrapper is disabled during the opt-in Browser capacity run")
 	}
-	runRecruitingResponseCapacity(t, false)
+	runRecruitingResponseCapacity(t, false, false)
 }
 
 func TestRecruitingBrowserResponseCapacityThroughRealDataPlanes(t *testing.T) {
 	if os.Getenv("ATOLL_RECRUITING_BROWSER_CAPACITY") != "1" {
 		t.Skip("set ATOLL_RECRUITING_BROWSER_CAPACITY=1 through the isolated Browser capacity runner")
 	}
-	runRecruitingResponseCapacity(t, true)
+	if os.Getenv("ATOLL_RECRUITING_BROWSER_ARTIFACT_RECOVERY") == "1" {
+		t.Skip("Browser capacity case is disabled during the Artifact recovery run")
+	}
+	runRecruitingResponseCapacity(t, true, false)
 }
 
-func runRecruitingResponseCapacity(t *testing.T, browser bool) {
+func TestRecruitingBrowserArtifactProviderRecoveryThroughRealDataPlanes(t *testing.T) {
+	if os.Getenv("ATOLL_RECRUITING_BROWSER_CAPACITY") != "1" ||
+		os.Getenv("ATOLL_RECRUITING_BROWSER_ARTIFACT_RECOVERY") != "1" {
+		t.Skip("use the isolated Browser Artifact recovery runner")
+	}
+	runRecruitingResponseCapacity(t, true, true)
+}
+
+func runRecruitingResponseCapacity(t *testing.T, browser, artifactRecovery bool) {
+	if artifactRecovery && !browser {
+		t.Fatal("Artifact recovery fixture requires the real Browser path")
+	}
 	executionBatchSize := 32
 	capability, capacityKind, artifactDirectory := "http.fetch", "HTTP", "http-capacity-responses"
+	var firstTraceAddress string
 	if browser {
 		executionBatchSize, capability, capacityKind, artifactDirectory = 1, "browser.public", "Browser", "browser-capacity-responses"
 	}
@@ -80,6 +95,24 @@ func runRecruitingResponseCapacity(t *testing.T, browser bool) {
 		"--server", fmt.Sprintf("ws://127.0.0.1:%d/compute", h.port), "--key", stringField(t, device, "key"),
 		"--name", deviceName, "--home", filepath.Join(h.root, "http-capacity-daemon"),
 	}, h.env, filepath.Join(h.root, "work"), daemonLog)
+	artifactDeviceName := deviceName
+	var artifactDeviceKey, artifactDaemonHome, artifactDaemonLog string
+	var artifactDaemon *proc
+	if artifactRecovery {
+		artifactDeviceName = "browser-artifact-provider"
+		artifactDevice := registrarRequest(t, ws, homeID, systemActor, "system.device.create",
+			map[string]any{"name": artifactDeviceName})
+		attachDevice(t, ws, homeID, stringField(t, artifactDevice, "id"))
+		artifactDeviceKey = stringField(t, artifactDevice, "key")
+		artifactDaemonHome = filepath.Join(h.root, "browser-artifact-provider")
+		artifactDaemonLog = filepath.Join(h.root, "logs", "browser-artifact-provider.log")
+		artifactDaemon = startProc(t, "browser-artifact-provider", filepath.Join(e2eBinDir, "atoll-daemon"), []string{
+			"--server", fmt.Sprintf("ws://127.0.0.1:%d/compute", h.port), "--key", artifactDeviceKey,
+			"--name", artifactDeviceName, "--home", artifactDaemonHome,
+		}, h.env, filepath.Join(h.root, "work"), artifactDaemonLog)
+		waitArtifactProviderReady(t, operator, ws, h.base, homeID, qualifiedChannel, artifactDeviceName,
+			"browser-before-outage", artifactDaemon, artifactDaemonLog)
+	}
 
 	spec := responseCapacityRecipe(browser, input.payloadBytes)
 	const recipeRef = "recipe://http-capacity-detail-v1"
@@ -96,12 +129,17 @@ func runRecruitingResponseCapacity(t *testing.T, browser bool) {
 		})
 	}
 	const controlName = "http-capacity-control"
+	attemptStaleAfterMS := 900_000
+	if artifactRecovery {
+		attemptStaleAfterMS = 30_000
+	}
 	registrarRequest(t, ws, homeID, systemActor, "system.actor.template.create", map[string]any{
 		"id": controlName, "name": controlName, "class": "recruiting",
 		"description": "Recruiting controlled-origin " + capacityKind + " response capacity control.",
 		"config": map[string]any{
 			"executor_id": "tool:http-capacity-executor-00", "executors": executorTargets,
-			"reconcile_interval_ms": 200, "daily_schedule_enabled": false, "backfill_materialize_limit": 500,
+			"reconcile_interval_ms": 200, "attempt_stale_after_ms": attemptStaleAfterMS,
+			"daily_schedule_enabled": false, "backfill_materialize_limit": 500,
 			"budget_max_active": 1000, "budget_max_per_capability": 1000, "budget_max_per_origin": 1000,
 			"budget_max_per_company": 1000, "budget_max_backfill_active": 1000,
 		}, "visibility": "private",
@@ -115,7 +153,7 @@ func runRecruitingResponseCapacity(t *testing.T, browser bool) {
 		name := fmt.Sprintf("http-capacity-executor-%02d", index)
 		executorConfig := map[string]any{
 			"capability": capability, "execution_enabled": true, "control_actor_id": "tool:" + controlName,
-			"control_wait_ms": 30000, "artifact_device_name": deviceName, "artifact_channel_name": qualifiedChannel,
+			"control_wait_ms": 30000, "artifact_device_name": artifactDeviceName, "artifact_channel_name": qualifiedChannel,
 			"artifact_directory": artifactDirectory, "artifact_access_scope": "operators",
 			"artifact_retention": "7d", "artifact_redaction": "raw", "artifact_max_bytes": 2 << 20,
 			"terms_policy_version": 1, "terms_reviewed_at": "2026-09-12T00:00:00Z",
@@ -182,6 +220,23 @@ func runRecruitingResponseCapacity(t *testing.T, browser bool) {
 		t.Fatalf("confirm HTTP capacity Backfill=%v", confirmed)
 	}
 	discardCapacityFeed(ws)
+	failedArtifactAttemptID := ""
+	artifactOutageDuration := time.Duration(0)
+	if artifactRecovery {
+		failedArtifactAttemptID = waitBrowserExecutionAtProviderCut(t, runtimeDSN, input.origin, input.timeout,
+			daemon, artifactDaemon, h.server, daemonLog, artifactDaemonLog, h.server.logPath)
+		outageStarted := time.Now()
+		artifactDaemon.kill9(t)
+		waitArtifactAttemptExpiredWithoutAcceptedEvidence(t, runtimeDSN, failedArtifactAttemptID, input.timeout,
+			daemon, h.server, daemonLog, h.server.logPath)
+		artifactDaemon = startProc(t, "browser-artifact-provider-recovered", filepath.Join(e2eBinDir, "atoll-daemon"), []string{
+			"--server", fmt.Sprintf("ws://127.0.0.1:%d/compute", h.port), "--key", artifactDeviceKey,
+			"--name", artifactDeviceName, "--home", artifactDaemonHome,
+		}, h.env, filepath.Join(h.root, "work"), artifactDaemonLog)
+		waitArtifactProviderReady(t, operator, ws, h.base, homeID, qualifiedChannel, artifactDeviceName,
+			"browser-after-recovery", artifactDaemon, artifactDaemonLog)
+		artifactOutageDuration = time.Since(outageStarted)
+	}
 	waitArtifactCapacityBackfill(t, ws, db, homeID, controlID, daemon, h.server,
 		backfillID, "completed", input.items, input.timeout, daemonLog, h.server.logPath)
 	completedDuration := time.Since(executionStarted)
@@ -209,17 +264,24 @@ func runRecruitingResponseCapacity(t *testing.T, browser bool) {
 	}
 	expectedMaterializeDispatches := expectedCompactedMaterializeDispatches(input.items, input.executors, 500)
 	expectedReleaseDispatches := (input.items + executionBatchSize - 1) / executionBatchSize
+	expectedRecoveryDispatches := 0
+	if artifactRecovery {
+		expectedRecoveryDispatches = 1
+	}
 	expectedTraceArtifacts := 0
 	if browser {
 		expectedTraceArtifacts = input.items
 	}
 	if backfillItems != input.items || succeededItems != input.items || outputs != input.items ||
 		responseArtifacts != input.items || traceArtifacts != expectedTraceArtifacts || succeededAttempts != input.items ||
-		deliveredDispatches != expectedReleaseDispatches+expectedMaterializeDispatches ||
+		deliveredDispatches != expectedReleaseDispatches+expectedMaterializeDispatches+expectedRecoveryDispatches ||
 		materializeDispatches != expectedMaterializeDispatches || releaseDispatches != expectedReleaseDispatches || activeBudget != 0 {
 		t.Fatalf("%s capacity facts items=%d/%d succeeded=%d outputs=%d responses=%d traces=%d attempts=%d dispatches=%d materialize=%d release=%d budget=%d", capacityKind,
 			backfillItems, input.items, succeededItems, outputs, responseArtifacts, traceArtifacts, succeededAttempts,
 			deliveredDispatches, materializeDispatches, releaseDispatches, activeBudget)
+	}
+	if artifactRecovery {
+		assertBrowserArtifactProviderRecoveryFacts(t, db, failedArtifactAttemptID)
 	}
 	// Executor distribution is an observed capacity signal, not a correctness
 	// invariant: one fast executor may legally drain several bounded supply
@@ -315,6 +377,9 @@ FROM recruiting_artifacts WHERE artifact_kind = 'trace' AND attempt_id IS NOT NU
 					t.Fatalf("Browser trace Artifact %s observed unsafe method %q", artifactID, method)
 				}
 			}
+			if firstTraceAddress == "" {
+				firstTraceAddress = address
+			}
 			verifiedTraces++
 		}
 		if err := traceRows.Close(); err != nil || verifiedTraces != input.items {
@@ -323,11 +388,15 @@ FROM recruiting_artifacts WHERE artifact_kind = 'trace' AND attempt_id IS NOT NU
 	}
 	metrics := readControlledOriginMetrics(t, input.origin)
 	maxRobotsRequests := input.executors
-	if browser {
-		maxRobotsRequests = input.items
+	expectedJobRequests := input.items
+	if artifactRecovery {
+		expectedJobRequests++
 	}
-	if metrics.JobRequests != uint64(input.items) || metrics.RobotsRequests < 1 || metrics.RobotsRequests > uint64(maxRobotsRequests) {
-		t.Fatalf("controlled origin metrics=%+v want jobs=%d robots in [1,%d]", metrics, input.items, maxRobotsRequests)
+	if browser {
+		maxRobotsRequests = expectedJobRequests
+	}
+	if metrics.JobRequests != uint64(expectedJobRequests) || metrics.RobotsRequests < 1 || metrics.RobotsRequests > uint64(maxRobotsRequests) {
+		t.Fatalf("controlled origin metrics=%+v want jobs=%d robots in [1,%d]", metrics, expectedJobRequests, maxRobotsRequests)
 	}
 	ledgerMessages, ledgerPayloadBytes, ledgerEvents, recruitingLedgerEvents :=
 		assertRecruitingDomainEventsInLedger(t, db, h.serverHome, homeID, controlID)
@@ -344,6 +413,10 @@ FROM recruiting_artifacts WHERE artifact_kind = 'trace' AND attempt_id IS NOT NU
 	for _, executorID := range executorIDs {
 		waitActorPresenceInChannel(t, recovered, homeID, executorID, daemon, daemonLog)
 	}
+	if artifactRecovery {
+		waitArtifactProviderReady(t, recoveredOperator, recovered, h.base, homeID, qualifiedChannel,
+			artifactDeviceName, "browser-after-server-restart", artifactDaemon, artifactDaemonLog)
+	}
 	replayed := recovered.request(homeID, "recruiting.backfill.create", controlID, createPayload)
 	if nestedStringField(t, replayed, "backfill", "status") != "previewing" ||
 		nestedStringField(t, replayed, "backfill", "backfill_id") != backfillID {
@@ -357,29 +430,44 @@ FROM recruiting_artifacts WHERE artifact_kind = 'trace' AND attempt_id IS NOT NU
 	statusResponse := recovered.request(homeID, "recruiting.system.status", controlID, map[string]any{})
 	status, _ := statusResponse["system_status"].(map[string]any)
 	health, _ := status["execution_health"].(map[string]any)
-	expectedHealthSamples := input.items
-	if expectedHealthSamples > 1000 {
-		expectedHealthSamples = 1000
+	expectedAttemptsScanned := input.items
+	if artifactRecovery {
+		expectedAttemptsScanned++
 	}
-	for _, field := range []string{
-		"offer_to_accept_observed_latency", "accept_to_start_observed_latency", "start_to_terminal_observed_latency",
-	} {
+	if expectedAttemptsScanned > 1000 {
+		expectedAttemptsScanned = 1000
+	}
+	phaseSamples := map[string]int{
+		"offer_to_accept_observed_latency":   expectedAttemptsScanned,
+		"accept_to_start_observed_latency":   expectedAttemptsScanned,
+		"start_to_terminal_observed_latency": min(input.items, 1000),
+	}
+	for field, expectedSamples := range phaseSamples {
 		summary, _ := health[field].(map[string]any)
-		if int(numberField(t, summary, "samples")) != expectedHealthSamples {
+		if int(numberField(t, summary, "samples")) != expectedSamples {
 			t.Fatalf("public execution health %s violated its bounded phase sample contract: %v", field, statusResponse)
 		}
 	}
 	truncated, _ := health["attempts_truncated"].(bool)
-	if int(numberField(t, health, "attempts_scanned")) != expectedHealthSamples || truncated != (input.items > expectedHealthSamples) {
+	totalAttempts := input.items
+	if artifactRecovery {
+		totalAttempts++
+	}
+	if int(numberField(t, health, "attempts_scanned")) != expectedAttemptsScanned || truncated != (totalAttempts > expectedAttemptsScanned) {
 		t.Fatalf("public execution health did not expose bounded sampling: %v", statusResponse)
 	}
 	if body := httpReadFile(t, recoveredOperator, h.base, recovered, homeID, firstResponseAddress); len(body) == 0 || (!browser && len(body) != input.payloadBytes) {
 		t.Fatalf("%s response Resource was unavailable after Server restart", capacityKind)
 	}
+	if browser {
+		if body := httpReadFile(t, recoveredOperator, h.base, recovered, homeID, firstTraceAddress); len(body) == 0 {
+			t.Fatal("Browser trace Resource was unavailable after Server restart")
+		}
+	}
 	restartDuration := time.Since(restartStarted)
 
-	t.Logf("%s capacity passed: items=%d payload_bytes=%d executors=%d used_executors=%d response_bytes=%d preview_ms=%d complete_ms=%d drain_ms=%d restart_ms=%d origin_jobs=%d origin_robots=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d offer_accept_p99_ms=%d offer_accept_max_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d accept_start_p99_ms=%d accept_start_max_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d start_terminal_p99_ms=%d start_terminal_max_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d terminal_next_offer_p99_ms=%d terminal_next_offer_max_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
-		capacityKind, input.items, input.payloadBytes, input.executors, usedExecutors, totalResponseBytes,
+	t.Logf("%s capacity passed: artifact_recovery=%t artifact_outage_ms=%d items=%d payload_bytes=%d executors=%d used_executors=%d response_bytes=%d preview_ms=%d complete_ms=%d drain_ms=%d restart_ms=%d origin_jobs=%d origin_robots=%d offer_accept_p50_ms=%d offer_accept_p95_ms=%d offer_accept_p99_ms=%d offer_accept_max_ms=%d accept_start_p50_ms=%d accept_start_p95_ms=%d accept_start_p99_ms=%d accept_start_max_ms=%d start_terminal_p50_ms=%d start_terminal_p95_ms=%d start_terminal_p99_ms=%d start_terminal_max_ms=%d terminal_next_offer_p50_ms=%d terminal_next_offer_p95_ms=%d terminal_next_offer_p99_ms=%d terminal_next_offer_max_ms=%d ledger_messages=%d ledger_payload_bytes=%d ledger_events=%d recruiting_events=%d total_ms=%d",
+		capacityKind, artifactRecovery, artifactOutageDuration.Milliseconds(), input.items, input.payloadBytes, input.executors, usedExecutors, totalResponseBytes,
 		previewDuration.Milliseconds(), completedDuration.Milliseconds(), drainedDuration.Milliseconds(),
 		restartDuration.Milliseconds(), metrics.JobRequests, metrics.RobotsRequests,
 		latency.OfferToAccept.P50, latency.OfferToAccept.P95, latency.OfferToAccept.P99, latency.OfferToAccept.Max,
@@ -387,6 +475,64 @@ FROM recruiting_artifacts WHERE artifact_kind = 'trace' AND attempt_id IS NOT NU
 		latency.StartToTerminal.P50, latency.StartToTerminal.P95, latency.StartToTerminal.P99, latency.StartToTerminal.Max,
 		latency.TerminalToOffer.P50, latency.TerminalToOffer.P95, latency.TerminalToOffer.P99, latency.TerminalToOffer.Max, ledgerMessages,
 		ledgerPayloadBytes, ledgerEvents, recruitingLedgerEvents, time.Since(testStarted).Milliseconds())
+}
+
+func waitBrowserExecutionAtProviderCut(t *testing.T, dsn, origin string, timeout time.Duration,
+	daemon, artifactDaemon, server *proc, logPaths ...string) string {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var attemptID, status string
+	var artifacts int
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		err = db.QueryRow(`SELECT a.attempt_id, a.attempt_status,
+  (SELECT COUNT(*) FROM recruiting_artifacts x WHERE x.attempt_id = a.attempt_id)
+FROM recruiting_attempts a JOIN recruiting_works w ON w.work_id = a.work_id
+WHERE w.purpose = 'historical_backfill_item' AND a.capability = 'browser.public'
+ORDER BY a.created_at LIMIT 1`).Scan(&attemptID, &status, &artifacts)
+		metrics := readControlledOriginMetrics(t, origin)
+		if err == nil && status == string(model.AttemptRunning) && artifacts == 0 && metrics.JobRequests == 1 {
+			return attemptID
+		}
+		if daemon.exited() || artifactDaemon.exited() || server.exited() {
+			t.Fatalf("process exited before the live Browser/Artifact cut: executor=%s provider=%s server=%s",
+				tailLog(logPaths[0], 160), tailLog(logPaths[1], 160), tailLog(logPaths[2], 160))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("Browser did not enter the running/no-evidence provider cut: attempt=%q status=%q artifacts=%d err=%v\nexecutor:\n%s\nprovider:\n%s\nserver:\n%s",
+		attemptID, status, artifacts, err, tailLog(logPaths[0], 160), tailLog(logPaths[1], 160), tailLog(logPaths[2], 160))
+	return ""
+}
+
+func assertBrowserArtifactProviderRecoveryFacts(t *testing.T, db *sql.DB, failedAttemptID string) {
+	t.Helper()
+	var failedStatus, oldDispatchStatus, recoveryDispatchStatus string
+	var failedArtifacts, failedAcceptedArtifacts, workAttempts, expiredAttempts, succeededAttempts int
+	if err := db.QueryRow(`SELECT
+  (SELECT attempt_status FROM recruiting_attempts WHERE attempt_id = ?),
+  (SELECT COUNT(*) FROM recruiting_artifacts WHERE attempt_id = ?),
+  (SELECT COUNT(*) FROM recruiting_artifacts WHERE attempt_id = ? AND rejected = FALSE),
+  (SELECT d.delivery_status FROM recruiting_attempts a JOIN recruiting_execution_dispatch_outbox d ON d.dispatch_id = a.dispatch_id WHERE a.attempt_id = ?),
+  (SELECT delivery_status FROM recruiting_execution_dispatch_outbox WHERE cause_kind = 'attempt_recovered' AND cause_id = ?),
+  (SELECT COUNT(*) FROM recruiting_attempts WHERE work_id = (SELECT work_id FROM recruiting_attempts WHERE attempt_id = ?)),
+  (SELECT COUNT(*) FROM recruiting_attempts WHERE work_id = (SELECT work_id FROM recruiting_attempts WHERE attempt_id = ?) AND attempt_status = 'expired'),
+  (SELECT COUNT(*) FROM recruiting_attempts WHERE work_id = (SELECT work_id FROM recruiting_attempts WHERE attempt_id = ?) AND attempt_status = 'succeeded')`,
+		failedAttemptID, failedAttemptID, failedAttemptID, failedAttemptID, failedAttemptID,
+		failedAttemptID, failedAttemptID, failedAttemptID).Scan(&failedStatus, &failedArtifacts, &failedAcceptedArtifacts,
+		&oldDispatchStatus, &recoveryDispatchStatus, &workAttempts, &expiredAttempts, &succeededAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if failedStatus != string(model.AttemptExpired) || failedAcceptedArtifacts != 0 ||
+		oldDispatchStatus != "delivered" || recoveryDispatchStatus != "delivered" ||
+		workAttempts != 2 || expiredAttempts != 1 || succeededAttempts != 1 {
+		t.Fatalf("Browser Artifact recovery attempt=%s status=%s artifacts=%d accepted=%d old_dispatch=%s recovery_dispatch=%s work_attempts=%d expired=%d succeeded=%d",
+			failedAttemptID, failedStatus, failedArtifacts, failedAcceptedArtifacts, oldDispatchStatus,
+			recoveryDispatchStatus, workAttempts, expiredAttempts, succeededAttempts)
+	}
 }
 
 func httpCapacityFromEnv(t *testing.T) httpCapacityInput {

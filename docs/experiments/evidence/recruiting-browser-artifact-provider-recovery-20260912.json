@@ -1,0 +1,97 @@
+{
+  "schema": "recruiting.browser-artifact-provider-recovery-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "a0af8f87",
+  "workload_manifest": "docs/experiments/workloads/recruiting-browser-capacity-v1.json#BF0",
+  "entrypoint": "make recruiting-browser-artifact-recovery",
+  "test": "TestRecruitingBrowserArtifactProviderRecoveryThroughRealDataPlanes",
+  "feature_under_test": "real Chrome execution while a separately authenticated Artifact provider process is killed and recovered",
+  "environment": {
+    "chrome": "/usr/bin/google-chrome",
+    "origin": "Docker --internal 11.254.x.x controlled HTTP service",
+    "origin_latency_ms": 5000,
+    "mysql": "ephemeral MySQL 8.4 with separate non-root migration and runtime accounts",
+    "processes": [
+      "Atoll Server",
+      "execution daemon launching real Chrome",
+      "separate File provider daemon"
+    ],
+    "data_planes": ["Recruiting MySQL", "Atoll Channel ledger", "daemon File Resources"]
+  },
+  "fault_cut": {
+    "provider_state_before_cut": "reachable and proven by a written probe Resource",
+    "browser_state_before_cut": "Attempt running, no Artifact persisted, and controlled origin accepted exactly one document request",
+    "cut": "SIGKILL the separate File provider while the real Chrome document response is still in flight",
+    "attempt_stale_after_ms": 30000,
+    "provider_outage_ms": 29844
+  },
+  "result": {
+    "backfill_items": 1,
+    "browser_document_requests": 2,
+    "robots_requests": 2,
+    "attempts": 2,
+    "expired_attempts": 1,
+    "succeeded_attempts": 1,
+    "accepted_artifacts_on_expired_attempt": 0,
+    "response_artifacts": 1,
+    "trace_artifacts": 1,
+    "backfill_outputs": 1,
+    "response_bytes_verified": 4081,
+    "active_permits_after_settlement": 0,
+    "pending_execution_dispatches_after_settlement": 0,
+    "old_dispatch_status": "delivered",
+    "recovery_dispatch_status": "delivered",
+    "business_completion_ms": 35996,
+    "outbox_drain_ms": 36098,
+    "server_restart_ms": 3004,
+    "journey_total_ms": 52017,
+    "offer_to_accept_ms": {"p50": 36, "p95": 36},
+    "accept_to_start_ms": {"p50": 27, "p95": 27},
+    "successful_start_to_terminal_ms": {"p50": 5408, "p95": 5408},
+    "ledger_messages": 529,
+    "ledger_payload_bytes": 149403,
+    "ledger_events": 159,
+    "recruiting_ledger_events": 157
+  },
+  "invariants": [
+    "the execution daemon and Artifact provider are different authenticated devices and OS processes",
+    "the provider is killed only after the Browser Attempt is running and real Chrome has started the document request",
+    "the expired Attempt produces no accepted Artifact or BackfillOutput and releases its Permit",
+    "the originating dispatch is durably settled and attempt_recovered creates a fresh dispatch identity",
+    "the recovered provider receives a distinct Attempt's DOM response and effect trace before the BackfillOutput is accepted",
+    "the DOM hash and Browser effect attestation are verified from Resource bytes",
+    "after Atoll Server restart the Executor and provider reconnect and both DOM and trace Resources remain readable"
+  ],
+  "regressions": {
+    "normal_B0": {
+      "status": "passed",
+      "items": 4,
+      "response_artifacts": 4,
+      "trace_artifacts": 4,
+      "response_bytes_verified": 16324,
+      "business_completion_ms": 3338,
+      "outbox_drain_ms": 3542,
+      "server_restart_ms": 3053
+    }
+  },
+  "implementation": {
+    "production_driver_test_hook_added": false,
+    "actor_classes_added": 0,
+    "worker_types_added": 0,
+    "atoll_core_modified": false,
+    "recovery_mechanism": "existing Attempt TTL, persisted source dispatch fence, attempt_recovered dispatch, and idempotent Artifact/result contracts"
+  },
+  "non_claims": [
+    "remote cloud or object-storage provider behavior",
+    "simultaneous SIGKILL of both Chrome and the Artifact provider",
+    "third-party JavaScript, authentication, anti-bot or availability behavior",
+    "Browser throughput or long-window production SLO",
+    "complete P9 production readiness"
+  ],
+  "acceptance": {
+    "gate": "P9 real Chrome execution combined with separate local File provider process outage",
+    "status": "passed",
+    "scenario": "S25",
+    "scenario_status_changed": false
+  }
+}
