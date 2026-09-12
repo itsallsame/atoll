@@ -38,7 +38,7 @@ func TestRecruitingExtensionBundlePairsManagedProfileThroughPopup(t *testing.T) 
 	parsedServer, _ := url.Parse(server.URL)
 	bridgeEndpoint := "ws://" + parsedServer.Host + "/capture"
 
-	extensionDirectory, err := filepath.Abs("../extension")
+	extensionDirectory, err := filepath.Abs("../../../../tools/recruiting-extension/extension")
 	if err != nil {
 		t.Fatal(err)
 	}

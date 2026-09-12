@@ -21,8 +21,8 @@ import (
 	"syscall"
 	"time"
 
+	bridge "github.com/wanpengxie/atoll/drivers/tools/recruiting/extensionbridge"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/browserbroker"
-	"github.com/wanpengxie/atoll/tools/recruiting-extension/bridge"
 )
 
 func main() {

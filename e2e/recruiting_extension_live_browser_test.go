@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	recruitingbridge "github.com/wanpengxie/atoll/drivers/tools/recruiting/extensionbridge"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
-	recruitingbridge "github.com/wanpengxie/atoll/tools/recruiting-extension/bridge"
 )
 
 func TestRecruitingExtensionCaptureLogicAgainstRealDiscordPage(t *testing.T) {

@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
+	recruitingbridge "github.com/wanpengxie/atoll/drivers/tools/recruiting/extensionbridge"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/extensioncapture"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
-	recruitingbridge "github.com/wanpengxie/atoll/tools/recruiting-extension/bridge"
 )
 
 func TestRecruitingExtensionBridgeUsesOrdinaryUserPublicProtocol(t *testing.T) {

@@ -211,7 +211,7 @@ recruiting-live-weekly:
 	./scripts/recruiting-live-weekly.sh
 
 recruiting-extension-test:
-	go test -race ./cmd/recruiting-extension-bridge ./tools/recruiting-extension/bridge
+	go test -race ./cmd/recruiting-extension-bridge ./drivers/tools/recruiting/extensionbridge
 	npm test --prefix tools/recruiting-extension
 	node --check tools/recruiting-extension/extension/background.js
 	node --check tools/recruiting-extension/extension/content-logic.js
@@ -223,7 +223,7 @@ recruiting-extension-live-test:
 
 recruiting-extension-bundle-test:
 	test -n "$$RECRUITING_CHROME_BIN"
-	go test -race ./tools/recruiting-extension/bridge -run '^TestRecruitingExtensionBundlePairsManagedProfileThroughPopup$$' -count=1 -v -timeout 45s
+	go test -race ./drivers/tools/recruiting/extensionbridge -run '^TestRecruitingExtensionBundlePairsManagedProfileThroughPopup$$' -count=1 -v -timeout 45s
 
 # ----------------------------------------------------------------------------
 # dev — 备好一个干净的开发场地：清空 $(DEV_HOME) + 编译，然后把启动命令
