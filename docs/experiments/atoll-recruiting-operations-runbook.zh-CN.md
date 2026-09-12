@@ -162,7 +162,7 @@ Company 合规物理擦除不得使用普通 archive 或直接执行 SQL：
 
 - 已通过的 Women’s Aid 活动倒序/更新置顶真实纵向样本仍需纳入 Nightly/Weekly 持续监测；单次通过不代表第三方契约永久不变；
 - 生产 OS/container 级出站隔离和真实授权登录站点 canary；
-- Recruiting 扩展的 32 项 execution batch 已把同一 H2 从 5.88 提升到 13.41 response/s，并将 ledger message 从 14,233 降到 1,638；专用 Detail/Backfill 候选查询测到 13.77/s，消除 Backfill 成功聚合的平方级明细扫描后测到 13.87/s。每个 Attempt/Permit/receipt/Artifact 仍独立，默认 batch size 1，Listing、Browser 和多结果任务不进入首版批量路径。优化后的 H3 5,000 项受控峰值全部正确完成，但持续吞吐仍为 10.65/s，按该速率完成 400K 约需 10.43 小时；且此测量是 Backfill workload，不是每日 Detail 路径的替代证据。这要求在外部部署验证多个隔离执行/控制分片，不能靠增加 Worker 类型或修改 Atoll core。真实 Chrome B2 已完成 100 DOM response + 100 effect trace，但四核主机从 2 到 4 Browser Executor 仍约 1.87→1.88/s，必须把 Browser 作为独立 capability 池跨主机扩容，禁止按 HTTP 吞吐估算。还需第三方 HTTP/Browser 延迟与限流分布、远程 Artifact、20K Listing + 400K Detail 完成吞吐与故障注入矩阵；本地受控基线不得外推为远程对象存储或第三方吞吐；
+- Recruiting 扩展的 32 项 execution batch 已把同一 H2 从 5.88 提升到 13.41 response/s，并将 ledger message 从 14,233 降到 1,638；专用 Detail/Backfill 候选查询测到 13.77/s，消除 Backfill 成功聚合的平方级明细扫描后测到 13.87/s。每个 Attempt/Permit/receipt/Artifact 仍独立，默认 batch size 1，Listing、Browser 和多结果任务不进入批量安全集合；批处理 Executor 对 Listing 使用单项协议回退，空 batch 不得提前完成原 dispatch。独立每日容量旅程已经从 durable cutoff 开始，经 10 页 Listing 完成 5,000/5,000 个 Detail 和 response Resource，D3 为 11.80/s，按该速率完成 400K 约需 9.41 小时，仍距 8 小时算术参考约 15.05%。这要求在外部部署验证多个隔离执行/控制分片，不能靠增加 Worker 类型或修改 Atoll core。真实 Chrome B2 已完成 100 DOM response + 100 effect trace，但四核主机从 2 到 4 Browser Executor 仍约 1.87→1.88/s，必须把 Browser 作为独立 capability 池跨主机扩容，禁止按 HTTP 吞吐估算。还需第三方 HTTP/Browser 延迟与限流分布、远程 Artifact、20K Listing + 400K Detail 完成吞吐与故障注入矩阵；本地受控基线不得外推为远程对象存储或第三方吞吐；
 - 生产数据量的 RTO/RPO、binlog PITR、加密异地保留，以及远程 MySQL/ledger/Artifact 联合恢复；
 - 仓库级非 Recruiting 核心 E2E blocker 的上游修复。
 

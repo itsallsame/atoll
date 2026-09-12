@@ -1,0 +1,27 @@
+{
+  "version": "recruiting.daily-detail-capacity-workload.v1",
+  "description": "One scheduled incremental SourceOccurrence streams a bounded, newest-activity-first Listing and executes every derived detail_sync Work through real Atoll Server, daemon, Executors, MySQL, ledger, and File Resources against an egress-less controlled origin.",
+  "listing_page_size": 500,
+  "execution_batch_size": 32,
+  "levels": {
+    "D0": {"items": 20, "payload_bytes": 1024, "origin_latency_ms": 5, "executors": 2, "timeout_seconds": 180},
+    "D1": {"items": 200, "payload_bytes": 4096, "origin_latency_ms": 5, "executors": 4, "timeout_seconds": 600},
+    "D2": {"items": 1000, "payload_bytes": 16384, "origin_latency_ms": 5, "executors": 8, "timeout_seconds": 1200},
+    "D3": {"items": 5000, "payload_bytes": 4096, "origin_latency_ms": 5, "executors": 8, "timeout_seconds": 1800}
+  },
+  "correctness_gates": [
+    "a durable daily timer creates one immutable SourceOccurrence and Listing Work from the cutoff snapshot",
+    "the production HTTP Listing Driver streams at most 500 ordered observations per accepted page and reaches the old activity boundary",
+    "each new observation creates one detail_sync Work and a page creates only compact capability wakes, not one wake per job",
+    "batch-enabled HTTP Executors fall back to the single-item protocol for the non-batch-safe Listing Work without completing its dispatch early",
+    "every Detail Work owns one fenced Attempt, Permit, response Artifact, immutable JobDetailVersion, result receipt, and terminal Work",
+    "the SourceOccurrence commits exactly one next Checkpoint and the Daily Run closes only after all derived Detail Work is accounted",
+    "all response Resource bytes match MySQL SHA-256 metadata and survive Server restart",
+    "all domain event intents due during execution drain to the Atoll Channel ledger, no execution dispatch or Permit remains active, and the logical future close event is not delivered before its immutable window end"
+  ],
+  "non_claims": [
+    "the controlled origin does not represent third-party latency, rate limits, CDN behavior, or site availability",
+    "this workload does not measure Browser or authenticated Profile execution",
+    "D0-D3 do not substitute for 20K simultaneous Listing occurrences, 400K Detail completion, remote Artifact storage, or a long-window production SLO"
+  ]
+}

@@ -203,6 +203,11 @@ func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, in
 		handleBatchWake(sys, cfg, production, incarnation, msg, payload)
 		return
 	}
+	handleSingleWake(sys, cfg, production, incarnation, msg, payload)
+}
+
+func handleSingleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, incarnation string,
+	msg actorbase.Msg, payload wakePayload) {
 	offer, err := requestExecutionOffer(msg.Ctx(), sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()), executioncontract.OfferRequest{
 		CommandID: wakeOfferCommandID(incarnation, payload.CommandID, string(msg.ID)), ExecutorIncarnation: incarnation,
 		Capability: cfg.Capability, Origin: payload.Origin, ProfileID: payload.ProfileID,
@@ -293,12 +298,16 @@ func handleBatchWake(sys actorbase.Sys, cfg Config, production *productionRuntim
 		}
 		if len(batch.Offers) == 0 {
 			if totalHandled == 0 {
-				_, _ = sys.Reply(msg, map[string]any{"status": "idle", "executor_incarnation": incarnation})
-			} else {
-				_, _ = sys.Reply(msg, map[string]any{"status": "handled", "attempt_id": first.Attempt.AttemptID,
-					"work_id": first.Work.WorkID, "kind": first.Kind, "executor_incarnation": incarnation,
-					"supply_batch_id": lastSupplyBatchID, "handled_count": totalHandled})
+				handleSingleWake(sys, cfg, production, incarnation, msg, payload)
+				return
 			}
+			if err := completeWake(sys, cfg.ControlActorID, msg, nextDispatchID, "idle", "", ""); err != nil {
+				_, _ = sys.Fail(msg, "result_unknown", err.Error(), map[string]any{"supply_batch_id": lastSupplyBatchID})
+				return
+			}
+			_, _ = sys.Reply(msg, map[string]any{"status": "handled", "attempt_id": first.Attempt.AttemptID,
+				"work_id": first.Work.WorkID, "kind": first.Kind, "executor_incarnation": incarnation,
+				"supply_batch_id": lastSupplyBatchID, "handled_count": totalHandled})
 			return
 		}
 		if totalHandled == 0 {

@@ -1,0 +1,140 @@
+{
+  "schema": "recruiting.daily-detail-capacity-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "2137dd1f",
+  "workload_manifest": "docs/experiments/workloads/recruiting-daily-detail-capacity-v1.json",
+  "feature_under_test": "scheduled daily SourceOccurrence through paginated Listing materialization and production Detail response capture",
+  "environment": {
+    "os": "Linux 6.8.0-71-generic x86_64",
+    "logical_cpus": 4,
+    "memory_bytes": 16237535232,
+    "go": "go1.25.7 linux/amd64",
+    "docker_server": "29.5.2",
+    "mysql_image": "mysql:8.4",
+    "database_identity": "ephemeral non-root staircase_runtime and staircase_migrator accounts",
+    "origin_isolation": "script-created Docker --internal 11.253.x.x network"
+  },
+  "implementation": {
+    "actor_classes_added": 0,
+    "worker_types_added": 0,
+    "atoll_core_modified": false,
+    "listing_dispatch": "each accepted page creates at most one wake for each selected available executor of the derived Detail capability, never one wake per Job",
+    "batch_fallback": "an empty initial Detail/Backfill batch leaves the dispatch pending and the same Executor falls back to the existing single-offer protocol for Listing; only a later empty continuation completes that continuation dispatch",
+    "batch_safe_purposes": ["detail_sync", "historical_backfill_item"],
+    "execution_batch_size": 32
+  },
+  "correctness_assertions": [
+    "Atoll durable daily timer creates exactly one immutable SourceOccurrence and one Listing Work",
+    "production HTTP Listing follows metadata offset pagination with at most 500 observations per page",
+    "the old activity boundary is reached before the incremental Checkpoint advances exactly once",
+    "every new observation creates exactly one Detail Work, successful Attempt, immutable JobDetailVersion, and response Artifact",
+    "every response Resource is read through Server and checked against its MySQL SHA-256 and byte count",
+    "all active Permits return to zero and every execution dispatch is delivered",
+    "all domain events due during execution are present in the Atoll Channel ledger",
+    "logical close at the immutable future window end reports one Listing success and every Detail success",
+    "the future-dated daily close event remains pending until its real delivery time instead of being delivered early",
+    "Server restart preserves DailyRun summary, executor presence, and response Resource readability"
+  ],
+  "runs": {
+    "D0": {
+      "items_succeeded": 20,
+      "listing_pages": 1,
+      "payload_bytes_each": 1024,
+      "response_bytes_verified": 20480,
+      "executors": 2,
+      "business_completion_ms": 11570,
+      "outbox_drain_ms": 11773,
+      "restart_recovery_ms": 2206,
+      "ledger_messages": 258,
+      "ledger_events": 76,
+      "recruiting_ledger_events": 73
+    },
+    "D1": {
+      "items_succeeded": 200,
+      "listing_pages": 1,
+      "payload_bytes_each": 4096,
+      "response_bytes_verified": 819200,
+      "executors": 4,
+      "business_completion_ms": 22593,
+      "outbox_drain_ms": 22999,
+      "restart_recovery_ms": 3152,
+      "ledger_messages": 571,
+      "ledger_events": 265,
+      "recruiting_ledger_events": 260
+    },
+    "D2": {
+      "items_succeeded": 1000,
+      "listing_pages": 2,
+      "payload_bytes_each": 16384,
+      "response_bytes_verified": 16384000,
+      "executors": 8,
+      "business_completion_ms": 77079,
+      "outbox_drain_ms": 80524,
+      "restart_recovery_ms": 3107,
+      "ledger_messages": 1931,
+      "ledger_events": 1109,
+      "recruiting_ledger_events": 1100,
+      "offer_to_accept_ms": {"p50": 5506, "p95": 6842},
+      "start_to_terminal_ms": {"p50": 4928, "p95": 6688},
+      "terminal_to_next_offer_ms": {"p50": 5115, "p95": 5986}
+    },
+    "D3": {
+      "items_succeeded": 5000,
+      "listing_pages": 10,
+      "payload_bytes_each": 4096,
+      "response_bytes_verified": 20480000,
+      "executors": 8,
+      "business_completion_ms": 423655,
+      "outbox_drain_ms": 436921,
+      "restart_recovery_ms": 3414,
+      "ledger_messages": 8602,
+      "ledger_payload_bytes": 31892216,
+      "ledger_events": 5304,
+      "recruiting_ledger_events": 5295,
+      "offer_to_accept_ms": {"p50": 6332, "p95": 10226},
+      "start_to_terminal_ms": {"p50": 6144, "p95": 9848},
+      "terminal_to_next_offer_ms": {"p50": 5839, "p95": 9850}
+    }
+  },
+  "capacity_assessment": {
+    "D2_detail_responses_per_second": 12.97,
+    "D3_detail_responses_per_second": 11.80,
+    "detail_400k_projected_hours_at_D3_rate": 9.41,
+    "remaining_gap_to_400k_in_8h_percent": 15.05,
+    "interpretation": "the actual daily Listing-to-Detail path is now proven through a controlled 5,000-item peak and is faster than the prior Backfill proxy, but a single four-core host still misses the arithmetic 400K-in-8h reference"
+  },
+  "regression_gates": {
+    "full_non_root_mysql_store_race_seconds": 231.708,
+    "full_non_root_mysql_actor_race_seconds": 3.072,
+    "package_race_passed": true,
+    "go_vet_passed": true,
+    "security_audit_passed": true,
+    "core_boundary_from_a94d2b8d_passed": true
+  },
+  "known_repository_gates": {
+    "make_lint_status": "fails only on the pre-existing web/societyconsole to drivers/tools/society/model dependency that is unchanged from a94d2b8d",
+    "go_test_all_status": "Recruiting and all non-E2E packages except the same archtest baseline passed; full E2E also exposed an unrelated persistent Coderunner child-presence failure and one Dismiss failure that passed an immediate isolated rerun",
+    "unchanged_from_a94d2b8d": [
+      "e2e/coderunner_test.go",
+      "e2e/dismiss_test.go",
+      "drivers/tools/coderunner",
+      "protocol",
+      "runtime",
+      "platform"
+    ],
+    "branch_added_layer_violations": 0
+  },
+  "non_claims": [
+    "third-party latency, throttling, CDN, JavaScript, or availability behavior",
+    "Browser or authenticated Profile throughput",
+    "remote Artifact performance",
+    "20K simultaneous Listing occurrence completion",
+    "400K Detail completion or long-window production SLO",
+    "production readiness"
+  ],
+  "acceptance": {
+    "scenario": "S25",
+    "status": "partial",
+    "reason": "the real scheduled daily path is proven to 5,000 Details, but the full 20K Listing plus 400K Detail production gate remains open"
+  }
+}

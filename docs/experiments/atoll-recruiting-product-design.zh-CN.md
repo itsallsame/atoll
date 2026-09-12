@@ -1168,6 +1168,8 @@ H3 又把相同 HTTP batch 路径从 H2 的 1,000 项扩大到 5,000 项，作�
 
 结果路径检查又发现历史回填父级聚合原来在每个成功 Item 后执行一次全成员 `SUM`，一个 n 项 Backfill 总计访问 O(n²) 个明细，同时父级行锁令这些扫描无法并行。成功结果事务本来已经用 `FOR UPDATE` 锁住父 Backfill 和唯一 queued Item，且在变更前检查 durable command receipt，因此正常路径改为从锁定父状态把 `succeeded_items` 单调加一；失败、accepted gap、取消和人工修复等低频混合路径仍按事实重算。两项成功并逐项重放的 MySQL 合同明确核对父聚合与明细状态计数相等。真实 H2 为 72.079 秒（13.87/s），H3 为 469.316 秒（10.65/s），相对上一版分别只改善 0.75% 和 1.10%。保留它的理由是消除了数据量相关的平方级工作，而不是宣称吞吐突破；H3 推算 400K 仍约 10.43 小时，比 8 小时算术参考低 23.29%，且该 workload 是 `live_refetch` Backfill，不能冒充每日 Detail 结果路径的直接测量。
 
+因此新增独立的每日 Detail 容量旅程，而不再用 Backfill 作替代证据。真实 Atoll durable timer 先按 cutoff 建立一份 SourceOccurrence 和 Listing Work；生产 HTTP Listing Driver 在受控无出站 origin 上按 500 项分页，到达旧活动时间边界后提交一次 Checkpoint，并从每页新 Observation 物化 Detail Work。同一批处理 Executor 收到不属于批量安全集合的 Listing wake 时，空批次不提前完成 dispatch，而是回退到原单项 offer；页面接受后只按当时可选 Detail Executor 数追加紧凑唤醒，不随岗位数逐项发送。D0/D1/D2/D3 分别完成 20、200、1,000、5,000 个新岗位，其中 D3 是 10 页 Listing、5,000 个 Detail GET/Attempt/JobDetailVersion/response Artifact，20,480,000 字节逐 Resource 校验，Permit 归零、执行 dispatch 全部交付并通过 Server 重启恢复。D2 业务完成 77.079 秒（12.97 Detail/s）；D3 完成 423.655 秒（11.80 Detail/s），按该本机受控速率执行 400K 约需 9.41 小时，仍低于 8 小时算术参考约 15.05%。测试在全部详情完成后以不可变窗口末作为逻辑时钟结算日报，并明确证明未来日期的关闭事件不会被 reconcile 提前投递。该证据关闭“每日 Listing 到 Detail 的 5,000 项真实数据面”缺口，但不等于 20K 同时 Listing、400K Detail、第三方限流或远程 Artifact 的生产门。
+
 ### 15.3 真实网站验收
 
 发现、Recipe、HTTP/API 和 Browser 以真实公开招聘网站验收。本地只注入不能安全施加给第三方的并发、重复、崩溃和数据库故障。

@@ -15,7 +15,11 @@ import (
 func main() {
 	payloadBytes := positiveEnv("RECRUITING_ORIGIN_PAYLOAD_BYTES", 4096)
 	latency := time.Duration(positiveEnv("RECRUITING_ORIGIN_LATENCY_MS", 5)) * time.Millisecond
+	listingItems := positiveEnv("RECRUITING_ORIGIN_LISTING_ITEMS", 1)
+	activityUnix := int64(positiveEnv("RECRUITING_ORIGIN_ACTIVITY_UNIX", int(time.Now().UTC().Unix())))
 	var jobRequests atomic.Uint64
+	var listingRequests atomic.Uint64
+	var listedItems atomic.Uint64
 	var robotsRequests atomic.Uint64
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(response http.ResponseWriter, _ *http.Request) {
@@ -29,8 +33,28 @@ func main() {
 	mux.HandleFunc("/metrics", func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(map[string]uint64{
-			"job_requests": jobRequests.Load(), "robots_requests": robotsRequests.Load(),
+			"job_requests": jobRequests.Load(), "listing_requests": listingRequests.Load(),
+			"listing_items": listedItems.Load(), "robots_requests": robotsRequests.Load(),
 		})
+	})
+	mux.HandleFunc("/listing", func(response http.ResponseWriter, request *http.Request) {
+		offset, err := nonNegativeQuery(request, "offset", 0)
+		if err != nil {
+			http.Error(response, err.Error(), http.StatusBadRequest)
+			return
+		}
+		limit, err := positiveQuery(request, "limit", 500)
+		if err != nil || limit > 500 {
+			http.Error(response, "limit must be in [1,500]", http.StatusBadRequest)
+			return
+		}
+		listingRequests.Add(1)
+		time.Sleep(latency)
+		body, emitted := listingResponse(request.Host, listingItems, activityUnix, offset, limit)
+		listedItems.Add(uint64(emitted))
+		response.Header().Set("Content-Type", "application/json")
+		response.Header().Set("Cache-Control", "no-store")
+		_, _ = response.Write(body)
 	})
 	mux.HandleFunc("/jobs/", func(response http.ResponseWriter, request *http.Request) {
 		id := strings.TrimPrefix(request.URL.Path, "/jobs/")
@@ -58,9 +82,62 @@ func main() {
 		_, _ = response.Write(browserResponseBody(id, payloadBytes))
 	})
 	server := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	log.Printf("recruiting controlled origin listening on %s payload_bytes=%d latency_ms=%d",
-		server.Addr, payloadBytes, latency.Milliseconds())
+	log.Printf("recruiting controlled origin listening on %s payload_bytes=%d latency_ms=%d listing_items=%d",
+		server.Addr, payloadBytes, latency.Milliseconds(), listingItems)
 	log.Fatal(server.ListenAndServe())
+}
+
+func positiveQuery(request *http.Request, name string, fallback int) (int, error) {
+	value := strings.TrimSpace(request.URL.Query().Get(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		return 0, fmt.Errorf("%s must be positive", name)
+	}
+	return parsed, nil
+}
+
+func nonNegativeQuery(request *http.Request, name string, fallback int) (int, error) {
+	value := strings.TrimSpace(request.URL.Query().Get(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return 0, fmt.Errorf("%s must be non-negative", name)
+	}
+	return parsed, nil
+}
+
+func listingResponse(host string, itemCount int, activityUnix int64, offset, limit int) ([]byte, int) {
+	total := itemCount
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	if offset > total {
+		offset = total
+	}
+	items := make([]map[string]any, 0, end-offset)
+	for index := offset; index < end; index++ {
+		id := fmt.Sprintf("%06d", index)
+		activity := time.Unix(activityUnix-int64(index), 0).UTC()
+		if index == itemCount-1 {
+			// The final row is older than the seeded checkpoint. It proves the
+			// activity boundary and lets the incremental scan close safely.
+			activity = time.Unix(activityUnix-172800, 0).UTC()
+		}
+		items = append(items, map[string]any{
+			"id": id, "title": "Daily Capacity Role " + id,
+			"url": "http://" + host + "/jobs/" + id, "activity_at": activity.Format(time.RFC3339),
+		})
+	}
+	body, _ := json.Marshal(map[string]any{
+		"offset": offset, "limit": limit, "totalFound": total, "content": items,
+	})
+	return body, len(items)
 }
 
 func positiveEnv(name string, fallback int) int {

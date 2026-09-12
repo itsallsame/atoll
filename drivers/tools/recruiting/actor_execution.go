@@ -652,9 +652,14 @@ func handleExecutionOfferBatch(sys actorbase.Sys, cfg Config, repository *store.
 		}
 		offers = append(offers, offer)
 	}
-	if err := repository.CompleteExecutionDispatch(msg.Ctx(), payload.DispatchID, executorID, time.UnixMilli(msg.TS).UTC()); err != nil {
-		failStoreError(sys, msg, err)
-		return
+	// An empty batch may mean this wake belongs to a non-batch-safe Work such
+	// as Listing. Leave the dispatch pending so the Executor can fall back to
+	// the single-offer protocol without a crash window that loses the wake.
+	if len(offers) != 0 {
+		if err := repository.CompleteExecutionDispatch(msg.Ctx(), payload.DispatchID, executorID, time.UnixMilli(msg.TS).UTC()); err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
 	}
 	if state != nil && len(offers) != 0 {
 		if state.ExecutorPresence == nil {
