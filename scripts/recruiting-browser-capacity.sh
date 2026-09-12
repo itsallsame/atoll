@@ -3,10 +3,11 @@ set -euo pipefail
 
 level="${RECRUITING_BROWSER_CAPACITY_LEVEL:-B0}"
 artifact_recovery="${RECRUITING_BROWSER_ARTIFACT_RECOVERY:-0}"
+joint_process_recovery="${RECRUITING_BROWSER_JOINT_PROCESS_RECOVERY:-0}"
 case "${level}" in
-  B0|B1|B2|BF0) ;;
+  B0|B1|B2|BF0|BF1) ;;
   *)
-    echo "recruiting Browser capacity: level must be one of B0, B1, B2, BF0" >&2
+    echo "recruiting Browser capacity: level must be one of B0, B1, B2, BF0, BF1" >&2
     exit 2
     ;;
 esac
@@ -14,8 +15,18 @@ if [[ "${artifact_recovery}" != "0" && "${artifact_recovery}" != "1" ]]; then
   echo "recruiting Browser capacity: RECRUITING_BROWSER_ARTIFACT_RECOVERY must be 0 or 1" >&2
   exit 2
 fi
-if [[ "${artifact_recovery}" == "1" && "${level}" != "BF0" ]] || [[ "${artifact_recovery}" == "0" && "${level}" == "BF0" ]]; then
-  echo "recruiting Browser capacity: BF0 and RECRUITING_BROWSER_ARTIFACT_RECOVERY=1 must be selected together" >&2
+if [[ "${joint_process_recovery}" != "0" && "${joint_process_recovery}" != "1" ]]; then
+  echo "recruiting Browser capacity: RECRUITING_BROWSER_JOINT_PROCESS_RECOVERY must be 0 or 1" >&2
+  exit 2
+fi
+if [[ "${artifact_recovery}" == "0" && "${joint_process_recovery}" == "1" ]]; then
+  echo "recruiting Browser capacity: joint process recovery also requires Artifact recovery" >&2
+  exit 2
+fi
+if [[ "${level}" == "BF0" && ( "${artifact_recovery}" != "1" || "${joint_process_recovery}" != "0" ) ]] ||
+   [[ "${level}" == "BF1" && ( "${artifact_recovery}" != "1" || "${joint_process_recovery}" != "1" ) ]] ||
+   [[ "${level}" != "BF0" && "${level}" != "BF1" && ( "${artifact_recovery}" != "0" || "${joint_process_recovery}" != "0" ) ]]; then
+  echo "recruiting Browser capacity: B0-B2 are normal, BF0 is provider-only recovery, and BF1 is joint process recovery" >&2
   exit 2
 fi
 if [[ "${level}" == "B2" && "${RECRUITING_BROWSER_CAPACITY_LARGE_ACK:-}" != "isolated-browser-large-load" ]]; then
@@ -97,13 +108,17 @@ fi
 
 test_name='TestRecruitingBrowserResponseCapacityThroughRealDataPlanes'
 if [[ "${artifact_recovery}" == "1" ]]; then
-  test_name='TestRecruitingBrowserArtifactProviderRecoveryThroughRealDataPlanes'
+	test_name='TestRecruitingBrowserArtifactProviderRecoveryThroughRealDataPlanes'
 fi
-echo "recruiting Browser capacity: level=${level} artifact_recovery=${artifact_recovery} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} executors=${executors} chrome=${chrome_bin} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
+if [[ "${joint_process_recovery}" == "1" ]]; then
+  test_name='TestRecruitingBrowserJointProcessRecoveryThroughRealDataPlanes'
+fi
+echo "recruiting Browser capacity: level=${level} artifact_recovery=${artifact_recovery} joint_process_recovery=${joint_process_recovery} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} executors=${executors} chrome=${chrome_bin} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
 set +e
 ATOLL_RECRUITING_HTTP_CAPACITY=1 \
 ATOLL_RECRUITING_BROWSER_CAPACITY=1 \
 ATOLL_RECRUITING_BROWSER_ARTIFACT_RECOVERY="${artifact_recovery}" \
+ATOLL_RECRUITING_BROWSER_JOINT_PROCESS_RECOVERY="${joint_process_recovery}" \
 RECRUITING_CHROME_BIN="${chrome_bin}" \
 RECRUITING_HTTP_CAPACITY_ITEMS="${items}" \
 RECRUITING_HTTP_CAPACITY_PAYLOAD_BYTES="${payload_bytes}" \

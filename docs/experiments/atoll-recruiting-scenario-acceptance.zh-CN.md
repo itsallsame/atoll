@@ -42,6 +42,8 @@ S25/P9 补充（2026-09-12，Artifact provider）：独立 File provider 在 Lis
 
 S25/P9 补充（2026-09-12，Browser + Artifact provider）：`make recruiting-browser-artifact-recovery` 使用真实 Chrome 执行 daemon 和另一个已认证 File provider daemon；在 Browser Attempt 已 running、受控 origin 已接受文档请求且尚无 Artifact 时 `SIGKILL` provider。BF0 中 provider 停机 29.844 秒，旧 Attempt expired 且零 accepted Artifact，新 `attempt_recovered` dispatch 产生不同 Attempt；最终一个 DOM response、一个 effect trace 和一个 BackfillOutput 成功，Permit/dispatch 清零，Server 重启后两类 Resource 均可读。正常 B0 同时回归通过。该证据关闭真实 Chrome 执行期间的本地 provider 进程故障组合，但不代表同时杀 Chrome 与 provider、远程对象存储或第三方登录站点；S25 仍为部分完成。证据为 `recruiting-browser-artifact-provider-recovery-20260912.json`。
 
+S25/P9 补充（2026-09-12，Browser 联合进程恢复）：BF1 在同一精确切点同时 `SIGKILL` Chrome 所在执行 daemon 进程组和独立 provider。两个执行侧进程均停止时，在线控制面通过设备失联/incarnation fence 在 601 ms 内把旧 Attempt 收口为 expired、释放 Permit 并持久化恢复 dispatch；两台 daemon 以原设备身份恢复后，新 Executor incarnation 用不同 Attempt 完成唯一 DOM、trace 和 BackfillOutput。两次网站请求可解释，旧 Attempt 零 accepted Artifact，全部 dispatch delivered，Server 重启后两类 Resource 可读；BF0/B0 回归通过。该证据关闭本地双进程联合退出切点，但不代表 Server/MySQL 同时故障、远程存储或第三方站点；S25 状态不变。证据为 `recruiting-browser-joint-process-recovery-20260912.json`。
+
 S25/P9 补充（2026-09-12，事务批处理）：Recruiting 扩展把同一批最多 32 个 Detail 的 Offer、Claim、Result 从“协议批量、数据库逐项事务”收敛为有界事务快速路径，并将共享预算维度按批聚合加减；每个 Attempt、Work、Permit、command receipt、Artifact、结果状态和幂等键仍独立持久化。异常快速路径整体回滚后再走既有逐项语义，Offer 遇到容量或无候选时只提交有效前缀；Listing、Browser 和多结果任务不进入该路径。每日 D2 从 77.079 秒降至 60.645 秒；D3 从 423.655 秒降至 351.175 秒，即 14.24 Detail/s，按该本机受控速率推算 400K 为 7.80 小时。它越过 13.89/s 算术参考，但没有实际执行 400K、20K 同时 Listing、第三方网络、远程 Artifact、多分片或长期 SLO，因此 S25 仍为部分完成。证据为 `recruiting-daily-detail-transaction-batching-20260912.json`。
 
 ## 当前实施顺序

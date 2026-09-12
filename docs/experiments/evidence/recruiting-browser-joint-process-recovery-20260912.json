@@ -1,0 +1,106 @@
+{
+  "schema": "recruiting.browser-joint-process-recovery-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "d5ce0c33",
+  "workload_manifest": "docs/experiments/workloads/recruiting-browser-capacity-v1.json#BF1",
+  "entrypoint": "make recruiting-browser-joint-process-recovery",
+  "test": "TestRecruitingBrowserJointProcessRecoveryThroughRealDataPlanes",
+  "feature_under_test": "joint loss and recovery of the real-Chrome execution daemon and its separate Artifact provider",
+  "environment": {
+    "chrome": "/usr/bin/google-chrome",
+    "origin": "Docker --internal 11.254.x.x controlled HTTP service",
+    "origin_latency_ms": 5000,
+    "mysql": "ephemeral MySQL 8.4 with separate non-root migration and runtime accounts",
+    "processes": [
+      "Atoll Server",
+      "execution daemon process group launching real Chrome",
+      "separate File provider daemon"
+    ],
+    "data_planes": ["Recruiting MySQL", "Atoll Channel ledger", "daemon File Resources"]
+  },
+  "fault_cut": {
+    "browser_state_before_cut": "Attempt running, no Artifact persisted, and controlled origin accepted exactly one document request",
+    "cut": "SIGKILL both the execution daemon process group that owns Chrome and the separate File provider daemon",
+    "processes_confirmed_exited_before_recovery": 2,
+    "control_plane_kept_running": true,
+    "execution_side_outage_ms": 601,
+    "recovery_trigger": "device disappearance and incarnation fencing allowed the control Actor to expire and redispatch before the 30-second stale TTL"
+  },
+  "result": {
+    "backfill_items": 1,
+    "browser_document_requests": 2,
+    "robots_requests": 2,
+    "attempts": 2,
+    "expired_attempts": 1,
+    "succeeded_attempts": 1,
+    "accepted_artifacts_on_expired_attempt": 0,
+    "response_artifacts": 1,
+    "trace_artifacts": 1,
+    "backfill_outputs": 1,
+    "response_bytes_verified": 4081,
+    "active_permits_after_settlement": 0,
+    "pending_execution_dispatches_after_settlement": 0,
+    "old_dispatch_status": "delivered",
+    "recovery_dispatch_status": "delivered",
+    "business_completion_ms": 6893,
+    "outbox_drain_ms": 6995,
+    "server_restart_ms": 2883,
+    "journey_total_ms": 23679,
+    "offer_to_accept_ms": {"p50": 36, "p95": 36},
+    "accept_to_start_ms": {"p50": 22, "p95": 22},
+    "successful_start_to_terminal_ms": {"p50": 5397, "p95": 5397},
+    "ledger_messages": 162,
+    "ledger_payload_bytes": 57367,
+    "ledger_events": 37,
+    "recruiting_ledger_events": 35
+  },
+  "invariants": [
+    "the two killed daemons are different authenticated devices and OS process groups",
+    "both process groups are confirmed stopped before the control plane observes the old Attempt as expired",
+    "the Atoll Server and Recruiting control Actor stay online and require no manual database mutation",
+    "the expired Attempt produces no accepted Artifact or BackfillOutput and releases its Permit",
+    "the originating dispatch is durably settled and attempt_recovered creates a fresh dispatch identity",
+    "both devices reconnect with their original identities and the Executor receives a new incarnation",
+    "the fresh Attempt persists exactly one DOM response, one effect trace and one BackfillOutput",
+    "after Atoll Server restart both devices reconnect and both DOM and trace Resources remain readable"
+  ],
+  "regressions": {
+    "provider_only_BF0": {
+      "status": "passed",
+      "provider_outage_ms": 29900,
+      "expired_attempts": 1,
+      "succeeded_attempts": 1,
+      "business_completion_ms": 35983,
+      "server_restart_ms": 3412
+    },
+    "normal_B0": {
+      "status": "passed",
+      "items": 4,
+      "response_artifacts": 4,
+      "trace_artifacts": 4,
+      "response_bytes_verified": 16324,
+      "business_completion_ms": 3124,
+      "server_restart_ms": 3508
+    }
+  },
+  "implementation": {
+    "production_driver_test_hook_added": false,
+    "actor_classes_added": 0,
+    "worker_types_added": 0,
+    "atoll_core_modified": false,
+    "recovery_mechanism": "existing presence/incarnation fence, Attempt recovery, persisted source dispatch, attempt_recovered dispatch, and idempotent Artifact/result contracts"
+  },
+  "non_claims": [
+    "remote cloud or object-storage provider behavior",
+    "simultaneous Atoll Server or MySQL failure",
+    "third-party JavaScript, authentication, anti-bot or availability behavior",
+    "Browser throughput or long-window production SLO",
+    "complete P9 production readiness"
+  ],
+  "acceptance": {
+    "gate": "P9 joint real-Chrome execution daemon and separate local File provider process outage",
+    "status": "passed",
+    "scenario": "S25",
+    "scenario_status_changed": false
+  }
+}

@@ -5,7 +5,8 @@
     "B0": {"items": 4, "payload_bytes": 4096, "origin_latency_ms": 5, "executors": 1, "timeout_seconds": 180},
     "B1": {"items": 20, "payload_bytes": 8192, "origin_latency_ms": 20, "executors": 2, "timeout_seconds": 600},
     "B2": {"items": 100, "payload_bytes": 16384, "origin_latency_ms": 50, "executors": 4, "timeout_seconds": 1800},
-    "BF0": {"items": 1, "payload_bytes": 4096, "origin_latency_ms": 5000, "executors": 1, "timeout_seconds": 180, "fault": "kill the separate Artifact provider after the real Chrome document request starts"}
+    "BF0": {"items": 1, "payload_bytes": 4096, "origin_latency_ms": 5000, "executors": 1, "timeout_seconds": 180, "fault": "kill the separate Artifact provider after the real Chrome document request starts"},
+    "BF1": {"items": 1, "payload_bytes": 4096, "origin_latency_ms": 5000, "executors": 1, "timeout_seconds": 180, "fault": "kill both the Chrome execution daemon and separate Artifact provider after the document request starts"}
   },
   "correctness_gates": [
     "the production Browser Driver and real Chrome reach the isolated public-shaped address without a private-network bypass",
@@ -21,7 +22,8 @@
     "the provider is killed only after the Browser Attempt is running and the controlled origin has accepted the document request",
     "the old Attempt expires without an accepted Artifact or business result and its originating dispatch is durably settled",
     "provider recovery allows a fresh dispatch and distinct Attempt to persist one DOM response, one effect trace and one BackfillOutput",
-    "all Permits and execution dispatches settle, and Server restart preserves provider presence and both Resource reads"
+    "all Permits and execution dispatches settle, and Server restart preserves provider presence and both Resource reads",
+    "BF1 additionally requires the control Actor to expire the old Attempt while both execution-side daemons are absent, then deliver recovery only after both devices reconnect"
   ],
   "non_claims": [
     "the controlled origin does not represent third-party JavaScript complexity, latency, rate limits, bot defenses, authentication, or site availability",

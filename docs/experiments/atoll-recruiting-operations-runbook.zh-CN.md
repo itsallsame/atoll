@@ -101,7 +101,9 @@ durable timer 到达 cutoff 时冻结当日 eligible Source roster，形成不�
 
 独立 File provider 恢复入口为 `make recruiting-daily-artifact-recovery`。它会在 Listing 已开始访问网站后强杀 provider，等待旧 Attempt 按 TTL 失效，再用同一设备身份和持久目录恢复 provider；验收要求出现一个 expired 和一个 succeeded Listing Attempt、旧 Attempt 无 accepted Artifact、全部 Detail 完成且 Server 重启后 Resource 仍可读。
 
-真实 Chrome 与 provider 的组合入口为 `make recruiting-browser-artifact-recovery`。固定 BF0 使用一个 Browser Work、一个执行 daemon 和一个独立 provider daemon；只有在 Attempt running、origin 已接受 Chrome 文档请求且数据库尚无 Artifact 后才杀 provider。验收要求旧 Attempt expired 且无 accepted Artifact，来源 dispatch 与恢复 dispatch 均 delivered，新 Attempt 只产生一份 DOM、trace 和 BackfillOutput，Permit/dispatch 清零，并在 Server 重启后分别回读 DOM 与 trace。两个本地入口都不替代远程对象存储、同时杀 Chrome/provider 或第三方授权站点演练。
+真实 Chrome 与 provider 的组合入口为 `make recruiting-browser-artifact-recovery`。固定 BF0 使用一个 Browser Work、一个执行 daemon 和一个独立 provider daemon；只有在 Attempt running、origin 已接受 Chrome 文档请求且数据库尚无 Artifact 后才杀 provider。验收要求旧 Attempt expired 且无 accepted Artifact，来源 dispatch 与恢复 dispatch 均 delivered，新 Attempt 只产生一份 DOM、trace 和 BackfillOutput，Permit/dispatch 清零，并在 Server 重启后分别回读 DOM 与 trace。
+
+双进程入口为 `make recruiting-browser-joint-process-recovery`。BF1 在相同切点同时杀执行 daemon 进程组和 provider；控制面必须在两端缺席时独立收口旧 Attempt，随后只在两台设备恢复、Executor 取得新 incarnation 后执行恢复 dispatch。操作员不得手工重开 Attempt、复制 Artifact 或修改数据库。以上本地入口均不替代远程对象存储、Server/MySQL 联合故障或第三方授权站点演练。
 
 共享修复的标准顺序：
 
