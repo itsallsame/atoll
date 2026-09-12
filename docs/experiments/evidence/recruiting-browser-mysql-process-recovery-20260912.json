@@ -1,0 +1,86 @@
+{
+  "schema": "recruiting.browser-mysql-process-recovery-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "6ddbc091",
+  "workload_manifest": "docs/experiments/workloads/recruiting-browser-capacity-v1.json#BF5",
+  "entrypoint": "make recruiting-browser-mysql-process-recovery",
+  "test": "TestRecruitingBrowserMySQLProcessRecoveryThroughRealDataPlanes",
+  "feature_under_test": "same-node MySQL process death, crash recovery, and result resumption while a real-Chrome request is in flight",
+  "environment": {
+    "chrome": "/usr/bin/google-chrome",
+    "origin": "Docker --internal 11.254.x.x controlled HTTP service",
+    "origin_latency_ms": 5000,
+    "mysql": "ephemeral MySQL 8.4 with separate non-root staircase_migrator and staircase_runtime accounts",
+    "database_storage": "test-only restartable Docker data volume removed during cleanup",
+    "stable_runtime_endpoint": "test-process transparent TCP proxy retargeted to the restarted container's published port",
+    "data_planes": ["Recruiting MySQL", "Atoll Channel ledger", "daemon File Resources"]
+  },
+  "fault_cut": {
+    "browser_state_before_cut": "Attempt running, no Artifact persisted, and controlled origin accepted exactly one document request",
+    "cut": "block the stable runtime endpoint, SIGKILL the MySQL container, hold the process down for seven seconds, restart the same container and data, retarget the proxy, then resume forwarding",
+    "mysql_process_outage_and_recovery_ms": 9498,
+    "server_confirmed_alive_during_outage": true,
+    "execution_daemon_confirmed_alive_during_outage": true
+  },
+  "fixture_calibration": {
+    "first_attempt_status": "failed before stable endpoint correction",
+    "finding": "Docker reallocated a random published host port when the same container restarted, so the old test DSN remained connection-refused even though MySQL crash recovery completed and the container was healthy",
+    "correction": "keep the runtime DSN pointed at a stable transparent proxy and retarget only the proxy upstream after restart; no production configuration or code changed"
+  },
+  "authoritative_result": {
+    "status": "passed",
+    "backfill_items": 1,
+    "browser_document_requests": 1,
+    "robots_requests": 1,
+    "attempts": 1,
+    "succeeded_attempts": 1,
+    "attempt_recovery_dispatches": 0,
+    "response_artifacts": 1,
+    "trace_artifacts": 1,
+    "backfill_outputs": 1,
+    "response_bytes_verified": 4081,
+    "active_permits_after_settlement": 0,
+    "pending_execution_dispatches_after_settlement": 0,
+    "business_completion_ms": 12035,
+    "outbox_drain_ms": 12137,
+    "final_server_restart_ms": 3292,
+    "journey_total_ms": 31088,
+    "offer_to_accept_ms": {"p50": 37, "p95": 37},
+    "accept_to_start_ms": {"p50": 29, "p95": 29},
+    "start_to_terminal_ms": {"p50": 11460, "p95": 11460},
+    "ledger_messages": 218,
+    "ledger_payload_bytes": 73303,
+    "ledger_events": 58,
+    "recruiting_ledger_events": 56
+  },
+  "invariants": [
+    "MySQL receives SIGKILL only after the Attempt is running, the request reached the origin, and no Artifact exists",
+    "Server and execution daemon remain alive while the database process is absent and performs crash recovery",
+    "the same database retains the seeded Work, Attempt, Recipe, Job, receipt, and outbox facts across process death",
+    "the Executor resends the immutable result through its bounded control retry path instead of rerunning the Recipe",
+    "the original Attempt succeeds without a replacement Attempt, recovery dispatch, or second website request",
+    "one DOM response, one effect trace, and one BackfillOutput commit after database recovery",
+    "all Permits and dispatches settle, and a final Server restart preserves state and both Resource reads"
+  ],
+  "implementation": {
+    "production_driver_test_hook_added": false,
+    "actor_classes_added": 0,
+    "worker_types_added": 0,
+    "atoll_core_modified": false,
+    "changed_production_scope": [],
+    "reused_production_behavior": "bounded immutable result replay introduced by BF4 in drivers/tools/recruitingexecutor/control_client.go; no production edit required for BF5"
+  },
+  "non_claims": [
+    "primary/replica failover or promotion",
+    "point-in-time recovery, corrupted storage, data loss, or a different database node",
+    "remote-network behavior or a long outage beyond control_wait_ms",
+    "simultaneous Atoll Server and MySQL failure",
+    "complete P9 production readiness"
+  ],
+  "acceptance": {
+    "gate": "P9 MySQL process death during an in-flight real-Chrome request",
+    "status": "passed",
+    "scenario": "S25",
+    "scenario_status_changed": false
+  }
+}

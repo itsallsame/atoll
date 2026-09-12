@@ -113,6 +113,8 @@ MySQL 短时停顿入口为 `make recruiting-browser-mysql-recovery`。BF3 在�
 
 MySQL 连接重置入口为 `make recruiting-browser-mysql-connection-recovery`。BF4 用透明 TCP 代理关闭已有数据库连接、七秒内拒绝新连接，再恢复到同一 MySQL；不需要也不得给业务运行账号增加管理权限。Executor 必须用同一结果 command 和 payload 在 `control_wait_ms` 内指数退避，不得重新执行 Recipe 或重抓网站。验收要求原 Attempt、网站请求、DOM、trace 和 BackfillOutput 各一份，且没有恢复 dispatch；明确的 fence、权限、版本或 payload 拒绝不得重试。若停机超过控制等待窗口，现有 Attempt 将按统一 TTL/dispatch 恢复，不能手改数据库。本入口不替代 MySQL failover、进程死亡、远程网络和 Server/MySQL 联合故障。
 
+MySQL 进程恢复入口为 `make recruiting-browser-mysql-process-recovery`。BF5 使用把本次测试库置于可重启的临时数据卷，在 running/no-evidence 切点阻断稳定 runtime endpoint 并 `SIGKILL` MySQL，七秒后重启同一容器和数据。Server/daemon 不得退出，Actor DSN、Attempt、结果 command/payload 不得变化，网站不得重抓；恢复后检查原 Attempt、唯一 DOM/trace/BackfillOutput、Permit/outbox 清零及 Server 重启回读。测试清理会删除临时容器和数据卷。本入口只代表同节点 crash recovery，不代表主从晋升、PITR、损坏存储、换节点或地域恢复。
+
 共享修复的标准顺序：
 
 ```text

@@ -685,6 +685,8 @@ MySQL 在途停顿进展（2026-09-12）：新增 `make recruiting-browser-mysql
 
 MySQL 连接重置进展（2026-09-12）：新增 `make recruiting-browser-mysql-connection-recovery` 和 BF4。测试内透明 TCP 代理承载全部 `staircase_runtime` 流量，在相同 running/no-evidence 切点关闭既有连接并拒绝新连接七秒，再恢复到原 MySQL。首次有效注入观察 200.68 秒仍见 Attempt/Work running、零 Artifact 和 15 分钟 dispatch deadline，定位到 Executor 只重放模糊 Call/Wait，而把控制 Actor 因数据库失败返回的明确 `internal_unavailable` 当成终态。Recruiting Executor 现以不变 command/operation/payload 在 `control_wait_ms` 内对 `internal_unavailable|channel_unavailable` 做 250 ms 起步、2 秒封顶的指数退避；单项和 batch 结果共用该规则，业务拒绝/协议错误仍只调用一次。权威复跑断连 7.003 秒，原 Attempt 在 8.175 秒内完成，origin 请求精确一次，DOM/trace/BackfillOutput 各一，Permit/dispatch 清零，Server 重启回读通过。没有新增 Worker 或改 Atoll core；主从切换、数据库进程死亡、远程网络和长停机仍是独立门。证据见 `evidence/recruiting-browser-mysql-connection-recovery-20260912.json`。
 
+MySQL 进程死亡恢复进展（2026-09-12）：新增 `make recruiting-browser-mysql-process-recovery` 和 BF5。真实 Chrome 请求已到 origin 且 Attempt running/零 Artifact 后，测试阻断稳定 runtime endpoint、`SIGKILL` MySQL，七秒后重启同一容器与数据卷；透明代理吸收 Docker 随机宿主端口变化，Actor DSN 始终不变。MySQL crash recovery 后原 Work、Attempt、Recipe、Job、receipt 和 outbox 仍在，BF4 的不可变结果重送直接完成原 Attempt，没有重新执行 Recipe；停机与恢复 9.498 秒，业务完成 12.035 秒，网站请求、DOM、trace、BackfillOutput 各一，最终 Server 重启通过。该切片没有生产代码变化，只证明同节点进程死亡与原数据恢复；主从 failover、PITR、存储损坏、远程节点和长停机尚未关闭。证据见 `evidence/recruiting-browser-mysql-process-recovery-20260912.json`。
+
 ## 16. 自动测试命令与 CI 分层
 
 计划在实现过程中提供以下稳定入口：

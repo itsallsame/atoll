@@ -54,6 +54,8 @@ S25/P9 补充（2026-09-12，MySQL 在途停顿）：BF3 在 Browser Attempt run
 
 S25/P9 补充（2026-09-12，MySQL 连接重置）：BF4 透明代理在 Browser running/no-evidence 切点关闭全部既有 MySQL TCP 连接并拒绝新连接 7.003 秒。首次有效运行观察 200.68 秒，原 Attempt/Work 仍 running 且零 Artifact，证明明确的 `internal_unavailable` 会让 Executor 放弃已经生成的结果。修复只在 Recruiting Executor：单项和 batch 结果均用不变 command/operation/payload，在 `control_wait_ms` 内对临时不可用做有界指数退避，业务拒绝不重试。权威复跑由原 Attempt 完成唯一 DOM、trace 和 BackfillOutput，网站请求仍精确一次，Permit/dispatch、ledger 和重启回读通过。它不代表 MySQL failover、进程死亡、远程网络、长停机或 Server/MySQL 联合故障，S25 状态不变。证据为 `recruiting-browser-mysql-connection-recovery-20260912.json`。
 
+S25/P9 补充（2026-09-12，MySQL 进程恢复）：BF5 在 Browser running/no-evidence 切点阻断稳定 runtime endpoint 并 `SIGKILL` MySQL，七秒后重启同一容器与数据卷；Server、daemon 和 Actor DSN 不变。停机与 crash recovery 共 9.498 秒，原数据库事实保留，BF4 的不可变结果退避让原 Attempt 在不重跑 Recipe 的情况下完成；网站请求、DOM、trace、BackfillOutput 各一，Permit/outbox、ledger 和 Server 重启回读通过。该证据只关闭本地同节点进程死亡，不代表主从 failover、PITR、存储损坏、换节点、长停机或 Server/MySQL 联合故障，S25 状态不变。证据为 `recruiting-browser-mysql-process-recovery-20260912.json`。
+
 ## 当前实施顺序
 
 1. S12/S25/P9：在授权部署环境完成真实登录、出站隔离、执行吞吐、联合恢复和长期监控。

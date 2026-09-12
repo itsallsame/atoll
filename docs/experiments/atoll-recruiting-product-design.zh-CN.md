@@ -1184,6 +1184,8 @@ H3 又把相同 HTTP batch 路径从 H2 的 1,000 项扩大到 5,000 项，作�
 
 每日 cutoff 的恢复不能只由 BF2 的在途 Attempt 证明。DF0 在 Recruiting Actor 已持久化当天 cutoff 后停掉 Server，跨过 cutoff 两秒仍直接核对 MySQL 中没有 DailyRun，排除旁路调度；Server 恢复而原 daemon 尚未恢复投递时，逾期 durable timer 使用原 schedule date、cutoff、window 和 policy 创建唯一 DailyRun/Occurrence。第一次旅程证明 timer 正确，却暴露首次 Listing dispatch 在 no_endpoint_yet 后继承 15 分钟 acknowledgement deadline：它尚无 Attempt，所以只跟踪“曾领取 Work 的 Executor”无法感知后来上线。修复把配置明确声明的 fleet base 与 Atoll catalog 以 O(fleet+catalog) 匹配，加入具体 incarnation 的现有 presence 观察；上线边沿继续调用原 AccelerateExecutorDispatches、幂等 dispatch 和 Attempt fence，不轮询全部 Work，也不增加 Worker。强化旅程暂停原 daemon，先证明 dispatch 已投递且 pending、Attempt 为零，再恢复同一进程并要求 delivery attempt 至少为 2；最终当天运行、20 个 Detail、Artifact、日报和重启回读全部完成。它关闭单日 cutoff 跨 Server 故障及“Server 先恢复、Executor 后恢复”的本地切点，但不推导多日停机补偿、Server/MySQL 同时故障或生产规模。
 
+BF5 再把故障从连接层推进到数据库进程：同一 running/no-evidence 切点先阻断稳定运行端点，再对 MySQL 容器发送 `SIGKILL`，停机七秒后以同一数据卷启动并完成 crash recovery。Docker 随机发布端口会在 restart 后变化，因此测试透明代理保持 Actor DSN 不变、只把上游改到新端口；这属于测试拓扑校准，不是生产重配置。实测停机与恢复共 9.498 秒，Server、daemon、数据库中既有 Work/Attempt/Recipe/Job/receipt/outbox 全部保留，BF4 的不可变结果退避使原 Attempt 完成，origin 仍只有一次请求，DOM、trace、BackfillOutput 各一。该切片没有新生产实现，也没有增加 Worker 或改 Atoll core；它证明同节点进程死亡与原数据重启，但不能替代主从晋升、PITR、存储损坏、换节点或地域灾难恢复。
+
 ### 15.3 真实网站验收
 
 发现、Recipe、HTTP/API 和 Browser 以真实公开招聘网站验收。本地只注入不能安全施加给第三方的并发、重复、崩溃和数据库故障。

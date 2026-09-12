@@ -7,10 +7,11 @@ joint_process_recovery="${RECRUITING_BROWSER_JOINT_PROCESS_RECOVERY:-0}"
 server_recovery="${RECRUITING_BROWSER_SERVER_RECOVERY:-0}"
 mysql_recovery="${RECRUITING_BROWSER_MYSQL_RECOVERY:-0}"
 mysql_connection_recovery="${RECRUITING_BROWSER_MYSQL_CONNECTION_RECOVERY:-0}"
+mysql_process_recovery="${RECRUITING_BROWSER_MYSQL_PROCESS_RECOVERY:-0}"
 case "${level}" in
-  B0|B1|B2|BF0|BF1|BF2|BF3|BF4) ;;
+  B0|B1|B2|BF0|BF1|BF2|BF3|BF4|BF5) ;;
   *)
-    echo "recruiting Browser capacity: level must be one of B0, B1, B2, BF0, BF1, BF2, BF3, BF4" >&2
+    echo "recruiting Browser capacity: level must be one of B0, B1, B2, BF0, BF1, BF2, BF3, BF4, BF5" >&2
     exit 2
     ;;
 esac
@@ -34,17 +35,26 @@ if [[ "${mysql_connection_recovery}" != "0" && "${mysql_connection_recovery}" !=
   echo "recruiting Browser capacity: RECRUITING_BROWSER_MYSQL_CONNECTION_RECOVERY must be 0 or 1" >&2
   exit 2
 fi
+if [[ "${mysql_process_recovery}" != "0" && "${mysql_process_recovery}" != "1" ]]; then
+  echo "recruiting Browser capacity: RECRUITING_BROWSER_MYSQL_PROCESS_RECOVERY must be 0 or 1" >&2
+  exit 2
+fi
 if [[ "${artifact_recovery}" == "0" && "${joint_process_recovery}" == "1" ]]; then
   echo "recruiting Browser capacity: joint process recovery also requires Artifact recovery" >&2
   exit 2
 fi
-if [[ "${level}" == "BF0" && ( "${artifact_recovery}" != "1" || "${joint_process_recovery}" != "0" || "${server_recovery}" != "0" || "${mysql_recovery}" != "0" || "${mysql_connection_recovery}" != "0" ) ]] ||
-   [[ "${level}" == "BF1" && ( "${artifact_recovery}" != "1" || "${joint_process_recovery}" != "1" || "${server_recovery}" != "0" || "${mysql_recovery}" != "0" || "${mysql_connection_recovery}" != "0" ) ]] ||
-   [[ "${level}" == "BF2" && ( "${artifact_recovery}" != "0" || "${joint_process_recovery}" != "0" || "${server_recovery}" != "1" || "${mysql_recovery}" != "0" || "${mysql_connection_recovery}" != "0" ) ]] ||
-   [[ "${level}" == "BF3" && ( "${artifact_recovery}" != "0" || "${joint_process_recovery}" != "0" || "${server_recovery}" != "0" || "${mysql_recovery}" != "1" || "${mysql_connection_recovery}" != "0" ) ]] ||
-   [[ "${level}" == "BF4" && ( "${artifact_recovery}" != "0" || "${joint_process_recovery}" != "0" || "${server_recovery}" != "0" || "${mysql_recovery}" != "0" || "${mysql_connection_recovery}" != "1" ) ]] ||
-   [[ "${level}" != "BF0" && "${level}" != "BF1" && "${level}" != "BF2" && "${level}" != "BF3" && "${level}" != "BF4" && ( "${artifact_recovery}" != "0" || "${joint_process_recovery}" != "0" || "${server_recovery}" != "0" || "${mysql_recovery}" != "0" || "${mysql_connection_recovery}" != "0" ) ]]; then
-  echo "recruiting Browser capacity: B0-B2 are normal, BF0 is provider-only, BF1 is joint-process, BF2 is Server recovery, BF3 is a MySQL stall, and BF4 is MySQL connection recovery" >&2
+actual_faults="${artifact_recovery}:${joint_process_recovery}:${server_recovery}:${mysql_recovery}:${mysql_connection_recovery}:${mysql_process_recovery}"
+case "${level}" in
+  BF0) expected_faults="1:0:0:0:0:0" ;;
+  BF1) expected_faults="1:1:0:0:0:0" ;;
+  BF2) expected_faults="0:0:1:0:0:0" ;;
+  BF3) expected_faults="0:0:0:1:0:0" ;;
+  BF4) expected_faults="0:0:0:0:1:0" ;;
+  BF5) expected_faults="0:0:0:0:0:1" ;;
+  *) expected_faults="0:0:0:0:0:0" ;;
+esac
+if [[ "${actual_faults}" != "${expected_faults}" ]]; then
+  echo "recruiting Browser capacity: B0-B2 are normal; BF0/BF1/BF2/BF3/BF4/BF5 select provider, joint-process, Server, MySQL-stall, MySQL-connection, and MySQL-process recovery respectively" >&2
   exit 2
 fi
 if [[ "${level}" == "B2" && "${RECRUITING_BROWSER_CAPACITY_LARGE_ACK:-}" != "isolated-browser-large-load" ]]; then
@@ -140,7 +150,10 @@ fi
 if [[ "${mysql_connection_recovery}" == "1" ]]; then
   test_name='TestRecruitingBrowserMySQLConnectionRecoveryThroughRealDataPlanes'
 fi
-echo "recruiting Browser capacity: level=${level} artifact_recovery=${artifact_recovery} joint_process_recovery=${joint_process_recovery} server_recovery=${server_recovery} mysql_recovery=${mysql_recovery} mysql_connection_recovery=${mysql_connection_recovery} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} executors=${executors} chrome=${chrome_bin} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
+if [[ "${mysql_process_recovery}" == "1" ]]; then
+  test_name='TestRecruitingBrowserMySQLProcessRecoveryThroughRealDataPlanes'
+fi
+echo "recruiting Browser capacity: level=${level} artifact_recovery=${artifact_recovery} joint_process_recovery=${joint_process_recovery} server_recovery=${server_recovery} mysql_recovery=${mysql_recovery} mysql_connection_recovery=${mysql_connection_recovery} mysql_process_recovery=${mysql_process_recovery} items=${items} payload_bytes=${payload_bytes} latency_ms=${latency_ms} executors=${executors} chrome=${chrome_bin} isolated_origin=${origin_url} revision=$(git -C "${repository_root}" rev-parse --short HEAD)"
 set +e
 ATOLL_RECRUITING_HTTP_CAPACITY=1 \
 ATOLL_RECRUITING_BROWSER_CAPACITY=1 \
@@ -149,6 +162,7 @@ ATOLL_RECRUITING_BROWSER_JOINT_PROCESS_RECOVERY="${joint_process_recovery}" \
 ATOLL_RECRUITING_BROWSER_SERVER_RECOVERY="${server_recovery}" \
 ATOLL_RECRUITING_BROWSER_MYSQL_RECOVERY="${mysql_recovery}" \
 ATOLL_RECRUITING_BROWSER_MYSQL_CONNECTION_RECOVERY="${mysql_connection_recovery}" \
+ATOLL_RECRUITING_BROWSER_MYSQL_PROCESS_RECOVERY="${mysql_process_recovery}" \
 RECRUITING_CHROME_BIN="${chrome_bin}" \
 RECRUITING_HTTP_CAPACITY_ITEMS="${items}" \
 RECRUITING_HTTP_CAPACITY_PAYLOAD_BYTES="${payload_bytes}" \

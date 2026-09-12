@@ -709,13 +709,17 @@ func startRecruitingMySQLInstance(t *testing.T) recruitingMySQLInstance {
 	if err := os.WriteFile(initSQL, []byte(sql), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command("docker", "run", "-d", "--name", containerName,
-		"-p", "127.0.0.1::3306", "-e", "MYSQL_RANDOM_ROOT_PASSWORD=yes",
-		"--tmpfs", "/var/lib/mysql:rw,nosuid,size=2g",
+	dockerArgs := []string{"run", "-d", "--name", containerName,
+		"-p", "127.0.0.1::3306", "-e", "MYSQL_RANDOM_ROOT_PASSWORD=yes"}
+	if os.Getenv("ATOLL_RECRUITING_BROWSER_MYSQL_PROCESS_RECOVERY") != "1" {
+		dockerArgs = append(dockerArgs, "--tmpfs", "/var/lib/mysql:rw,nosuid,size=2g")
+	}
+	dockerArgs = append(dockerArgs,
 		"-e", "MYSQL_DATABASE="+databaseName, "-e", "MYSQL_USER=staircase_migrator",
 		"-e", "MYSQL_PASSWORD="+migrationPassword,
 		"-v", initSQL+":/docker-entrypoint-initdb.d/10-runtime.sql:ro",
 		"mysql:8.4", "--default-time-zone=+00:00", "--log-bin-trust-function-creators=1")
+	command := exec.Command("docker", dockerArgs...)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("start recruiting MySQL: %v\n%s", err, output)
 	}
