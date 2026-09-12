@@ -64,31 +64,100 @@ func (r *Repository) OfferExecution(ctx context.Context, request ListingOfferReq
 	return r.offerExecution(ctx, request, "")
 }
 
+// OfferExecutionBatch creates one bounded supply batch in a single transaction.
+// ErrNotFound and ErrBudgetBlocked terminate the batch after committing its
+// already prepared prefix, matching repeated OfferExecution calls. Any other
+// error rolls the entire fast path back so the caller may safely fall back.
+func (r *Repository) OfferExecutionBatch(ctx context.Context, requests []ListingOfferRequest) ([]ExecutionOffer, error) {
+	if len(requests) < 2 || len(requests) > 32 {
+		return nil, fmt.Errorf("execution offer batch requires 2..32 requests")
+	}
+	first := requests[0]
+	seenAttempts := make(map[string]struct{}, len(requests))
+	for _, request := range requests {
+		if err := validateExecutionOfferRequest(request); err != nil || !request.SupplyBatchOnly || request.SupplyBatchID == "" {
+			return nil, fmt.Errorf("execution offer batch requires valid supply-batch-only requests")
+		}
+		if _, duplicate := seenAttempts[request.AttemptID]; duplicate {
+			return nil, fmt.Errorf("execution offer batch Attempt IDs must be unique")
+		}
+		seenAttempts[request.AttemptID] = struct{}{}
+		if request.ExecutorActorID != first.ExecutorActorID || request.ExecutorIncarnation != first.ExecutorIncarnation ||
+			request.Capability != first.Capability || request.Origin != first.Origin || request.ProfileID != first.ProfileID ||
+			request.SupplyBatchID != first.SupplyBatchID || request.DispatchID != first.DispatchID ||
+			!request.OfferedAt.Equal(first.OfferedAt) || request.BudgetPolicy != first.BudgetPolicy ||
+			request.CompanyImportLimit != first.CompanyImportLimit {
+			return nil, fmt.Errorf("execution offer batch routing and policy must be uniform")
+		}
+	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return nil, fmt.Errorf("begin execution offer batch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	budgetBatch := &budgetAcquireBatch{}
+	offers := make([]ExecutionOffer, 0, len(requests))
+	for _, request := range requests {
+		offer, offerErr := r.offerExecutionTx(ctx, tx, request, "", budgetBatch)
+		if errors.Is(offerErr, ErrNotFound) || errors.Is(offerErr, ErrBudgetBlocked) {
+			break
+		}
+		if offerErr != nil {
+			return nil, offerErr
+		}
+		offers = append(offers, offer)
+	}
+	if err := flushBudgetAcquireBatchTx(ctx, tx, budgetBatch, first.OfferedAt); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit execution offer batch: %w", err)
+	}
+	return offers, nil
+}
+
 func (r *Repository) offerExecution(ctx context.Context, request ListingOfferRequest, requiredPurpose string) (ExecutionOffer, error) {
-	if strings.TrimSpace(request.AttemptID) == "" || strings.TrimSpace(request.ExecutorActorID) == "" ||
-		strings.TrimSpace(request.ExecutorIncarnation) == "" || strings.TrimSpace(request.Capability) == "" || request.OfferedAt.IsZero() ||
-		request.BudgetPolicy.validate() != nil || request.CompanyImportLimit < 0 || request.CompanyImportLimit > 500 ||
-		len(strings.TrimSpace(request.SupplyBatchID)) > 191 || strings.TrimSpace(request.SupplyBatchID) != request.SupplyBatchID ||
-		len(strings.TrimSpace(request.DispatchID)) > 191 || strings.TrimSpace(request.DispatchID) != request.DispatchID {
-		return ExecutionOffer{}, fmt.Errorf("execution offer requires attempt, executor identity, incarnation, capability, and time")
+	if err := validateExecutionOfferRequest(request); err != nil {
+		return ExecutionOffer{}, err
 	}
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return ExecutionOffer{}, fmt.Errorf("begin execution offer: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	offer, err := r.offerExecutionTx(ctx, tx, request, requiredPurpose, nil)
+	if err != nil {
+		return ExecutionOffer{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ExecutionOffer{}, fmt.Errorf("commit execution offer: %w", err)
+	}
+	return offer, nil
+}
+
+func validateExecutionOfferRequest(request ListingOfferRequest) error {
+	if strings.TrimSpace(request.AttemptID) == "" || strings.TrimSpace(request.ExecutorActorID) == "" ||
+		strings.TrimSpace(request.ExecutorIncarnation) == "" || strings.TrimSpace(request.Capability) == "" || request.OfferedAt.IsZero() ||
+		request.BudgetPolicy.validate() != nil || request.CompanyImportLimit < 0 || request.CompanyImportLimit > 500 ||
+		len(strings.TrimSpace(request.SupplyBatchID)) > 191 || strings.TrimSpace(request.SupplyBatchID) != request.SupplyBatchID ||
+		len(strings.TrimSpace(request.DispatchID)) > 191 || strings.TrimSpace(request.DispatchID) != request.DispatchID {
+		return fmt.Errorf("execution offer requires attempt, executor identity, incarnation, capability, and time")
+	}
+	return nil
+}
+
+func (r *Repository) offerExecutionTx(ctx context.Context, tx *sql.Tx, request ListingOfferRequest,
+	requiredPurpose string, budgetBatch *budgetAcquireBatch) (ExecutionOffer, error) {
+	var err error
 	if replay, found, err := getExecutionOfferReplay(ctx, tx, request, requiredPurpose); err != nil {
 		return ExecutionOffer{}, err
 	} else if found {
-		if err := tx.Commit(); err != nil {
-			return ExecutionOffer{}, fmt.Errorf("commit execution offer replay: %w", err)
-		}
 		return replay, nil
 	}
 
 	var workState []byte
 	var placement WorkPlacement
-	var businessKey, origin, profileID sql.NullString
+	var businessKey, origin, profileID, placementCompanyID, placementSourceID, placementRootWorkID sql.NullString
 	var deadline sql.NullTime
 	// Discover a small candidate set without locks, then lock exact primary-key
 	// rows one by one. A locking range query with ORDER BY/EXISTS can make
@@ -293,12 +362,14 @@ LIMIT 100`, request.Capability, requiredPurpose, requiredPurpose, request.Supply
 	allowPausedCausal := false
 	for _, candidateID := range candidateIDs {
 		err = tx.QueryRowContext(ctx, `
-SELECT state_json, business_key, priority, capability, origin, profile_id, not_before, deadline_at
+SELECT state_json, business_key, company_id, source_id, root_work_id,
+       priority, capability, origin, profile_id, not_before, deadline_at
 FROM recruiting_works
 WHERE work_id = ? AND status IN ('open', 'waiting_retry')
   AND not_before <= ? AND (deadline_at IS NULL OR deadline_at > ?)
 FOR UPDATE SKIP LOCKED`, candidateID, request.OfferedAt.UTC(), request.OfferedAt.UTC()).Scan(
-			&workState, &businessKey, &placement.Priority, &placement.Capability, &origin, &profileID,
+			&workState, &businessKey, &placementCompanyID, &placementSourceID, &placementRootWorkID,
+			&placement.Priority, &placement.Capability, &origin, &profileID,
 			&placement.NotBefore, &deadline)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
@@ -333,7 +404,9 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	if err := json.Unmarshal(workState, &work); err != nil {
 		return ExecutionOffer{}, fmt.Errorf("decode claimed execution work: %w", err)
 	}
-	placement.BusinessKey, placement.Origin, placement.ProfileID = businessKey.String, origin.String, profileID.String
+	placement.BusinessKey, placement.CompanyID, placement.SourceID, placement.RootWorkID = businessKey.String,
+		placementCompanyID.String, placementSourceID.String, placementRootWorkID.String
+	placement.Origin, placement.ProfileID = origin.String, profileID.String
 	if deadline.Valid {
 		value := deadline.Time.UTC()
 		placement.DeadlineAt = &value
@@ -415,8 +488,10 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	if err != nil {
 		return ExecutionOffer{}, err
 	}
-	if err := attachCurrentScopeFencesTx(ctx, tx, work.WorkID, &fence); err != nil {
-		return ExecutionOffer{}, err
+	if work.Purpose != "detail_sync" {
+		if err := attachCurrentScopeFencesTx(ctx, tx, work.WorkID, &fence); err != nil {
+			return ExecutionOffer{}, err
+		}
 	}
 	// A directed wake is only a scheduling hint. Re-authorize every ordinary
 	// Profile-backed claim inside the transaction so an executor that guesses
@@ -513,8 +588,14 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		if classErr != nil {
 			return ExecutionOffer{}, classErr
 		}
-		permit, permitExpiresAt, err = acquireBudgetPermitTx(ctx, tx, attempt.AttemptID, placement.Origin, placement.ProfileID,
-			placement.Capability, companyID, workloadClass, request.BudgetPolicy, request.OfferedAt)
+		if budgetBatch == nil {
+			permit, permitExpiresAt, err = acquireBudgetPermitTx(ctx, tx, attempt.AttemptID, placement.Origin, placement.ProfileID,
+				placement.Capability, companyID, workloadClass, request.BudgetPolicy, request.OfferedAt)
+		} else {
+			permit, permitExpiresAt, err = acquireBudgetPermitBatchedTx(ctx, tx, budgetBatch, attempt.AttemptID,
+				placement.Origin, placement.ProfileID, placement.Capability, companyID, workloadClass,
+				request.BudgetPolicy, request.OfferedAt)
+		}
 		if err != nil {
 			return ExecutionOffer{}, err
 		}
@@ -571,9 +652,6 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	}
 	if err := insertAttempt(ctx, tx, attempt, offerState, request.SupplyBatchID, request.DispatchID, request.OfferedAt); err != nil {
 		return ExecutionOffer{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return ExecutionOffer{}, fmt.Errorf("commit execution offer: %w", err)
 	}
 	return offer, nil
 }
@@ -1149,13 +1227,17 @@ func loadDetailOfferFence(ctx context.Context, tx *sql.Tx, work model.Work, plac
 		return nil, model.AttemptFence{}, fmt.Errorf("load detail execution job: %w", err)
 	}
 	var companyState, sourceState, assignmentState, recipeState []byte
+	var companyConfigurationVersion, companyExecutionFence uint64
+	var sourceConfigurationVersion, sourceExecutionFence uint64
 	err = tx.QueryRowContext(ctx, `
-SELECT c.state_json, s.state_json, a.state_json, r.state_json
+SELECT c.state_json, s.state_json, a.state_json, r.state_json,
+       c.configuration_version, c.execution_fence, s.configuration_version, s.execution_fence
 FROM recruiting_sources s
 JOIN recruiting_companies c ON c.company_id = s.company_id
 JOIN recruiting_source_assignments a ON a.source_id = s.source_id AND a.recipe_kind = 'detail'
 JOIN recruiting_recipes r ON r.recipe_id = a.recipe_id AND r.recipe_version = a.recipe_version
-WHERE s.source_id = ?`, job.SourceID).Scan(&companyState, &sourceState, &assignmentState, &recipeState)
+WHERE s.source_id = ? FOR SHARE`, job.SourceID).Scan(&companyState, &sourceState, &assignmentState, &recipeState,
+		&companyConfigurationVersion, &companyExecutionFence, &sourceConfigurationVersion, &sourceExecutionFence)
 	if err != nil {
 		return nil, model.AttemptFence{}, fmt.Errorf("load detail execution fence: %w", err)
 	}
@@ -1188,8 +1270,9 @@ WHERE s.source_id = ?`, job.SourceID).Scan(&companyState, &sourceState, &assignm
 		}
 		companyAllowsDetail = baselineMember
 	}
-	if (!acceptPausedResult && (!companyAllowsDetail || company.ControlStatus != model.ControlActive ||
-		source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy)) ||
+	if placement.CompanyID != company.CompanyID || placement.SourceID != source.SourceID ||
+		(!acceptPausedResult && (!companyAllowsDetail || company.ControlStatus != model.ControlActive ||
+			source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy)) ||
 		source.DetailAssignment == nil || *source.DetailAssignment != assignment || assignment.Kind != model.RecipeDetail ||
 		recipe.Status != model.RecipeActive || recipe.Kind != model.RecipeDetail || recipe.RecipeID != assignment.RecipeID ||
 		recipe.Version != assignment.RecipeVersion || recipe.ContractHash != assignment.ContractHash ||
@@ -1200,6 +1283,8 @@ WHERE s.source_id = ?`, job.SourceID).Scan(&companyState, &sourceState, &assignm
 	fence := model.AttemptFence{
 		CompanyVersion: company.Version, SourceVersion: source.Version, AssignmentVersion: assignment.AssignmentVersion,
 		RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, RefreshGeneration: job.RefreshGeneration,
+		CompanyConfigurationVersion: companyConfigurationVersion, CompanyExecutionFence: companyExecutionFence,
+		SourceConfigurationVersion: sourceConfigurationVersion, SourceExecutionFence: sourceExecutionFence,
 	}
 	if placement.ProfileID != "" {
 		var profileState []byte
@@ -1607,6 +1692,98 @@ func (r *Repository) ApplyExecutionTransitionCommand(ctx context.Context, comman
 	return CommandResult{Response: append(json.RawMessage(nil), response...), Replayed: replayed}, nil
 }
 
+// ApplyExecutionClaimBatch performs the bounded, homogeneous claim transition
+// in one transaction. An error rolls the whole fast path back, allowing the
+// caller to use ApplyExecutionTransitionCommand item by item without observing
+// a hidden committed prefix.
+func (r *Repository) ApplyExecutionClaimBatch(ctx context.Context, commands []ExecutionTransitionCommand,
+	businessAt time.Time) ([]CommandResult, error) {
+	if len(commands) < 1 || len(commands) > 32 || businessAt.IsZero() {
+		return nil, fmt.Errorf("execution claim batch requires 1..32 commands and business time")
+	}
+	seenAttempts := make(map[string]struct{}, len(commands))
+	seenCommands := make(map[string]struct{}, len(commands))
+	for _, command := range commands {
+		if strings.TrimSpace(command.CommandID) == "" || strings.TrimSpace(command.RequestHash) == "" ||
+			strings.TrimSpace(command.CorrelationID) == "" || strings.TrimSpace(command.RequestedBy) == "" ||
+			command.RequestedBy != strings.TrimSpace(command.RequestedBy) || strings.TrimSpace(command.AttemptID) == "" ||
+			strings.TrimSpace(command.ExecutorIncarnation) == "" || command.Word != executioncontract.TypeClaimBatch ||
+			command.Action != "claim" || command.Failure != nil || strings.TrimSpace(command.Reason) != "" {
+			return nil, fmt.Errorf("execution claim batch command shape is invalid")
+		}
+		if _, duplicate := seenAttempts[command.AttemptID]; duplicate {
+			return nil, fmt.Errorf("execution claim batch Attempt IDs must be unique")
+		}
+		if _, duplicate := seenCommands[command.CommandID]; duplicate {
+			return nil, fmt.Errorf("execution claim batch command IDs must be unique")
+		}
+		seenAttempts[command.AttemptID] = struct{}{}
+		seenCommands[command.CommandID] = struct{}{}
+	}
+	var results []CommandResult
+	var err error
+	for transactionAttempt := 0; transactionAttempt < 32; transactionAttempt++ {
+		results, err = r.applyExecutionClaimBatchOnce(ctx, commands, businessAt)
+		if !isMySQLTransactionContention(err) {
+			break
+		}
+		if waitErr := waitForTransactionRetry(ctx, transactionAttempt); waitErr != nil {
+			return nil, waitErr
+		}
+	}
+	return results, err
+}
+
+func (r *Repository) applyExecutionClaimBatchOnce(ctx context.Context, commands []ExecutionTransitionCommand,
+	businessAt time.Time) ([]CommandResult, error) {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	results := make([]CommandResult, 0, len(commands))
+	for _, command := range commands {
+		var response json.RawMessage
+		replayed := false
+		hooks := &executionTransitionHooks{
+			before: func(tx *sql.Tx) (bool, error) {
+				stored, found, err := readCommandReceipt(ctx, tx, command.CommandID, command.RequestHash)
+				if err != nil || !found {
+					return false, err
+				}
+				response, replayed = stored, true
+				return true, nil
+			},
+			after: func(tx *sql.Tx, attempt model.Attempt, _ model.Work) error {
+				var err error
+				response, err = json.Marshal(struct {
+					ContractVersion string         `json:"contract_version"`
+					CorrelationID   string         `json:"correlation_id"`
+					RequestedBy     string         `json:"requested_by"`
+					Attempt         *model.Attempt `json:"attempt,omitempty"`
+				}{executioncontract.Version, command.CorrelationID, command.RequestedBy, &attempt})
+				if err != nil {
+					return err
+				}
+				receipt, err := model.NewCommandReceipt(command.CommandID, command.Word, command.RequestHash, response)
+				if err != nil {
+					return err
+				}
+				return reserveCommandReceipt(ctx, tx, receipt, businessAt)
+			},
+		}
+		if _, err := r.transitionListingExecutionTx(ctx, tx, command.AttemptID, command.RequestedBy,
+			command.ExecutorIncarnation, command.Action, command.Reason, nil, nil, businessAt, hooks); err != nil {
+			return nil, err
+		}
+		results = append(results, CommandResult{Response: append(json.RawMessage(nil), response...), Replayed: replayed})
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit execution claim batch: %w", err)
+	}
+	return results, nil
+}
+
 func isMySQLTransactionContention(err error) bool {
 	var driverError *mysql.MySQLError
 	return errors.As(err, &driverError) && (driverError.Number == 1213 || driverError.Number == 1205)
@@ -1635,6 +1812,20 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 		return model.Attempt{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	attempt, err := r.transitionListingExecutionTx(ctx, tx, attemptID, executorActorID, executorIncarnation,
+		action, reason, report, failurePolicy, businessAt, hooks)
+	if err != nil {
+		return model.Attempt{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.Attempt{}, fmt.Errorf("commit execution transition: %w", err)
+	}
+	return attempt, nil
+}
+
+func (r *Repository) transitionListingExecutionTx(ctx context.Context, tx *sql.Tx, attemptID, executorActorID,
+	executorIncarnation, action, reason string, report *executioncontract.FailureReport,
+	failurePolicy *ExecutionFailurePolicy, businessAt time.Time, hooks *executionTransitionHooks) (model.Attempt, error) {
 	attempt, err := getAttemptWith(ctx, tx, attemptID, true)
 	if err != nil {
 		return model.Attempt{}, err
@@ -1766,7 +1957,7 @@ func (r *Repository) transitionListingExecution(ctx context.Context, attemptID, 
 		default:
 			fenceErr = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)
 		}
-		if fenceErr == nil {
+		if fenceErr == nil && work.Purpose != "detail_sync" {
 			fenceErr = attachCurrentScopeFencesTx(ctx, tx, work.WorkID, &currentFence)
 		}
 		if fenceErr != nil || !sameAttemptFence(attempt, currentFence) {
@@ -1956,9 +2147,6 @@ WHERE attempt_id = ? AND attempt_status = ?`, attempt.Status, state, attempt.Sta
 			return model.Attempt{}, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return model.Attempt{}, fmt.Errorf("commit execution transition: %w", err)
-	}
 	return attempt, nil
 }
 
@@ -1998,16 +2186,19 @@ WHERE work_id = ? AND version = ?`, work.Status, nullableString(string(work.Reso
 
 func getWorkPlacementWith(ctx context.Context, tx *sql.Tx, workID string) (WorkPlacement, error) {
 	var placement WorkPlacement
-	var businessKey, capability, origin, profileID sql.NullString
+	var businessKey, companyID, sourceID, rootWorkID, capability, origin, profileID sql.NullString
 	var deadline sql.NullTime
 	err := tx.QueryRowContext(ctx, `
-SELECT business_key, priority, capability, origin, profile_id, not_before, deadline_at
-FROM recruiting_works WHERE work_id = ?`, workID).Scan(&businessKey, &placement.Priority, &capability,
+SELECT business_key, company_id, source_id, root_work_id, priority, capability, origin, profile_id, not_before, deadline_at
+FROM recruiting_works WHERE work_id = ?`, workID).Scan(&businessKey, &companyID, &sourceID, &rootWorkID,
+		&placement.Priority, &capability,
 		&origin, &profileID, &placement.NotBefore, &deadline)
 	if err != nil {
 		return WorkPlacement{}, err
 	}
-	placement.BusinessKey, placement.Capability = businessKey.String, capability.String
+	placement.BusinessKey, placement.CompanyID, placement.SourceID, placement.RootWorkID = businessKey.String,
+		companyID.String, sourceID.String, rootWorkID.String
+	placement.Capability = capability.String
 	placement.Origin, placement.ProfileID = origin.String, profileID.String
 	placement.NotBefore = placement.NotBefore.UTC()
 	if deadline.Valid {

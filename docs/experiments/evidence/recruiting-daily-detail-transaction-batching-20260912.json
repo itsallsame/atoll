@@ -1,0 +1,129 @@
+{
+  "schema": "recruiting.daily-detail-transaction-batching-evidence.v1",
+  "captured_at": "2026-09-12",
+  "revision_before_commit": "817878fb",
+  "workload_manifest": "docs/experiments/workloads/recruiting-daily-detail-capacity-v1.json",
+  "test": "TestRecruitingScheduledDailyDetailCapacityThroughRealDataPlanes",
+  "feature_under_test": "bounded Recruiting Detail Offer, Claim, Result transactions and aggregate budget accounting",
+  "environment": {
+    "os": "Linux 6.8.0-71-generic x86_64",
+    "logical_cpus": 4,
+    "memory_bytes": 16237535232,
+    "go": "go1.25.7 linux/amd64",
+    "docker_server": "29.5.2",
+    "mysql_image": "mysql:8.4",
+    "database_identity": "ephemeral non-root staircase_runtime and staircase_migrator accounts",
+    "origin_isolation": "script-created Docker --internal 11.253.x.x network",
+    "artifact_provider": "separately attached local File provider"
+  },
+  "implementation": {
+    "actor_classes_added": 0,
+    "worker_types_added": 0,
+    "atoll_core_modified": false,
+    "maximum_batch_items": 32,
+    "batch_safe_purposes": ["detail_sync", "historical_backfill_item"],
+    "excluded_purposes": ["listing_sync", "browser execution", "multi-result execution"],
+    "offer": "one bounded transaction prepares a valid prefix; no-candidate or budget-blocked terminates that prefix normally, while exceptional errors roll back before item-wise fallback",
+    "claim": "one bounded atomic transaction persists each Attempt transition and command receipt independently; any member failure rolls the whole fast path back",
+    "result": "one bounded atomic transaction persists each Work, Attempt, receipt, primary Artifact, supporting Artifacts and business result independently; any member failure rolls the whole fast path back before existing item-wise rejected-Artifact handling",
+    "budget": "each Permit remains independently versioned while shared global, capability, origin, company, profile and workload usage is locked and adjusted once per dimension by the aggregate delta",
+    "fence": "the Detail eligibility read also captures Company and Source configuration versions and execution fences under one shared configuration fence; Work placement is checked against that Company and Source domain",
+    "compatibility": "default batch size remains one and all exceptional paths retain the established item-wise protocol"
+  },
+  "contract_tests": [
+    "TestDetailResultBatchCommitsAndReplaysAtomically",
+    "TestDetailResultBatchRollsBackBeforeIndependentFallback",
+    "TestExecutionClaimBatchCommitsReplaysAndRollsBackAtomically",
+    "TestDetailOfferBatchCommitsReplaysAndRollsBackAtomically",
+    "TestDetailOfferBatchStopsAtAggregatedBudgetLimit"
+  ],
+  "baseline": {
+    "D2": {
+      "items_succeeded": 1000,
+      "business_completion_ms": 77079,
+      "detail_responses_per_second": 12.97
+    },
+    "D3": {
+      "items_succeeded": 5000,
+      "business_completion_ms": 423655,
+      "detail_responses_per_second": 11.80,
+      "detail_400k_projected_hours": 9.41
+    },
+    "source": "recruiting-daily-detail-capacity-20260912.json"
+  },
+  "optimized": {
+    "D2": {
+      "items_succeeded": 1000,
+      "response_bytes_verified": 16384000,
+      "business_completion_ms": 60645,
+      "detail_responses_per_second": 16.49
+    },
+    "D3": {
+      "items_succeeded": 5000,
+      "listing_requests": 10,
+      "detail_requests": 5000,
+      "response_bytes_verified": 20480000,
+      "business_completion_ms": 351175,
+      "outbox_drain_ms": 364234,
+      "server_restart_ms": 3410,
+      "journey_total_ms": 421656,
+      "detail_responses_per_second": 14.24,
+      "detail_400k_projected_hours": 7.80,
+      "offer_to_accept_ms": {"p50": 5136, "p95": 8532},
+      "start_to_terminal_ms": {"p50": 5263, "p95": 8776},
+      "terminal_to_next_offer_ms": {"p50": 4591, "p95": 8087},
+      "ledger_messages": 8615,
+      "ledger_payload_bytes": 32510960,
+      "ledger_events": 5307,
+      "recruiting_ledger_events": 5298
+    }
+  },
+  "assessment": {
+    "D3_business_completion_improvement_percent": 17.1,
+    "throughput_above_400k_in_8h_arithmetic_reference_percent": 2.5,
+    "arithmetic_reference_detail_responses_per_second": 13.89,
+    "interpretation": "the controlled single-four-core-host D3 slice crosses the arithmetic 400K-in-8h throughput reference; this is a sizing signal, not proof that 400K were executed or that production SLO is met"
+  },
+  "fault_regressions": {
+    "http_failure_matrix": {
+      "detail_succeeded": 19,
+      "detail_waiting_human": 1,
+      "detail_requests": 22,
+      "business_completion_ms": 11891,
+      "outbox_drain_ms": 11994,
+      "server_restart_ms": 2164,
+      "status": "passed"
+    },
+    "artifact_provider_recovery": {
+      "provider_outage_ms": 30189,
+      "detail_succeeded": 20,
+      "response_bytes_verified": 20480,
+      "business_completion_after_provider_ready_ms": 6509,
+      "outbox_drain_after_provider_ready_ms": 6712,
+      "server_restart_ms": 2895,
+      "status": "passed"
+    }
+  },
+  "regression_gates": {
+    "full_non_root_mysql_store_race_seconds": 232.500,
+    "full_non_root_mysql_actor_race_seconds": 3.147,
+    "package_race_passed": true,
+    "go_vet_passed": true,
+    "security_audit_passed": true,
+    "core_boundary_from_a94d2b8d_passed": true
+  },
+  "non_claims": [
+    "actual execution of 20K simultaneous Listing occurrences and 400K Detail jobs",
+    "third-party latency, throttling, CDN, JavaScript or availability behavior",
+    "Browser or authenticated Profile throughput",
+    "remote Artifact provider performance",
+    "multi-shard deployment capacity",
+    "long-window production SLO or production readiness"
+  ],
+  "acceptance": {
+    "scenario": "S25",
+    "status": "partial",
+    "scenario_completion_changed": false,
+    "reason": "the controlled single-host arithmetic reference is crossed, but the full external production-scale workload and long-window gates remain open"
+  }
+}

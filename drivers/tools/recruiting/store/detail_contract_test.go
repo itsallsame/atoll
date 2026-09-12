@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -80,6 +81,71 @@ INSERT INTO recruiting_checkpoints(
 	}
 }
 
+func TestDetailResultBatchCommitsAndReplaysAtomically(t *testing.T) {
+	repository, _, ctx, cleanup := detailContractRepository(t)
+	defer cleanup()
+	now := time.Date(2026, 9, 8, 5, 30, 0, 0, time.UTC)
+	first := createDetailFixture(t, ctx, repository, "detail-batch-first", now)
+	second := createDetailFixture(t, ctx, repository, "detail-batch-second", now.Add(time.Second))
+	defer pauseExecutionSource(t, ctx, repository, first.source.SourceID, now.Add(10*time.Minute))
+	defer pauseExecutionSource(t, ctx, repository, second.source.SourceID, now.Add(10*time.Minute))
+	inputs := []DetailResult{first.result("detail-batch-first-artifact"), second.result("detail-batch-second-artifact")}
+
+	outcomes, err := repository.AcceptDetailResultBatch(ctx, inputs)
+	if err != nil || len(outcomes) != 2 || outcomes[0].Replayed || outcomes[1].Replayed {
+		t.Fatalf("detail batch outcomes=%+v err=%v", outcomes, err)
+	}
+	replayed, err := repository.AcceptDetailResultBatch(ctx, inputs)
+	if err != nil || len(replayed) != 2 || !replayed[0].Replayed || !replayed[1].Replayed {
+		t.Fatalf("detail batch replay=%+v err=%v", replayed, err)
+	}
+	for _, fixture := range []detailFixture{first, second} {
+		work, workErr := repository.GetWork(ctx, fixture.work.WorkID)
+		attempt, attemptErr := repository.GetAttempt(ctx, fixture.attempt.AttemptID)
+		if workErr != nil || attemptErr != nil || work.Status != model.WorkCompleted || attempt.Status != model.AttemptSucceeded {
+			t.Fatalf("batch terminal fixture=%s work=%+v attempt=%+v work_err=%v attempt_err=%v",
+				fixture.work.WorkID, work, attempt, workErr, attemptErr)
+		}
+	}
+}
+
+func TestDetailResultBatchRollsBackBeforeIndependentFallback(t *testing.T) {
+	repository, db, ctx, cleanup := detailContractRepository(t)
+	defer cleanup()
+	now := time.Date(2026, 9, 8, 5, 45, 0, 0, time.UTC)
+	first := createDetailFixture(t, ctx, repository, "detail-batch-rollback-first", now)
+	second := createDetailFixture(t, ctx, repository, "detail-batch-rollback-second", now.Add(time.Second))
+	defer pauseExecutionSource(t, ctx, repository, first.source.SourceID, now.Add(10*time.Minute))
+	defer pauseExecutionSource(t, ctx, repository, second.source.SourceID, now.Add(10*time.Minute))
+	firstResult := first.result("detail-batch-rollback-first-artifact")
+	secondResult := second.result("detail-batch-rollback-second-artifact")
+	secondResult.ExecutorIncarnation = "stale-incarnation"
+
+	if _, err := repository.AcceptDetailResultBatch(ctx, []DetailResult{firstResult, secondResult}); !errors.Is(err, ErrResultFenced) {
+		t.Fatalf("mixed-validity detail batch error=%v", err)
+	}
+	for _, fixture := range []detailFixture{first, second} {
+		work, _ := repository.GetWork(ctx, fixture.work.WorkID)
+		attempt, _ := repository.GetAttempt(ctx, fixture.attempt.AttemptID)
+		if work.Status != model.WorkRunning || attempt.Status != model.AttemptRunning {
+			t.Fatalf("failed atomic batch leaked terminal state fixture=%s work=%s attempt=%s",
+				fixture.work.WorkID, work.Status, attempt.Status)
+		}
+	}
+	var artifacts int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_artifacts WHERE artifact_id IN (?, ?)",
+		firstResult.Artifact.ArtifactID, secondResult.Artifact.ArtifactID).Scan(&artifacts); err != nil || artifacts != 0 {
+		t.Fatalf("failed atomic batch retained artifacts=%d err=%v", artifacts, err)
+	}
+	if _, err := repository.AcceptDetailResult(ctx, firstResult); err != nil {
+		t.Fatalf("valid item fallback: %v", err)
+	}
+	if _, err := repository.AcceptDetailResult(ctx, secondResult); !errors.Is(err, ErrResultFenced) {
+		t.Fatalf("fenced item fallback: %v", err)
+	}
+	assertRejectedOnly(t, ctx, db, repository, second, secondResult.Artifact.ArtifactID)
+}
+
 func TestStaleOrWrongSenderDetailResultOnlyKeepsRejectedArtifact(t *testing.T) {
 	repository, db, ctx, cleanup := detailContractRepository(t)
 	defer cleanup()
@@ -152,6 +218,113 @@ func TestDetailExecutionReturnsToBatchOnlyCandidateQuery(t *testing.T) {
 	if err := repository.VerifyAttemptSupplyBatch(ctx, retry.Attempt.AttemptID, "detail-batch-retry-supply",
 		"executor-b", "incarnation-b"); err != nil {
 		t.Fatalf("batch-only detail Attempt did not retain supply identity: %v", err)
+	}
+}
+
+func TestDetailOfferBatchCommitsReplaysAndRollsBackAtomically(t *testing.T) {
+	repository, db, ctx, cleanup := detailContractRepository(t)
+	defer cleanup()
+	now := time.Date(2026, 9, 8, 7, 45, 0, 0, time.UTC)
+	prepareRetry := func(prefix string, at time.Time) detailFixture {
+		t.Helper()
+		fixture := createDetailFixture(t, ctx, repository, prefix, at)
+		if _, err := repository.FailListingExecution(ctx, fixture.attempt.AttemptID, fixture.attempt.ExecutorActorID,
+			fixture.attempt.ExecutorIncarnation, "upstream_timeout", at.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		return fixture
+	}
+	first := prepareRetry("detail-offer-batch-first", now)
+	second := prepareRetry("detail-offer-batch-second", now.Add(time.Second))
+	defer pauseExecutionSource(t, ctx, repository, first.source.SourceID, now.Add(20*time.Minute))
+	defer pauseExecutionSource(t, ctx, repository, second.source.SourceID, now.Add(20*time.Minute))
+	requests := make([]ListingOfferRequest, 2)
+	for index := range requests {
+		requests[index] = ListingOfferRequest{
+			AttemptID: fmt.Sprintf("detail-offer-batch-attempt-%d", index), ExecutorActorID: "detail-offer-batch-executor",
+			ExecutorIncarnation: "detail-offer-batch-boot", Capability: "http.fetch", OfferedAt: now.Add(3 * time.Minute),
+			BudgetPolicy: testExecutionBudgetPolicy(), SupplyBatchID: "detail-offer-batch-supply", SupplyBatchOnly: true,
+		}
+	}
+	offers, err := repository.OfferExecutionBatch(ctx, requests)
+	if err != nil || len(offers) != 2 || offers[0].Detail == nil || offers[1].Detail == nil {
+		t.Fatalf("detail offer batch=%+v err=%v", offers, err)
+	}
+	replayed, err := repository.OfferExecutionBatch(ctx, requests)
+	if err != nil || len(replayed) != 2 || replayed[0].Attempt.AttemptID != offers[0].Attempt.AttemptID ||
+		replayed[1].Attempt.AttemptID != offers[1].Attempt.AttemptID {
+		t.Fatalf("detail offer batch replay=%+v err=%v", replayed, err)
+	}
+	var activeGlobal int
+	if err := db.QueryRowContext(ctx, `SELECT active_count FROM recruiting_budget_usage
+WHERE dimension_type = 'global' AND dimension_key = 'all'`).Scan(&activeGlobal); err != nil || activeGlobal != 2 {
+		t.Fatalf("batched budget acquisition active=%d err=%v", activeGlobal, err)
+	}
+
+	third := prepareRetry("detail-offer-batch-third", now.Add(4*time.Minute))
+	fourth := prepareRetry("detail-offer-batch-fourth", now.Add(4*time.Minute+time.Second))
+	defer pauseExecutionSource(t, ctx, repository, third.source.SourceID, now.Add(20*time.Minute))
+	defer pauseExecutionSource(t, ctx, repository, fourth.source.SourceID, now.Add(20*time.Minute))
+	rollbackRequests := []ListingOfferRequest{
+		{AttemptID: "detail-offer-batch-rollback-new", ExecutorActorID: "detail-offer-batch-rollback-executor",
+			ExecutorIncarnation: "detail-offer-batch-rollback-boot", Capability: "http.fetch", OfferedAt: now.Add(7 * time.Minute),
+			BudgetPolicy: testExecutionBudgetPolicy(), SupplyBatchID: "detail-offer-batch-rollback-supply", SupplyBatchOnly: true},
+		{AttemptID: first.attempt.AttemptID, ExecutorActorID: "detail-offer-batch-rollback-executor",
+			ExecutorIncarnation: "detail-offer-batch-rollback-boot", Capability: "http.fetch", OfferedAt: now.Add(7 * time.Minute),
+			BudgetPolicy: testExecutionBudgetPolicy(), SupplyBatchID: "detail-offer-batch-rollback-supply", SupplyBatchOnly: true},
+	}
+	if _, err := repository.OfferExecutionBatch(ctx, rollbackRequests); !errors.Is(err, ErrAttemptConflict) {
+		t.Fatalf("conflicting detail offer batch error=%v", err)
+	}
+	if _, err := repository.GetAttempt(ctx, rollbackRequests[0].AttemptID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("failed detail offer batch leaked first Attempt: %v", err)
+	}
+}
+
+func TestDetailOfferBatchStopsAtAggregatedBudgetLimit(t *testing.T) {
+	repository, db, ctx, cleanup := detailContractRepository(t)
+	defer cleanup()
+	now := time.Date(2026, 9, 8, 7, 55, 0, 0, time.UTC)
+	fixtures := []detailFixture{
+		createDetailFixture(t, ctx, repository, "detail-offer-budget-first", now),
+		createDetailFixture(t, ctx, repository, "detail-offer-budget-second", now.Add(time.Second)),
+	}
+	for _, fixture := range fixtures {
+		defer pauseExecutionSource(t, ctx, repository, fixture.source.SourceID, now.Add(20*time.Minute))
+		if _, err := repository.FailListingExecution(ctx, fixture.attempt.AttemptID, fixture.attempt.ExecutorActorID,
+			fixture.attempt.ExecutorIncarnation, "upstream_timeout", now.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	policy := testExecutionBudgetPolicy()
+	policy.MaxActive, policy.MaxPerCapability, policy.MaxPerOrigin, policy.MaxPerCompany, policy.MaxPerProfile = 1, 1, 1, 1, 1
+	policy.MaxBaselineActive, policy.MaxCalibrationActive, policy.MaxBackfillActive = 1, 1, 1
+	requests := make([]ListingOfferRequest, 2)
+	for index := range requests {
+		requests[index] = ListingOfferRequest{
+			AttemptID: fmt.Sprintf("detail-offer-budget-attempt-%d", index), ExecutorActorID: "detail-offer-budget-executor",
+			ExecutorIncarnation: "detail-offer-budget-boot", Capability: "http.fetch", OfferedAt: now.Add(3 * time.Minute),
+			BudgetPolicy: policy, SupplyBatchID: "detail-offer-budget-supply", SupplyBatchOnly: true,
+		}
+	}
+	offers, err := repository.OfferExecutionBatch(ctx, requests)
+	if err != nil || len(offers) != 1 {
+		t.Fatalf("budget-limited offer batch=%+v err=%v", offers, err)
+	}
+	if _, err := repository.GetAttempt(ctx, requests[0].AttemptID); err != nil {
+		t.Fatalf("first budget-limited Attempt missing: %v", err)
+	}
+	if _, err := repository.GetAttempt(ctx, requests[1].AttemptID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("budget-limited batch created excess Attempt: %v", err)
+	}
+	var active, granted int
+	if err := db.QueryRowContext(ctx, `SELECT active_count FROM recruiting_budget_usage
+WHERE dimension_type = 'global' AND dimension_key = 'all'`).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_budget_permits
+WHERE permit_status = 'granted'`).Scan(&granted); err != nil || active != 1 || granted != 1 {
+		t.Fatalf("budget-limited facts active=%d granted=%d err=%v", active, granted, err)
 	}
 }
 

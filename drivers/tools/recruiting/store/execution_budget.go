@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -49,6 +50,20 @@ type budgetDimension struct {
 	typeName string
 	key      string
 	limit    int
+}
+
+type budgetDimensionKey struct {
+	typeName string
+	key      string
+}
+
+type budgetAcquireBatch struct {
+	dimensions map[budgetDimensionKey]*budgetAcquireDimension
+}
+
+type budgetAcquireDimension struct {
+	active int
+	delta  int
 }
 
 func budgetDimensions(permit model.BudgetPermit, policy ExecutionBudgetPolicy) []budgetDimension {
@@ -137,6 +152,95 @@ INSERT INTO recruiting_budget_permits(
 	return permit, expiresAt, nil
 }
 
+func acquireBudgetPermitBatchedTx(ctx context.Context, tx *sql.Tx, batch *budgetAcquireBatch,
+	attemptID, origin, profileID, capability, companyID, workloadClass string,
+	policy ExecutionBudgetPolicy, grantedAt time.Time) (model.BudgetPermit, time.Time, error) {
+	if batch == nil {
+		return model.BudgetPermit{}, time.Time{}, fmt.Errorf("budget acquisition batch is required")
+	}
+	if err := policy.validate(); err != nil {
+		return model.BudgetPermit{}, time.Time{}, err
+	}
+	permitSum := sha256.Sum256([]byte("recruiting.execution.permit.v1\n" + attemptID))
+	permitID := "permit-" + hex.EncodeToString(permitSum[:16])
+	permit, err := model.NewBudgetPermit(permitID, attemptID, origin, profileID, capability, companyID, policy.Version, workloadClass)
+	if err != nil {
+		return model.BudgetPermit{}, time.Time{}, err
+	}
+	if batch.dimensions == nil {
+		batch.dimensions = make(map[budgetDimensionKey]*budgetAcquireDimension)
+	}
+	dimensions := budgetDimensions(permit, policy)
+	for _, dimension := range dimensions {
+		key := budgetDimensionKey{typeName: dimension.typeName, key: dimension.key}
+		entry := batch.dimensions[key]
+		if entry == nil {
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO recruiting_budget_usage(dimension_type, dimension_key, active_count, version, updated_at)
+VALUES (?, ?, 0, 1, ?) ON DUPLICATE KEY UPDATE dimension_key = VALUES(dimension_key)`,
+				dimension.typeName, dimension.key, grantedAt.UTC()); err != nil {
+				return model.BudgetPermit{}, time.Time{}, fmt.Errorf("ensure batched budget dimension: %w", err)
+			}
+			entry = &budgetAcquireDimension{}
+			if err := tx.QueryRowContext(ctx, `SELECT active_count FROM recruiting_budget_usage
+WHERE dimension_type = ? AND dimension_key = ? FOR UPDATE`, dimension.typeName, dimension.key).Scan(&entry.active); err != nil {
+				return model.BudgetPermit{}, time.Time{}, fmt.Errorf("lock batched budget dimension: %w", err)
+			}
+			batch.dimensions[key] = entry
+		}
+		if entry.active+entry.delta >= dimension.limit {
+			return model.BudgetPermit{}, time.Time{}, fmt.Errorf("%w: %s capacity exhausted", ErrBudgetBlocked, dimension.typeName)
+		}
+	}
+	for _, dimension := range dimensions {
+		batch.dimensions[budgetDimensionKey{typeName: dimension.typeName, key: dimension.key}].delta++
+	}
+	expiresAt := grantedAt.UTC().Add(policy.PermitTTL)
+	state, _ := json.Marshal(permit)
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO recruiting_budget_permits(
+  permit_id, attempt_id, origin, profile_id, capability, company_id, workload_class,
+  policy_version, permit_status, version, expires_at, state_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, permit.PermitID, permit.AttemptID, permit.Origin,
+		nullableString(permit.ProfileID), permit.Capability, permit.CompanyID, nullableString(permit.WorkloadClass), permit.PolicyVersion,
+		permit.Status, permit.Version, expiresAt, state); err != nil {
+		return model.BudgetPermit{}, time.Time{}, fmt.Errorf("create batched execution budget permit: %w", err)
+	}
+	return permit, expiresAt, nil
+}
+
+func flushBudgetAcquireBatchTx(ctx context.Context, tx *sql.Tx, batch *budgetAcquireBatch, at time.Time) error {
+	if batch == nil || len(batch.dimensions) == 0 {
+		return nil
+	}
+	keys := make([]budgetDimensionKey, 0, len(batch.dimensions))
+	for key := range batch.dimensions {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].typeName == keys[j].typeName {
+			return keys[i].key < keys[j].key
+		}
+		return keys[i].typeName < keys[j].typeName
+	})
+	for _, key := range keys {
+		entry := batch.dimensions[key]
+		if entry.delta == 0 {
+			continue
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE recruiting_budget_usage
+SET active_count = active_count + ?, version = version + 1, updated_at = ?
+WHERE dimension_type = ? AND dimension_key = ?`, entry.delta, at.UTC(), key.typeName, key.key)
+		if err != nil {
+			return err
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return ErrAttemptConflict
+		}
+	}
+	return nil
+}
+
 func releaseBudgetPermitTx(ctx context.Context, tx *sql.Tx, attemptID string, terminal model.BudgetPermitStatus, at time.Time) error {
 	var state []byte
 	err := tx.QueryRowContext(ctx, `
@@ -195,6 +299,111 @@ SET permit_status = ?, version = ?, state_json = ? WHERE permit_id = ? AND versi
 	}
 	if changed, _ := result.RowsAffected(); changed != 1 {
 		return ErrAttemptConflict
+	}
+	return nil
+}
+
+// releaseBudgetPermitsTx releases a bounded set of independently persisted
+// permits while decrementing each shared budget dimension once. Result batches
+// commonly share global, capability, origin, and company dimensions; applying
+// their aggregate delta avoids repeating the same lock/update round trips for
+// every successful item without weakening the per-Attempt permit fence.
+func releaseBudgetPermitsTx(ctx context.Context, tx *sql.Tx, attemptIDs []string,
+	terminal model.BudgetPermitStatus, at time.Time) error {
+	if len(attemptIDs) == 0 || len(attemptIDs) > 32 {
+		return fmt.Errorf("budget permit batch requires 1..32 Attempt IDs")
+	}
+	type dimensionKey struct {
+		typeName string
+		key      string
+	}
+	type permitTransition struct {
+		before model.BudgetPermit
+		after  model.BudgetPermit
+	}
+	seen := make(map[string]struct{}, len(attemptIDs))
+	transitions := make([]permitTransition, 0, len(attemptIDs))
+	deltas := make(map[dimensionKey]int)
+	for _, attemptID := range attemptIDs {
+		if _, duplicate := seen[attemptID]; duplicate {
+			return fmt.Errorf("budget permit batch Attempt IDs must be unique")
+		}
+		seen[attemptID] = struct{}{}
+		var state []byte
+		err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_budget_permits
+WHERE attempt_id = ? FOR UPDATE`, attemptID).Scan(&state)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		var permit model.BudgetPermit
+		if err := json.Unmarshal(state, &permit); err != nil {
+			return err
+		}
+		if permit.Status != model.PermitGranted {
+			continue
+		}
+		var closed model.BudgetPermit
+		if terminal == model.PermitExpired {
+			closed, err = permit.Expire(permit.Version)
+		} else {
+			closed, err = permit.Release(permit.Version)
+		}
+		if err != nil {
+			return err
+		}
+		transitions = append(transitions, permitTransition{before: permit, after: closed})
+		for _, dimension := range budgetDimensions(permit, ExecutionBudgetPolicy{
+			MaxActive: 1, MaxPerCapability: 1, MaxPerOrigin: 1, MaxPerCompany: 1, MaxPerProfile: 1,
+			MaxBaselineActive: 1, MaxCalibrationActive: 1, MaxBackfillActive: 1,
+		}) {
+			deltas[dimensionKey{typeName: dimension.typeName, key: dimension.key}]++
+		}
+	}
+	keys := make([]dimensionKey, 0, len(deltas))
+	for key := range deltas {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].typeName == keys[j].typeName {
+			return keys[i].key < keys[j].key
+		}
+		return keys[i].typeName < keys[j].typeName
+	})
+	for _, key := range keys {
+		var active int
+		if err := tx.QueryRowContext(ctx, `SELECT active_count FROM recruiting_budget_usage
+WHERE dimension_type = ? AND dimension_key = ? FOR UPDATE`, key.typeName, key.key).Scan(&active); err != nil {
+			return err
+		}
+		if active < deltas[key] {
+			return fmt.Errorf("budget usage underflow for %s", key.typeName)
+		}
+	}
+	for _, key := range keys {
+		result, err := tx.ExecContext(ctx, `UPDATE recruiting_budget_usage
+SET active_count = active_count - ?, version = version + 1, updated_at = ?
+WHERE dimension_type = ? AND dimension_key = ?`, deltas[key], at.UTC(), key.typeName, key.key)
+		if err != nil {
+			return err
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return ErrAttemptConflict
+		}
+	}
+	for _, transition := range transitions {
+		state, _ := json.Marshal(transition.after)
+		result, err := tx.ExecContext(ctx, `UPDATE recruiting_budget_permits
+SET permit_status = ?, version = ?, state_json = ? WHERE permit_id = ? AND version = ?`,
+			transition.after.Status, transition.after.Version, state, transition.after.PermitID, transition.before.Version)
+		if err != nil {
+			return err
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return ErrAttemptConflict
+		}
 	}
 	return nil
 }

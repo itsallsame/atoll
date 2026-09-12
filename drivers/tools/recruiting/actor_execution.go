@@ -130,6 +130,15 @@ func handleExecutionResultBatch(sys actorbase.Sys, repository *store.Repository,
 		failStoreError(sys, msg, err)
 		return
 	}
+	if detailInputs, detailOnly := executionDetailResultBatch(executorID, payload.Items, time.UnixMilli(msg.TS).UTC()); detailOnly {
+		if outcomes, err := repository.AcceptDetailResultBatch(msg.Ctx(), detailInputs); err == nil {
+			replyExecutionResultBatch(sys, msg, executorID, payload.SupplyBatchID, len(outcomes))
+			return
+		}
+		// The bounded fast path is atomic. Falling back after its rollback keeps
+		// the established per-item acceptance and rejected-Artifact semantics for
+		// a mixed-validity or concurrently fenced batch.
+	}
 	accepted := 0
 	seenAttempts := make(map[string]struct{}, len(payload.Items))
 	for _, item := range payload.Items {
@@ -182,13 +191,39 @@ func handleExecutionResultBatch(sys actorbase.Sys, repository *store.Repository,
 		}
 		accepted++
 	}
-	continuationDispatchID, err := store.SupplyBatchCapacityDispatchID(payload.SupplyBatchID)
+	replyExecutionResultBatch(sys, msg, executorID, payload.SupplyBatchID, accepted)
+}
+
+func executionDetailResultBatch(executorID string, items []executioncontract.ResultBatchItem, observedAt time.Time) ([]store.DetailResult, bool) {
+	inputs := make([]store.DetailResult, 0, len(items))
+	for _, item := range items {
+		item.ResultKind = strings.TrimSpace(item.ResultKind)
+		if item.ResultKind != "detail" {
+			return nil, false
+		}
+		var result detailResultPayload
+		if err := decodeExecutionBatchItem(item.Payload, &result); err != nil || result.ResultKind != item.ResultKind || strings.TrimSpace(result.CommandID) == "" {
+			return nil, false
+		}
+		inputs = append(inputs, store.DetailResult{
+			AttemptID: result.AttemptID, ExecutorActorID: executorID, ExecutorIncarnation: result.ExecutorIncarnation,
+			Artifact: result.Artifact, SupportingArtifacts: result.SupportingArtifacts, DetailVersionID: result.DetailVersionID,
+			NormalizedContentHash: result.NormalizedContentHash, DetailJSON: result.Detail,
+			ObservedAt: observedAt, CauseCommandID: result.CommandID,
+			RequestHash: executionBatchResultHash(executorID, item.ResultKind, item.Payload),
+		})
+	}
+	return inputs, true
+}
+
+func replyExecutionResultBatch(sys actorbase.Sys, msg actorbase.Msg, executorID, supplyBatchID string, accepted int) {
+	continuationDispatchID, err := store.SupplyBatchCapacityDispatchID(supplyBatchID)
 	if err != nil {
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, err.Error())
 		return
 	}
 	_, _ = sys.Reply(msg, executioncontract.ResultBatchResponse{ContractVersion: executioncontract.Version,
-		CorrelationID: string(msg.CorrelationID), RequestedBy: executorID, SupplyBatchID: payload.SupplyBatchID,
+		CorrelationID: string(msg.CorrelationID), RequestedBy: executorID, SupplyBatchID: supplyBatchID,
 		AcceptedItems: accepted, ContinuationDispatchID: continuationDispatchID})
 }
 
@@ -634,9 +669,9 @@ func handleExecutionOfferBatch(sys actorbase.Sys, cfg Config, repository *store.
 	}
 	executorID := string(msg.Sender.ID)
 	supplyBatchID := executionSupplyBatchID(executorID, payload.CommandID)
-	offers := make([]executioncontract.Offer, 0, payload.Limit)
+	offerRequests := make([]store.ListingOfferRequest, 0, payload.Limit)
 	for index := 0; index < payload.Limit; index++ {
-		offer, err := repository.OfferExecution(msg.Ctx(), store.ListingOfferRequest{
+		offerRequests = append(offerRequests, store.ListingOfferRequest{
 			AttemptID: executionBatchAttemptID(executorID, supplyBatchID, index), ExecutorActorID: executorID,
 			DispatchID:          payload.DispatchID,
 			ExecutorIncarnation: payload.ExecutorIncarnation, Capability: payload.Capability, Origin: payload.Origin,
@@ -644,14 +679,23 @@ func handleExecutionOfferBatch(sys actorbase.Sys, cfg Config, repository *store.
 			CompanyImportLimit: cfg.CompanyImportApplyLimit, SupplyBatchID: supplyBatchID,
 			SupplyBatchOnly: true,
 		})
-		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrBudgetBlocked) {
-			break
+	}
+	offers, batchErr := repository.OfferExecutionBatch(msg.Ctx(), offerRequests)
+	if batchErr != nil {
+		// The fast path rolls back on exceptional errors, so the established
+		// item-wise path can retain its partial-prefix and error classification.
+		offers = make([]executioncontract.Offer, 0, payload.Limit)
+		for _, request := range offerRequests {
+			offer, err := repository.OfferExecution(msg.Ctx(), request)
+			if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrBudgetBlocked) {
+				break
+			}
+			if err != nil {
+				failStoreError(sys, msg, err)
+				return
+			}
+			offers = append(offers, offer)
 		}
-		if err != nil {
-			failStoreError(sys, msg, err)
-			return
-		}
-		offers = append(offers, offer)
 	}
 	// An empty batch may mean this wake belongs to a non-batch-safe Work such
 	// as Listing. Leave the dispatch pending so the Executor can fall back to
@@ -707,16 +751,32 @@ func handleExecutionClaimBatch(sys actorbase.Sys, cfg Config, repository *store.
 		failStoreError(sys, msg, err)
 		return
 	}
-	attempts := make([]model.Attempt, 0, len(payload.AttemptIDs))
 	businessAt := time.UnixMilli(msg.TS).UTC()
+	commands := make([]store.ExecutionTransitionCommand, 0, len(payload.AttemptIDs))
 	for _, attemptID := range payload.AttemptIDs {
 		commandID := executionBatchTransitionCommandID(payload.CommandID, "claim", attemptID)
-		result, err := repository.ApplyExecutionTransitionCommand(msg.Ctx(), store.ExecutionTransitionCommand{
+		commands = append(commands, store.ExecutionTransitionCommand{
 			CommandID: commandID, Word: executioncontract.TypeClaimBatch,
 			RequestHash:   executionBatchTransitionHash(payload.SupplyBatchID, "claim", attemptID),
 			CorrelationID: string(msg.CorrelationID), RequestedBy: executorID, AttemptID: attemptID,
 			ExecutorIncarnation: payload.ExecutorIncarnation, Action: "claim", FailurePolicy: cfg.executionFailurePolicy(),
-		}, businessAt)
+		})
+	}
+	if results, err := repository.ApplyExecutionClaimBatch(msg.Ctx(), commands, businessAt); err == nil {
+		attempts, decodeErr := decodeExecutionClaimBatchResults(results)
+		if decodeErr != nil {
+			_, _ = sys.Fail(msg, ErrorInternalUnavailable, decodeErr.Error())
+			return
+		}
+		_, _ = sys.Reply(msg, executioncontract.ClaimBatchResponse{ContractVersion: executioncontract.Version,
+			CorrelationID: string(msg.CorrelationID), RequestedBy: executorID, SupplyBatchID: payload.SupplyBatchID, Attempts: attempts})
+		return
+	}
+	// The fast path is atomic. Its rollback makes the established item-wise
+	// path a safe compatibility fallback for an exceptional or fenced member.
+	attempts := make([]model.Attempt, 0, len(commands))
+	for _, command := range commands {
+		result, err := repository.ApplyExecutionTransitionCommand(msg.Ctx(), command, businessAt)
 		if err != nil {
 			failStoreError(sys, msg, err)
 			return
@@ -730,6 +790,18 @@ func handleExecutionClaimBatch(sys actorbase.Sys, cfg Config, repository *store.
 	}
 	_, _ = sys.Reply(msg, executioncontract.ClaimBatchResponse{ContractVersion: executioncontract.Version,
 		CorrelationID: string(msg.CorrelationID), RequestedBy: executorID, SupplyBatchID: payload.SupplyBatchID, Attempts: attempts})
+}
+
+func decodeExecutionClaimBatchResults(results []store.CommandResult) ([]model.Attempt, error) {
+	attempts := make([]model.Attempt, 0, len(results))
+	for _, result := range results {
+		var response executioncontract.TransitionResponse
+		if json.Unmarshal(result.Response, &response) != nil || response.Attempt == nil {
+			return nil, errors.New("stored batch claim response is invalid")
+		}
+		attempts = append(attempts, *response.Attempt)
+	}
+	return attempts, nil
 }
 
 func handleExecutionWakeCompleted(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

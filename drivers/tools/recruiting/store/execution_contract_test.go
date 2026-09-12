@@ -367,6 +367,84 @@ func TestAttemptSupplyBatchMembersVerifyAsOneBoundedEnvelope(t *testing.T) {
 	}
 }
 
+func TestExecutionClaimBatchCommitsReplaysAndRollsBackAtomically(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	makeCommands := func(prefix string) ([]ExecutionTransitionCommand, []string, time.Time) {
+		t.Helper()
+		offerAt, _ := prepareListingExecutionWork(t, ctx, repository, prefix, 2)
+		commands := make([]ExecutionTransitionCommand, 0, 2)
+		attemptIDs := make([]string, 0, 2)
+		for index := 0; index < 2; index++ {
+			attemptID := fmt.Sprintf("%s-attempt-%d", prefix, index)
+			offer, offerErr := repository.OfferListingExecution(ctx, ListingOfferRequest{
+				AttemptID: attemptID, ExecutorActorID: prefix + "-executor", ExecutorIncarnation: prefix + "-boot",
+				Capability: "http.fetch", OfferedAt: offerAt, BudgetPolicy: testExecutionBudgetPolicy(), SupplyBatchID: prefix + "-supply",
+			})
+			if offerErr != nil {
+				t.Fatal(offerErr)
+			}
+			attemptIDs = append(attemptIDs, offer.Attempt.AttemptID)
+			commands = append(commands, ExecutionTransitionCommand{
+				CommandID: fmt.Sprintf("%s-command-%d", prefix, index), Word: executioncontract.TypeClaimBatch,
+				RequestHash: fmt.Sprintf("sha256:%s-%d", prefix, index), CorrelationID: prefix + "-correlation",
+				RequestedBy: prefix + "-executor", AttemptID: attemptID, ExecutorIncarnation: prefix + "-boot", Action: "claim",
+			})
+		}
+		return commands, attemptIDs, offerAt
+	}
+
+	commands, attemptIDs, offerAt := makeCommands("execution-claim-batch-commit")
+	results, err := repository.ApplyExecutionClaimBatch(ctx, commands, offerAt)
+	if err != nil || len(results) != 2 || results[0].Replayed || results[1].Replayed {
+		t.Fatalf("claim batch results=%+v err=%v", results, err)
+	}
+	replayed, err := repository.ApplyExecutionClaimBatch(ctx, commands, offerAt.Add(time.Second))
+	if err != nil || len(replayed) != 2 || !replayed[0].Replayed || !replayed[1].Replayed {
+		t.Fatalf("claim batch replay=%+v err=%v", replayed, err)
+	}
+	for _, attemptID := range attemptIDs {
+		attempt, getErr := repository.GetAttempt(ctx, attemptID)
+		if getErr != nil || attempt.Status != model.AttemptRunning {
+			t.Fatalf("claimed Attempt %s = %+v err=%v", attemptID, attempt, getErr)
+		}
+	}
+
+	rollbackCommands, rollbackAttemptIDs, rollbackAt := makeCommands("execution-claim-batch-rollback")
+	rollbackCommands[1].ExecutorIncarnation = "stale-boot"
+	if _, err := repository.ApplyExecutionClaimBatch(ctx, rollbackCommands, rollbackAt); !errors.Is(err, ErrAttemptConflict) {
+		t.Fatalf("mixed-validity claim batch error=%v", err)
+	}
+	for index, attemptID := range rollbackAttemptIDs {
+		attempt, _ := repository.GetAttempt(ctx, attemptID)
+		if attempt.Status != model.AttemptOffered {
+			t.Fatalf("failed claim batch leaked Attempt transition %s=%s", attemptID, attempt.Status)
+		}
+		var receipts int
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM recruiting_command_receipts WHERE command_id = ?",
+			fmt.Sprintf("execution-claim-batch-rollback-command-%d", index)).Scan(&receipts); err != nil || receipts != 0 {
+			t.Fatalf("failed claim batch leaked receipts=%d err=%v", receipts, err)
+		}
+	}
+	if _, err := repository.ApplyExecutionTransitionCommand(ctx, rollbackCommands[0], rollbackAt); err != nil {
+		t.Fatalf("valid claim fallback: %v", err)
+	}
+	if _, err := repository.ApplyExecutionTransitionCommand(ctx, rollbackCommands[1], rollbackAt); !errors.Is(err, ErrAttemptConflict) {
+		t.Fatalf("fenced claim fallback: %v", err)
+	}
+}
+
 func TestClassifiedFailureBackoffIsBoundedAndRepairStopsAutomaticOffers(t *testing.T) {
 	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
 	if dsn == "" {

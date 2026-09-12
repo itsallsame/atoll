@@ -43,19 +43,7 @@ type detailResultSnapshot struct {
 const detailResultMaxJSONBytes = 1 << 20
 
 func (r *Repository) AcceptDetailResult(ctx context.Context, input DetailResult) (DetailResultOutcome, error) {
-	if input.AttemptID == "" || input.Artifact.ArtifactID == "" || input.Artifact.AttemptID != input.AttemptID ||
-		input.ExecutorActorID == "" || input.ExecutorIncarnation == "" || input.DetailVersionID == "" ||
-		input.NormalizedContentHash == "" || !json.Valid(input.DetailJSON) || len(input.DetailJSON) == 0 ||
-		len(input.DetailJSON) > detailResultMaxJSONBytes || input.ObservedAt.IsZero() || input.CauseCommandID == "" {
-		return DetailResultOutcome{}, fmt.Errorf("detail result identity, artifact, normalized content, JSON, and observed time are required")
-	}
-	if err := validateResultArtifact(input.Artifact, input.AttemptID, model.ArtifactResponse); err != nil {
-		return DetailResultOutcome{}, err
-	}
-	if err := validateSupportingResultArtifacts(input.Artifact, input.SupportingArtifacts, input.AttemptID); err != nil {
-		return DetailResultOutcome{}, err
-	}
-	if err := validateOptionalResultCommand(input.CauseCommandID, input.RequestHash); err != nil {
+	if err := validateDetailResult(input); err != nil {
 		return DetailResultOutcome{}, err
 	}
 	outcome, fenceErr, err := r.acceptDetailResultTransaction(ctx, input)
@@ -71,13 +59,98 @@ func (r *Repository) AcceptDetailResult(ctx context.Context, input DetailResult)
 	return outcome, nil
 }
 
+// AcceptDetailResultBatch commits the normal all-success Detail result path in
+// one bounded transaction. It deliberately has no partial-success semantics:
+// callers that receive an error can safely fall back to AcceptDetailResult one
+// item at a time, preserving rejected-Artifact retention and independent Work
+// recovery for the exceptional item without replaying any committed prefix.
+func (r *Repository) AcceptDetailResultBatch(ctx context.Context, inputs []DetailResult) ([]DetailResultOutcome, error) {
+	if len(inputs) < 1 || len(inputs) > 32 {
+		return nil, fmt.Errorf("detail result batch requires 1..32 items")
+	}
+	seenAttempts := make(map[string]struct{}, len(inputs))
+	seenCommands := make(map[string]struct{}, len(inputs))
+	for _, input := range inputs {
+		if err := validateDetailResult(input); err != nil {
+			return nil, err
+		}
+		if _, duplicate := seenAttempts[input.AttemptID]; duplicate {
+			return nil, fmt.Errorf("detail result batch Attempt IDs must be unique")
+		}
+		if _, duplicate := seenCommands[input.CauseCommandID]; duplicate {
+			return nil, fmt.Errorf("detail result batch command IDs must be unique")
+		}
+		seenAttempts[input.AttemptID] = struct{}{}
+		seenCommands[input.CauseCommandID] = struct{}{}
+	}
+
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return nil, fmt.Errorf("begin detail result batch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	outcomes := make([]DetailResultOutcome, 0, len(inputs))
+	for _, input := range inputs {
+		outcome, fenceErr, err := r.acceptDetailResultTx(ctx, tx, input, false)
+		if err != nil {
+			return nil, err
+		}
+		if fenceErr != nil {
+			return nil, fmt.Errorf("%w: %v", ErrResultFenced, fenceErr)
+		}
+		outcomes = append(outcomes, outcome)
+	}
+	attemptIDs := make([]string, len(inputs))
+	releasedAt := inputs[0].ObservedAt
+	for index := range inputs {
+		attemptIDs[index] = inputs[index].AttemptID
+		if inputs[index].ObservedAt.After(releasedAt) {
+			releasedAt = inputs[index].ObservedAt
+		}
+	}
+	if err := releaseBudgetPermitsTx(ctx, tx, attemptIDs, model.PermitReleased, releasedAt); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit detail result batch: %w", err)
+	}
+	return outcomes, nil
+}
+
+func validateDetailResult(input DetailResult) error {
+	if input.AttemptID == "" || input.Artifact.ArtifactID == "" || input.Artifact.AttemptID != input.AttemptID ||
+		input.ExecutorActorID == "" || input.ExecutorIncarnation == "" || input.DetailVersionID == "" ||
+		input.NormalizedContentHash == "" || !json.Valid(input.DetailJSON) || len(input.DetailJSON) == 0 ||
+		len(input.DetailJSON) > detailResultMaxJSONBytes || input.ObservedAt.IsZero() || input.CauseCommandID == "" {
+		return fmt.Errorf("detail result identity, artifact, normalized content, JSON, and observed time are required")
+	}
+	if err := validateResultArtifact(input.Artifact, input.AttemptID, model.ArtifactResponse); err != nil {
+		return err
+	}
+	if err := validateSupportingResultArtifacts(input.Artifact, input.SupportingArtifacts, input.AttemptID); err != nil {
+		return err
+	}
+	return validateOptionalResultCommand(input.CauseCommandID, input.RequestHash)
+}
+
 func (r *Repository) acceptDetailResultTransaction(ctx context.Context, input DetailResult) (DetailResultOutcome, error, error) {
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return DetailResultOutcome{}, nil, fmt.Errorf("begin detail result: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	outcome, fenceErr, err := r.acceptDetailResultTx(ctx, tx, input, true)
+	if err != nil || fenceErr != nil {
+		return DetailResultOutcome{}, fenceErr, err
+	}
+	if err := tx.Commit(); err != nil {
+		return DetailResultOutcome{}, nil, fmt.Errorf("commit detail result: %w", err)
+	}
+	return outcome, nil, nil
+}
 
+func (r *Repository) acceptDetailResultTx(ctx context.Context, tx *sql.Tx, input DetailResult,
+	releasePermit bool) (DetailResultOutcome, error, error) {
 	attempt, err := getAttemptWith(ctx, tx, input.AttemptID, true)
 	if err != nil {
 		return DetailResultOutcome{}, nil, err
@@ -113,9 +186,6 @@ func (r *Repository) acceptDetailResultTransaction(ctx context.Context, input De
 			if err := reserveResultReceipt(ctx, tx, input.CauseCommandID, executioncontract.TypeResult, input.RequestHash, snapshot.Outcome, input.ObservedAt); err != nil {
 				return DetailResultOutcome{}, nil, err
 			}
-			if err := tx.Commit(); err != nil {
-				return DetailResultOutcome{}, nil, err
-			}
 			return snapshot.Outcome, nil, nil
 		}
 		return DetailResultOutcome{}, fmt.Errorf("artifact ID already belongs to another result"), nil
@@ -139,7 +209,7 @@ func (r *Repository) acceptDetailResultTransaction(ctx context.Context, input De
 		return DetailResultOutcome{}, err, nil
 	}
 	job := detail.Job
-	if err := canAcceptResultTx(ctx, tx, attempt, work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
+	if err := attempt.CanAcceptResult(work, currentFence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
 		return DetailResultOutcome{}, err, nil
 	}
 
@@ -201,8 +271,10 @@ WHERE work_id = ? AND version = ?`,
 	if changed != 1 {
 		return DetailResultOutcome{}, fmt.Errorf("detail work changed during acceptance"), nil
 	}
-	if err := releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitReleased, input.ObservedAt); err != nil {
-		return DetailResultOutcome{}, nil, err
+	if releasePermit {
+		if err := releaseBudgetPermitTx(ctx, tx, attempt.AttemptID, model.PermitReleased, input.ObservedAt); err != nil {
+			return DetailResultOutcome{}, nil, err
+		}
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"attempt_id": succeededAttempt.AttemptID, "work_id": completedWork.WorkID, "job_id": acceptance.Job.JobID,
@@ -222,9 +294,6 @@ WHERE work_id = ? AND version = ?`,
 	}
 	if err := reserveResultReceipt(ctx, tx, input.CauseCommandID, executioncontract.TypeResult, input.RequestHash, outcome, input.ObservedAt); err != nil {
 		return DetailResultOutcome{}, nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return DetailResultOutcome{}, nil, fmt.Errorf("commit detail result: %w", err)
 	}
 	return outcome, nil, nil
 }
