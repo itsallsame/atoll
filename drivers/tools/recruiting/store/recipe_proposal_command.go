@@ -61,13 +61,20 @@ func (r *Repository) ApplyRecipeProposalCommand(ctx context.Context, expectedSou
 	if current.Version != expectedSourceVersion {
 		return CommandResult{}, &model.VersionConflictError{Expected: expectedSourceVersion, Actual: current.Version}
 	}
-	if current.ReadinessStatus != model.SourceReady || current.ControlStatus != model.ControlActive ||
-		current.HealthStatus != model.HealthHealthy || current.ActiveEndpoint == nil ||
-		current.ActiveEndpoint.Revision != endpointRevision {
-		return CommandResult{}, fmt.Errorf("Recipe proposal requires the exact active endpoint of a ready healthy Source")
+	sourceEndpoint := current.ActiveEndpoint
+	bootstrapCandidate := false
+	if sourceEndpoint == nil && current.CandidateEndpoint != nil && current.ReadinessStatus == model.SourceCandidate {
+		sourceEndpoint, bootstrapCandidate = current.CandidateEndpoint, true
 	}
-	scopeTarget := current.ActiveEndpoint.URL
-	if proposal != nil && proposal.SourceURL != current.ActiveEndpoint.URL {
+	if current.ControlStatus != model.ControlActive || current.HealthStatus != model.HealthHealthy || sourceEndpoint == nil ||
+		sourceEndpoint.Revision != endpointRevision || (!bootstrapCandidate && current.ReadinessStatus != model.SourceReady) {
+		return CommandResult{}, fmt.Errorf("Recipe proposal requires the exact endpoint of a ready Source or a candidate-only Source bootstrap")
+	}
+	if bootstrapCandidate && (recipe.Kind != model.RecipeListing || proposal != nil) {
+		return CommandResult{}, fmt.Errorf("candidate Source bootstrap only accepts an uncaptured Listing Recipe")
+	}
+	scopeTarget := sourceEndpoint.URL
+	if proposal != nil && proposal.SourceURL != sourceEndpoint.URL {
 		return CommandResult{}, fmt.Errorf("browser capture proposal URL does not match the locked Source endpoint")
 	}
 	if proposal != nil && proposal.SampleJobID != "" {
@@ -108,6 +115,14 @@ func (r *Repository) ApplyRecipeProposalCommand(ctx context.Context, expectedSou
 			return CommandResult{}, fmt.Errorf("%w: Recipe ID and version", ErrBusinessKeyExists)
 		}
 		return CommandResult{}, fmt.Errorf("create proposed Recipe: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO recruiting_recipe_source_provenance(
+  recipe_id, recipe_version, source_id, source_version, endpoint_revision, endpoint_url,
+  bootstrap_candidate, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, recipe.RecipeID, recipe.Version, current.SourceID, current.Version,
+		sourceEndpoint.Revision, sourceEndpoint.URL, bootstrapCandidate, businessAt.UTC())
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("create Recipe Source provenance: %w", err)
 	}
 	if proposal != nil {
 		proposalState, marshalErr := json.Marshal(proposal)

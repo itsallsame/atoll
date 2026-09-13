@@ -57,6 +57,29 @@ func TestRecipeValidationListingRunFreezesCandidateWithoutPublishingIt(t *testin
 	}
 }
 
+func TestBootstrapRecipeValidationFreezesCandidateWithoutActivatingSource(t *testing.T) {
+	source, _ := NewRecruitmentSource("source-bootstrap", "company-bootstrap", "https://jobs.example.com/openings", "all", 1)
+	candidate, _ := NewRecipe("listing-bootstrap", RecipeListing, "jobs.example.com", 1, "content-a", "contract-a",
+		RecipeExecution{ABIVersion: RecipeABIVersion, ContentRef: "recipe://listing/bootstrap",
+			RequiredCapability: "http.fetch", Transport: RecipeTransportHTTPJSON})
+	validating, _ := candidate.BeginValidation(candidate.StateVersion)
+	proposed, _ := NewSourceRecipeAssignment(source.SourceID, RecipeListing, validating.RecipeID, validating.Version,
+		validating.ContractHash, "2026-09-13T00:00:00Z")
+	snapshot, err := NewBootstrapRecipeValidationListingExecutionSnapshot(source, validating, proposed)
+	if err != nil || snapshot.Endpoint.URL != source.CandidateEndpoint.URL || snapshot.Assignment.AssignmentVersion != 1 {
+		t.Fatalf("bootstrap Recipe validation snapshot=%+v err=%v", snapshot, err)
+	}
+	if source.ReadinessStatus != SourceCandidate || source.ActiveEndpoint != nil || source.ListingAssignment != nil {
+		t.Fatalf("bootstrap snapshot published Source state: %+v", source)
+	}
+	readyShaped := source
+	readyShaped.ActiveEndpoint, readyShaped.CandidateEndpoint = readyShaped.CandidateEndpoint, nil
+	readyShaped.ReadinessStatus = SourceReady
+	if _, err := NewBootstrapRecipeValidationListingExecutionSnapshot(readyShaped, validating, proposed); err == nil {
+		t.Fatal("bootstrap snapshot accepted an already-active Source")
+	}
+}
+
 func TestOnlyQueuedProductionRunCanLinkDailyRecovery(t *testing.T) {
 	execution := testListingExecution("source-1")
 	checkpoint := IncrementalCheckpoint{Version: 4, FrontierJobKeys: []string{"old"}}

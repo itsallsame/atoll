@@ -222,10 +222,19 @@ func handleRecipePropose(sys actorbase.Sys, repository *store.Repository, msg ac
 		failStoreError(sys, msg, &model.VersionConflictError{Expected: payload.ExpectedVersion, Actual: source.Version})
 		return
 	}
-	if source.ReadinessStatus != model.SourceReady || source.ControlStatus != model.ControlActive ||
-		source.HealthStatus != model.HealthHealthy || source.ActiveEndpoint == nil ||
-		source.ActiveEndpoint.Revision != payload.EndpointRevision {
-		_, _ = sys.Fail(msg, ErrorQualityRejected, "Recipe proposal requires the exact active endpoint of a ready healthy Source")
+	endpoint := source.ActiveEndpoint
+	bootstrapCandidate := false
+	if endpoint == nil && source.CandidateEndpoint != nil &&
+		source.ReadinessStatus == model.SourceCandidate {
+		endpoint, bootstrapCandidate = source.CandidateEndpoint, true
+	}
+	if source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy || endpoint == nil ||
+		endpoint.Revision != payload.EndpointRevision || (!bootstrapCandidate && source.ReadinessStatus != model.SourceReady) {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, "Recipe proposal requires the exact endpoint of a ready Source or a candidate-only Source bootstrap")
+		return
+	}
+	if bootstrapCandidate && payload.CaptureRef != "" {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, "candidate Source bootstrap does not accept an Extension Capture until the Source is ready")
 		return
 	}
 	execution := model.RecipeExecution{ABIVersion: model.RecipeABIVersion, ContentRef: payload.ContentRef}
@@ -239,13 +248,17 @@ func handleRecipePropose(sys actorbase.Sys, repository *store.Repository, msg ac
 		_, _ = sys.Fail(msg, ErrorQualityRejected, err.Error())
 		return
 	}
+	if bootstrapCandidate && spec.Kind != recipeabi.KindListing {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, "candidate Source bootstrap only accepts a Listing Recipe")
+		return
+	}
 	contentHash, err := spec.ContentHash()
 	if err != nil || contentHash != payload.ExpectedContentHash {
 		_, _ = sys.Fail(msg, ErrorQualityRejected, "Recipe Resource content hash does not match the proposal")
 		return
 	}
 	contractHash, err := spec.ContractHash()
-	scopeURL, parseErr := url.Parse(source.ActiveEndpoint.URL)
+	scopeURL, parseErr := url.Parse(endpoint.URL)
 	if err != nil || parseErr != nil || scopeURL.Hostname() == "" {
 		_, _ = sys.Fail(msg, ErrorQualityRejected, "Recipe contract or Source scope is invalid")
 		return
@@ -271,7 +284,7 @@ func handleRecipePropose(sys actorbase.Sys, repository *store.Repository, msg ac
 		candidateHash, candidateHashErr := capture.Candidate.ContentHash()
 		if proposalErr != nil || candidateHashErr != nil || proposal.ContentHash != payload.ExpectedCaptureHash ||
 			candidateHash != contentHash || capture.SourceID != source.SourceID ||
-			capture.EndpointVersion != payload.EndpointRevision || capture.SourceURL != source.ActiveEndpoint.URL ||
+			capture.EndpointVersion != payload.EndpointRevision || capture.SourceURL != endpoint.URL ||
 			capture.CapturedBy != commandContext.RequestedBy {
 			_, _ = sys.Fail(msg, ErrorQualityRejected, "Extension Capture identity, actor, endpoint fence, candidate, or hash does not match the proposal")
 			return

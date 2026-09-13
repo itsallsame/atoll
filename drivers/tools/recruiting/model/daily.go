@@ -114,6 +114,27 @@ func NewRecipeValidationListingExecutionSnapshot(source RecruitmentSource, recip
 		ContractHash: recipe.ContractHash, Execution: recipe.Execution, Origin: endpoint.Scheme + "://" + endpoint.Host}, nil
 }
 
+// NewBootstrapRecipeValidationListingExecutionSnapshot validates the first
+// Listing Recipe against a Source that has no production endpoint or
+// Assignment yet. The candidate endpoint and proposed Assignment are frozen
+// for execution, but neither becomes production state through this function.
+func NewBootstrapRecipeValidationListingExecutionSnapshot(source RecruitmentSource, recipe Recipe,
+	assignment SourceRecipeAssignment) (ListingExecutionSnapshot, error) {
+	if source.ActiveEndpoint != nil || source.CandidateEndpoint == nil || source.ListingAssignment != nil ||
+		source.ReadinessStatus != SourceCandidate || recipe.Status != RecipeValidating || recipe.Kind != RecipeListing ||
+		assignment.SourceID != source.SourceID || assignment.Kind != RecipeListing || assignment.RecipeID != recipe.RecipeID ||
+		assignment.RecipeVersion != recipe.Version || assignment.ContractHash != recipe.ContractHash || assignment.AssignmentVersion != 1 {
+		return ListingExecutionSnapshot{}, fmt.Errorf("bootstrap Recipe validation requires a candidate-only Source, validating Listing Recipe, and first proposed Assignment")
+	}
+	endpoint, err := url.Parse(source.CandidateEndpoint.URL)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return ListingExecutionSnapshot{}, fmt.Errorf("bootstrap Recipe validation endpoint is invalid")
+	}
+	return ListingExecutionSnapshot{Endpoint: *source.CandidateEndpoint, Assignment: assignment,
+		RecipeID: recipe.RecipeID, RecipeVersion: recipe.Version, ContentHash: recipe.ContentHash,
+		ContractHash: recipe.ContractHash, Execution: recipe.Execution, Origin: endpoint.Scheme + "://" + endpoint.Host}, nil
+}
+
 func (s ListingExecutionSnapshot) Validate(sourceID string) error {
 	endpoint, err := url.Parse(s.Endpoint.URL)
 	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" || s.Endpoint.Revision == 0 ||

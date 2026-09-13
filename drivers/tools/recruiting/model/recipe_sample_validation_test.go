@@ -39,6 +39,29 @@ func TestDetailRecipeSampleValidationFreezesCandidateAndJob(t *testing.T) {
 	}
 }
 
+func TestFirstDetailRecipeValidationUsesPendingBaselineJob(t *testing.T) {
+	company, _ := NewCompany("bootstrap-detail-company", "Company", "https://company.example")
+	company.OnboardingStatus = CompanyInitializing
+	source, _ := NewRecruitmentSource("bootstrap-detail-source", company.CompanyID,
+		"https://jobs.example/openings", "all", 1)
+	source.ReadinessStatus = SourceReady
+	candidate, _ := NewRecipe("bootstrap-detail", RecipeDetail, "jobs.example", 1, "content", "contract",
+		RecipeExecution{ABIVersion: RecipeABIVersion, ContentRef: "recipe://detail/bootstrap",
+			RequiredCapability: "http.fetch", Transport: RecipeTransportHTTPHTML})
+	candidate, _ = candidate.BeginValidation(candidate.StateVersion)
+	job, _ := NewSourceJob("bootstrap-detail-job", source.SourceID, "external-1", "https://jobs.example/1")
+	run, err := NewBootstrapDetailRecipeSampleValidation("bootstrap-detail-validation", "bootstrap-detail-work",
+		company, source, candidate, job, 4, "2026-09-10T01:00:00Z")
+	if err != nil || run.ProposedAssignment.AssignmentVersion != 1 || run.SampleJobID != job.JobID {
+		t.Fatalf("bootstrap Detail validation=%+v err=%v", run, err)
+	}
+	source.DetailAssignment = &run.ProposedAssignment
+	if _, err := NewBootstrapDetailRecipeSampleValidation("invalid", "invalid-work", company, source,
+		candidate, job, 4, "2026-09-10T01:00:00Z"); err == nil {
+		t.Fatal("bootstrap Detail validation accepted a Source with an existing assignment")
+	}
+}
+
 func TestDiscoveryRecipeSampleValidationHasNoFakeSourceFence(t *testing.T) {
 	company, _ := NewCompany("company-discovery", "Company", "https://company.example/careers")
 	candidate, _ := NewRecipe("discovery-new", RecipeDiscovery, "company.example", 2, "content", "contract",

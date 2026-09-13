@@ -154,10 +154,12 @@ VALUES (?,?,?,?,?,?,?,0,0,0,0,1,?,?,?)`, mission.MissionID, company.CompanyID, c
 }
 
 func (r *Repository) ApplyMaterializeDeepDiscoverySources(ctx context.Context, missionID string,
-	sources []model.RecruitmentSource, receipt model.CommandReceipt, events []model.EventIntent,
+	expectedCompanyVersion uint64, company model.Company, sources []model.RecruitmentSource,
+	receipt model.CommandReceipt, events []model.EventIntent, companyEvent *model.EventIntent,
 	businessAt time.Time) (CommandResult, error) {
 	missionID = strings.TrimSpace(missionID)
-	if missionID == "" || len(sources) < 1 || len(sources) > 2000 || len(events) != len(sources) ||
+	if missionID == "" || expectedCompanyVersion == 0 || company.CompanyID == "" || len(sources) > 2000 ||
+		len(events) != len(sources) || (len(sources) == 0 && company.Version == expectedCompanyVersion) ||
 		receipt.CommandID == "" || businessAt.IsZero() {
 		return CommandResult{}, fmt.Errorf("bounded Deep Discovery source materialization facts are required")
 	}
@@ -178,13 +180,30 @@ func (r *Repository) ApplyMaterializeDeepDiscoverySources(ctx context.Context, m
 	if mission.Status != model.DeepDiscoveryDone {
 		return CommandResult{}, fmt.Errorf("completed Deep Discovery Mission is required before Source materialization")
 	}
-	var companyControl model.ControlStatus
-	if err := tx.QueryRowContext(ctx, `SELECT control_status FROM recruiting_companies WHERE company_id=? FOR SHARE`,
-		mission.CompanyID).Scan(&companyControl); err != nil {
+	var companyState []byte
+	if err := tx.QueryRowContext(ctx, `SELECT state_json FROM recruiting_companies WHERE company_id=? FOR UPDATE`,
+		mission.CompanyID).Scan(&companyState); err != nil {
 		return CommandResult{}, err
 	}
-	if companyControl == model.ControlArchived {
+	var currentCompany model.Company
+	if err := json.Unmarshal(companyState, &currentCompany); err != nil {
+		return CommandResult{}, err
+	}
+	if currentCompany.Version != expectedCompanyVersion {
+		return CommandResult{}, &model.VersionConflictError{Expected: expectedCompanyVersion, Actual: currentCompany.Version}
+	}
+	if currentCompany.ControlStatus == model.ControlArchived {
 		return CommandResult{}, fmt.Errorf("cannot materialize Sources for an archived Company")
+	}
+	if company.Version == expectedCompanyVersion+1 {
+		expected, transitionErr := currentCompany.StartDiscovery(expectedCompanyVersion)
+		if transitionErr != nil || expected != company || companyEvent == nil ||
+			companyEvent.AggregateType != "company" || companyEvent.AggregateID != company.CompanyID ||
+			companyEvent.AggregateVersion != company.Version || companyEvent.CauseCommandID != receipt.CommandID {
+			return CommandResult{}, fmt.Errorf("materialized Source Company transition is inconsistent")
+		}
+	} else if company.Version != expectedCompanyVersion || company != currentCompany || companyEvent != nil {
+		return CommandResult{}, fmt.Errorf("materialized Source Company fence is inconsistent")
 	}
 	validatedKeys := make(map[string]struct{})
 	rows, err := tx.QueryContext(ctx, `SELECT state_json FROM recruiting_deep_discovery_nodes
@@ -254,6 +273,19 @@ WHERE mission_id=? AND node_kind='list_url' AND node_state='validated' ORDER BY 
 			return CommandResult{}, err
 		}
 	}
+	if company.Version != expectedCompanyVersion {
+		state, _ := json.Marshal(company)
+		result, err := tx.ExecContext(ctx, `UPDATE recruiting_companies
+SET onboarding_status=?, configuration_version=?, control_epoch=?, execution_fence=?, version=?, state_json=?, updated_at=?
+WHERE company_id=? AND version=?`, company.OnboardingStatus, company.ConfigurationVersion, company.ControlEpoch,
+			company.ExecutionFence, company.Version, state, businessAt.UTC(), company.CompanyID, expectedCompanyVersion)
+		if err != nil {
+			return CommandResult{}, err
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return CommandResult{}, &model.VersionConflictError{Expected: expectedCompanyVersion, Actual: currentCompany.Version}
+		}
+	}
 	if err := reserveCommandReceipt(ctx, tx, receipt, businessAt); err != nil {
 		return CommandResult{}, err
 	}
@@ -263,6 +295,15 @@ WHERE mission_id=? AND node_kind='list_url' AND node_state='validated' ORDER BY 
 			return CommandResult{}, err
 		}
 		if err := appendEventIntent(ctx, tx, event, eventAt, businessAt); err != nil {
+			return CommandResult{}, err
+		}
+	}
+	if companyEvent != nil {
+		eventAt, err := time.Parse(time.RFC3339, companyEvent.BusinessAt)
+		if err != nil {
+			return CommandResult{}, err
+		}
+		if err := appendEventIntent(ctx, tx, *companyEvent, eventAt, businessAt); err != nil {
 			return CommandResult{}, err
 		}
 	}

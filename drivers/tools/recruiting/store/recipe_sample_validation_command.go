@@ -19,6 +19,7 @@ type DetailRecipeValidationPreparation struct {
 	CurrentAssignment model.SourceRecipeAssignment
 	Recipe            model.Recipe
 	Job               model.SourceJob
+	Bootstrap         bool
 }
 
 type DetailRecipeRolloutValidationPreparation struct {
@@ -88,19 +89,33 @@ func (r *Repository) PrepareDetailRecipeValidation(ctx context.Context, sourceID
 func readDetailRecipeValidationPreparation(ctx context.Context, queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, sourceID, recipeID string, recipeVersion uint64, jobID string, lock bool) (DetailRecipeValidationPreparation, error) {
-	query := `SELECT c.state_json, s.state_json, a.state_json, r.state_json, j.state_json
+	query := `SELECT c.state_json, s.state_json, a.state_json, r.state_json, j.state_json,
+       p.source_version, p.endpoint_revision, p.endpoint_url,
+       EXISTS(SELECT 1
+         FROM recruiting_baseline_generations bg
+         JOIN recruiting_baseline_staging stage
+           ON stage.source_id = bg.source_id AND stage.baseline_generation = bg.baseline_generation
+              AND stage.attempt_id <=> bg.listing_attempt_id
+         WHERE bg.source_id = s.source_id AND bg.listing_finalized = TRUE
+           AND bg.materialization_completed = FALSE AND stage.source_job_key = j.source_job_key
+           AND JSON_UNQUOTE(JSON_EXTRACT(stage.row_json, '$.detail_url')) = j.detail_url)
 FROM recruiting_sources s
 JOIN recruiting_companies c ON c.company_id = s.company_id
-JOIN recruiting_source_assignments a ON a.source_id = s.source_id AND a.recipe_kind = 'detail'
+LEFT JOIN recruiting_source_assignments a ON a.source_id = s.source_id AND a.recipe_kind = 'detail'
 JOIN recruiting_recipes r ON r.recipe_id = ? AND r.recipe_version = ?
 JOIN recruiting_source_jobs j ON j.job_id = ? AND j.source_id = s.source_id
+LEFT JOIN recruiting_recipe_source_provenance p ON p.recipe_id = r.recipe_id AND p.recipe_version = r.recipe_version
 WHERE s.source_id = ?`
 	if lock {
 		query += " FOR UPDATE"
 	}
 	var companyState, sourceState, assignmentState, recipeState, jobState []byte
+	var proposalSourceVersion, proposalEndpointRevision sql.NullInt64
+	var proposalEndpointURL sql.NullString
+	var bootstrapSample bool
 	if err := queryer.QueryRowContext(ctx, query, recipeID, recipeVersion, jobID, sourceID).Scan(
-		&companyState, &sourceState, &assignmentState, &recipeState, &jobState); err != nil {
+		&companyState, &sourceState, &assignmentState, &recipeState, &jobState,
+		&proposalSourceVersion, &proposalEndpointRevision, &proposalEndpointURL, &bootstrapSample); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return DetailRecipeValidationPreparation{}, ErrNotFound
 		}
@@ -110,31 +125,58 @@ WHERE s.source_id = ?`
 	for _, item := range []struct {
 		data   []byte
 		target any
-	}{{companyState, &value.Company}, {sourceState, &value.Source}, {assignmentState, &value.CurrentAssignment},
-		{recipeState, &value.Recipe}, {jobState, &value.Job}} {
+	}{{companyState, &value.Company}, {sourceState, &value.Source}, {recipeState, &value.Recipe}, {jobState, &value.Job}} {
 		if err := json.Unmarshal(item.data, item.target); err != nil {
 			return DetailRecipeValidationPreparation{}, fmt.Errorf("decode Detail Recipe validation input: %w", err)
 		}
 	}
-	if value.Company.OnboardingStatus != model.CompanyReady || value.Company.ControlStatus != model.ControlActive ||
-		value.Source.ReadinessStatus != model.SourceReady || value.Source.ControlStatus != model.ControlActive ||
-		value.Source.HealthStatus != model.HealthHealthy || value.Source.DetailAssignment == nil ||
-		!reflect.DeepEqual(*value.Source.DetailAssignment, value.CurrentAssignment) ||
+	if len(assignmentState) != 0 {
+		if err := json.Unmarshal(assignmentState, &value.CurrentAssignment); err != nil {
+			return DetailRecipeValidationPreparation{}, fmt.Errorf("decode Detail Recipe Assignment: %w", err)
+		}
+	}
+	if value.Company.ControlStatus != model.ControlActive || value.Source.ReadinessStatus != model.SourceReady || value.Source.ControlStatus != model.ControlActive ||
+		value.Source.HealthStatus != model.HealthHealthy {
+		return DetailRecipeValidationPreparation{}, fmt.Errorf("Detail Recipe validation requires a ready active Source")
+	}
+	standard := value.Company.OnboardingStatus == model.CompanyReady && value.Source.DetailAssignment != nil && len(assignmentState) != 0 &&
+		reflect.DeepEqual(*value.Source.DetailAssignment, value.CurrentAssignment)
+	bootstrapOnboarding := value.Company.OnboardingStatus == model.CompanyInitializing ||
+		value.Company.OnboardingStatus == model.CompanyDiscoveringSources
+	bootstrap := bootstrapOnboarding && bootstrapSample && value.Source.DetailAssignment == nil && len(assignmentState) == 0 &&
+		value.Job.Status == model.JobDetailPending && value.Source.ActiveEndpoint != nil &&
+		proposalSourceVersion.Valid && proposalSourceVersion.Int64 > 0 && uint64(proposalSourceVersion.Int64) == value.Source.Version &&
+		proposalEndpointRevision.Valid && proposalEndpointRevision.Int64 > 0 &&
+		uint64(proposalEndpointRevision.Int64) == value.Source.ActiveEndpoint.Revision &&
+		proposalEndpointURL.Valid && proposalEndpointURL.String == value.Source.ActiveEndpoint.URL
+	if (!standard && !bootstrap) ||
 		value.Recipe.Kind != model.RecipeDetail ||
-		(value.Recipe.Status != model.RecipeDraft && value.Recipe.Status != model.RecipeQuarantined) {
+		(value.Recipe.Status != model.RecipeDraft && value.Recipe.Status != model.RecipeQuarantined &&
+			value.Recipe.Status != model.RecipeValidating) {
 		return DetailRecipeValidationPreparation{}, fmt.Errorf("Detail Recipe validation requires a ready Source, current Detail Assignment, Job, and candidate")
 	}
+	value.Bootstrap = bootstrap
 	return value, nil
 }
 
 func (p DetailRecipeValidationPreparation) NewRun(runID, workID string, expectedFieldCount int,
 	effectiveAt string) (model.Recipe, model.RecipeSampleValidation, error) {
-	nextRecipe, err := p.Recipe.BeginValidation(p.Recipe.StateVersion)
-	if err != nil {
-		return model.Recipe{}, model.RecipeSampleValidation{}, err
+	nextRecipe := p.Recipe
+	var err error
+	if p.Recipe.Status != model.RecipeValidating {
+		nextRecipe, err = p.Recipe.BeginValidation(p.Recipe.StateVersion)
+		if err != nil {
+			return model.Recipe{}, model.RecipeSampleValidation{}, err
+		}
 	}
-	run, err := model.NewDetailRecipeSampleValidation(runID, workID, p.Company, p.Source,
-		p.CurrentAssignment, nextRecipe, p.Job, expectedFieldCount, effectiveAt)
+	var run model.RecipeSampleValidation
+	if p.Bootstrap {
+		run, err = model.NewBootstrapDetailRecipeSampleValidation(runID, workID, p.Company, p.Source,
+			nextRecipe, p.Job, expectedFieldCount, effectiveAt)
+	} else {
+		run, err = model.NewDetailRecipeSampleValidation(runID, workID, p.Company, p.Source,
+			p.CurrentAssignment, nextRecipe, p.Job, expectedFieldCount, effectiveAt)
+	}
 	return nextRecipe, run, err
 }
 

@@ -158,3 +158,78 @@ func TestRecipeValidationExecutesEvidenceOnlyBeforeApproval(t *testing.T) {
 		t.Fatalf("approved Recipe=%+v", active)
 	}
 }
+
+func TestFirstListingRecipeCanValidateAgainstCandidateSourceWithoutPublishingIt(t *testing.T) {
+	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
+	}
+	db, err := Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	migrateTestDatabase(t, ctx, db)
+	repository, _ := NewRepository(db)
+	now := time.Date(2095, 2, 4, 3, 0, 0, 0, time.UTC)
+	company, _ := model.NewCompany("bootstrap-company", "Bootstrap Company", "https://jobs.bootstrap.example")
+	if err := repository.CreateCompany(ctx, company, now); err != nil {
+		t.Fatal(err)
+	}
+	source, _ := model.NewRecruitmentSource("bootstrap-source", company.CompanyID,
+		"https://jobs.bootstrap.example/openings", "all", 1)
+	if err := repository.CreateSource(ctx, source, now); err != nil {
+		t.Fatal(err)
+	}
+	recipe, _ := model.NewRecipe("bootstrap-listing", model.RecipeListing, "jobs.bootstrap.example", 1,
+		"sha256:bootstrap-content", "sha256:bootstrap-contract", model.RecipeExecution{ABIVersion: model.RecipeABIVersion,
+			ContentRef: "recipe://bootstrap/listing", RequiredCapability: "http.fetch", Transport: model.RecipeTransportHTTPJSON})
+	proposalReceipt, _ := model.NewCommandReceipt("bootstrap-proposal-command", "recruiting.recipe.propose",
+		"sha256:bootstrap-proposal", json.RawMessage(`{"status":"draft"}`))
+	proposalEvent, _ := model.NewEventIntent("bootstrap-proposal-event", "recipe.proposed", "recipe",
+		recipe.RecipeID+"@1", recipe.StateVersion, now.Format(time.RFC3339Nano), proposalReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyRecipeProposalCommand(ctx, source.Version, source.CandidateEndpoint.Revision,
+		source.SourceID, recipe, proposalReceipt, proposalEvent, now, nil); err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := repository.PrepareRecipeValidation(ctx, source.SourceID, recipe.RecipeID, recipe.Version)
+	if err != nil || !preparation.Bootstrap {
+		t.Fatalf("candidate bootstrap preparation=%+v err=%v", preparation, err)
+	}
+	validating, run, err := preparation.NewRun("bootstrap-validation-run", "bootstrap-validation-work",
+		now.Add(time.Second).Format(time.RFC3339Nano))
+	if err != nil || run.ListingExecution.Endpoint.URL != source.CandidateEndpoint.URL ||
+		run.ListingExecution.Assignment.AssignmentVersion != 1 {
+		t.Fatalf("candidate bootstrap run=%+v err=%v", run, err)
+	}
+	work, _ := model.NewWork(run.WorkID, "recipe", recipe.RecipeID+"@1", "recipe_validation", "manual")
+	work, _ = work.WithCausality("human:bootstrap:1", "message-bootstrap", "")
+	placement := WorkPlacement{BusinessKey: "recipe-validation|" + run.ListingRunID, Priority: 100,
+		Capability: validating.Execution.RequiredCapability, Origin: run.ListingExecution.Origin, NotBefore: now.Add(time.Second)}
+	validationReceipt, _ := model.NewCommandReceipt("bootstrap-validation-command", "recruiting.recipe.validate",
+		"sha256:bootstrap-validation", json.RawMessage(`{"status":"validating"}`))
+	validationEvent, _ := model.NewEventIntent("bootstrap-validation-event", "recipe.validation_started", "recipe",
+		recipe.RecipeID+"@1", validating.StateVersion, now.Add(time.Second).Format(time.RFC3339Nano),
+		validationReceipt.CommandID, json.RawMessage(`{}`))
+	dispatch, _ := NewExecutionDispatchIntent("bootstrap-validation-dispatch", "tool:bootstrap-executor",
+		placement.Capability, placement.Origin, "", "recipe_validation", validationReceipt.CommandID, now.Add(time.Second))
+	if _, err := repository.ApplyRecipeValidationCommand(ctx, recipe.StateVersion, validating, run, work, placement,
+		validationReceipt, validationEvent, &dispatch, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	storedSource, _ := repository.GetSource(ctx, source.SourceID)
+	if storedSource.ReadinessStatus != model.SourceCandidate || storedSource.ActiveEndpoint != nil || storedSource.ListingAssignment != nil {
+		t.Fatalf("Recipe validation prematurely published Source: %+v", storedSource)
+	}
+	offer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "bootstrap-validation-attempt",
+		ExecutorActorID: "tool:bootstrap-executor:1", ExecutorIncarnation: "boot-bootstrap",
+		Capability: placement.Capability, Origin: placement.Origin, OfferedAt: now.Add(time.Second),
+		BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil || offer.Kind != "listing" || offer.ListingRun == nil ||
+		offer.ListingRun.Mode != model.ListingRunRecipeValidation || offer.Attempt.AssignmentVersion != 1 ||
+		offer.Attempt.SourceVersion != source.Version {
+		t.Fatalf("candidate bootstrap offer=%+v err=%v", offer, err)
+	}
+}

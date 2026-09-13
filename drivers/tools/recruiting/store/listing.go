@@ -28,6 +28,9 @@ type ListingIngest struct {
 	// ForceDetailRefresh is reserved for an explicit full baseline. Daily
 	// overlap ingestion must leave it false so unchanged rows stay cheap.
 	ForceDetailRefresh bool
+	// EnsurePendingDetailWork lets baseline materialization attach the first
+	// Detail Work to a pending Job identity created solely as a Recipe sample.
+	EnsurePendingDetailWork bool
 }
 
 type ListingIngestResult struct {
@@ -99,6 +102,7 @@ func applyListingObservationTx(ctx context.Context, tx *sql.Tx, input ListingIng
 		return ListingIngestResult{}, err
 	}
 	needsDetail := false
+	jobChanged := false
 	if newJob {
 		jobID := input.NewJobID
 		if jobID == "" {
@@ -108,9 +112,13 @@ func applyListingObservationTx(ctx context.Context, tx *sql.Tx, input ListingIng
 		needsDetail = err == nil
 	} else {
 		job, needsDetail, err = job.ObserveListing(job.Version, input.Observation)
+		jobChanged = needsDetail
+		if err == nil && input.EnsurePendingDetailWork && !needsDetail && job.Status == model.JobDetailPending {
+			needsDetail = true
+		}
 		if err == nil && input.ForceDetailRefresh && !needsDetail {
 			job, err = job.ForceRefresh(job.Version, input.Observation.DetailURL)
-			needsDetail = err == nil
+			needsDetail, jobChanged = err == nil, err == nil
 		}
 	}
 	if err != nil {
@@ -120,7 +128,7 @@ func applyListingObservationTx(ctx context.Context, tx *sql.Tx, input ListingIng
 		if err := insertJob(ctx, tx, job, input.ObservedAt); err != nil {
 			return ListingIngestResult{}, err
 		}
-	} else if needsDetail {
+	} else if jobChanged {
 		if err := updateJob(ctx, tx, job, job.Version-1, input.ObservedAt); err != nil {
 			return ListingIngestResult{}, err
 		}

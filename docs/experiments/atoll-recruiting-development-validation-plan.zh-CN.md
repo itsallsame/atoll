@@ -820,3 +820,9 @@ CI 层级：
 运行手册已形成预生产版本：`docs/experiments/atoll-recruiting-operations-runbook.zh-CN.md`。它只引用现有公开消息、非 root migration/runtime、既有分层验证入口和已经实现的状态语义，并把尚未关闭的真实站点、出站隔离、联合恢复和仓库级阻塞继续列为发布门；文档存在不等于这些生产门已经通过。
 
 只有上述清单都有可复现证据，并且 P9 正确性门槛全部满足，Atoll Recruiting 才可以从“产品与架构可行”转为“可生产运行”。
+
+## 21. 2026-09-13 冷启动闭环阶段
+
+本阶段消除了新 Source 的两个循环依赖，同时保持 Atoll core 零修改：候选 Endpoint 可在不可变 provenance 围栏下验证首个 Listing Recipe；baseline 列表完成后只物化一条真实 `detail_pending` 样本供首个 Detail Recipe 验证，待 Recipe 审批并首次分配后才批量创建 Detail Work。自然语言 `onboarding.status` 在 Source 已物化后返回初始化阶段和连续动作指令，不再反复要求 materialize。
+
+已完成的代码门包括招聘扩展单元测试、`go vet`、`go test -race`、boundary check 和 migration 61。真实字节站点同时证明：其岗位 API 使用页面上下文生成的 POST/签名，普通 GET 不等价；不得把临时签名硬编码为 Recipe，也不得放开浏览器任意 POST。后续实现必须把网络发现证据转换为版本化、受限的公开只读请求模板，并单独通过 effect-policy 与真实站点验收。

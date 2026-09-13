@@ -235,16 +235,27 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 	status, next, directive := string(mission.Status), deepDiscoveryNextAction(mission),
 		"Continue the current stage when active; when completed, present all typed URLs and coverage gaps."
 	classified := allURLsClassified(urls)
+	var sources []model.RecruitmentSource
 	if mission.Status == model.DeepDiscoveryDone && classified {
-		next = "materialize_validated_urls"
-		directive = "Call recruiting.onboarding.materialize with only company_name before presenting the typed URL result."
+		sources, err = listAllCompanySources(msg, repository, company.CompanyID)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+		if len(sources) == 0 {
+			next = "materialize_validated_urls"
+			directive = "Call recruiting.onboarding.materialize with only company_name before presenting the typed URL result."
+		} else {
+			next = "initialize_candidate_sources"
+			directive = "For each candidate Source, generate a Resource-backed Listing Recipe from real page/network evidence, then call recruiting.recipe.propose and recruiting.recipe.validate. Approve only successful evidence, validate and publish the Source, then start its first baseline. After the baseline exposes a pending sample Job, generate and validate the first Detail Recipe, approve and assign it. Continue without asking the user for internal IDs; report only evidence-backed blockers."
+		}
 	}
 	if mission.Status == model.DeepDiscoveryDone && !classified {
 		status, next = "needs_classification", "begin_new_discovery_generation"
 		directive = "These are legacy unclassified URL facts. State that their recruitment types are unverified; do not infer types from labels, URL text, or memory. Call recruiting.onboarding.begin to start an evidence-backed classification generation when the user requested discovery."
 	}
 	_, _ = sys.Reply(msg, onboardingResponse{ContractVersion: ContractVersion, Status: status, Company: &company,
-		Mission: &mission, ValidatedURLs: urls, NextAction: next, AgentDirective: directive,
+		Mission: &mission, ValidatedURLs: urls, Sources: sources, NextAction: next, AgentDirective: directive,
 		ClassificationComplete: classified, ClassificationPolicy: onboardingClassificationPolicy})
 }
 
@@ -285,6 +296,17 @@ func handleOnboardingMaterialize(sys actorbase.Sys, repository *store.Repository
 	if !allURLsClassified(urls) {
 		_, _ = sys.Fail(msg, ErrorQualityRejected, "every validated URL must have an evidence-backed recruitment type")
 		return
+	}
+	nextCompany := company
+	companyChanged := false
+	if company.OnboardingStatus == model.CompanyNew || company.OnboardingStatus == model.CompanyBlockedNoSources ||
+		company.OnboardingStatus == model.CompanyBlocked {
+		nextCompany, err = company.StartDiscovery(company.Version)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+		companyChanged = true
 	}
 	existing, err := listAllCompanySources(msg, repository, company.CompanyID)
 	if err != nil {
@@ -340,11 +362,11 @@ func handleOnboardingMaterialize(sys actorbase.Sys, repository *store.Repository
 		}
 		missing, allSources = append(missing, source), append(allSources, source)
 	}
-	response := onboardingResponse{ContractVersion: ContractVersion, Status: "materialized", Company: &company, Mission: &mission,
+	response := onboardingResponse{ContractVersion: ContractVersion, Status: "materialized", Company: &nextCompany, Mission: &mission,
 		ValidatedURLs: urls, Sources: allSources, NextAction: "generate_and_validate_listing_and_detail_recipes",
 		AgentDirective:         "Present the typed URL result. Continue with Recipe generation only when the user asked to initialize collection.",
 		ClassificationComplete: true, ClassificationPolicy: onboardingClassificationPolicy}
-	if len(missing) == 0 {
+	if len(missing) == 0 && !companyChanged {
 		_, _ = sys.Reply(msg, response)
 		return
 	}
@@ -368,7 +390,21 @@ func handleOnboardingMaterialize(sys actorbase.Sys, repository *store.Repository
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
 		return
 	}
-	result, err := repository.ApplyMaterializeDeepDiscoverySources(msg.Ctx(), mission.MissionID, missing, receipt, events, businessAt)
+	var companyEvent *model.EventIntent
+	if companyChanged {
+		audit, _ := json.Marshal(map[string]any{"requested_by": string(msg.Sender.ID), "mission_id": mission.MissionID,
+			"company_id": company.CompanyID})
+		created, eventErr := model.NewEventIntent("event-"+stableDigest(commandID+"|company.discovery.started"),
+			"company.discovery.started", "company", company.CompanyID, nextCompany.Version,
+			businessAt.Format(time.RFC3339Nano), commandID, audit)
+		if eventErr != nil {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, eventErr.Error())
+			return
+		}
+		companyEvent = &created
+	}
+	result, err := repository.ApplyMaterializeDeepDiscoverySources(msg.Ctx(), mission.MissionID, company.Version,
+		nextCompany, missing, receipt, events, companyEvent, businessAt)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return

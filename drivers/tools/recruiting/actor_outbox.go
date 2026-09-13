@@ -50,6 +50,7 @@ type outboxReconcileResponse struct {
 	DispatchExhausted           int    `json:"dispatch_exhausted"`
 	BaselineSourceID            string `json:"baseline_source_id,omitempty"`
 	BaselineGeneration          uint64 `json:"baseline_generation,omitempty"`
+	BaselineRecipeSampleJobID   string `json:"baseline_recipe_sample_job_id,omitempty"`
 	BaselineMaterialized        int    `json:"baseline_materialized"`
 	BaselineDispatches          int    `json:"baseline_dispatches"`
 	BaselinePageCompleted       bool   `json:"baseline_page_completed"`
@@ -148,6 +149,14 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 	}
 	response.ProfileSessionsScanned, response.ProfileSessionsExpired = profileExpiry.Scanned, profileExpiry.Expired
 	response.ProfileSessionConflicts = profileExpiry.Conflicts
+	sampleJob, err := repository.MaterializeNextBaselineRecipeSample(msg.Ctx(), now)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	if sampleJob != nil {
+		response.BaselineRecipeSampleJobID = sampleJob.JobID
+	}
 	materialized, err := repository.MaterializeNextBaselinePage(msg.Ctx(), cfg.BaselineMaterializeLimit, now,
 		cfg.executionDispatchTargets())
 	if err != nil {

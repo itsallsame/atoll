@@ -55,6 +55,7 @@ func NewDetailRecipeSampleValidation(id, workID string, company Company, source 
 	if id == "" || workID == "" || company.CompanyID != source.CompanyID || company.Version == 0 || source.Version == 0 ||
 		company.OnboardingStatus != CompanyReady || company.ControlStatus != ControlActive ||
 		source.ReadinessStatus != SourceReady || source.ControlStatus != ControlActive || source.HealthStatus != HealthHealthy ||
+		source.DetailAssignment != nil ||
 		candidate.Kind != RecipeDetail || candidate.Status != RecipeValidating || expectedFieldCount < 1 ||
 		currentAssignment.SourceID != source.SourceID ||
 		currentAssignment.Kind != RecipeDetail || job.SourceID != source.SourceID || job.JobID == "" || job.Version == 0 {
@@ -77,6 +78,42 @@ func NewDetailRecipeSampleValidation(id, workID string, company Company, source 
 		ExpectedFieldCount: expectedFieldCount,
 		EndpointURL:        job.DetailURL, EndpointVersion: job.Version, Origin: endpoint.Scheme + "://" + endpoint.Host,
 		Status: RecipeSampleValidationQueued, Version: 1}
+	return run, run.Validate()
+}
+
+// NewBootstrapDetailRecipeSampleValidation validates the first Detail Recipe
+// against a real Job identity observed by the finalized baseline. It freezes a
+// proposed first Assignment but does not publish that Assignment or any detail
+// data; approval and recipe.assign remain separate operator-visible steps.
+func NewBootstrapDetailRecipeSampleValidation(id, workID string, company Company, source RecruitmentSource,
+	candidate Recipe, job SourceJob, expectedFieldCount int, effectiveAt string) (RecipeSampleValidation, error) {
+	id, workID = strings.TrimSpace(id), strings.TrimSpace(workID)
+	bootstrapOnboarding := company.OnboardingStatus == CompanyDiscoveringSources ||
+		company.OnboardingStatus == CompanyInitializing
+	if id == "" || workID == "" || company.CompanyID != source.CompanyID || company.Version == 0 || source.Version == 0 ||
+		!bootstrapOnboarding || company.ControlStatus != ControlActive ||
+		source.ReadinessStatus != SourceReady || source.ControlStatus != ControlActive || source.HealthStatus != HealthHealthy ||
+		source.DetailAssignment != nil || candidate.Kind != RecipeDetail || candidate.Status != RecipeValidating ||
+		expectedFieldCount < 1 || job.SourceID != source.SourceID || job.JobID == "" || job.Version == 0 ||
+		job.Status != JobDetailPending {
+		return RecipeSampleValidation{}, fmt.Errorf("Detail Recipe bootstrap requires a ready Source, unassigned real pending Job, and validating candidate")
+	}
+	proposed, err := NewSourceRecipeAssignment(source.SourceID, RecipeDetail, candidate.RecipeID,
+		candidate.Version, candidate.ContractHash, effectiveAt)
+	if err != nil {
+		return RecipeSampleValidation{}, err
+	}
+	endpoint, err := url.Parse(job.DetailURL)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" || endpoint.User != nil || endpoint.Fragment != "" ||
+		!strings.EqualFold(candidate.Scope, endpoint.Hostname()) {
+		return RecipeSampleValidation{}, fmt.Errorf("Detail Recipe bootstrap sample URL does not match candidate scope")
+	}
+	run := RecipeSampleValidation{ValidationRunID: id, WorkID: workID, RecipeKind: RecipeDetail,
+		Mode: RecipeSampleValidationCandidate, CompanyID: company.CompanyID, SourceID: source.SourceID,
+		CompanyVersion: company.Version, SourceVersion: source.Version, Candidate: candidate,
+		ProposedAssignment: proposed, SampleJobID: job.JobID, SampleJobVersion: job.Version,
+		ExpectedFieldCount: expectedFieldCount, EndpointURL: job.DetailURL, EndpointVersion: job.Version,
+		Origin: endpoint.Scheme + "://" + endpoint.Host, Status: RecipeSampleValidationQueued, Version: 1}
 	return run, run.Validate()
 }
 
