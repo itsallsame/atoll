@@ -427,6 +427,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 进展补充（2026-09-13，D1 Actor/Executor 进程双轴）：新增隔离入口 `make recruiting-daily-process-failure-matrix` 和只在显式测试 token 下启用的 D0—D6 可变快照 origin；生产 HTTP Executor 仍只执行 GET，快照控制接口不进入 Recipe。D1 `unchanged overlap` 先由真实 Server、daemon、非 root MySQL、File Resource 和 HTTP Executor 完成 D0 三岗位建账，再分别执行两个独立子场景。Executor 轴在第一页事务已提交、daemon 尚未处理回包时 `SIGKILL` daemon，旧 Attempt 保留 1 页证据后过期；Actor 轴在第一页事务被测试闸门阻塞、尚未提交时 `SIGKILL` Atoll Server，旧 Attempt 不留下已接受页面。两轴均由同一持久 Work 的新 Attempt 从第一页完整重扫，最终严格为 2 Attempt（1 expired、1 succeeded）、3 个 Job、3 个 DetailVersion、0 active Permit；Executor 轴保留 4 条 Attempt 级页面/Observation，Actor 轴保留 3 条，没有重复业务岗位或详情。固定提交 `d1d34e02` 的权威双轴复跑分别为 15.53/18.26 秒，总计 33.79 秒，测试容器全部清理；证据见 `evidence/recruiting-daily-d1-process-failure-matrix-20260913.json`。D1 的 OS 进程双轴据此关闭；D2—D6 仍须沿同一矩阵扩展，因此 P6 保持进行中。
 
+进展补充（2026-09-13，D1—D4 连续进程矩阵）：同一入口现让每个故障轴在一套连续 MySQL 血缘中依次运行 D0 建账、D1 无变化、D2 新岗位、D3 历史岗位更新后重新置顶和 D4 同活动时间组跨页，而不是用互相隔离的小测试冒充每日演进。每一天都在首个 Listing page result transaction 处重复进程故障：Executor 轴先提交页面、暂停并 `SIGKILL` daemon；Actor 轴在提交前 `SIGKILL` Atoll Server。恢复后新 Attempt 必须从第 1 页重扫，每日严格为 2 Attempt（1 expired、1 succeeded）和 0 active Permit。增强断言逐日核对 Checkpoint 2→3→4→5→6、D2 的第 4 个 Job/Detail、D3 同一 C Job 的 refresh generation/detail version 均为 2，以及 D4 frontier 同时包含跨页的 E/F；最终为 6 个 Job、7 个 DetailVersion。固定提交 `30de9f2b` 的 8 个 OS 故障切点权威复跑通过，Executor/Actor 连续轴分别 24.78/35.38 秒，总计 60.16 秒，容器全部清理。证据见 `evidence/recruiting-daily-d1-d4-process-failure-matrix-20260913.json`。D1—D4 的 OS 进程双轴据此关闭；D5 不安全边界失败和 D6 人工因果重试双轴仍待完成，P6 保持进行中。
+
 ## 12. P7：运维、修复与人工参与
 
 ### 开发项

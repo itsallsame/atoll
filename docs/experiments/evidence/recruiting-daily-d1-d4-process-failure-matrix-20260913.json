@@ -1,0 +1,59 @@
+{
+  "schema_version": "recruiting.daily-process-failure-matrix-evidence.v2",
+  "commit": "30de9f2bce017d72ca190490455872d17d8e32ba",
+  "completed_at": "2026-09-13T12:47:39+08:00",
+  "test": "TestRecruitingDailyIncrementalProcessFailureMatrix",
+  "command": "make recruiting-daily-process-failure-matrix",
+  "topology": {
+    "atoll_server": "real process",
+    "daemon": "real process",
+    "executor": "recruiting-executor on daemon",
+    "mysql": "ephemeral MySQL 8.4",
+    "mysql_migration_identity": "staircase_migrator",
+    "mysql_runtime_identity": "staircase_runtime",
+    "artifact_provider": "daemon File Resource",
+    "origin": "read-only container on a Docker internal network"
+  },
+  "fault_axes": [
+    {
+      "name": "executor_process",
+      "days": ["D1", "D2", "D3", "D4"],
+      "cuts": 4,
+      "fault": "SIGKILL daemon after page one committed and before result acknowledgement was processed",
+      "old_attempt_pages_per_day": 1,
+      "duration_seconds": 24.78,
+      "result": "passed"
+    },
+    {
+      "name": "actor_server_process",
+      "days": ["D1", "D2", "D3", "D4"],
+      "cuts": 4,
+      "fault": "SIGKILL Atoll Server while page one result transaction was blocked before commit",
+      "old_attempt_pages_per_day": 0,
+      "duration_seconds": 35.38,
+      "result": "passed"
+    }
+  ],
+  "daily_invariants": [
+    {"day": "D1", "case": "unchanged_overlap", "checkpoint_version": 3, "retry_pages": 3, "jobs": 3, "detail_versions": 3},
+    {"day": "D2", "case": "one_new_job", "checkpoint_version": 4, "retry_pages": 4, "jobs": 4, "detail_versions": 4},
+    {"day": "D3", "case": "historical_job_updated_and_retopped", "checkpoint_version": 5, "retry_pages": 4, "jobs": 4, "detail_versions": 5, "retopped_job_refresh_generation": 2, "retopped_job_detail_version": 2},
+    {"day": "D4", "case": "equal_time_frontier_split_across_pages", "checkpoint_version": 6, "retry_pages": 5, "jobs": 6, "detail_versions": 7, "required_frontier_keys": ["e", "f"]}
+  ],
+  "per_day_execution_invariants": {
+    "attempts": 2,
+    "expired_attempts": 1,
+    "succeeded_attempts": 1,
+    "active_permits": 0,
+    "new_attempt_restarts_at_page": 1,
+    "business_jobs_are_unique": true,
+    "detail_versions_are_unique_per_generation": true
+  },
+  "total_fault_cuts": 8,
+  "total_test_duration_seconds": 60.16,
+  "go_package_duration_seconds": 64.870,
+  "all_containers_removed": true,
+  "atoll_core_modified": false,
+  "result": "passed",
+  "scope_limit": "This closes D1-D4 actor/executor process axes. D5 unsafe-boundary failure and D6 human causal retry process axes remain open, so P6 is still in progress."
+}
