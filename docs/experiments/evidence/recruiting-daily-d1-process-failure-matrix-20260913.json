@@ -1,0 +1,61 @@
+{
+  "schema_version": "recruiting.daily-process-failure-matrix-evidence.v1",
+  "commit": "d1d34e020afc3528934fa149f8b9cd5f0e96e63e",
+  "completed_at": "2026-09-13T12:36:01+08:00",
+  "test": "TestRecruitingDailyIncrementalProcessFailureMatrix",
+  "command": "make recruiting-daily-process-failure-matrix",
+  "scope": {
+    "day": "D1",
+    "business_case": "unchanged overlap",
+    "fault_axes": ["executor_process", "actor_server_process"],
+    "cutpoint": "first listing page result transaction"
+  },
+  "topology": {
+    "atoll_server": "real process",
+    "daemon": "real process",
+    "executor": "recruiting-executor on daemon",
+    "mysql": "ephemeral MySQL 8.4",
+    "mysql_migration_identity": "staircase_migrator",
+    "mysql_runtime_identity": "staircase_runtime",
+    "artifact_provider": "daemon File Resource",
+    "origin": "read-only container on a Docker internal network"
+  },
+  "cases": [
+    {
+      "name": "D1_executor_exit_after_first_page",
+      "duration_seconds": 15.53,
+      "fault": "SIGKILL daemon after page one committed and before result acknowledgement was processed",
+      "old_attempt_pages": 1,
+      "total_attempts": 2,
+      "expired_attempts": 1,
+      "succeeded_attempts": 1,
+      "accepted_page_progress": 4,
+      "accepted_observations": 4,
+      "jobs": 3,
+      "detail_versions": 3,
+      "active_permits": 0,
+      "result": "passed"
+    },
+    {
+      "name": "D1_actor_exit_after_first_page",
+      "duration_seconds": 18.26,
+      "fault": "SIGKILL Atoll Server while the first page result transaction was blocked before commit",
+      "old_attempt_pages": 0,
+      "total_attempts": 2,
+      "expired_attempts": 1,
+      "succeeded_attempts": 1,
+      "accepted_page_progress": 3,
+      "accepted_observations": 3,
+      "jobs": 3,
+      "detail_versions": 3,
+      "active_permits": 0,
+      "result": "passed"
+    }
+  ],
+  "total_test_duration_seconds": 33.79,
+  "go_package_duration_seconds": 38.756,
+  "all_containers_removed": true,
+  "atoll_core_modified": false,
+  "result": "passed",
+  "scope_limit": "This closes the D1 actor/executor process axes only. D2-D6 process axes remain open, so P6 is still in progress."
+}

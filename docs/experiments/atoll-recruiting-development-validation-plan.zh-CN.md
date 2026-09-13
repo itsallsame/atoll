@@ -425,6 +425,8 @@ Recipe 与 Artifact 只通过 Atoll 已有的公开 `Actor Resource` 接口接�
 
 退出门：所有成功日只扫描必要增量和重叠，不抓取历史全集；任何故障排列均为零漏失的已接受 Observation、零陈旧 Checkpoint 覆盖、零重复有效 Detail generation。
 
+进展补充（2026-09-13，D1 Actor/Executor 进程双轴）：新增隔离入口 `make recruiting-daily-process-failure-matrix` 和只在显式测试 token 下启用的 D0—D6 可变快照 origin；生产 HTTP Executor 仍只执行 GET，快照控制接口不进入 Recipe。D1 `unchanged overlap` 先由真实 Server、daemon、非 root MySQL、File Resource 和 HTTP Executor 完成 D0 三岗位建账，再分别执行两个独立子场景。Executor 轴在第一页事务已提交、daemon 尚未处理回包时 `SIGKILL` daemon，旧 Attempt 保留 1 页证据后过期；Actor 轴在第一页事务被测试闸门阻塞、尚未提交时 `SIGKILL` Atoll Server，旧 Attempt 不留下已接受页面。两轴均由同一持久 Work 的新 Attempt 从第一页完整重扫，最终严格为 2 Attempt（1 expired、1 succeeded）、3 个 Job、3 个 DetailVersion、0 active Permit；Executor 轴保留 4 条 Attempt 级页面/Observation，Actor 轴保留 3 条，没有重复业务岗位或详情。固定提交 `d1d34e02` 的权威双轴复跑分别为 15.53/18.26 秒，总计 33.79 秒，测试容器全部清理；证据见 `evidence/recruiting-daily-d1-process-failure-matrix-20260913.json`。D1 的 OS 进程双轴据此关闭；D2—D6 仍须沿同一矩阵扩展，因此 P6 保持进行中。
+
 ## 12. P7：运维、修复与人工参与
 
 ### 开发项
