@@ -131,7 +131,7 @@ func TestRunnerBlocksBrowserWriteBeforeItReachesOrigin(t *testing.T) {
 		}
 		response.Header().Set("Content-Type", "text/html")
 		_, _ = response.Write([]byte(`<!doctype html><html><body><script>
-fetch('/write',{method:'POST',body:'forbidden'}).finally(()=>document.body.innerHTML='<div class="done">done</div>')
+fetch('/write',{method:'POST',headers:{'Content-Type':'application/json','website-path':'en'},body:JSON.stringify({offset:0,limit:12,keyword:''})}).finally(()=>document.body.innerHTML='<div class="done">done</div>')
 </script></body></html>`))
 	}))
 	defer server.Close()
@@ -142,7 +142,10 @@ fetch('/write',{method:'POST',body:'forbidden'}).finally(()=>document.body.inner
 	result, err := runner.Run(context.Background(), request)
 	if err != nil || result.Attestation.AllowedWriteRequests != 0 || result.Attestation.BlockedWriteRequests != 1 ||
 		!reflect.DeepEqual(result.Attestation.BlockedMethods, []string{http.MethodPost}) ||
-		!result.Attestation.PublicEndpoint || writes.Load() != 0 {
+		!result.Attestation.PublicEndpoint || writes.Load() != 0 || len(result.PublicQueryEvidence) != 1 ||
+		result.PublicQueryEvidence[0].EndpointURL != server.URL+"/write" ||
+		result.PublicQueryEvidence[0].Headers["Website-Path"] != "en" ||
+		!strings.Contains(string(result.PublicQueryEvidence[0].JSONBody), `"offset":0`) {
 		t.Fatalf("Chrome write was not blocked: err=%v attestation=%+v origin_writes=%d", err, result.Attestation, writes.Load())
 	}
 }
@@ -318,5 +321,40 @@ func TestRunnerReadsOptInPublicWebsiteInRealChrome(t *testing.T) {
 	if len(result.DOM) == 0 || !result.Attestation.PublicEndpoint || !result.Attestation.RobotsAllowed ||
 		result.Attestation.DocumentNavigations != 1 {
 		t.Fatalf("public-site result did not satisfy Broker contract: %+v", result)
+	}
+}
+
+func TestRunnerObservesByteDancePublicQueryWithoutSendingIt(t *testing.T) {
+	if os.Getenv("RECRUITING_LIVE_BYTEDANCE_PROBE") != "1" {
+		t.Skip("set RECRUITING_LIVE_BYTEDANCE_PROBE=1 for the real public site")
+	}
+	plan := browserdriver.Plan{Version: browserdriver.PlanVersion, MaxNavigations: 1, MaxDOMBytes: 2 << 20,
+		Actions: []browserdriver.Action{{Kind: browserdriver.ActionScrollPage, MaxRepeats: 30}}}
+	planHash, _ := plan.ContentHash()
+	request := browserdriver.SessionRequest{EndpointURL: "https://joinbytedance.com/search",
+		UserAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/144.0.0.0 Safari/537.36", AcceptLanguage: "en-US,en;q=0.9",
+		Plan: plan, PlanHash: planHash, AttemptID: "attempt-bytedance-public-query-live", TimeoutMS: 30_000,
+		Policy:         browserdriver.PolicyEvidence{TermsPolicyVersion: 1, TermsReviewedAt: "2026-09-13T00:00:00Z"},
+		AllowedMethods: []string{http.MethodGet, http.MethodHead, http.MethodOptions}, SameOriginDocs: true,
+		BlockDownloads: true, BlockPopups: true}
+	runner, err := New(chromeForTest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, observation := range result.PublicQueryEvidence {
+		if observation.EndpointURL == "https://jobs.bytedance.com/api/v1/public/supplier/config/job/filters" &&
+			observation.Method == http.MethodPost && observation.Headers["Website-Path"] == "en" &&
+			string(observation.JSONBody) == `{}` {
+			found = true
+		}
+	}
+	if !found || result.Attestation.BlockedWriteRequests < 1 {
+		t.Fatalf("ByteDance public query was not retained as blocked evidence: queries=%+v attestation=%+v",
+			result.PublicQueryEvidence, result.Attestation)
 	}
 }

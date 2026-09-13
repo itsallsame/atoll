@@ -11,6 +11,7 @@ import (
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
 
 func TestDeepDiscoveryRepositoryContract(t *testing.T) {
@@ -162,6 +163,26 @@ func TestDeepDiscoveryBrowserProbeRunsThroughWorkAttemptAndBudget(t *testing.T) 
 	if err := repository.CreateCompany(ctx, company, now); err != nil {
 		t.Fatal(err)
 	}
+	preparedSource, _ := model.NewRecruitmentSource("deep-browser-prepared-source", company.CompanyID,
+		"https://example.com/careers", "social", 1)
+	if err := repository.CreateSource(ctx, preparedSource, now); err != nil {
+		t.Fatal(err)
+	}
+	preparedResponse := json.RawMessage(`{"content_ref":"recipe://recruiting-prepared/example"}`)
+	preparedReceipt, _ := model.NewCommandReceipt("deep-browser-recipe-prepare", "recruiting.recipe.prepare",
+		"sha256:deep-browser-recipe-prepare", preparedResponse)
+	preparedEvent, _ := model.NewEventIntent("event-deep-browser-recipe-prepare", "recipe.prepared", "recipe_preparation",
+		preparedReceipt.CommandID, 1, now.Format(time.RFC3339Nano), preparedReceipt.CommandID, json.RawMessage(`{"source_id":"deep-browser-prepared-source"}`))
+	firstPreparation, err := repository.ApplyRecipePreparationCommand(ctx, preparedSource.SourceID, preparedSource.Version,
+		preparedReceipt, preparedEvent, now)
+	if err != nil || firstPreparation.Replayed || string(firstPreparation.Response) != string(preparedResponse) {
+		t.Fatalf("first Recipe preparation=%+v err=%v", firstPreparation, err)
+	}
+	replayedPreparation, err := repository.ApplyRecipePreparationCommand(ctx, preparedSource.SourceID, preparedSource.Version,
+		preparedReceipt, preparedEvent, now)
+	if err != nil || !replayedPreparation.Replayed || string(replayedPreparation.Response) != string(preparedResponse) {
+		t.Fatalf("replayed Recipe preparation=%+v err=%v", replayedPreparation, err)
+	}
 	mission, _ := model.NewDeepDiscoveryMission("deep-browser-mission", company, 1, 5, 2)
 	if err := repository.CreateDeepDiscoveryMission(ctx, company.Version, mission, now); err != nil {
 		t.Fatal(err)
@@ -196,10 +217,13 @@ func TestDeepDiscoveryBrowserProbeRunsThroughWorkAttemptAndBudget(t *testing.T) 
 		"file://worker/recruiting/deep-browser-response", work.WorkID, offer.Attempt.AttemptID, "operators", "30d", false)
 	trace, _ := model.NewArtifactMetadata("deep-browser-trace", model.ArtifactTrace, "sha256:"+strings.Repeat("b", 64),
 		"file://worker/recruiting/deep-browser-trace", work.WorkID, offer.Attempt.AttemptID, "operators", "30d", false)
+	queryEvidence, _ := recipeabi.NewPublicQueryObservation("https://api.example.com/public/jobs", "POST",
+		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{"offset":0,"limit":20}`))
 	result := DeepDiscoveryBrowserResult{CommandID: "deep-browser-result", RequestHash: "sha256:deep-browser-result",
 		AttemptID: offer.Attempt.AttemptID, ExecutorActorID: "tool:browser:1", ExecutorIncarnation: "boot-1",
 		Artifact: artifact, SupportingArtifacts: []model.ArtifactMetadata{trace}, FinalURL: "https://example.com/careers",
 		ContentHash: contentHash, Links: []executioncontract.DeepDiscoveryLink{{URL: "https://example.com/jobs/1", Text: "Engineer"}},
+		PublicQueryEvidence: []recipeabi.PublicQueryObservation{queryEvidence},
 		Attestation: executioncontract.DeepDiscoveryEffectAttestation{DocumentNavigations: 1, ObservedMethods: []string{"GET"},
 			PublicEndpoint: true, RobotsAllowed: true, TermsPolicyVersion: 1}, ObservedAt: now.Add(4 * time.Second)}
 	outcome, err := repository.AcceptDeepDiscoveryBrowserResult(ctx, result)
@@ -208,7 +232,8 @@ func TestDeepDiscoveryBrowserProbeRunsThroughWorkAttemptAndBudget(t *testing.T) 
 	}
 	storedProbe, storedWork, storedResult, err := repository.GetDeepDiscoveryBrowserResult(ctx, probe.ProbeID)
 	if err != nil || storedResult == nil || storedProbe.Status != model.DeepDiscoveryProbeCompleted ||
-		storedWork.Status != model.WorkCompleted || storedResult.AttemptID != offer.Attempt.AttemptID {
+		storedWork.Status != model.WorkCompleted || storedResult.AttemptID != offer.Attempt.AttemptID ||
+		len(storedResult.PublicQueryEvidence) != 1 || storedResult.PublicQueryEvidence[0].BodyHash != queryEvidence.BodyHash {
 		t.Fatalf("stored browser result probe=%+v work=%+v result=%+v err=%v", storedProbe, storedWork, storedResult, err)
 	}
 	storedMission, _ := repository.GetDeepDiscoveryMission(ctx, mission.MissionID)

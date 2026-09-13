@@ -91,10 +91,11 @@ func (a Attestation) Validate(request SessionRequest) error {
 }
 
 type SessionResult struct {
-	FinalURL    string      `json:"final_url"`
-	ContentType string      `json:"content_type"`
-	DOM         []byte      `json:"-"`
-	Attestation Attestation `json:"attestation"`
+	FinalURL            string                             `json:"final_url"`
+	ContentType         string                             `json:"content_type"`
+	DOM                 []byte                             `json:"-"`
+	Attestation         Attestation                        `json:"attestation"`
+	PublicQueryEvidence []recipeabi.PublicQueryObservation `json:"public_query_evidence,omitempty"`
 }
 
 type Broker interface {

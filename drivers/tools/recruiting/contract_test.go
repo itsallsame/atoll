@@ -33,7 +33,7 @@ func TestNaturalLanguageOnboardingWordsPublishInputSchemas(t *testing.T) {
 	for _, word := range []string{
 		TypeCompanyAdd, TypeCompanyGet, TypeCompanyList, TypeCompanyUpdate,
 		TypeSourceDiscover, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
-		TypeSourceList, TypeRecipeInspect, TypeSystemStatus, TypeCapacityStatus,
+		TypeSourceGet, TypeSourceList, TypeSourceUpdate, TypeRecipeInspect, TypeRecipePrepare, TypeSystemStatus, TypeCapacityStatus,
 		TypeRecipePropose, TypeRecipeValidate, TypeRecipeApprove,
 		TypeWorkGet, TypeWorkList, TypeRepairGet, TypeRepairList, TypeSystemReconcile,
 		TypeWorkResolve, TypeWorkRetry, TypeRepairValidate, TypeRepairResolve, TypeRepairRecover,

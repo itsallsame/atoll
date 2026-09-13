@@ -120,8 +120,9 @@ func handleDeepDiscoveryBrowserResult(sys actorbase.Sys, repository *store.Repos
 		CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), AttemptID: payload.AttemptID,
 		ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
 		Artifact: payload.Artifact, SupportingArtifacts: payload.SupportingArtifacts, FinalURL: payload.FinalURL,
-		ContentHash: payload.ContentHash, Links: payload.Links, Attestation: payload.Attestation,
-		ObservedAt: time.UnixMilli(msg.TS).UTC(),
+		ContentHash: payload.ContentHash, Links: payload.Links, PublicQueryEvidence: payload.PublicQueryEvidence,
+		Attestation: payload.Attestation,
+		ObservedAt:  time.UnixMilli(msg.TS).UTC(),
 	})
 	if err != nil {
 		failStoreError(sys, msg, err)

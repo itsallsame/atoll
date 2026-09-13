@@ -5,6 +5,8 @@ package browserbroker
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +28,7 @@ import (
 	"github.com/chromedp/chromedp"
 	"github.com/temoto/robotstxt"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/browserdriver"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
 
 type Runner struct {
@@ -62,6 +65,8 @@ type policyState struct {
 	downloads            int
 	popups               int
 	firstViolation       error
+	publicQueries        map[string]recipeabi.PublicQueryObservation
+	publicQueryBytes     int
 }
 
 type requestTracker struct {
@@ -183,7 +188,8 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	tabCtx, cancelTab := chromedp.NewContext(allocatorCtx)
 	defer cancelTab()
 
-	state := &policyState{initialOrigin: origin(endpoint), methods: map[string]struct{}{}, blockedMethods: map[string]struct{}{}}
+	state := &policyState{initialOrigin: origin(endpoint), methods: map[string]struct{}{}, blockedMethods: map[string]struct{}{},
+		publicQueries: map[string]recipeabi.PublicQueryObservation{}}
 	requestTasks := newRequestTracker()
 	chromedp.ListenTarget(tabCtx, func(event any) {
 		switch value := event.(type) {
@@ -273,7 +279,8 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	if int64(len(dom)) > request.Plan.MaxDOMBytes {
 		dom = dom[:request.Plan.MaxDOMBytes+1]
 	}
-	result := browserdriver.SessionResult{FinalURL: finalURL, ContentType: contentType, DOM: []byte(dom), Attestation: attestation}
+	result := browserdriver.SessionResult{FinalURL: finalURL, ContentType: contentType, DOM: []byte(dom), Attestation: attestation,
+		PublicQueryEvidence: state.publicQueryEvidence()}
 	if violation != nil {
 		return result, policyFailure(violation)
 	}
@@ -385,6 +392,11 @@ func (s *policyState) inspectRequest(ctx context.Context, runner *Runner, event 
 	// a document-level write is additionally a terminal navigation violation.
 	allowed := method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 	if !allowed {
+		if method == http.MethodPost && (event.ResourceType == network.ResourceTypeXHR || event.ResourceType == network.ResourceTypeFetch) {
+			if observation, err := runner.publicQueryObservation(ctx, event); err == nil {
+				s.addPublicQuery(observation)
+			}
+		}
 		s.mu.Lock()
 		s.blockedWriteRequests++
 		s.blockedMethods[method] = struct{}{}
@@ -416,6 +428,75 @@ func (s *policyState) inspectRequest(ctx context.Context, runner *Runner, event 
 		s.mu.Unlock()
 	}
 	return allowed
+}
+
+func (r *Runner) publicQueryObservation(ctx context.Context, event *fetch.EventRequestPaused) (recipeabi.PublicQueryObservation, error) {
+	endpoint, err := r.publicURL(ctx, event.Request.URL)
+	if err != nil {
+		return recipeabi.PublicQueryObservation{}, err
+	}
+	headers := make(map[string]string)
+	for name, raw := range event.Request.Headers {
+		canonical := strings.ToLower(strings.TrimSpace(name))
+		// Cookies from this short-lived, empty public profile are deliberately
+		// omitted. Authorization-bearing requests are not candidates at all.
+		if canonical == "authorization" || canonical == "proxy-authorization" {
+			return recipeabi.PublicQueryObservation{}, errors.New("credential-bearing request is not public-query evidence")
+		}
+		switch canonical {
+		case "accept", "accept-language", "content-type", "website-path":
+			value, ok := raw.(string)
+			if !ok {
+				return recipeabi.PublicQueryObservation{}, errors.New("public query header is not textual")
+			}
+			headers[http.CanonicalHeaderKey(canonical)] = value
+		}
+	}
+	if !event.Request.HasPostData || len(event.Request.PostDataEntries) == 0 {
+		return recipeabi.PublicQueryObservation{}, errors.New("public query body was not available to the browser policy")
+	}
+	body := make([]byte, 0, 1024)
+	for _, entry := range event.Request.PostDataEntries {
+		if entry == nil {
+			return recipeabi.PublicQueryObservation{}, errors.New("public query body contained an empty entry")
+		}
+		part, decodeErr := base64.StdEncoding.DecodeString(entry.Bytes)
+		if decodeErr != nil || len(body)+len(part) > 64<<10 {
+			return recipeabi.PublicQueryObservation{}, errors.New("public query body was invalid or exceeded its bound")
+		}
+		body = append(body, part...)
+	}
+	return recipeabi.NewPublicQueryObservation(endpoint.String(), http.MethodPost, headers, json.RawMessage(body))
+}
+
+func (s *policyState) addPublicQuery(observation recipeabi.PublicQueryObservation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.publicQueries) >= 20 || s.publicQueryBytes+observation.EncodedSize() > recipeabi.MaxPublicQueryEvidenceBytes {
+		return
+	}
+	key := observation.EndpointURL + "\n" + observation.BodyHash
+	if _, duplicate := s.publicQueries[key]; duplicate {
+		return
+	}
+	s.publicQueries[key] = observation
+	s.publicQueryBytes += observation.EncodedSize()
+}
+
+func (s *policyState) publicQueryEvidence() []recipeabi.PublicQueryObservation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]recipeabi.PublicQueryObservation, 0, len(s.publicQueries))
+	for _, observation := range s.publicQueries {
+		result = append(result, observation)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].EndpointURL != result[j].EndpointURL {
+			return result[i].EndpointURL < result[j].EndpointURL
+		}
+		return result[i].BodyHash < result[j].BodyHash
+	})
+	return result
 }
 
 func (s *policyState) setViolation(err error) {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
 
 type DeepDiscoveryBrowserResultOutcome struct {
@@ -167,13 +168,15 @@ type DeepDiscoveryBrowserResult struct {
 	FinalURL            string
 	ContentHash         string
 	Links               []executioncontract.DeepDiscoveryLink
+	PublicQueryEvidence []recipeabi.PublicQueryObservation
 	Attestation         executioncontract.DeepDiscoveryEffectAttestation
 	ObservedAt          time.Time
 }
 
 func (r *Repository) AcceptDeepDiscoveryBrowserResult(ctx context.Context, input DeepDiscoveryBrowserResult) (DeepDiscoveryBrowserResultOutcome, error) {
 	if input.CommandID == "" || input.RequestHash == "" || input.AttemptID == "" || input.ExecutorActorID == "" ||
-		input.ExecutorIncarnation == "" || input.ObservedAt.IsZero() || len(input.Links) > 200 || len(input.SupportingArtifacts) > 9 {
+		input.ExecutorIncarnation == "" || input.ObservedAt.IsZero() || len(input.Links) > 200 ||
+		len(input.PublicQueryEvidence) > 20 || len(input.SupportingArtifacts) > 9 {
 		return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser result requires bounded execution evidence")
 	}
 	if err := validateResultArtifact(input.Artifact, input.AttemptID, model.ArtifactResponse); err != nil {
@@ -207,6 +210,22 @@ func (r *Repository) AcceptDeepDiscoveryBrowserResult(ctx context.Context, input
 			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser result contains duplicate link")
 		}
 		seen[link.URL] = struct{}{}
+	}
+	seenQueries := map[string]struct{}{}
+	queryEvidenceBytes := 0
+	for _, observation := range input.PublicQueryEvidence {
+		if err := observation.Validate(); err != nil {
+			return DeepDiscoveryBrowserResultOutcome{}, err
+		}
+		key := observation.EndpointURL + "\n" + observation.BodyHash
+		if _, duplicate := seenQueries[key]; duplicate {
+			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser result contains duplicate public-query evidence")
+		}
+		seenQueries[key] = struct{}{}
+		queryEvidenceBytes += observation.EncodedSize()
+		if queryEvidenceBytes > recipeabi.MaxPublicQueryEvidenceBytes {
+			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser public-query evidence exceeds its total byte bound")
+		}
 	}
 	outcome, err := r.acceptDeepDiscoveryBrowserResultTx(ctx, input)
 	if errors.Is(err, ErrResultFenced) {
@@ -313,7 +332,8 @@ SET probe_status=?,version=?,state_json=?,result_json=?,updated_at=? WHERE probe
 	if err != nil {
 		return DeepDiscoveryBrowserResultOutcome{}, err
 	}
-	attemptResult, _ := json.Marshal(map[string]any{"probe_id": probe.ProbeID, "artifact_id": input.Artifact.ArtifactID, "link_count": len(input.Links)})
+	attemptResult, _ := json.Marshal(map[string]any{"probe_id": probe.ProbeID, "artifact_id": input.Artifact.ArtifactID,
+		"link_count": len(input.Links), "public_query_count": len(input.PublicQueryEvidence)})
 	if err := updateAttemptStatusTx(ctx, tx, attempt.Status, succeededAttempt, attemptResult, input.ObservedAt); err != nil {
 		return DeepDiscoveryBrowserResultOutcome{}, err
 	}
@@ -324,7 +344,8 @@ SET probe_status=?,version=?,state_json=?,result_json=?,updated_at=? WHERE probe
 		return DeepDiscoveryBrowserResultOutcome{}, err
 	}
 	eventPayload, _ := json.Marshal(map[string]any{"attempt_id": attempt.AttemptID, "work_id": work.WorkID,
-		"probe_id": probe.ProbeID, "artifact_id": input.Artifact.ArtifactID, "link_count": len(input.Links)})
+		"probe_id": probe.ProbeID, "artifact_id": input.Artifact.ArtifactID, "link_count": len(input.Links),
+		"public_query_count": len(input.PublicQueryEvidence)})
 	event, err := model.NewEventIntent("deep-discovery-browser-completed-"+attempt.AttemptID, "deep.discovery.browser.completed",
 		"deep_discovery_probe", probe.ProbeID, nextProbe.Version, input.ObservedAt.Format(time.RFC3339Nano), input.CommandID, eventPayload)
 	if err != nil {

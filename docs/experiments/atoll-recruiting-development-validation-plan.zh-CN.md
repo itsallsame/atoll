@@ -834,3 +834,13 @@ CI 层级：
 单元合同覆盖两页 POST、body offset 推进、短页终止、Artifact 先持久化、详情 URL 生成，以及 redirect、数组 body、重复 key/header、Authorization、错误 limit 和危险模板的失败关闭。真实 Live Smoke 使用生产 HTTP Driver 访问字节公开岗位 API，先读取 robots，再发送无凭证 JSON POST，成功抽取 1—12 条岗位及规范详情 URL；网页抓包用于确认请求合同后不进入生产测试代码。紧凑证据见 `evidence/recruiting-live-public-query-post-bytedance-20260913.json`。
 
 本阶段只关闭“已发现公开 API 后可保存为低成本 HTTP Listing Recipe 并执行”的数据面能力。网络观察自动沉淀为候选 API Endpoint/Recipe Resource、自然语言 Agent 连续调用 `source.update → recipe.propose → recipe.validate`，以及字节 Source 的首次 baseline/Detail 全链路仍是下一切片，不能因 Live Smoke 通过而宣称公司接入完成。
+
+## 23. 2026-09-13 网络证据到 Recipe Resource 阶段
+
+Deep Discovery Browser Broker 现在会在继续阻断 POST 的同时，从隔离的空白公开 Profile 中识别 XHR/fetch 的安全公开查询子集。每个 Session 最多保留 20 条、编码后合计不超过 64 KiB，按 endpoint/body hash 去重并稳定排序；只保存 `accept/accept-language/content-type/website-path`、固定 JSON 和哈希。Cookie 永不写入结果，Authorization/Proxy-Authorization 使候选拒绝，JSON 中 token/secret/password/authorization/signature/cookie/api-key/CSRF 等字段、重复 key、过深或过大结构同样拒绝。Query 证据进入 effect trace、Executor result、MySQL Probe result 和 `deep_discovery.browser.get`，但 POST 仍没有到达网站。
+
+新增自然语言 Agent 可调用的 `recruiting.recipe.prepare`。它只接受 active/healthy candidate Source，要求没有 Listing Assignment，以 Source version fence 读取同公司已完成 Probe，并用 body hash 选择一条持久证据。候选必须是 `http.fetch` 的 HTTP JSON Listing Recipe，method/header/body 与该证据完全一致；Extraction、详情 URL 模板、分页和活动边界继续由共享 ABI 校验。通过后 Recruiting Actor 用规范 Spec content hash 创建不可覆盖、可幂等重放的 content-addressed `recipe://recruiting-prepared/...` KV Resource，生成稳定 Recipe identity，并明确返回先 `source.update`、再 `recipe.propose/validate` 的下一动作。`source.get/update` 的公开 input schema 同步补齐，Agent 不再依赖校验报错猜 wire shape。
+
+验证分四层：真实 Chrome fixture 证明 JSON POST 未到 origin 但证据被捕获；Recipe ABI 负向合同证明认证 header、敏感/重复 JSON 和请求漂移均拒绝；Actor 纯合同证明跨 Company、未知 body hash、变更请求不能生成 Resource，且同 content 重放不覆盖；真实字节 Browser Broker 观察到公开 `config/job/filters` POST 并继续阻断，上一阶段生产 HTTP Driver 仍独立验证真实 `search/job/posts` Recipe 返回 200。没有 migration，本阶段只扩展既有 Probe `result_json`。
+
+字节页面的岗位查询依赖前置配置 POST 成功；由于安全策略正确阻断前置请求，本阶段的自动 Probe 不会继续看见后续岗位 POST。这是明确未关闭的 gap，不通过放开 Browser POST 规避。下一切片应实现“已验证公开查询响应的本地 browser stub”或由授权 Extension 捕获完整链路，然后才能用生产数据完成 `prepare → source.update → propose → validate → publish → baseline`；当前不能宣称字节公司已完成接入。

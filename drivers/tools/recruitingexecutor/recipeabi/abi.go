@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	Version      = "recruiting.recipe.v1"
-	MaxSpecBytes = 256 << 10
+	Version                     = "recruiting.recipe.v1"
+	MaxSpecBytes                = 256 << 10
+	MaxPublicQueryEvidenceBytes = 64 << 10
 )
 
 type Kind string
@@ -292,6 +293,74 @@ type ReadRequest struct {
 	UserAgent        string            `json:"user_agent"`
 }
 
+// PublicQueryObservation is sanitized network evidence from an isolated
+// public-browser session. The browser still blocks the POST; this record only
+// permits a later, independently validated HTTP Recipe to reproduce a query
+// that carries no credentials or arbitrary headers.
+type PublicQueryObservation struct {
+	EndpointURL string            `json:"endpoint_url"`
+	Method      string            `json:"method"`
+	Headers     map[string]string `json:"headers"`
+	JSONBody    json.RawMessage   `json:"json_body"`
+	BodyHash    string            `json:"body_hash"`
+}
+
+func (o PublicQueryObservation) EncodedSize() int {
+	size := len(o.EndpointURL) + len(o.Method) + len(o.JSONBody) + len(o.BodyHash)
+	for name, value := range o.Headers {
+		size += len(name) + len(value)
+	}
+	return size
+}
+
+func NewPublicQueryObservation(endpointURL, method string, headers map[string]string, body json.RawMessage) (PublicQueryObservation, error) {
+	observation := PublicQueryObservation{EndpointURL: strings.TrimSpace(endpointURL), Method: strings.ToUpper(strings.TrimSpace(method)),
+		Headers: headers, JSONBody: append(json.RawMessage(nil), body...)}
+	sum := sha256.Sum256(body)
+	observation.BodyHash = "sha256:" + hex.EncodeToString(sum[:])
+	if err := observation.Validate(); err != nil {
+		return PublicQueryObservation{}, err
+	}
+	return observation, nil
+}
+
+func (o PublicQueryObservation) Validate() error {
+	endpoint, err := url.Parse(o.EndpointURL)
+	if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" ||
+		endpoint.User != nil || endpoint.Fragment != "" || o.Method != "POST" || len(o.JSONBody) == 0 || len(o.JSONBody) > 64<<10 {
+		return fmt.Errorf("public-query observation requires an absolute HTTP(S) POST with bounded JSON")
+	}
+	body, err := decodeUniqueJSONObject(o.JSONBody)
+	if err != nil {
+		return fmt.Errorf("public-query observation JSON: %w", err)
+	}
+	if err := validatePublicQueryValues(body, 0); err != nil {
+		return err
+	}
+	if err := validatePublicQueryHeaders(o.Headers); err != nil {
+		return err
+	}
+	if !strings.EqualFold(recipeHeader(o.Headers, "content-type"), "application/json") {
+		return fmt.Errorf("public-query observation requires JSON Content-Type")
+	}
+	sum := sha256.Sum256(o.JSONBody)
+	if o.BodyHash != "sha256:"+hex.EncodeToString(sum[:]) {
+		return fmt.Errorf("public-query observation body hash does not match")
+	}
+	return nil
+}
+
+func (o PublicQueryObservation) MatchesReadRequest(request ReadRequest) bool {
+	if o.Validate() != nil || strings.ToUpper(strings.TrimSpace(request.Method)) != o.Method {
+		return false
+	}
+	sum := sha256.Sum256(request.JSONBody)
+	if o.BodyHash != "sha256:"+hex.EncodeToString(sum[:]) || !equalPublicHeaders(o.Headers, request.Headers) {
+		return false
+	}
+	return bytes.Equal(bytes.TrimSpace(o.JSONBody), bytes.TrimSpace(request.JSONBody))
+}
+
 type Extraction struct {
 	Collection     string            `json:"collection,omitempty"`
 	CollectionRoot bool              `json:"collection_root,omitempty"`
@@ -355,10 +424,13 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("GET Recipe cannot declare a JSON body")
 	}
 	if method == "POST" {
-		_, bodyErr := decodeUniqueJSONObject(s.Request.JSONBody)
+		body, bodyErr := decodeUniqueJSONObject(s.Request.JSONBody)
 		if s.Transport != TransportHTTPJSON || s.Request.MaxRedirects != 0 || len(s.Request.JSONBody) == 0 ||
 			len(s.Request.JSONBody) > 64<<10 || bodyErr != nil {
 			return fmt.Errorf("public-query POST requires HTTP JSON, a bounded JSON object, and zero redirects")
+		}
+		if err := validatePublicQueryValues(body, 0); err != nil {
+			return err
 		}
 		if !strings.EqualFold(strings.TrimSpace(recipeHeader(s.Request.Headers, "content-type")), "application/json") {
 			return fmt.Errorf("public-query POST requires Content-Type application/json")
@@ -371,23 +443,8 @@ func (s Spec) Validate() error {
 		s.Request.MaxRedirects < 0 || s.Request.MaxRedirects > 5 || strings.TrimSpace(s.Request.UserAgent) == "" {
 		return fmt.Errorf("request budgets exceed the recipe ABI limits")
 	}
-	canonicalHeaders := make(map[string]struct{}, len(s.Request.Headers))
-	for name := range s.Request.Headers {
-		canonicalName := strings.ToLower(strings.TrimSpace(name))
-		if _, duplicate := canonicalHeaders[canonicalName]; duplicate {
-			return fmt.Errorf("recipe header %q is duplicated case-insensitively", name)
-		}
-		canonicalHeaders[canonicalName] = struct{}{}
-		switch canonicalName {
-		case "accept", "accept-language", "content-type", "website-path":
-		default:
-			return fmt.Errorf("recipe header %q is not allowed", name)
-		}
-	}
-	for name, value := range s.Request.Headers {
-		if len(value) > 512 || strings.TrimSpace(value) != value || strings.ContainsAny(name+value, "\r\n") {
-			return fmt.Errorf("recipe headers cannot contain control newlines")
-		}
+	if err := validatePublicQueryHeaders(s.Request.Headers); err != nil {
+		return err
 	}
 	if method == "GET" && recipeHeader(s.Request.Headers, "content-type") != "" {
 		return fmt.Errorf("GET Recipe cannot declare Content-Type")
@@ -583,6 +640,106 @@ func safeQueryName(value string) bool {
 }
 
 func safeJSONField(value string) bool { return safeQueryName(value) }
+
+func validatePublicQueryHeaders(headers map[string]string) error {
+	canonicalHeaders := make(map[string]struct{}, len(headers))
+	for name, value := range headers {
+		canonicalName := strings.ToLower(strings.TrimSpace(name))
+		if _, duplicate := canonicalHeaders[canonicalName]; duplicate {
+			return fmt.Errorf("recipe header %q is duplicated case-insensitively", name)
+		}
+		canonicalHeaders[canonicalName] = struct{}{}
+		switch canonicalName {
+		case "accept", "accept-language", "content-type", "website-path":
+		default:
+			return fmt.Errorf("recipe header %q is not allowed", name)
+		}
+		if len(value) > 512 || strings.TrimSpace(value) != value || strings.ContainsAny(name+value, "\r\n") {
+			return fmt.Errorf("recipe headers cannot contain control newlines")
+		}
+	}
+	return nil
+}
+
+func equalPublicHeaders(left, right map[string]string) bool {
+	normalize := func(values map[string]string) map[string]string {
+		result := make(map[string]string, len(values))
+		for name, value := range values {
+			result[strings.ToLower(strings.TrimSpace(name))] = value
+		}
+		return result
+	}
+	a, b := normalize(left), normalize(right)
+	if len(a) != len(b) {
+		return false
+	}
+	for name, value := range a {
+		if b[name] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func validatePublicQueryValues(object map[string]json.RawMessage, depth int) error {
+	if depth > 6 || len(object) > 100 {
+		return fmt.Errorf("public-query JSON structure exceeds its bound")
+	}
+	for name, raw := range object {
+		lower := strings.ToLower(strings.TrimSpace(name))
+		if lower == "" || len(name) > 128 || strings.ContainsAny(lower, "\r\n") ||
+			strings.Contains(lower, "token") || strings.Contains(lower, "secret") ||
+			strings.Contains(lower, "password") || strings.Contains(lower, "authorization") ||
+			strings.Contains(lower, "signature") || strings.Contains(lower, "cookie") ||
+			strings.Contains(lower, "api_key") || strings.Contains(lower, "apikey") || strings.Contains(lower, "csrf") {
+			return fmt.Errorf("public-query JSON contains a sensitive or invalid field")
+		}
+		var value any
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&value); err != nil {
+			return fmt.Errorf("public-query JSON value is invalid")
+		}
+		if err := validatePublicQueryValue(value, depth+1); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validatePublicQueryValue(value any, depth int) error {
+	if depth > 6 {
+		return fmt.Errorf("public-query JSON nesting exceeds its bound")
+	}
+	switch typed := value.(type) {
+	case nil, bool, json.Number:
+		return nil
+	case string:
+		if len(typed) > 2048 || strings.ContainsAny(typed, "\r\n") {
+			return fmt.Errorf("public-query JSON string exceeds its bound")
+		}
+		return nil
+	case []any:
+		if len(typed) > 500 {
+			return fmt.Errorf("public-query JSON array exceeds its bound")
+		}
+		for _, item := range typed {
+			if err := validatePublicQueryValue(item, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	case map[string]any:
+		raw := make(map[string]json.RawMessage, len(typed))
+		for name, item := range typed {
+			encoded, _ := json.Marshal(item)
+			raw[name] = encoded
+		}
+		return validatePublicQueryValues(raw, depth)
+	default:
+		return fmt.Errorf("public-query JSON contains an unsupported value")
+	}
+}
 
 // decodeUniqueJSONObject rejects duplicate top-level keys. They are otherwise
 // silently collapsed by encoding/json, which could make the first POST and

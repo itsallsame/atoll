@@ -1,6 +1,7 @@
 package recruiting
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 	"github.com/wanpengxie/atoll/lib/actorbase"
 	"github.com/wanpengxie/atoll/protocol/resource"
+	"github.com/wanpengxie/atoll/runtime/accessdoor"
 )
 
 // recipeRolloutPayload changes one Source assignment at a time. Listing
@@ -69,6 +71,22 @@ type recipeProposePayload struct {
 	ExpectedContentHash string `json:"expected_content_hash"`
 	CaptureRef          string `json:"capture_ref,omitempty"`
 	ExpectedCaptureHash string `json:"expected_capture_hash,omitempty"`
+}
+
+type recipePreparePayload struct {
+	MutationCommand
+	ProbeID  string          `json:"probe_id"`
+	BodyHash string          `json:"body_hash"`
+	Spec     json.RawMessage `json:"spec"`
+}
+
+type preparedRecipeResource struct {
+	Observation   recipeabi.PublicQueryObservation
+	CanonicalSpec []byte
+	ContentHash   string
+	ContentRef    string
+	RecipeID      string
+	NextAction    string
 }
 
 type recipeProposalResponse struct {
@@ -149,6 +167,8 @@ type recipeValidationResponse struct {
 
 func handleRecipeMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	switch msg.Type {
+	case TypeRecipePrepare:
+		handleRecipePrepare(sys, repository, msg)
 	case TypeRecipePropose:
 		handleRecipePropose(sys, repository, msg)
 	case TypeRecipeValidate:
@@ -169,6 +189,159 @@ func handleRecipeMessage(sys actorbase.Sys, cfg Config, repository *store.Reposi
 	case TypeRecipeRollback:
 		handleRecipeRollback(sys, repository, msg)
 	}
+}
+
+func handleRecipePrepare(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	if repository == nil {
+		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
+		return
+	}
+	var payload recipePreparePayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	commandContext, err := NewCommandContext(payload.MutationCommand, string(msg.Sender.ID))
+	payload.ProbeID, payload.BodyHash = strings.TrimSpace(payload.ProbeID), strings.TrimSpace(payload.BodyHash)
+	if err != nil || payload.Target.Type != "source" || payload.ProbeID == "" || payload.BodyHash == "" || len(payload.Spec) == 0 {
+		if err == nil {
+			err = fmt.Errorf("source target, probe_id, body_hash, and Recipe spec are required")
+		}
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	requestHash := commandRequestHash(msg)
+	if replay, found, lookupErr := repository.LookupCommand(msg.Ctx(), payload.CommandID, requestHash); lookupErr != nil {
+		failStoreError(sys, msg, lookupErr)
+		return
+	} else if found {
+		_, _ = sys.Reply(msg, json.RawMessage(replay.Response))
+		return
+	}
+	source, err := repository.GetSource(msg.Ctx(), payload.Target.ID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	if source.Version != payload.ExpectedVersion {
+		failStoreError(sys, msg, &model.VersionConflictError{Expected: payload.ExpectedVersion, Actual: source.Version})
+		return
+	}
+	if source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy ||
+		source.ReadinessStatus != model.SourceCandidate || source.ListingAssignment != nil || source.CandidateEndpoint == nil {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, "Recipe preparation requires an active healthy candidate Source without a Listing assignment")
+		return
+	}
+	probe, _, result, err := repository.GetDeepDiscoveryBrowserResult(msg.Ctx(), payload.ProbeID)
+	if err != nil || result == nil {
+		if err == nil {
+			err = fmt.Errorf("Deep Discovery browser probe has no completed evidence")
+		}
+		failStoreError(sys, msg, err)
+		return
+	}
+	mission, err := repository.GetDeepDiscoveryMission(msg.Ctx(), probe.MissionID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	prepared, err := prepareListingRecipeResource(source, mission, *result, payload.BodyHash, payload.Spec)
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, err.Error())
+		return
+	}
+	if err := createContentAddressedRecipe(sys.Resource(), prepared.ContentRef, prepared.CanonicalSpec); err != nil {
+		_, _ = sys.Fail(msg, ErrorInternalUnavailable, err.Error())
+		return
+	}
+	response := map[string]any{
+		"contract_version": ContractVersion, "correlation_id": string(msg.CorrelationID),
+		"requested_by": commandContext.RequestedBy, "source_id": source.SourceID, "source_version": source.Version,
+		"probe_id": probe.ProbeID, "observed_endpoint": prepared.Observation.EndpointURL, "body_hash": prepared.Observation.BodyHash,
+		"recipe_id": prepared.RecipeID, "recipe_version": 1, "content_ref": prepared.ContentRef, "content_hash": prepared.ContentHash,
+		"next_action":     prepared.NextAction,
+		"agent_directive": "If next_action is stage_source_endpoint, call recruiting.source.update with the observed_endpoint and exact Source version. Then call recruiting.recipe.propose with the returned Source version/endpoint revision and this Recipe identity/resource; continue through recipe.validate without asking the user for internal IDs.",
+	}
+	responseBytes, _ := json.Marshal(response)
+	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, requestHash, responseBytes)
+	businessAt := time.UnixMilli(msg.TS).UTC()
+	audit, _ := json.Marshal(map[string]any{"requested_by": commandContext.RequestedBy, "reason": payload.Reason,
+		"source_id": source.SourceID, "probe_id": probe.ProbeID, "body_hash": prepared.Observation.BodyHash,
+		"content_ref": prepared.ContentRef, "content_hash": prepared.ContentHash})
+	var event model.EventIntent
+	if err == nil {
+		event, err = model.NewEventIntent("event-"+stableDigest(payload.CommandID+"|recipe.prepared"), "recipe.prepared",
+			"recipe_preparation", payload.CommandID, 1, businessAt.Format(time.RFC3339Nano), payload.CommandID, audit)
+	}
+	var commandResult store.CommandResult
+	if err == nil {
+		commandResult, err = repository.ApplyRecipePreparationCommand(msg.Ctx(), source.SourceID, source.Version,
+			receipt, event, businessAt)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(commandResult.Response))
+}
+
+func prepareListingRecipeResource(source model.RecruitmentSource, mission model.DeepDiscoveryMission,
+	result store.DeepDiscoveryBrowserResult, bodyHash string, rawSpec json.RawMessage) (preparedRecipeResource, error) {
+	if source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy ||
+		source.ReadinessStatus != model.SourceCandidate || source.ListingAssignment != nil || source.CandidateEndpoint == nil {
+		return preparedRecipeResource{}, fmt.Errorf("Recipe preparation requires an active healthy candidate Source without a Listing assignment")
+	}
+	if mission.CompanyID != source.CompanyID {
+		return preparedRecipeResource{}, fmt.Errorf("browser probe and Source must belong to the same Company")
+	}
+	var observation *recipeabi.PublicQueryObservation
+	for index := range result.PublicQueryEvidence {
+		if result.PublicQueryEvidence[index].BodyHash == bodyHash {
+			candidate := result.PublicQueryEvidence[index]
+			observation = &candidate
+			break
+		}
+	}
+	if observation == nil {
+		return preparedRecipeResource{}, fmt.Errorf("body_hash does not identify public-query evidence from this Probe")
+	}
+	spec, err := recipeabi.DecodeSpec(rawSpec)
+	if err != nil {
+		return preparedRecipeResource{}, err
+	}
+	if spec.Kind != recipeabi.KindListing || spec.Transport != recipeabi.TransportHTTPJSON ||
+		spec.RequiredCapability != "http.fetch" || !observation.MatchesReadRequest(spec.Request) {
+		return preparedRecipeResource{}, fmt.Errorf("prepared Recipe must be an HTTP Listing whose request exactly matches the selected public-query evidence")
+	}
+	canonicalSpec, _ := json.Marshal(spec)
+	contentHash, _ := spec.ContentHash()
+	prepared := preparedRecipeResource{Observation: *observation, CanonicalSpec: canonicalSpec, ContentHash: contentHash,
+		ContentRef: "recipe://recruiting-prepared/" + strings.TrimPrefix(contentHash, "sha256:"),
+		RecipeID:   "listing-bootstrap-" + stableDigest(source.SourceID+"|"+contentHash), NextAction: "stage_source_endpoint"}
+	if source.CandidateEndpoint.URL == observation.EndpointURL {
+		prepared.NextAction = "propose_recipe"
+	}
+	return prepared, nil
+}
+
+type recipeResourceAccess interface {
+	Create(resource.ResourceID, []byte) (accessdoor.Outcome, error)
+	Read(resource.ResourceID) (accessdoor.Outcome, error)
+}
+
+func createContentAddressedRecipe(resources recipeResourceAccess, contentRef string, content []byte) error {
+	id := resource.ResourceID(contentRef)
+	outcome, err := resources.Create(id, content)
+	if err == nil && outcome.Accepted() {
+		return nil
+	}
+	existing, readErr := resources.Read(id)
+	if readErr == nil && existing.Accepted() && existing.Found && bytes.Equal(existing.Value, content) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("create Recipe Resource: %w", err)
+	}
+	return fmt.Errorf("create Recipe Resource rejected: %s", outcome.RejectReason)
 }
 
 func handleRecipePropose(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

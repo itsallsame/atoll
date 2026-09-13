@@ -233,6 +233,38 @@ func TestPublicQueryPOSTRequiresFixedJSONAndBodyPagination(t *testing.T) {
 	}
 }
 
+func TestPublicQueryObservationIsCredentialFreeAndMatchesExactRequest(t *testing.T) {
+	headers := map[string]string{"Content-Type": "application/json", "website-path": "en"}
+	observation, err := NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,
+		json.RawMessage(`{"keyword":"","limit":12,"offset":0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ReadRequest{Method: "POST", Headers: map[string]string{"content-type": "application/json", "Website-Path": "en"},
+		JSONBody: json.RawMessage(`{"keyword":"","limit":12,"offset":0}`)}
+	if !observation.MatchesReadRequest(request) {
+		t.Fatal("exact public-query request did not match its observation")
+	}
+	request.JSONBody = json.RawMessage(`{"keyword":"campus","limit":12,"offset":0}`)
+	if observation.MatchesReadRequest(request) {
+		t.Fatal("changed public-query body matched frozen evidence")
+	}
+	for name, candidate := range map[string]json.RawMessage{
+		"secret field": json.RawMessage(`{"csrf_token":"secret"}`),
+		"duplicate":    json.RawMessage(`{"offset":0,"offset":12}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers, candidate); err == nil {
+				t.Fatal("unsafe public-query observation was accepted")
+			}
+		})
+	}
+	if _, err := NewPublicQueryObservation("https://jobs.example/api/search", "POST",
+		map[string]string{"Content-Type": "application/json", "Authorization": "secret"}, json.RawMessage(`{}`)); err == nil {
+		t.Fatal("authorization-bearing public-query observation was accepted")
+	}
+}
+
 func TestRecipeSpecRejectsWritesSecretsAndWeakIncrementalClaims(t *testing.T) {
 	for name, mutate := range map[string]func(*Spec){
 		"write method":                 func(s *Spec) { s.Request.Method = "POST" },

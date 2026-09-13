@@ -84,9 +84,10 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 	if err != nil {
 		return fmt.Errorf("save Deep Discovery DOM: %w", err)
 	}
-	attestationJSON, _ := json.Marshal(result.Attestation)
+	traceJSON, _ := json.Marshal(map[string]any{"attestation": result.Attestation,
+		"public_query_evidence": result.PublicQueryEvidence})
 	traceRef, err := sink.Put(ctx, httpdriver.ArtifactWrite{Kind: "trace", AttemptID: offer.Attempt.AttemptID,
-		PageSequence: 2, URL: finalURL, ContentType: "application/json", Body: attestationJSON})
+		PageSequence: 2, URL: finalURL, ContentType: "application/json", Body: traceJSON})
 	if err != nil {
 		return fmt.Errorf("save Deep Discovery effect trace: %w", err)
 	}
@@ -104,6 +105,7 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 		ResultKind: "deep_discovery_browser", AttemptID: offer.Attempt.AttemptID,
 		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Artifact: primary, SupportingArtifacts: supporting,
 		FinalURL: finalURL, ContentHash: "sha256:" + hex.EncodeToString(bodySum[:]), Links: wireLinks,
+		PublicQueryEvidence: result.PublicQueryEvidence,
 		Attestation: executioncontract.DeepDiscoveryEffectAttestation{DocumentNavigations: result.Attestation.DocumentNavigations,
 			ObservedMethods: result.Attestation.ObservedMethods, BlockedMethods: result.Attestation.BlockedMethods,
 			AllowedWriteRequests: result.Attestation.AllowedWriteRequests, BlockedWriteRequests: result.Attestation.BlockedWriteRequests,

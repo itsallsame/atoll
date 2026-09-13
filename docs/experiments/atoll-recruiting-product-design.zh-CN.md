@@ -152,6 +152,7 @@ Mission 默认最多 5 轮搜索、250 次外部操作；预算是创建时冻�
 - `recruiting.deep_discovery.start/get/checkpoint/graph`；
 - `recruiting.deep_discovery.wait/resume/complete/cancel`；同一公司同一时刻只允许一个未完成 Mission，取消保留证据并释放下一代探索；
 - `recruiting.deep_discovery.browser.observe` 是 Recruiting Actor 的公开异步命令：它先对 Mission 做版本校验并原子消耗一次冻结预算，创建 `deep_discovery_browser` Work、不可变 Probe、审计事件和定向 dispatch；现有 `browser.public` Executor 只能经统一 offer/accept/start/result 协议领取，不能由 Agent 直接调用。浏览器只允许 GET/HEAD/OPTIONS 和有界等待、滚动、同源跟链，阻断表单、写请求、下载、弹窗及跨源文档导航；DOM 和 effect trace 写入 Artifact Resource，`recruiting.deep_discovery.browser.get` 同时返回 Probe、权威 Work 状态、规范 URL、有限链接、Artifact 元数据与安全 attestation。成功后由 Agent 将判断写入 checkpoint；终态失败或人工结案后必须创建新的预算化 Probe，不能把通用 Work retry 变成脱离原 Probe 的旁路执行；
+- 浏览器对 XHR/fetch POST 仍在到达 origin 前阻断，但可把满足公开查询安全子集的请求记录为 `public_query_evidence`：只保留规范公网 URL、固定 JSON object、公开白名单 header 和 body SHA-256，最多 20 条且编码后合计不超过 64 KiB；Cookie 被丢弃，Authorization/Proxy-Authorization、敏感 JSON 字段、重复 key/header、超量或非 JSON 请求不形成候选。该证据没有执行和发布权限。已物化候选 Source 可由 Agent 调用 `recruiting.recipe.prepare`，Actor 重新核对 Probe 所属 Company、Source version、body hash，以及 Listing Spec 的 method/header/body 与证据逐字节一致，再创建 content-addressed `recipe://` Resource 并返回 Source Endpoint 修正、`recipe.propose/validate` 的连续动作。用户不填写 Recipe JSON 或内部 ID；这些是 Agent 与 Actor 之间的实现合同；
 - 面向用户的自然入口是 `recruiting.onboarding.begin/status/materialize`：用户只提供公司名；系统解析 Company、启动或恢复 Mission，并在完成后用 `materialize` 将全部“已验证且已分类”的 ListURL 幂等、原子地登记为候选 Source。内部 Company/Mission/Source ID 均由系统生成，不要求用户填写。底层 `recruiting.source.add` 仍保留给明确的结构化运维场景；自然语言主流程不依赖它逐条拼装结果。
 
 `DiscoveryMission` 保存公司级一次探索；`Discovery Playbook` 保存可复用的探索策略；`Listing Recipe` 和 `Detail Recipe` 保存确认后的确定性生产代码。通用链接选择器只能作为低成本启发式证据，不能作为已批准 Discovery Recipe，也不能绕过覆盖审计。
@@ -700,6 +701,8 @@ Recipe 的生产入口是“按 scope 查找 active 版本并执行”，不是�
 公开招聘站点即使把查询语义放在 HTTP `POST`，也不应因此每天退化为 Browser。HTTP JSON Recipe 可声明一种严格受限的 `public-query POST`：请求体必须是至多 64 KiB 的固定 JSON object，不能带 Cookie、Authorization 或其他秘密，只能使用 ABI 白名单内的公开内容协商/站点语言 header，`Content-Type` 固定为 `application/json`，redirect 必须为零。跨页运行只能修改 Recipe 明确声明的顶层非负整数 offset/limit 字段；重复 JSON key、大小写重复 header、任意 URL/方法/表单或脚本均失败关闭。Browser Recipe 仍保持 GET 文档导航和写请求阻断，不能借该能力放开任意 POST。
 
 列表 API 只返回岗位 ID 而不返回详情链接时，JSON Extraction 可对 Listing 的 `detail_url_field` 使用一个绝对 HTTP(S) 模板，并只把 URL-path escaped 的单个标量替换进 `{value}`。模板、字段映射和分页均进入 Recipe content/contract hash。API Endpoint 仍必须作为 Source 的候选 Endpoint 经网络证据、Recipe validation 和 Source publication 独立验证；页面入口只保留为发现证据，不能让 Recipe 在运行时暗中把 Source 改到另一个 API。
+
+网络发现也不能假装一次浏览必然看见全部 API。若目标岗位查询只有在另一个被阻断 POST 成功后才会发起，当前 Probe 只能保存已实际观察到的前置公开查询；不得为“继续页面”自动放行未知 POST。此类依赖链要么由授权浏览器插件提供完整网络证据，要么经过“候选查询独立 HTTP 验证→以已验证响应作为本地 stub→下一次 Browser Probe”的后续安全链路。覆盖审计必须把尚未观察到的岗位查询记为 gap，而不是把前置配置接口误当成岗位列表 Source。
 
 ```text
 draft → validating → active → superseded

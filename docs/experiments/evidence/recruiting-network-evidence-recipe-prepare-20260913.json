@@ -1,0 +1,36 @@
+{
+  "schema_version": "recruiting.network-evidence-recipe-prepare.v1",
+  "observed_at": "2026-09-13",
+  "scope": "Deep Discovery blocked public-query evidence to immutable Listing Recipe Resource",
+  "atoll_core_modified": false,
+  "database_migration_required": false,
+  "browser_effect_policy": {
+    "post_reaches_origin": false,
+    "max_public_query_evidence": 20,
+    "max_total_evidence_bytes": 65536,
+    "cookies_persisted": false,
+    "authorization_allowed": false,
+    "json_body_max_bytes": 65536
+  },
+  "control_plane": {
+    "word": "recruiting.recipe.prepare",
+    "source_version_fenced": true,
+    "same_company_probe_required": true,
+    "exact_method_headers_body_required": true,
+    "resource_content_addressed": true,
+    "resource_overwrite_allowed": false,
+    "next_actions": [
+      "recruiting.source.update",
+      "recruiting.recipe.propose",
+      "recruiting.recipe.validate"
+    ]
+  },
+  "real_site": {
+    "landing_url": "https://joinbytedance.com/search",
+    "observed_blocked_endpoint": "https://jobs.bytedance.com/api/v1/public/supplier/config/job/filters",
+    "observed_method": "POST",
+    "browser_sent_post_to_origin": false,
+    "downstream_listing_endpoint_from_previous_http_live_smoke": "https://jobs.bytedance.com/api/v1/public/supplier/search/job/posts"
+  },
+  "known_gap": "The listing query is emitted only after a prerequisite POST succeeds. Unknown Browser POST remains blocked; a validated-response local stub or authorized Extension network capture is required for automatic chained discovery."
+}

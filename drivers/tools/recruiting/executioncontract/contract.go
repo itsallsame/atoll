@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
 
 const Version = "recruiting.execution.v1"
@@ -309,16 +310,17 @@ func (a DeepDiscoveryEffectAttestation) Validate(maxNavigations int) error {
 }
 
 type DeepDiscoveryBrowserResult struct {
-	CommandID           string                         `json:"command_id"`
-	ResultKind          string                         `json:"result_kind"`
-	AttemptID           string                         `json:"attempt_id"`
-	ExecutorIncarnation string                         `json:"executor_incarnation"`
-	Artifact            model.ArtifactMetadata         `json:"artifact"`
-	SupportingArtifacts []model.ArtifactMetadata       `json:"supporting_artifacts,omitempty"`
-	FinalURL            string                         `json:"final_url"`
-	ContentHash         string                         `json:"content_hash"`
-	Links               []DeepDiscoveryLink            `json:"links"`
-	Attestation         DeepDiscoveryEffectAttestation `json:"attestation"`
+	CommandID           string                             `json:"command_id"`
+	ResultKind          string                             `json:"result_kind"`
+	AttemptID           string                             `json:"attempt_id"`
+	ExecutorIncarnation string                             `json:"executor_incarnation"`
+	Artifact            model.ArtifactMetadata             `json:"artifact"`
+	SupportingArtifacts []model.ArtifactMetadata           `json:"supporting_artifacts,omitempty"`
+	FinalURL            string                             `json:"final_url"`
+	ContentHash         string                             `json:"content_hash"`
+	Links               []DeepDiscoveryLink                `json:"links"`
+	PublicQueryEvidence []recipeabi.PublicQueryObservation `json:"public_query_evidence,omitempty"`
+	Attestation         DeepDiscoveryEffectAttestation     `json:"attestation"`
 }
 
 // CompanyImportApplyItem is a bounded, immutable slice of the confirmed

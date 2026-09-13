@@ -247,7 +247,7 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 			directive = "Call recruiting.onboarding.materialize with only company_name before presenting the typed URL result."
 		} else {
 			next = "initialize_candidate_sources"
-			directive = "For each candidate Source, generate a Resource-backed Listing Recipe from real page/network evidence, then call recruiting.recipe.propose and recruiting.recipe.validate. Approve only successful evidence, validate and publish the Source, then start its first baseline. After the baseline exposes a pending sample Job, generate and validate the first Detail Recipe, approve and assign it. Continue without asking the user for internal IDs; report only evidence-backed blockers."
+			directive = "For each candidate Source, use recruiting.recipe.prepare when a completed browser Probe exposes public_query_evidence; otherwise generate a Resource-backed Listing Recipe from real page evidence. Internally stage an observed API with recruiting.source.update, then call recruiting.recipe.propose and recruiting.recipe.validate. Approve only successful evidence, validate and publish the Source, then start its first baseline. After the baseline exposes a pending sample Job, generate and validate the first Detail Recipe, approve and assign it. Continue without asking the user for internal IDs; report only evidence-backed blockers."
 		}
 	}
 	if mission.Status == model.DeepDiscoveryDone && !classified {
