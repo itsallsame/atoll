@@ -1,0 +1,47 @@
+{
+  "schema_version": "recruiting.live-public-query-post.v1",
+  "observed_at": "2026-09-13",
+  "site": "ByteDance public careers",
+  "landing_url": "https://joinbytedance.com/search",
+  "endpoint_url": "https://jobs.bytedance.com/api/v1/public/supplier/search/job/posts",
+  "request_contract": {
+    "method": "POST",
+    "content_type": "application/json",
+    "public_headers": [
+      "accept",
+      "content-type",
+      "website-path"
+    ],
+    "credential_headers_present": false,
+    "cookie_required": false,
+    "redirect_limit": 0,
+    "pagination": "top-level integer offset/limit in fixed JSON object",
+    "page_size": 12
+  },
+  "response_contract": {
+    "collection_pointer": "/data/job_post_list",
+    "identity_pointer": "/id",
+    "title_pointer": "/title",
+    "reported_total_at_observation": 1396,
+    "detail_url_template": "https://joinbytedance.com/search/{value}"
+  },
+  "verification": {
+    "real_public_endpoint": true,
+    "robots_checked_by_production_driver": true,
+    "http_status": 200,
+    "records_extracted_min": 1,
+    "records_extracted_max": 12,
+    "unit_body_pagination_pages": 2,
+    "negative_contract_cases": [
+      "redirect",
+      "array_body",
+      "duplicate_json_key",
+      "secret_header",
+      "case_insensitive_duplicate_header",
+      "browser_post",
+      "wrong_page_limit",
+      "unsafe_detail_url_template"
+    ]
+  },
+  "scope_limit": "Live smoke proves the observed public endpoint contract only; it does not prove long-term stability, update-retop calibration, automatic network-to-Recipe generation, or complete company onboarding."
+}

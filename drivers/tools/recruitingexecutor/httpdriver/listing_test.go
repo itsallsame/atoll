@@ -2,14 +2,18 @@ package httpdriver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeexec"
 )
 
 type memoryArtifactSink struct {
@@ -193,6 +197,97 @@ func TestRunListingAdvancesRootArrayUntilShortOffsetPage(t *testing.T) {
 	if err != nil || result.Output.Failure != nil || len(result.Pages) != 2 ||
 		len(skips) != 2 || skips[0] != "0" || skips[1] != "2" || !result.Pages[1].Terminal {
 		t.Fatalf("short-page offset result=%+v skips=%v err=%v", result, skips, err)
+	}
+}
+
+func TestRunListingAdvancesConstrainedPublicQueryPOSTBody(t *testing.T) {
+	var offsets []int64
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/robots.txt" {
+			_, _ = response.Write([]byte("User-agent: *\nAllow: /\n"))
+			return
+		}
+		if request.Method != http.MethodPost || request.Header.Get("Content-Type") != "application/json" ||
+			request.Header.Get("website-path") != "en" {
+			t.Errorf("unexpected public-query request method=%s headers=%v", request.Method, request.Header)
+			response.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Offset int64 `json:"offset"`
+			Limit  int64 `json:"limit"`
+		}
+		if json.NewDecoder(request.Body).Decode(&body) != nil || body.Limit != 2 {
+			t.Errorf("invalid public-query body")
+			response.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		offsets = append(offsets, body.Offset)
+		if body.Offset == 2 {
+			_, _ = response.Write([]byte(`{"data":{"job_post_list":[{"id":"job-1","title":"Last"}]}}`))
+			return
+		}
+		_, _ = response.Write([]byte(`{"data":{"job_post_list":[{"id":"job-3","title":"New"},{"id":"job-2","title":"Middle"}]}}`))
+	}))
+	defer server.Close()
+	spec := runnerSpec()
+	spec.Request = recipeabi.ReadRequest{Method: "POST", Headers: map[string]string{
+		"Accept": "application/json", "Content-Type": "application/json", "website-path": "en",
+	}, JSONBody: json.RawMessage(`{"keyword":"","limit":2,"offset":0}`), TimeoutMS: 1_000,
+		MaxResponseBytes: 4096, MaxRedirects: 0, UserAgent: "Atoll-Recruiting-Test/1"}
+	spec.Extraction = recipeabi.Extraction{Collection: "/data/job_post_list", Fields: map[string]string{
+		"job_key": "/id", "detail_url": "/id", "title": "/title",
+	}, Templates: map[string]string{"detail_url": "https://careers.example/position/{value}/detail"}}
+	spec.Listing.ActivityField = ""
+	spec.Listing.BoundaryMode = "frontier_keys"
+	spec.OffsetPagination = &recipeabi.OffsetPagination{OffsetBodyField: "offset", LimitBodyField: "limit", PageSize: 2}
+	checker, _ := newRobotsTxtChecker(robotsPolicy(), true)
+	driver, _ := newDriver(testPolicy(), checker, true)
+	input := runnerInput(server.URL + "/api/search")
+	input.Checkpoint = nil
+	result, err := driver.RunListing(context.Background(), spec, input, compliance, &memoryArtifactSink{})
+	if err != nil || result.Output.Failure != nil || len(result.Pages) != 2 ||
+		len(offsets) != 2 || offsets[0] != 0 || offsets[1] != 2 ||
+		result.Pages[0].ResumeCursor != "post-offset:2" || !result.Pages[1].Terminal ||
+		string(result.Pages[0].Items[0]["detail_url"]) != `"https://careers.example/position/job-3/detail"` {
+		t.Fatalf("POST listing result=%+v offsets=%v err=%v", result, offsets, err)
+	}
+}
+
+func TestLiveByteDancePublicQueryRecipe(t *testing.T) {
+	if os.Getenv("RECRUITING_LIVE_BYTEDANCE_PROBE") != "1" {
+		t.Skip("set RECRUITING_LIVE_BYTEDANCE_PROBE=1 for the real public endpoint")
+	}
+	spec := runnerSpec()
+	spec.Request = recipeabi.ReadRequest{Method: "POST", Headers: map[string]string{
+		"Accept": "application/json", "Content-Type": "application/json", "website-path": "en",
+	}, JSONBody: json.RawMessage(`{"recruitment_id_list":[],"job_category_id_list":[],"subject_id_list":[],"location_code_list":[],"keyword":"","limit":12,"offset":0}`),
+		TimeoutMS: 10_000, MaxResponseBytes: 2 << 20, MaxRedirects: 0, UserAgent: "Atoll-Recruiting/1"}
+	spec.Extraction = recipeabi.Extraction{Collection: "/data/job_post_list", Fields: map[string]string{
+		"job_key": "/id", "detail_url": "/id", "title": "/title",
+	}, Templates: map[string]string{"detail_url": "https://joinbytedance.com/search/{value}"}}
+	spec.Listing.ActivityField = ""
+	spec.Listing.BoundaryMode = "frontier_keys"
+	spec.OffsetPagination = &recipeabi.OffsetPagination{OffsetBodyField: "offset", LimitBodyField: "limit", PageSize: 12}
+	checker, err := newRobotsTxtChecker(RobotsPolicy{Timeout: 10 * time.Second, MaxBytes: 64 << 10,
+		CacheTTL: time.Hour}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver, err := New(testPolicy(), checker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := runnerInput("https://jobs.bytedance.com/api/v1/public/supplier/search/job/posts")
+	input.Checkpoint = nil
+	fetched, err := driver.Fetch(context.Background(), spec, input, compliance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := recipeexec.ExecuteJSON(spec, fetched.Body)
+	if err != nil || len(document.Items) < 1 || len(document.Items) > 12 ||
+		!strings.HasPrefix(string(document.Items[0]["detail_url"]), `"https://joinbytedance.com/search/`) {
+		t.Fatalf("real ByteDance Recipe items=%d err=%v", len(document.Items), err)
 	}
 }
 

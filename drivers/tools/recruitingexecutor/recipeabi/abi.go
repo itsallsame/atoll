@@ -285,6 +285,7 @@ func (p BrowserPlan) ContentHash() (string, error) {
 type ReadRequest struct {
 	Method           string            `json:"method"`
 	Headers          map[string]string `json:"headers,omitempty"`
+	JSONBody         json.RawMessage   `json:"json_body,omitempty"`
 	TimeoutMS        int               `json:"timeout_ms"`
 	MaxResponseBytes int64             `json:"max_response_bytes"`
 	MaxRedirects     int               `json:"max_redirects"`
@@ -295,6 +296,7 @@ type Extraction struct {
 	Collection     string            `json:"collection,omitempty"`
 	CollectionRoot bool              `json:"collection_root,omitempty"`
 	Fields         map[string]string `json:"fields"`
+	Templates      map[string]string `json:"templates,omitempty"`
 	Attributes     map[string]string `json:"attributes,omitempty"`
 	Next           string            `json:"next,omitempty"`
 	NextAttribute  string            `json:"next_attribute,omitempty"`
@@ -305,12 +307,14 @@ type Extraction struct {
 // and total from the response. Short-page mode pins a page size and stops when
 // the response collection is shorter; both modes remain bounded by Listing.
 type OffsetPagination struct {
-	OffsetPointer string `json:"offset_pointer,omitempty"`
-	LimitPointer  string `json:"limit_pointer,omitempty"`
-	TotalPointer  string `json:"total_pointer,omitempty"`
-	OffsetQuery   string `json:"offset_query"`
-	LimitQuery    string `json:"limit_query,omitempty"`
-	PageSize      int    `json:"page_size,omitempty"`
+	OffsetPointer   string `json:"offset_pointer,omitempty"`
+	LimitPointer    string `json:"limit_pointer,omitempty"`
+	TotalPointer    string `json:"total_pointer,omitempty"`
+	OffsetQuery     string `json:"offset_query,omitempty"`
+	LimitQuery      string `json:"limit_query,omitempty"`
+	OffsetBodyField string `json:"offset_body_field,omitempty"`
+	LimitBodyField  string `json:"limit_body_field,omitempty"`
+	PageSize        int    `json:"page_size,omitempty"`
 }
 
 type ListingContract struct {
@@ -343,24 +347,50 @@ func (s Spec) Validate() error {
 	default:
 		return fmt.Errorf("unsupported recipe transport %q", s.Transport)
 	}
-	if strings.ToUpper(strings.TrimSpace(s.Request.Method)) != "GET" {
-		return fmt.Errorf("recipe request must be read-only GET")
+	method := strings.ToUpper(strings.TrimSpace(s.Request.Method))
+	if method != "GET" && method != "POST" {
+		return fmt.Errorf("recipe request must be GET or a constrained public-query POST")
+	}
+	if method == "GET" && len(s.Request.JSONBody) != 0 {
+		return fmt.Errorf("GET Recipe cannot declare a JSON body")
+	}
+	if method == "POST" {
+		_, bodyErr := decodeUniqueJSONObject(s.Request.JSONBody)
+		if s.Transport != TransportHTTPJSON || s.Request.MaxRedirects != 0 || len(s.Request.JSONBody) == 0 ||
+			len(s.Request.JSONBody) > 64<<10 || bodyErr != nil {
+			return fmt.Errorf("public-query POST requires HTTP JSON, a bounded JSON object, and zero redirects")
+		}
+		if !strings.EqualFold(strings.TrimSpace(recipeHeader(s.Request.Headers, "content-type")), "application/json") {
+			return fmt.Errorf("public-query POST requires Content-Type application/json")
+		}
+	}
+	if s.Transport == TransportBrowser && method != "GET" {
+		return fmt.Errorf("browser Recipe document navigation remains GET-only")
 	}
 	if s.Request.TimeoutMS < 100 || s.Request.TimeoutMS > 60_000 || s.Request.MaxResponseBytes < 1 || s.Request.MaxResponseBytes > 20<<20 ||
 		s.Request.MaxRedirects < 0 || s.Request.MaxRedirects > 5 || strings.TrimSpace(s.Request.UserAgent) == "" {
 		return fmt.Errorf("request budgets exceed the recipe ABI limits")
 	}
+	canonicalHeaders := make(map[string]struct{}, len(s.Request.Headers))
 	for name := range s.Request.Headers {
-		switch strings.ToLower(strings.TrimSpace(name)) {
-		case "accept", "accept-language":
+		canonicalName := strings.ToLower(strings.TrimSpace(name))
+		if _, duplicate := canonicalHeaders[canonicalName]; duplicate {
+			return fmt.Errorf("recipe header %q is duplicated case-insensitively", name)
+		}
+		canonicalHeaders[canonicalName] = struct{}{}
+		switch canonicalName {
+		case "accept", "accept-language", "content-type", "website-path":
 		default:
 			return fmt.Errorf("recipe header %q is not allowed", name)
 		}
 	}
 	for name, value := range s.Request.Headers {
-		if strings.ContainsAny(name+value, "\r\n") {
+		if len(value) > 512 || strings.TrimSpace(value) != value || strings.ContainsAny(name+value, "\r\n") {
 			return fmt.Errorf("recipe headers cannot contain control newlines")
 		}
+	}
+	if method == "GET" && recipeHeader(s.Request.Headers, "content-type") != "" {
+		return fmt.Errorf("GET Recipe cannot declare Content-Type")
 	}
 	if strings.ContainsAny(s.Request.UserAgent, "\r\n") {
 		return fmt.Errorf("recipe user agent cannot contain control newlines")
@@ -382,6 +412,17 @@ func (s Spec) Validate() error {
 				return fmt.Errorf("JSON extraction fields require JSON pointers")
 			}
 		}
+		for field, template := range s.Extraction.Templates {
+			if s.Kind != KindListing || s.Listing == nil || field != s.Listing.DetailURLField ||
+				s.Extraction.Fields[field] == "" || strings.Count(template, "{value}") != 1 || len(template) > 2048 {
+				return fmt.Errorf("JSON templates are restricted to one bounded listing detail URL template")
+			}
+			probe, err := url.Parse(strings.Replace(template, "{value}", "probe", 1))
+			if err != nil || (probe.Scheme != "http" && probe.Scheme != "https") || probe.Host == "" ||
+				probe.User != nil || probe.Fragment != "" {
+				return fmt.Errorf("listing detail URL template must produce an absolute public HTTP(S) URL")
+			}
+		}
 		for _, pointer := range []string{s.Extraction.Collection, s.Extraction.Next} {
 			if pointer != "" && !strings.HasPrefix(pointer, "/") {
 				return fmt.Errorf("JSON collection and next expressions must be JSON pointers")
@@ -392,13 +433,32 @@ func (s Spec) Validate() error {
 	}
 	if s.OffsetPagination != nil {
 		page := s.OffsetPagination
+		queryMode := safeQueryName(page.OffsetQuery) && page.OffsetBodyField == "" && page.LimitBodyField == ""
+		bodyMode := safeJSONField(page.OffsetBodyField) && page.OffsetQuery == "" && page.LimitQuery == "" &&
+			method == "POST"
 		metadataMode := jsonPointer(page.OffsetPointer) && jsonPointer(page.LimitPointer) && jsonPointer(page.TotalPointer) &&
-			page.LimitQuery == "" && page.PageSize == 0
+			page.LimitQuery == "" && page.LimitBodyField == "" && page.PageSize == 0
 		shortPageMode := page.OffsetPointer == "" && page.LimitPointer == "" && page.TotalPointer == "" &&
-			safeQueryName(page.LimitQuery) && page.PageSize >= 1 && page.PageSize <= 500
+			((queryMode && safeQueryName(page.LimitQuery)) || (bodyMode && safeJSONField(page.LimitBodyField))) &&
+			page.PageSize >= 1 && page.PageSize <= 500
 		if s.Kind != KindListing || s.Transport != TransportHTTPJSON || s.Extraction.Next != "" ||
-			!safeQueryName(page.OffsetQuery) || (!metadataMode && !shortPageMode) {
-			return fmt.Errorf("offset pagination requires a JSON listing, metadata pointers or bounded short-page mode, safe query names, and no next expression")
+			(!queryMode && !bodyMode) || (!metadataMode && !shortPageMode) {
+			return fmt.Errorf("offset pagination requires a JSON listing, one safe query/body offset location, metadata pointers or bounded short-page mode, and no next expression")
+		}
+		if bodyMode {
+			body, bodyErr := decodeUniqueJSONObject(s.Request.JSONBody)
+			if bodyErr != nil {
+				return fmt.Errorf("offset body pagination requires a JSON object")
+			}
+			if _, ok := nonNegativeJSONInteger(body[page.OffsetBodyField]); !ok {
+				return fmt.Errorf("offset body field must contain a non-negative integer")
+			}
+			if page.LimitBodyField != "" {
+				limit, ok := nonNegativeJSONInteger(body[page.LimitBodyField])
+				if !ok || int(limit) != page.PageSize {
+					return fmt.Errorf("limit body field must equal the configured page size")
+				}
+			}
 		}
 	}
 	if s.Transport == TransportHTTPHTML || s.Transport == TransportBrowser {
@@ -522,6 +582,76 @@ func safeQueryName(value string) bool {
 	return true
 }
 
+func safeJSONField(value string) bool { return safeQueryName(value) }
+
+// decodeUniqueJSONObject rejects duplicate top-level keys. They are otherwise
+// silently collapsed by encoding/json, which could make the first POST and
+// subsequent pagination requests carry different effective values.
+func decodeUniqueJSONObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok || delimiter != '{' {
+		return nil, fmt.Errorf("JSON body must be an object")
+	}
+	result := make(map[string]json.RawMessage)
+	for decoder.More() {
+		keyToken, keyErr := decoder.Token()
+		if keyErr != nil {
+			return nil, keyErr
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, fmt.Errorf("JSON object key must be a string")
+		}
+		if _, duplicate := result[key]; duplicate {
+			return nil, fmt.Errorf("duplicate JSON object key %q", key)
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		result[key] = value
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, fmt.Errorf("JSON body contains trailing data")
+		}
+		return nil, err
+	}
+	return result, nil
+}
+
+func recipeHeader(headers map[string]string, requested string) string {
+	for name, value := range headers {
+		if strings.EqualFold(strings.TrimSpace(name), requested) {
+			return value
+		}
+	}
+	return ""
+}
+
+func nonNegativeJSONInteger(raw json.RawMessage) (int64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var value json.Number
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return 0, false
+	}
+	integer, err := value.Int64()
+	return integer, err == nil && integer >= 0
+}
+
 func (s Spec) ContentHash() (string, error) {
 	if err := s.Validate(); err != nil {
 		return "", err
@@ -534,22 +664,36 @@ func (s Spec) ContentHash() (string, error) {
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-// ContractHash identifies the extraction and incremental compatibility
-// contract independently from request tuning such as timeout and User-Agent.
-// A changed selector, identity/activity mapping, pagination rule, or listing
-// boundary therefore cannot silently reuse an existing Assignment lineage.
+// ContractHash identifies request semantics, extraction, and incremental
+// compatibility independently from operational tuning such as timeout,
+// response limits, redirects, and User-Agent. A changed public-query filter,
+// selector, identity/activity mapping, pagination rule, or listing boundary
+// therefore cannot silently reuse an existing Assignment lineage.
 func (s Spec) ContractHash() (string, error) {
 	if err := s.Validate(); err != nil {
 		return "", err
 	}
 	contract := struct {
-		Kind             Kind              `json:"kind"`
-		Transport        Transport         `json:"transport"`
+		Kind      Kind      `json:"kind"`
+		Transport Transport `json:"transport"`
+		Request   struct {
+			Method   string            `json:"method"`
+			Headers  map[string]string `json:"headers,omitempty"`
+			JSONBody json.RawMessage   `json:"json_body,omitempty"`
+		} `json:"request"`
 		Extraction       Extraction        `json:"extraction"`
 		OffsetPagination *OffsetPagination `json:"offset_pagination,omitempty"`
 		Listing          *ListingContract  `json:"listing,omitempty"`
 		BrowserPlan      *BrowserPlan      `json:"browser_plan,omitempty"`
-	}{s.Kind, s.Transport, s.Extraction, s.OffsetPagination, s.Listing, s.BrowserPlan}
+	}{
+		Kind: s.Kind, Transport: s.Transport,
+		Request: struct {
+			Method   string            `json:"method"`
+			Headers  map[string]string `json:"headers,omitempty"`
+			JSONBody json.RawMessage   `json:"json_body,omitempty"`
+		}{Method: strings.ToUpper(strings.TrimSpace(s.Request.Method)), Headers: s.Request.Headers, JSONBody: s.Request.JSONBody},
+		Extraction: s.Extraction, OffsetPagination: s.OffsetPagination, Listing: s.Listing, BrowserPlan: s.BrowserPlan,
+	}
 	raw, err := json.Marshal(contract)
 	if err != nil {
 		return "", err

@@ -825,4 +825,12 @@ CI 层级：
 
 本阶段消除了新 Source 的两个循环依赖，同时保持 Atoll core 零修改：候选 Endpoint 可在不可变 provenance 围栏下验证首个 Listing Recipe；baseline 列表完成后只物化一条真实 `detail_pending` 样本供首个 Detail Recipe 验证，待 Recipe 审批并首次分配后才批量创建 Detail Work。自然语言 `onboarding.status` 在 Source 已物化后返回初始化阶段和连续动作指令，不再反复要求 materialize。
 
-已完成的代码门包括招聘扩展单元测试、`go vet`、`go test -race`、boundary check 和 migration 61。真实字节站点同时证明：其岗位 API 使用页面上下文生成的 POST/签名，普通 GET 不等价；不得把临时签名硬编码为 Recipe，也不得放开浏览器任意 POST。后续实现必须把网络发现证据转换为版本化、受限的公开只读请求模板，并单独通过 effect-policy 与真实站点验收。
+已完成的代码门包括招聘扩展单元测试、`go vet`、`go test -race`、boundary check 和 migration 61。真实字节站点同时证明：其岗位 API 使用公开 JSON POST，普通 GET 不等价；请求不需要 Cookie、Authorization 或临时签名，但需要固定公开 `website-path` 语言 header。该结论只来自本次真实网络证据，不能外推到其他站点。
+
+## 22. 2026-09-13 公开查询 POST Recipe 阶段
+
+本阶段在招聘扩展的既有 Recipe ABI 和 HTTP Driver 内增加严格受限的 `public-query POST`，没有修改 Atoll core、增加 Worker 类型或把 Browser 变成每日默认路径。Recipe 必须冻结至多 64 KiB 的 JSON object、零 redirect、公开 header 白名单和 JSON Content-Type；拒绝秘密 header、重复 key/header、Browser POST 及任意脚本。offset/limit 可位于请求 body，但运行时只能推进声明的顶层非负整数；请求体分页游标以 `post-offset:N` 保存。JSON Listing 还可把单个标量按 URL path escaping 写入已哈希的详情 URL 模板。
+
+单元合同覆盖两页 POST、body offset 推进、短页终止、Artifact 先持久化、详情 URL 生成，以及 redirect、数组 body、重复 key/header、Authorization、错误 limit 和危险模板的失败关闭。真实 Live Smoke 使用生产 HTTP Driver 访问字节公开岗位 API，先读取 robots，再发送无凭证 JSON POST，成功抽取 1—12 条岗位及规范详情 URL；网页抓包用于确认请求合同后不进入生产测试代码。紧凑证据见 `evidence/recruiting-live-public-query-post-bytedance-20260913.json`。
+
+本阶段只关闭“已发现公开 API 后可保存为低成本 HTTP Listing Recipe 并执行”的数据面能力。网络观察自动沉淀为候选 API Endpoint/Recipe Resource、自然语言 Agent 连续调用 `source.update → recipe.propose → recipe.validate`，以及字节 Source 的首次 baseline/Detail 全链路仍是下一切片，不能因 Live Smoke 通过而宣称公司接入完成。

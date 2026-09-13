@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -110,6 +111,13 @@ func ExecuteJSON(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 				return DocumentResult{}, fmt.Errorf("row %d field %s: %w", index, field, err)
 			}
 			item[field] = raw
+		}
+		for field, template := range spec.Extraction.Templates {
+			value, ok := rawIdentity(item[field])
+			if !ok || strings.TrimSpace(value) == "" {
+				return DocumentResult{}, fmt.Errorf("row %d template field %s is not a scalar identity", index, field)
+			}
+			item[field], _ = json.Marshal(strings.Replace(template, "{value}", url.PathEscape(value), 1))
 		}
 		if spec.Kind == recipeabi.KindListing {
 			identity, ok := rawIdentity(item[spec.Listing.IdentityField])

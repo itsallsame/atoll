@@ -3,6 +3,7 @@
 package httpdriver
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -180,7 +181,12 @@ func (d *Driver) Fetch(ctx context.Context, spec recipeabi.Spec, input recipeabi
 	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(spec.Request.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	requestCtx = context.WithValue(requestCtx, redirectLimitKey{}, spec.Request.MaxRedirects)
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint.String(), nil)
+	method := strings.ToUpper(strings.TrimSpace(spec.Request.Method))
+	var requestBody io.Reader
+	if method == http.MethodPost {
+		requestBody = bytes.NewReader(spec.Request.JSONBody)
+	}
+	request, err := http.NewRequestWithContext(requestCtx, method, endpoint.String(), requestBody)
 	if err != nil {
 		return Result{}, err
 	}

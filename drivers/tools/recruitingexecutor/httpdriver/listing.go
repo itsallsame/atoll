@@ -94,13 +94,16 @@ func (d *Driver) runListing(ctx context.Context, spec recipeabi.Spec, input reci
 	}
 	initialURL, _ := url.Parse(input.Endpoint.URL)
 	currentURL := initialURL
+	currentBody := append(json.RawMessage(nil), spec.Request.JSONBody...)
 	var artifacts []recipeabi.ArtifactRef
 	var pages []ListingPage
 	var totalBytes int64
 	for pageSequence := 1; !scan.Complete(); pageSequence++ {
 		pageInput := input
 		pageInput.Endpoint.URL = currentURL.String()
-		fetched, fetchErr := d.Fetch(ctx, spec, pageInput, compliance)
+		pageSpec := spec
+		pageSpec.Request.JSONBody = currentBody
+		fetched, fetchErr := d.Fetch(ctx, pageSpec, pageInput, compliance)
 		totalBytes += int64(len(fetched.Body))
 		kind := "page"
 		if fetchErr != nil {
@@ -155,14 +158,23 @@ func (d *Driver) runListing(ctx context.Context, spec recipeabi.Spec, input reci
 		}
 		var nextURL *url.URL
 		if document.OffsetPage != nil {
-			nextURL, err = resolveOffsetPage(initialURL, currentURL, *spec.OffsetPagination, *document.OffsetPage)
+			if spec.OffsetPagination.OffsetBodyField != "" {
+				var nextOffset int64
+				currentBody, nextOffset, err = resolveOffsetBody(currentBody, *spec.OffsetPagination, *document.OffsetPage)
+				page.ResumeCursor = fmt.Sprintf("post-offset:%d", nextOffset)
+				nextURL = currentURL
+			} else {
+				nextURL, err = resolveOffsetPage(initialURL, currentURL, *spec.OffsetPagination, *document.OffsetPage)
+			}
 		} else {
 			nextURL, err = resolveNextPage(initialURL, currentURL, document.Next)
 		}
 		if err != nil {
 			return classifiedListingFailure(ctx, sink, input, artifacts, pageSequence, currentURL.String(), "contract_violated", err, scan.Quality())
 		}
-		page.ResumeCursor = nextURL.String()
+		if page.ResumeCursor == "" {
+			page.ResumeCursor = nextURL.String()
+		}
 		if consume != nil {
 			if err := consume(page); err != nil {
 				return ListingRunResult{}, fmt.Errorf("consume listing page %d: %w", pageSequence, err)
@@ -202,6 +214,57 @@ func (d *Driver) runListing(ctx context.Context, spec recipeabi.Spec, input reci
 		return ListingRunResult{}, err
 	}
 	return ListingRunResult{Output: output, CheckpointCandidate: candidate, Pages: pages}, nil
+}
+
+func resolveOffsetBody(current json.RawMessage, pagination recipeabi.OffsetPagination,
+	page recipeexec.OffsetPage) (json.RawMessage, int64, error) {
+	if pagination.OffsetBodyField == "" || page.NextOffset < 0 {
+		return nil, 0, fmt.Errorf("offset body page requires a field and non-negative offset")
+	}
+	var body map[string]json.RawMessage
+	if json.Unmarshal(current, &body) != nil || body == nil {
+		return nil, 0, fmt.Errorf("offset body page requires a JSON object")
+	}
+	currentOffset, err := parseNonNegativeJSONInt(body[pagination.OffsetBodyField])
+	if err != nil {
+		return nil, 0, fmt.Errorf("offset body field %q: %w", pagination.OffsetBodyField, err)
+	}
+	nextOffset := page.NextOffset
+	if page.Relative {
+		if pagination.LimitBodyField == "" {
+			return nil, 0, fmt.Errorf("relative offset body page requires a limit field")
+		}
+		limit, limitErr := parseNonNegativeJSONInt(body[pagination.LimitBodyField])
+		if limitErr != nil || limit != page.Limit {
+			return nil, 0, fmt.Errorf("offset body limit does not match configured page size")
+		}
+		nextOffset = currentOffset + page.NextOffset
+		if nextOffset < currentOffset {
+			return nil, 0, fmt.Errorf("offset body next offset overflowed")
+		}
+	} else if currentOffset != page.CurrentOffset {
+		return nil, 0, fmt.Errorf("offset response does not match request body")
+	}
+	body[pagination.OffsetBodyField], _ = json.Marshal(nextOffset)
+	next, err := json.Marshal(body)
+	if err != nil {
+		return nil, 0, err
+	}
+	return next, nextOffset, nil
+}
+
+func parseNonNegativeJSONInt(raw json.RawMessage) (int64, error) {
+	var number json.Number
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&number); err != nil {
+		return 0, fmt.Errorf("must be an integer")
+	}
+	value, err := number.Int64()
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("must be a non-negative integer")
+	}
+	return value, nil
 }
 
 func putArtifact(ctx context.Context, sink ArtifactSink, write ArtifactWrite) (recipeabi.ArtifactRef, error) {

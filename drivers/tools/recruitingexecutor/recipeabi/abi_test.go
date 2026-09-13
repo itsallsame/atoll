@@ -2,6 +2,7 @@ package recipeabi
 
 import (
 	"encoding/json"
+	"maps"
 	"strings"
 	"testing"
 
@@ -62,6 +63,22 @@ func TestRecipeContractHashSeparatesCompatibilityFromRequestTuning(t *testing.T)
 	changed.Extraction.Fields = map[string]string{"job_key": "/external_id", "detail_url": "/url", "activity_at": "/updated_at"}
 	if next, err := changed.ContractHash(); err != nil || next == first {
 		t.Fatalf("identity extraction did not change compatibility hash: first=%s next=%s err=%v", first, next, err)
+	}
+	post := validListingSpec()
+	post.Request.Method = "POST"
+	post.Request.MaxRedirects = 0
+	post.Request.Headers = map[string]string{"Content-Type": "application/json"}
+	post.Request.JSONBody = json.RawMessage(`{"audience":"social","offset":0,"limit":12}`)
+	post.Extraction.Next = ""
+	post.OffsetPagination = &OffsetPagination{OffsetBodyField: "offset", LimitBodyField: "limit", PageSize: 12}
+	postHash, err := post.ContractHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedPost := post
+	changedPost.Request.JSONBody = json.RawMessage(`{"audience":"campus","offset":0,"limit":12}`)
+	if next, err := changedPost.ContractHash(); err != nil || next == postHash {
+		t.Fatalf("public-query audience did not change compatibility hash: first=%s next=%s err=%v", postHash, next, err)
 	}
 }
 
@@ -175,6 +192,44 @@ func TestOffsetPaginationIsHashBoundAndRestrictedToJSONListings(t *testing.T) {
 	shortPage.OffsetPagination.PageSize = 501
 	if err := shortPage.Validate(); err == nil {
 		t.Fatal("unbounded short-page offset pagination was accepted")
+	}
+}
+
+func TestPublicQueryPOSTRequiresFixedJSONAndBodyPagination(t *testing.T) {
+	spec := validListingSpec()
+	spec.Request.Method = "POST"
+	spec.Request.MaxRedirects = 0
+	spec.Request.Headers = map[string]string{"Accept": "application/json", "Content-Type": "application/json", "website-path": "en"}
+	spec.Request.JSONBody = json.RawMessage(`{"keyword":"","limit":12,"offset":0}`)
+	spec.Extraction.Next = ""
+	spec.Extraction.Templates = map[string]string{"detail_url": "https://careers.example/position/{value}/detail"}
+	spec.Extraction.Fields["detail_url"] = "/id"
+	spec.OffsetPagination = &OffsetPagination{OffsetBodyField: "offset", LimitBodyField: "limit", PageSize: 12}
+	if err := spec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*Spec){
+		"redirect":         func(value *Spec) { value.Request.MaxRedirects = 1 },
+		"array body":       func(value *Spec) { value.Request.JSONBody = json.RawMessage(`[1,2]`) },
+		"duplicate body":   func(value *Spec) { value.Request.JSONBody = json.RawMessage(`{"offset":0,"offset":12,"limit":12}`) },
+		"secret header":    func(value *Spec) { value.Request.Headers["Authorization"] = "secret" },
+		"duplicate header": func(value *Spec) { value.Request.Headers["content-type"] = "application/json" },
+		"browser":          func(value *Spec) { value.Transport = TransportBrowser },
+		"wrong limit":      func(value *Spec) { value.OffsetPagination.PageSize = 10 },
+		"unsafe template":  func(value *Spec) { value.Extraction.Templates["detail_url"] = "javascript:{value}" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := spec
+			candidate.Request.Headers = maps.Clone(spec.Request.Headers)
+			candidate.Extraction.Fields = maps.Clone(spec.Extraction.Fields)
+			candidate.Extraction.Templates = maps.Clone(spec.Extraction.Templates)
+			page := *spec.OffsetPagination
+			candidate.OffsetPagination = &page
+			mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("unsafe public-query POST was accepted")
+			}
+		})
 	}
 }
 
