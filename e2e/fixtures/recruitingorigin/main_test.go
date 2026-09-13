@@ -81,6 +81,11 @@ func TestDailyJourneyListingResponsePagesAndDetailVersion(t *testing.T) {
 	if string(d2Detail) == string(d3Detail) {
 		t.Fatal("D3 retopped historical job must expose changed detail content")
 	}
+	var d2Record, d3Record map[string]any
+	if json.Unmarshal(d2Detail, &d2Record) != nil || json.Unmarshal(d3Detail, &d3Record) != nil ||
+		d2Record["title"] == d3Record["title"] {
+		t.Fatal("D3 retopped historical job must change a normalized Detail field")
+	}
 	if len(dailyJourneyResponseBody("a", 1, 256)) != 256 {
 		t.Fatal("journey response must honor the configured payload size")
 	}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -30,13 +31,13 @@ func TestRecruitingDailyIncrementalProcessFailureMatrix(t *testing.T) {
 		if selected != "" && selected != "all" && selected != fault {
 			continue
 		}
-		t.Run("D1_"+fault+"_exit_after_first_page", func(t *testing.T) {
-			runDailyD1ProcessFailure(t, fault)
+		t.Run("D1_D4_"+fault+"_process_sequence", func(t *testing.T) {
+			runDailyD1D4ProcessFailures(t, fault)
 		})
 	}
 }
 
-func runDailyD1ProcessFailure(t *testing.T, fault string) {
+func runDailyD1D4ProcessFailures(t *testing.T, fault string) {
 	origin := strings.TrimRight(os.Getenv("RECRUITING_DAILY_PROCESS_ORIGIN"), "/")
 	token := os.Getenv("RECRUITING_DAILY_PROCESS_TOKEN")
 	if origin == "" || token == "" {
@@ -134,47 +135,139 @@ func runDailyD1ProcessFailure(t *testing.T, fault string) {
 	waitDailyProcessDay(t, runtimeDSN, d0.runID, sourceID, 3, 3, 45*time.Second,
 		daemon, h.server, daemonLog, h.server.logPath)
 
-	setDailyProcessOriginDay(t, origin, token, 1)
-	gate := installDailyProcessResultGate(t, runtimeDSN, fault)
-	d1 := planDailyProcessJourney(t, runtimeDSN, sourceID, 1, "tool:"+executorName)
-	waitUntilDailyProcessDue(t, d1.dueAt)
-	materializeDailyProcessJourney(t, runtimeDSN, d1, "tool:"+executorName, 1)
-	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 50})
-	gate.waitBlocked(t, 30*time.Second, daemonLog, h.server.logPath)
-
-	firstAttempt := dailyProcessLatestListingAttempt(t, runtimeDSN, d1.runID)
-	firstPageCommitted := false
-	switch fault {
-	case "executor":
-		if err := syscall.Kill(-daemon.cmd.Process.Pid, syscall.SIGSTOP); err != nil {
-			t.Fatalf("pause Executor at D1 page acknowledgement: %v", err)
-		}
-		gate.release(t)
-		waitDailyProcessPageCount(t, runtimeDSN, firstAttempt, 1, 15*time.Second)
-		firstPageCommitted = true
-		daemon.kill9(t)
-		daemonLog = filepath.Join(h.root, "logs", "daily-process-"+fault+"-daemon-2.log")
-		daemon = startProc(t, "daily-process-"+fault+"-daemon-2", filepath.Join(e2eBinDir, "atoll-daemon"),
-			daemonArgs, h.env, filepath.Join(h.root, "work"), daemonLog)
-		waitActorPresenceInChannel(t, ws, homeID, executorID, daemon, daemonLog)
-	case "actor":
-		h.server.kill9(t)
-		gate.release(t)
-		h.startServer()
-		operator = newAPIClient(t, h.base)
-		if login := operator.login(email, "operator-local-password"); login["id"] != "daily-process-"+fault {
-			t.Fatalf("daily process operator login after Actor exit=%v", login)
-		}
-		ws = dialWS(t, h.base, operator.cookieHeader(), map[string]int64{homeID: 0})
-		waitRecruitingReady(t, ws, homeID, controlID, h.server)
-		waitActorPresenceInChannel(t, ws, homeID, executorID, daemon, daemonLog)
-	default:
-		t.Fatalf("unknown fault axis %q", fault)
+	state := &dailyProcessHarness{
+		fault: fault, origin: origin, token: token, runtimeDSN: runtimeDSN, h: h,
+		operator: operator, ws: ws, email: email, homeID: homeID, controlID: controlID,
+		executorID: executorID, executorName: executorName, daemonArgs: daemonArgs,
+		daemonLog: daemonLog, daemon: daemon, daemonGeneration: 1,
 	}
-	ws.request(homeID, "recruiting.system.reconcile", controlID, map[string]any{"limit": 50})
-	waitDailyProcessDay(t, runtimeDSN, d1.runID, sourceID, 3, 3, 60*time.Second,
-		daemon, h.server, daemonLog, h.server.logPath)
-	assertDailyProcessD1Recovery(t, runtimeDSN, d1.runID, firstAttempt, firstPageCommitted)
+	for _, day := range []struct {
+		number, jobs, details, pages int
+	}{
+		{number: 1, jobs: 3, details: 3, pages: 3},
+		{number: 2, jobs: 4, details: 4, pages: 4},
+		{number: 3, jobs: 4, details: 5, pages: 4},
+		{number: 4, jobs: 6, details: 7, pages: 5},
+	} {
+		state.runFaultDay(t, sourceID, day.number, day.jobs, day.details, day.pages)
+	}
+}
+
+type dailyProcessHarness struct {
+	fault            string
+	origin           string
+	token            string
+	runtimeDSN       string
+	h                *harness
+	operator         *apiClient
+	ws               *wsClient
+	email            string
+	homeID           string
+	controlID        string
+	executorID       string
+	executorName     string
+	daemonArgs       []string
+	daemonLog        string
+	daemon           *proc
+	daemonGeneration int
+}
+
+func (s *dailyProcessHarness) runFaultDay(t *testing.T, sourceID string, day, jobs, details, pages int) {
+	t.Helper()
+	setDailyProcessOriginDay(t, s.origin, s.token, day)
+	gate := installDailyProcessResultGate(t, s.runtimeDSN, fmt.Sprintf("%s_d%d", s.fault, day))
+	plan := planDailyProcessJourney(t, s.runtimeDSN, sourceID, day, "tool:"+s.executorName)
+	waitUntilDailyProcessDue(t, plan.dueAt)
+	materializeDailyProcessJourney(t, s.runtimeDSN, plan, "tool:"+s.executorName, day)
+	s.ws.request(s.homeID, "recruiting.system.reconcile", s.controlID, map[string]any{"limit": 50})
+	gate.waitBlocked(t, 30*time.Second, s.daemonLog, s.h.server.logPath)
+
+	firstAttempt := dailyProcessLatestListingAttempt(t, s.runtimeDSN, plan.runID)
+	firstPageCommitted := false
+	switch s.fault {
+	case "executor":
+		if err := syscall.Kill(-s.daemon.cmd.Process.Pid, syscall.SIGSTOP); err != nil {
+			t.Fatalf("pause Executor at D%d page acknowledgement: %v", day, err)
+		}
+		gate.release(t)
+		waitDailyProcessPageCount(t, s.runtimeDSN, firstAttempt, 1, 15*time.Second)
+		firstPageCommitted = true
+		s.daemon.kill9(t)
+		s.daemonGeneration++
+		s.daemonLog = filepath.Join(s.h.root, "logs",
+			fmt.Sprintf("daily-process-%s-daemon-%d.log", s.fault, s.daemonGeneration))
+		s.daemon = startProc(t, fmt.Sprintf("daily-process-%s-daemon-%d", s.fault, s.daemonGeneration),
+			filepath.Join(e2eBinDir, "atoll-daemon"), s.daemonArgs, s.h.env,
+			filepath.Join(s.h.root, "work"), s.daemonLog)
+		waitActorPresenceInChannel(t, s.ws, s.homeID, s.executorID, s.daemon, s.daemonLog)
+	case "actor":
+		s.h.server.kill9(t)
+		gate.release(t)
+		s.h.startServer()
+		s.operator = newAPIClient(t, s.h.base)
+		if login := s.operator.login(s.email, "operator-local-password"); login["id"] != "daily-process-"+s.fault {
+			t.Fatalf("daily process operator login after D%d Actor exit=%v", day, login)
+		}
+		s.ws = dialWS(t, s.h.base, s.operator.cookieHeader(), map[string]int64{s.homeID: 0})
+		waitRecruitingReady(t, s.ws, s.homeID, s.controlID, s.h.server)
+		waitActorPresenceInChannel(t, s.ws, s.homeID, s.executorID, s.daemon, s.daemonLog)
+	default:
+		t.Fatalf("unknown fault axis %q", s.fault)
+	}
+	gate.close(t)
+	s.ws.request(s.homeID, "recruiting.system.reconcile", s.controlID, map[string]any{"limit": 50})
+	waitDailyProcessDay(t, s.runtimeDSN, plan.runID, sourceID, jobs, details, 60*time.Second,
+		s.daemon, s.h.server, s.daemonLog, s.h.server.logPath)
+	assertDailyProcessRecovery(t, s.runtimeDSN, plan.runID, firstAttempt, firstPageCommitted,
+		pages, jobs, details)
+	assertDailyProcessDaySemantics(t, s.runtimeDSN, sourceID, day)
+}
+
+func assertDailyProcessDaySemantics(t *testing.T, dsn, sourceID string, day int) {
+	t.Helper()
+	db, err := store.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repository, _ := store.NewRepository(db)
+	checkpoint, err := repository.GetCheckpoint(context.Background(), sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Unix(dailyProcessJourneyActivityUnix, 0).UTC()
+	wantFrontier := map[int]time.Time{1: base, 2: base.Add(48 * time.Hour),
+		3: base.Add(72 * time.Hour), 4: base.Add(96 * time.Hour)}[day]
+	if checkpoint.Version != uint64(day+2) || checkpoint.FrontierActivityAt != wantFrontier.Format(time.RFC3339) {
+		t.Fatalf("D%d checkpoint version=%d frontier=%s want=%d/%s", day, checkpoint.Version,
+			checkpoint.FrontierActivityAt, day+2, wantFrontier.Format(time.RFC3339))
+	}
+	if day == 4 && (!slices.Contains(checkpoint.FrontierJobKeys, "e") ||
+		!slices.Contains(checkpoint.FrontierJobKeys, "f")) {
+		t.Fatalf("D4 checkpoint lost split equal-time frontier: %+v", checkpoint.FrontierJobKeys)
+	}
+	if day < 2 {
+		return
+	}
+	key := "d"
+	wantRefresh, wantDetailVersion := uint64(1), uint64(1)
+	if day >= 3 {
+		key, wantRefresh, wantDetailVersion = "c", 2, 2
+	}
+	var state []byte
+	if err := db.QueryRow(`SELECT state_json FROM recruiting_source_jobs WHERE source_id = ? AND source_job_key = ?`,
+		sourceID, key).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	var job model.SourceJob
+	if err := json.Unmarshal(state, &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.RefreshGeneration != wantRefresh || job.DetailVersion != wantDetailVersion ||
+		job.Status != model.JobAvailable || job.DetailContentHash == "" {
+		t.Fatalf("D%d job %s refresh=%d detail=%d status=%s hash=%q", day, key,
+			job.RefreshGeneration, job.DetailVersion, job.Status, job.DetailContentHash)
+	}
 }
 
 type dailyProcessPlan struct {
@@ -317,6 +410,7 @@ type dailyProcessResultGate struct {
 	signal   string
 	trigger  string
 	released bool
+	closed   bool
 }
 
 func installDailyProcessResultGate(t *testing.T, runtimeDSN, suffix string) *dailyProcessResultGate {
@@ -366,16 +460,7 @@ END`, trigger, signal, lockName, signal, lockName)
 	}
 	gate := &dailyProcessResultGate{holder: holder, observer: observer, admin: admin,
 		lockName: lockName, signal: signal, trigger: trigger}
-	t.Cleanup(func() {
-		if !gate.released {
-			var ignored sql.NullInt64
-			_ = gate.holder.QueryRowContext(context.Background(), `SELECT RELEASE_LOCK(?)`, gate.lockName).Scan(&ignored)
-		}
-		_ = gate.holder.Close()
-		_ = gate.observer.Close()
-		_, _ = gate.admin.Exec("DROP TRIGGER IF EXISTS " + gate.trigger)
-		_ = gate.admin.Close()
-	})
+	t.Cleanup(func() { gate.close(t) })
 	return gate
 }
 
@@ -403,6 +488,25 @@ func (g *dailyProcessResultGate) release(t *testing.T) {
 		t.Fatalf("release daily process gate: released=%v err=%v", released, err)
 	}
 	g.released = true
+}
+
+func (g *dailyProcessResultGate) close(t *testing.T) {
+	t.Helper()
+	if g.closed {
+		return
+	}
+	if !g.released {
+		var ignored sql.NullInt64
+		_ = g.holder.QueryRowContext(context.Background(), `SELECT RELEASE_LOCK(?)`, g.lockName).Scan(&ignored)
+		g.released = true
+	}
+	_ = g.holder.Close()
+	_ = g.observer.Close()
+	if _, err := g.admin.Exec("DROP TRIGGER IF EXISTS " + g.trigger); err != nil {
+		t.Errorf("drop daily process gate: %v", err)
+	}
+	_ = g.admin.Close()
+	g.closed = true
 }
 
 func waitDailyProcessDay(t *testing.T, dsn, runID, sourceID string, jobs, details int, timeout time.Duration,
@@ -470,7 +574,8 @@ func waitDailyProcessPageCount(t *testing.T, dsn, attemptID string, want int, ti
 	t.Fatalf("Attempt %s page count=%d want=%d err=%v", attemptID, count, want, err)
 }
 
-func assertDailyProcessD1Recovery(t *testing.T, dsn, runID, firstAttempt string, firstPageCommitted bool) {
+func assertDailyProcessRecovery(t *testing.T, dsn, runID, firstAttempt string, firstPageCommitted bool,
+	wantPages, wantJobs, wantDetails int) {
 	t.Helper()
 	db, err := store.Open(dsn)
 	if err != nil {
@@ -497,8 +602,10 @@ func assertDailyProcessD1Recovery(t *testing.T, dsn, runID, firstAttempt string,
 		wantFirstPages = 1
 	}
 	if attempts != 2 || expired != 1 || succeeded != 1 || firstPages != wantFirstPages ||
-		totalPages != 3+wantFirstPages || observations != 3+wantFirstPages || jobs != 3 || details != 3 || activePermits != 0 {
-		t.Fatalf("D1 recovery attempts=%d expired=%d succeeded=%d first_pages=%d/%d total_pages=%d observations=%d jobs=%d details=%d permits=%d",
-			attempts, expired, succeeded, firstPages, wantFirstPages, totalPages, observations, jobs, details, activePermits)
+		totalPages != wantPages+wantFirstPages || observations != wantPages+wantFirstPages ||
+		jobs != wantJobs || details != wantDetails || activePermits != 0 {
+		t.Fatalf("daily recovery attempts=%d expired=%d succeeded=%d first_pages=%d/%d total_pages=%d/%d observations=%d/%d jobs=%d/%d details=%d/%d permits=%d",
+			attempts, expired, succeeded, firstPages, wantFirstPages, totalPages, wantPages+wantFirstPages,
+			observations, wantPages+wantFirstPages, jobs, wantJobs, details, wantDetails, activePermits)
 	}
 }

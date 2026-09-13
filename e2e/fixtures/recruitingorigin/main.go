@@ -227,7 +227,7 @@ func dailyJourneyResponseBody(id string, day, targetBytes int) []byte {
 		version = "v2"
 	}
 	prefix := fmt.Sprintf(`{"id":%q,"title":%q,"url":%q,"version":%q,"padding":"`, id,
-		"Daily Journey Role "+id, "http://controlled-origin.invalid/jobs/"+id, version)
+		"Daily Journey Role "+id+" "+version, "http://controlled-origin.invalid/jobs/"+id, version)
 	suffix := `"}`
 	padding := targetBytes - len(prefix) - len(suffix)
 	if padding < 0 {
