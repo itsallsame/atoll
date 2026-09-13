@@ -26,10 +26,12 @@ func main() {
 	listingItems := positiveEnv("RECRUITING_ORIGIN_LISTING_ITEMS", 1)
 	activityUnix := int64(positiveEnv("RECRUITING_ORIGIN_ACTIVITY_UNIX", int(time.Now().UTC().Unix())))
 	failureMatrix := strings.TrimSpace(os.Getenv("RECRUITING_ORIGIN_FAILURE_MATRIX")) == "1"
+	journeyToken := strings.TrimSpace(os.Getenv("RECRUITING_ORIGIN_DAILY_JOURNEY_TOKEN"))
 	var jobRequests atomic.Uint64
 	var listingRequests atomic.Uint64
 	var listedItems atomic.Uint64
 	var robotsRequests atomic.Uint64
+	var journeyDay atomic.Uint64
 	var unavailableAttempts atomic.Uint64
 	var throttledAttempts atomic.Uint64
 	var unavailableRequests atomic.Uint64
@@ -51,8 +53,30 @@ func main() {
 			"listing_items": listedItems.Load(), "robots_requests": robotsRequests.Load(),
 			"injected_503": unavailableRequests.Load(), "injected_429": throttledRequests.Load(),
 			"injected_403": forbiddenRequests.Load(),
+			"journey_day":  journeyDay.Load(),
 		})
 	})
+	if journeyToken != "" {
+		mux.HandleFunc("/control/day", func(response http.ResponseWriter, request *http.Request) {
+			if request.Method != http.MethodPost {
+				response.Header().Set("Allow", http.MethodPost)
+				http.Error(response, "POST required", http.StatusMethodNotAllowed)
+				return
+			}
+			if request.Header.Get("X-Atoll-Test-Token") != journeyToken {
+				http.Error(response, "invalid test token", http.StatusForbidden)
+				return
+			}
+			day, err := parseJourneyDay(request.URL.Query().Get("value"))
+			if err != nil {
+				http.Error(response, err.Error(), http.StatusBadRequest)
+				return
+			}
+			journeyDay.Store(uint64(day))
+			response.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(response).Encode(map[string]string{"day": fmt.Sprintf("D%d", day)})
+		})
+	}
 	mux.HandleFunc("/listing", func(response http.ResponseWriter, request *http.Request) {
 		offset, err := nonNegativeQuery(request, "offset", 0)
 		if err != nil {
@@ -66,7 +90,13 @@ func main() {
 		}
 		listingRequests.Add(1)
 		time.Sleep(listingLatency)
-		body, emitted := listingResponse(request.Host, listingItems, activityUnix, offset, limit)
+		var body []byte
+		var emitted int
+		if journeyToken != "" {
+			body, emitted = dailyJourneyListingResponse(request.Host, int(journeyDay.Load()), activityUnix, offset, limit)
+		} else {
+			body, emitted = listingResponse(request.Host, listingItems, activityUnix, offset, limit)
+		}
 		listedItems.Add(uint64(emitted))
 		response.Header().Set("Content-Type", "application/json")
 		response.Header().Set("Cache-Control", "no-store")
@@ -102,6 +132,9 @@ func main() {
 			}
 		}
 		body := responseBody(id, payloadBytes)
+		if journeyToken != "" {
+			body = dailyJourneyResponseBody(id, int(journeyDay.Load()), payloadBytes)
+		}
 		response.Header().Set("Content-Type", "application/json")
 		response.Header().Set("Cache-Control", "no-store")
 		_, _ = response.Write(body)
@@ -122,6 +155,85 @@ func main() {
 	log.Printf("recruiting controlled origin listening on %s payload_bytes=%d latency_ms=%d listing_latency_ms=%d listing_items=%d",
 		server.Addr, payloadBytes, latency.Milliseconds(), listingLatency.Milliseconds(), listingItems)
 	log.Fatal(server.ListenAndServe())
+}
+
+type dailyJourneyItem struct {
+	id            string
+	activityDelta time.Duration
+	titleVersion  string
+}
+
+func parseJourneyDay(raw string) (int, error) {
+	raw = strings.TrimSpace(strings.ToUpper(raw))
+	if len(raw) != 2 || raw[0] != 'D' || raw[1] < '0' || raw[1] > '6' {
+		return 0, fmt.Errorf("value must be D0 through D6")
+	}
+	return int(raw[1] - '0'), nil
+}
+
+func dailyJourneyItems(day int) []dailyJourneyItem {
+	hour := time.Hour
+	dayOffset := 24 * hour
+	switch day {
+	case 0, 1:
+		return []dailyJourneyItem{{"a", 0, "v1"}, {"b", -hour, "v1"}, {"c", -2 * hour, "v1"}}
+	case 2:
+		return []dailyJourneyItem{{"d", 2 * dayOffset, "v1"}, {"a", 0, "v1"}, {"b", -hour, "v1"}, {"c", -2 * hour, "v1"}}
+	case 3:
+		return []dailyJourneyItem{{"c", 3 * dayOffset, "v2"}, {"d", 2 * dayOffset, "v1"}, {"a", 0, "v1"}, {"b", -hour, "v1"}}
+	case 4:
+		return []dailyJourneyItem{{"e", 4 * dayOffset, "v1"}, {"f", 4 * dayOffset, "v1"}, {"c", 3 * dayOffset, "v2"}, {"d", 2 * dayOffset, "v1"}, {"a", 0, "v1"}, {"b", -hour, "v1"}}
+	case 5:
+		return []dailyJourneyItem{{"g", 5 * dayOffset, "v1"}, {"h", 5*dayOffset - hour, "v1"},
+			{"i", 5*dayOffset - 2*hour, "v1"}, {"j", 5*dayOffset - 3*hour, "v1"},
+			{"k", 5*dayOffset - 4*hour, "v1"}, {"l", 5*dayOffset - 5*hour, "v1"},
+			{"m", 5*dayOffset - 6*hour, "v1"}}
+	case 6:
+		return []dailyJourneyItem{{"g", 6 * dayOffset, "v1"}, {"h", 5 * dayOffset, "v1"},
+			{"e", 4 * dayOffset, "v1"}, {"f", 4 * dayOffset, "v1"},
+			{"c", 3 * dayOffset, "v2"}, {"d", 2 * dayOffset, "v1"}}
+	default:
+		return nil
+	}
+}
+
+func dailyJourneyListingResponse(host string, day int, activityUnix int64, offset, limit int) ([]byte, int) {
+	all := dailyJourneyItems(day)
+	end := offset + limit
+	if end > len(all) {
+		end = len(all)
+	}
+	if offset > len(all) {
+		offset = len(all)
+	}
+	items := make([]map[string]any, 0, end-offset)
+	base := time.Unix(activityUnix, 0).UTC()
+	for _, item := range all[offset:end] {
+		items = append(items, map[string]any{
+			"id": item.id, "title": "Daily Journey Role " + item.id + " " + item.titleVersion,
+			"url":         "http://" + host + "/jobs/" + item.id,
+			"activity_at": base.Add(item.activityDelta).Format(time.RFC3339),
+		})
+	}
+	body, _ := json.Marshal(map[string]any{
+		"offset": offset, "limit": limit, "totalFound": len(all), "content": items,
+	})
+	return body, len(items)
+}
+
+func dailyJourneyResponseBody(id string, day, targetBytes int) []byte {
+	version := "v1"
+	if id == "c" && day >= 3 {
+		version = "v2"
+	}
+	prefix := fmt.Sprintf(`{"id":%q,"title":%q,"url":%q,"version":%q,"padding":"`, id,
+		"Daily Journey Role "+id, "http://controlled-origin.invalid/jobs/"+id, version)
+	suffix := `"}`
+	padding := targetBytes - len(prefix) - len(suffix)
+	if padding < 0 {
+		padding = 0
+	}
+	return []byte(prefix + strings.Repeat("x", padding) + suffix)
 }
 
 func writeInjectedFailure(response http.ResponseWriter, status int, detail string) {
