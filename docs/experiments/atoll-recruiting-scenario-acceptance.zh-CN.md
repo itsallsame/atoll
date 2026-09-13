@@ -1,6 +1,6 @@
 # Atoll Recruiting S01—S25 场景验收账本
 
-更新时间：2026-09-12
+更新时间：2026-09-13
 
 本账本按产品场景判断完成度，不以代码量、测试总数或某个压力测试代替业务验收。状态含义：
 
@@ -16,7 +16,7 @@
 | S04 人工维护 Source | 完成 | `TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart`、`TestSourceValidationCreatesFencedExecutionAndEvidenceForPublish` | — |
 | S05 首次全量 | 完成 | `TestCurrentBaselineMaterializerHandlesTenThousandJobsInBoundedPages`、`TestRecruitingLiveBaselinePageRecoveryThroughAtoll`、`TestRecruitingLiveQualifiedWordPressSourceThroughAtoll` | — |
 | S06 第二次校准 | 完成 | `TestSourceCannotPublishAnUnverifiedIncrementalContract`、Source validation 四维 assessment 合同、Women’s Aid update-retop 真实证据 | 持续观测由 Nightly/Weekly 管理，不改变一次验收结论 |
-| S07 每日列表增量 | 完成 | `TestDailyIncrementalD0ThroughD6PreservesBoundaryAndRefreshInvariants`、`TestRecruitingLiveQualifiedWordPressSourceThroughAtoll` | OS 级全切点矩阵属于 P9 可靠性门 |
+| S07 每日列表增量 | 完成 | `TestDailyIncrementalD0ThroughD6PreservesBoundaryAndRefreshInvariants`、`TestRecruitingLiveQualifiedWordPressSourceThroughAtoll`、`TestRecruitingDailyIncrementalProcessFailureMatrix` | D1—D6 Executor/Server 共 12 个 OS 切点已关闭；远程灾备仍属于 P9 |
 | S08 新岗位详情 | 完成 | `TestListingObservationCreatesDetailOnlyForNewOrChangedJob`、qualified WordPress 17 个真实详情 | — |
 | S09 变化岗位详情 | 完成 | detail version/refresh generation 合同及 D0—D6 旅程 | — |
 | S10 Listing 修复 | 完成 | `TestRecruitingOperatorQuarantinesAndRollsBackRecipeThroughServer`、Listing rollout/rollback 合同 | — |
@@ -48,6 +48,8 @@ S25/P9 补充（2026-09-12，事务批处理）：Recruiting 扩展把同一批�
 
 S25/P9 补充（2026-09-12，Atoll Server 在途恢复）：BF2 在真实 Chrome 请求已进入 origin 且尚无 Artifact 时杀 Server，原执行 daemon OS 进程全程存活。首次运行观察 211 秒后仍有 running Attempt，反向发现周期 reconcile timer 在“fire 已出队、后继 ID 未持久化”的 crash cut 会断链。Recruiting Actor 现仅在 body 启动时替换周期 reconcile timer；每日 cutoff/work/close timer 保留其精确持久 deadline，Atoll core 零修改。加强后的权威复跑证明同一 Executor Actor 以新 incarnation 重连、旧 Attempt expired 且零 accepted Artifact、新 Attempt 唯一完成 DOM、trace 和 BackfillOutput，Permit/dispatch 清零并可再次重启回读；BF1、BF0、B0、D0 均回归通过。该证据关闭 Server 单点在途 Browser 切点，但不覆盖跨每日 cutoff、Server/MySQL 联合故障、远程 Artifact 或生产 SLO，S25 状态仍为部分完成。证据为 `recruiting-browser-server-recovery-20260912.json`。
 
+S07/P6 补充（2026-09-13，D1—D6 连续进程矩阵）：每个 Executor/Server 故障轴均在同一 MySQL 血缘连续执行 D0 建账及 D1—D6 演进。D5 边界消失在 `max_pages` 后只保存六份原始页面与一份分类失败证据，不发布 page progress/Observation、不推进 v6 Checkpoint，并进入 `waiting_human`；D6 由普通用户公开 `resolve(terminated) → retry` 原子重绑同一 Occurrence，进程恢复后从第 1 页重扫并推进 v7，最终 8 Job/9 DetailVersion。固定提交 `0491651e` 的 12 个 OS 故障切点全部通过，P6 据此关闭；证据为 `recruiting-daily-d1-d6-process-failure-matrix-20260913.json`。
+
 S07/S25/P9 补充（2026-09-12，每日 cutoff 跨 Server 故障）：DF0 在每日 timer 已持久、cutoff 尚未来临时杀 Server，跨过 cutoff 后确认 MySQL 零旁路 DailyRun；恢复后旧 timer 的原日期、cutoff、window 和 policy 创建唯一 DailyRun/Occurrence。首次 221.93 秒失败定位到“首次 dispatch 已 post、Executor 尚无 Attempt、15 分钟 acknowledgement deadline 无法被后续 presence 提前”；Recruiting 现以 O(fleet+catalog) 把明确配置的 fleet 映射到具体 incarnation，复用已有 dispatch acceleration，不新增 Worker、不改 Atoll core。强化旅程先暂停原 daemon，证明 dispatch pending/已 post 且 Attempt 为零，再恢复同一进程并要求至少两次 delivery；20/20 Detail、20,480 字节 Resource、日报和再次重启均通过。该证据关闭单日 cutoff 的 Server 单点与 Server 先于 Executor 恢复切点，但不覆盖多日停机、Server/MySQL 联合故障或生产规模，S25 仍为部分完成。证据为 recruiting-daily-server-cutoff-recovery-20260912.json。
 
 S25/P9 补充（2026-09-12，MySQL 在途停顿）：BF3 在 Browser Attempt running、真实 Chrome 请求已进入 origin 且零 Artifact 时暂停本次测试的非 root MySQL 8.4 容器 7.048 秒，Server 与执行 daemon 全程存活；页面完成后的 Chrome 子进程寿命不作为本门断言。恢复后仍由原 Attempt 唯一完成 DOM、trace 和 BackfillOutput，网站请求精确一次，没有新 Attempt 或 `attempt_recovered` dispatch；Permit/outbox、ledger、最终 Server 重启与 Resource 回读均通过。该证据关闭连接保持下的本地短时数据库 stall，但不代表连接重置、MySQL failover、远程数据库、长停机或 Server/MySQL 联合故障，S25 状态不变。证据为 `recruiting-browser-mysql-recovery-20260912.json`。
@@ -56,8 +58,10 @@ S25/P9 补充（2026-09-12，MySQL 连接重置）：BF4 透明代理在 Browser
 
 S25/P9 补充（2026-09-12，MySQL 进程恢复）：BF5 在 Browser running/no-evidence 切点阻断稳定 runtime endpoint 并 `SIGKILL` MySQL，七秒后重启同一容器与数据卷；Server、daemon 和 Actor DSN 不变。停机与 crash recovery 共 9.498 秒，原数据库事实保留，BF4 的不可变结果退避让原 Attempt 在不重跑 Recipe 的情况下完成；网站请求、DOM、trace、BackfillOutput 各一，Permit/outbox、ledger 和 Server 重启回读通过。该证据只关闭本地同节点进程死亡，不代表主从 failover、PITR、存储损坏、换节点、长停机或 Server/MySQL 联合故障，S25 状态不变。证据为 `recruiting-browser-mysql-process-recovery-20260912.json`。
 
+S25/P9 补充（2026-09-12，Server/MySQL 联合恢复）：BF6 在 Browser running/no-evidence 的同一切点阻断数据库端点并同时 `SIGKILL` Server/MySQL，保持执行 daemon 存活；先恢复同一 MySQL 数据和连接，再恢复 Server。旧 Attempt 过期且零 accepted Artifact，同一 Executor Actor 以新 incarnation 承接唯一恢复 dispatch，新 Attempt 完成唯一 DOM、trace 与 BackfillOutput，Permit/outbox 清零并通过再次重启回读。该证据关闭本地同数据控制面的联合故障，不代表远程 failover、PITR、地域灾难、远程 Artifact 或零重抓，S25 状态不变。证据为 `recruiting-browser-control-plane-recovery-20260912.json`。
+
 ## 当前实施顺序
 
-1. S12/S25/P9：在授权部署环境完成真实登录、出站隔离、执行吞吐、联合恢复和长期监控。
+1. S12/S25/P9：在授权部署环境完成真实登录、生产出站隔离、远程数据面/多分片执行吞吐、长期监控与远程灾备。
 
 每关闭一项，必须同时更新本账本、开发验证计划和对应机读证据。账本状态为 `部分完成` 或 `未完成` 时，不得宣称 P8/P9 或整体产品开发完成。
