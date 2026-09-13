@@ -1,0 +1,29 @@
+{
+  "schema_version": "recruiting.mysql-stress-evidence.v1",
+  "commit": "a9396c3e6ad597226faa14780911907d49aef0b0",
+  "started_at": "2026-09-12T17:56:03+08:00",
+  "completed_at": "2026-09-12T20:49:08+08:00",
+  "duration_seconds": 10385,
+  "mysql_version": "8.4",
+  "latest_migration": "000056_attempt_dispatch.sql",
+  "total_iterations": 100,
+  "shards": 4,
+  "iterations_per_shard": 25,
+  "race_enabled": true,
+  "migration_identity": "staircase_migrator",
+  "runtime_identity": "staircase_runtime",
+  "failure_scan": "clean",
+  "all_containers_removed": true,
+  "worktree_clean_after_run": true,
+  "head_unchanged_after_run": true,
+  "atoll_core_diff_from_a94d2b8d": "clean",
+  "logs": [
+    {"shard": 1, "sha256": "0e1f072351063ef82d5eba6096a1064a8dc32d52e68a6f6099252e96c68b332e", "success_results": 25, "shard_success_markers": 1},
+    {"shard": 2, "sha256": "cd59b988c62e41800632732f8a62d28b2d45a836e09078661a8e427d79c6813b", "success_results": 25, "shard_success_markers": 1},
+    {"shard": 3, "sha256": "8830cd12eda00aeeeb267aad46e2e3c608da9a0a57ee2bc06d69c2f1cb448644", "success_results": 25, "shard_success_markers": 1},
+    {"shard": 4, "sha256": "a31353ddf4d84af7f56bfd75b55cbc413d500f1d906d790859364fc798020474", "success_results": 25, "shard_success_markers": 1}
+  ],
+  "runtime_log_directory": ".cache/recruiting-mysql-stress-20260912T095603Z",
+  "result": "passed",
+  "scope_limit": "This evidence closes the P2 100-iteration database stress exit gate on a9396c3e. It does not by itself close P3-P9 or production-environment gates."
+}

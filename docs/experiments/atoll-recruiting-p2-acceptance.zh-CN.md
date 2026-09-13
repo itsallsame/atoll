@@ -1,8 +1,8 @@
 # Atoll Recruiting P2 验收记录
 
-状态：进行中，尚未通过退出门
+状态：已通过退出门
 
-日期：2026-09-08
+日期：2026-09-12
 
 P1 契约基线：`a94d2b8d`
 
@@ -91,9 +91,11 @@ make build-go
 ./scripts/recruiting-boundary-check.sh a94d2b8d
 ```
 
-## 尚未完成
+## 最终退出门
 
 - receipt/聚合/outbox 原子编排已随 P3 及后续控制词完成，全部全局协调领取入口的生产 SQL 形状也已有 EXPLAIN 合同；不再作为 P2 缺口。
-- 历史提交 `0af563b3f7d2` 的完整 100 轮与残留核对已通过。固定提交 `e67f9024d336` 又在 2026-09-12 完成 4×25：四个 shard 各有 25 个 suite success 和唯一 shard success marker，失败扫描为空，退出后测试容器为零；证据见 `evidence/recruiting-mysql-stress-e67f9024.json`。该运行不包含隔离工作树的后续提交，不能冒充包含 migration `000044` 的最终合并 revision；最终 revision 仍需重新执行相同压力门。
+- 历史提交 `0af563b3f7d2` 与 `e67f9024d336` 的 100 轮记录只证明各自固定 revision，继续保留为历史证据，不用于代替最终门禁。
+- 最终功能提交 `a9396c3e6ad597226faa14780911907d49aef0b0`（包含 migration `000056_attempt_dispatch.sql`）于 2026-09-12 17:56:03—20:49:08（Asia/Shanghai）完成 4×25＝100 轮完整 migration+contract race 压力门。四个 shard 各含 25 个 `recruiting mysql: ok` 和唯一 `recruiting mysql shard: ok (iterations=25)`；失败扫描为空，全部一次性 MySQL 容器退出后为零，工作区干净，HEAD 与启动提交一致，Atoll 核心目录相对 `a94d2b8d` 无差异。
+- 最终机读证据及原始日志 SHA-256 见 `evidence/recruiting-mysql-stress-a9396c3e-20260912.json`；原始日志位于 ignored `.cache/recruiting-mysql-stress-20260912T095603Z`，不提交一次性数据库输出。
 
-P2 仍为进行中，直到最终合并 revision 的 100 轮压力门和容器/随机 schema 残留核对完成。
+P2 的最终 revision 压力退出门已关闭。P3—P9 的控制面、业务链路、容量和生产环境门禁仍保持各自独立状态，不由本记录提前关闭。

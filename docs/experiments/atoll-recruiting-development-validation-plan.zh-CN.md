@@ -226,7 +226,7 @@ requested_by（来自 Atoll envelope 上下文，不是客户端可填写字段�
 
 ## 7. P2：MySQL Resource、migration 与恢复
 
-执行状态：进行中。Schema ADR、migration/checksum runner、非 root DSN 防护、全部 Resource Repository、DailyRun/全部轻量 SourceOccurrence 的原子截点事务、execution dispatch outbox，以及 Work Center 的绑定游标/索引查询已实现。migration `000043` 补齐 Company onboarding 协调索引后，baseline 物化、Company readiness、backfill 物化、Work offer、Occurrence 到期、Attempt/Permit 恢复和 dispatch 到期等所有当前全局协调领取入口均已有生产 SQL 形状的 EXPLAIN 合同。固定提交 `e67f9024` 已完成 4×25 压力门、失败扫描和零残留容器核对；它不包含隔离开发线后续提交。包含 migration `000044` 的最终合并 revision 仍须重新执行同一门禁，因此 P2 尚未达到退出门。当前证据记录于 `docs/experiments/atoll-recruiting-p2-acceptance.zh-CN.md`。
+执行状态：已通过。Schema ADR、migration/checksum runner、非 root DSN 防护、全部 Resource Repository、DailyRun/全部轻量 SourceOccurrence 的原子截点事务、execution dispatch outbox，以及 Work Center 的绑定游标/索引查询已实现。migration `000043` 补齐 Company onboarding 协调索引后，baseline 物化、Company readiness、backfill 物化、Work offer、Occurrence 到期、Attempt/Permit 恢复和 dispatch 到期等所有当前全局协调领取入口均已有生产 SQL 形状的 EXPLAIN 合同。最终功能提交 `a9396c3e`（包含 migration `000056`）已完成 4×25＝100 轮完整 migration+contract race 压力门：四个 shard 各 25 次成功且各有唯一终态标记，失败扫描为空，测试容器全部清理，运行前后 HEAD 未变化，Atoll 核心目录相对基线 `a94d2b8d` 无差异。P2 退出门据此关闭；该结论不替代 P3—P9 的独立退出门。验收记录见 `docs/experiments/atoll-recruiting-p2-acceptance.zh-CN.md`，机读证据见 `docs/experiments/evidence/recruiting-mysql-stress-a9396c3e-20260912.json`。
 
 ### 7.1 Schema 设计步骤
 
