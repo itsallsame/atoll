@@ -1,6 +1,8 @@
 package recruiting
 
 import (
+	"encoding/json"
+
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/lib/introspect"
 )
@@ -14,7 +16,7 @@ const (
 )
 
 func manifest() introspect.Manifest {
-	return introspect.Manifest{
+	result := introspect.Manifest{
 		Class: Class, Interfaces: []string{"actor", "recruiting-control"},
 		Words: map[string]introspect.WordSpec{
 			TypeCompanyMergePreview:            {Description: "preview a version-fenced reversible logical company merge or reversal without rewriting history"},
@@ -134,4 +136,36 @@ func manifest() introspect.Manifest {
 			TypeExecutionResult:                {Description: "submit an executor result for actor-owned recruiting work"},
 		},
 	}
+	// These are the public words used by the natural-language onboarding path.
+	// Publishing their exact wire shapes is essential: an Atoll agent can only
+	// call another actor safely from actor.describe; it must never have to infer
+	// application payload fields from validation failures.
+	inputSchemas := map[string]string{
+		TypeCompanyAdd:    `{"type":"object","additionalProperties":false,"required":["command_id","company_id","name","reason"],"properties":{"command_id":{"type":"string"},"company_id":{"type":"string"},"name":{"type":"string"},"website":{"type":"string","description":"Optional canonical http(s) official website; omit when it is not known yet."},"reason":{"type":"string"}}}`,
+		TypeCompanyGet:    `{"type":"object","additionalProperties":false,"required":["company_id"],"properties":{"company_id":{"type":"string"}}}`,
+		TypeCompanyList:   `{"type":"object","additionalProperties":false,"properties":{"cursor":{"type":"string"},"limit":{"type":"integer","minimum":0,"maximum":500}}}`,
+		TypeCompanyUpdate: mutationSchema(`,"name":{"type":"string"},"website":{"type":"string"}`),
+		TypeSourceDiscover: mutationSchema(`,"discovery_id":{"type":"string"},"work_id":{"type":"string"},"discovery_generation":{"type":"integer","minimum":1},"recipe_id":{"type":"string"},"recipe_version":{"type":"integer","minimum":1},"profile_id":{"type":"string"},"priority":{"type":"integer","minimum":-100,"maximum":100},"deadline_at":{"type":"string"}`,
+			"discovery_id", "work_id", "discovery_generation", "recipe_id", "recipe_version"),
+		TypeSourceDiscoveryGet:        `{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string"}}}`,
+		TypeSourceDiscoveryCandidates: `{"type":"object","additionalProperties":false,"required":["discovery_id"],"properties":{"discovery_id":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":0,"maximum":500}}}`,
+		TypeSourceList:                `{"type":"object","additionalProperties":false,"properties":{"company_id":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":0,"maximum":500}}}`,
+		TypeRecipeInspect:             `{"type":"object","additionalProperties":false,"required":["recipe_id","recipe_version"],"properties":{"recipe_id":{"type":"string"},"recipe_version":{"type":"integer","minimum":1}}}`,
+		TypeSystemStatus:              `{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"integer","minimum":0}}}`,
+		TypeCapacityStatus:            `{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"integer","minimum":0}}}`,
+	}
+	for word, schema := range inputSchemas {
+		spec := result.Words[word]
+		spec.InputSchema = json.RawMessage(schema)
+		result.Words[word] = spec
+	}
+	return result
+}
+
+func mutationSchema(extraProperties string, extraRequired ...string) string {
+	required := `"command_id","target","expected_version","reason"`
+	for _, field := range extraRequired {
+		required += `,"` + field + `"`
+	}
+	return `{"type":"object","additionalProperties":false,"required":[` + required + `],"properties":{"command_id":{"type":"string"},"target":{"type":"object","additionalProperties":false,"required":["target_type","target_id"],"properties":{"target_type":{"type":"string"},"target_id":{"type":"string"}}},"expected_version":{"type":"integer","minimum":1},"reason":{"type":"string"}` + extraProperties + `}}`
 }

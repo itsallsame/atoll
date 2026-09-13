@@ -100,6 +100,7 @@ func main() {
 	}
 	if ack := send("attach", "attach", map[string]any{
 		"since": map[string]int64{}, "focus": *channelID, "history_protocol": subjectgate.FrameVersion,
+		"generation": uint64(1),
 	}); ack["frame_type"] != "receipt" {
 		log.Fatalf("attach rejected: %v", ack)
 	}
