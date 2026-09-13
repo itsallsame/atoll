@@ -109,6 +109,8 @@ Server 单点入口为 `make recruiting-browser-server-recovery`。BF2 在真实
 
 跨每日 cutoff 的 Server 单点入口为 make recruiting-daily-server-cutoff-recovery。验收必须区分两个阶段：Server 离线跨过 cutoff 时 MySQL 不应被旁路写入；Server 恢复后应以原 timer payload 创建当天唯一 DailyRun/Occurrence。若首个 dispatch 在 Executor 尚未重连时为 pending，不要手工改 next_attempt_at：配置 fleet 的具体 incarnation 上线会通过 presence 边沿提前该 dispatch。检查 delivery attempts 增长、随后唯一 Attempt 领取并完成；禁止重新创建 DailyRun、重发人工命令或将 cutoff 改到次日。本入口只覆盖单日 Server 单点，不替代多日停机补偿和联合恢复。
 
+每日增量连续进程入口为 `make recruiting-daily-process-failure-matrix`。它在每个 Executor/Server 故障轴的一套持久 MySQL 血缘中执行 D0 建账以及 D1 无变化、D2 新岗位、D3 更新后重新置顶、D4 同时间跨页、D5 边界消失、D6 人工恢复。D5 的正确终态是 `waiting_human`、Checkpoint 不变、零业务 page/Observation，但原始页面和分类失败 Artifact 必须保留；禁止为让任务变绿而直接推进 Checkpoint。操作员检查证据并修复 Source/Recipe 后，只能通过公开 `recruiting.work.resolve` 以 `terminated` 关闭旧 Work，再用 `recruiting.work.retry` 创建保留 `cause_work_id` 的新 Work；Occurrence 必须由重试事务原子重绑。D6 成功后旧失败 Work 仍是不可变历史。固定证据见 `evidence/recruiting-daily-d1-d6-process-failure-matrix-20260913.json`。
+
 MySQL 短时停顿入口为 `make recruiting-browser-mysql-recovery`。BF3 在真实 Chrome 请求已经进入 origin、Attempt running 且零 Artifact 时暂停本次测试专属 MySQL 容器七秒；Server 和执行 daemon 必须保持存活，页面完成后的 Chrome 子进程寿命不作为本门断言。恢复后应由同一 Attempt 完成，origin 文档请求、Attempt、DOM、trace 和 BackfillOutput 各一份，且不存在 `attempt_recovered` dispatch。不要把数据库停顿当成网站失败而手工重抓，也不要修改 Attempt、Permit 或 outbox。本入口只验证连接保持下的短停顿；连接重置、主从切换、远程数据库、长停机及 Server/MySQL 联合故障必须独立演练。
 
 MySQL 连接重置入口为 `make recruiting-browser-mysql-connection-recovery`。BF4 用透明 TCP 代理关闭已有数据库连接、七秒内拒绝新连接，再恢复到同一 MySQL；不需要也不得给业务运行账号增加管理权限。Executor 必须用同一结果 command 和 payload 在 `control_wait_ms` 内指数退避，不得重新执行 Recipe 或重抓网站。验收要求原 Attempt、网站请求、DOM、trace 和 BackfillOutput 各一份，且没有恢复 dispatch；明确的 fence、权限、版本或 payload 拒绝不得重试。若停机超过控制等待窗口，现有 Attempt 将按统一 TTL/dispatch 恢复，不能手改数据库。本入口不替代 MySQL failover、进程死亡、远程网络和 Server/MySQL 联合故障。
@@ -185,6 +187,6 @@ Company 合规物理擦除不得使用普通 archive 或直接执行 SQL：
 - 生产 OS/container 级出站隔离和真实授权登录站点 canary；
 - Recruiting 扩展的 32 项 execution batch 已把同一 H2 从 5.88 提升到 13.41 response/s，并将 ledger message 从 14,233 降到 1,638；专用 Detail/Backfill 候选查询测到 13.77/s，消除 Backfill 成功聚合的平方级明细扫描后测到 13.87/s。进一步把批量安全的 Detail Offer、Claim、Result 收敛到最多 32 项的数据库事务快速路径，并聚合共享预算计数；逐 Attempt/Work/Permit/receipt/Artifact 仍分别写入，异常批次回滚后走逐项兼容路径。独立每日容量旅程经 10 页 Listing 完成 5,000/5,000 个 Detail 和 response Resource，D3 从 423.655 秒降至 351.175 秒（14.24/s），按该本机速率完成 400K 约 7.80 小时，越过 8 小时算术参考。默认 batch size 1 不变，Listing、Browser 和多结果任务不进入批量安全集合；批处理 Executor 对 Listing 使用单项协议回退。该数字不是实际 400K 或生产 SLO，仍须在外部部署验证多个隔离执行/控制分片，不能靠增加 Worker 类型或修改 Atoll core。真实 Chrome B2 已完成 100 DOM response + 100 effect trace，但四核主机从 2 到 4 Browser Executor 仍约 1.87→1.88/s，必须把 Browser 作为独立 capability 池跨主机扩容，禁止按 HTTP 吞吐估算。还需第三方 HTTP/Browser 延迟与限流分布、远程 Artifact、20K Listing + 400K Detail 完成吞吐与故障注入矩阵；本地受控基线不得外推为远程对象存储或第三方吞吐；
 - 生产数据量的 RTO/RPO、binlog PITR、加密异地保留，以及远程 MySQL/ledger/Artifact 联合恢复；
-- 仓库级非 Recruiting 核心 E2E blocker 的上游修复。
+- 仓库级非 Recruiting 核心 E2E `TestCoderunnerHumanJourney` 的上游修复；固定提交 `4af110a6` 上原 Portal 类阻塞已通过，该项定向三次仍稳定缺少 node child presence。
 
 上述项目存在时，系统可以继续开发和受控验收，但不得宣称 P9 或生产准入完成。
