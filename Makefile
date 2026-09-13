@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope recruiting-boundary-check recruiting-live-smoke recruiting-live-nightly recruiting-live-weekly recruiting-mysql-stress recruiting-capacity recruiting-process-capacity recruiting-artifact-capacity recruiting-http-capacity recruiting-daily-detail-capacity recruiting-daily-detail-failure-matrix recruiting-daily-artifact-recovery recruiting-daily-server-cutoff-recovery recruiting-browser-capacity recruiting-browser-artifact-recovery recruiting-browser-joint-process-recovery recruiting-browser-server-recovery recruiting-backup-restore recruiting-joint-restore recruiting-security-audit recruiting-extension-test recruiting-extension-live-test recruiting-extension-bundle-test dev clean e2e-loop
+.PHONY: deps install build build-go build-release web web-dev all package test test-full test-strict lint check-data-plane-scope recruiting-boundary-check recruiting-live-smoke recruiting-live-nightly recruiting-live-weekly recruiting-mysql-stress recruiting-capacity recruiting-process-capacity recruiting-artifact-capacity recruiting-http-capacity recruiting-daily-detail-capacity recruiting-daily-detail-failure-matrix recruiting-daily-artifact-recovery recruiting-daily-server-cutoff-recovery recruiting-daily-process-failure-matrix recruiting-browser-capacity recruiting-browser-artifact-recovery recruiting-browser-joint-process-recovery recruiting-browser-server-recovery recruiting-backup-restore recruiting-joint-restore recruiting-security-audit recruiting-extension-test recruiting-extension-live-test recruiting-extension-bundle-test dev clean e2e-loop
 .PHONY: recruiting-browser-mysql-recovery recruiting-browser-mysql-connection-recovery recruiting-browser-mysql-process-recovery recruiting-browser-control-plane-recovery
 
 # server/daemon ship namespaced (atoll-server / atoll-daemon); the entry
@@ -201,6 +201,9 @@ recruiting-daily-artifact-recovery:
 
 recruiting-daily-server-cutoff-recovery:
 	RECRUITING_DAILY_SERVER_CUTOFF_RECOVERY=1 ./scripts/recruiting-daily-detail-capacity.sh
+
+recruiting-daily-process-failure-matrix:
+	./scripts/recruiting-daily-process-failure-matrix.sh
 
 recruiting-browser-capacity:
 	./scripts/recruiting-browser-capacity.sh

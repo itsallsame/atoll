@@ -434,6 +434,12 @@ func dailyDetailListingRecipe(items int) recipeabi.Spec {
 
 func seedDailyDetailCapacitySource(t *testing.T, dsn, sourceID, origin, listingRef, detailRef string,
 	listingSpec, detailSpec recipeabi.Spec, activityAt, at time.Time) {
+	seedDailyDetailCapacitySourceAtEndpoint(t, dsn, sourceID, origin, origin+"/listing?limit=500",
+		listingRef, detailRef, listingSpec, detailSpec, activityAt, at)
+}
+
+func seedDailyDetailCapacitySourceAtEndpoint(t *testing.T, dsn, sourceID, origin, endpoint, listingRef, detailRef string,
+	listingSpec, detailSpec recipeabi.Spec, activityAt, at time.Time) {
 	t.Helper()
 	db, err := store.Open(dsn)
 	if err != nil {
@@ -466,7 +472,6 @@ func seedDailyDetailCapacitySource(t *testing.T, dsn, sourceID, origin, listingR
 		company = next
 	}
 
-	endpoint := origin + "/listing?limit=500"
 	source, err := model.NewRecruitmentSource(sourceID, company.CompanyID, endpoint, "all", 1)
 	if err != nil {
 		t.Fatalf("create daily capacity Source: %v", err)
