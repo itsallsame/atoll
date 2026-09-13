@@ -1,0 +1,48 @@
+{
+  "schema_version": "recruiting.daily-process-failure-matrix-evidence.v3",
+  "commit": "0491651ecfad494f5987d156d2d853a9bfe9b736",
+  "completed_at": "2026-09-13T12:59:32+08:00",
+  "test": "TestRecruitingDailyIncrementalProcessFailureMatrix",
+  "command": "RECRUITING_DAILY_PROCESS_CASE=all make recruiting-daily-process-failure-matrix",
+  "topology": {
+    "atoll_server": "real process",
+    "daemon": "real process",
+    "executor": "recruiting-executor on daemon",
+    "mysql": "ephemeral MySQL 8.4",
+    "mysql_migration_identity": "staircase_migrator",
+    "mysql_runtime_identity": "staircase_runtime",
+    "artifact_provider": "daemon File Resource",
+    "origin": "read-only container on a Docker internal network"
+  },
+  "fault_axes": [
+    {"name": "executor_process", "days": ["D1", "D2", "D3", "D4", "D5", "D6"], "cuts": 6, "fault": "SIGKILL daemon after the gated result or failure transaction committed and before its acknowledgement was processed", "duration_seconds": 30.67, "result": "passed"},
+    {"name": "actor_server_process", "days": ["D1", "D2", "D3", "D4", "D5", "D6"], "cuts": 6, "fault": "SIGKILL Atoll Server while the gated result or failure transaction was blocked before commit", "duration_seconds": 45.46, "result": "passed"}
+  ],
+  "daily_invariants": [
+    {"day": "D1", "case": "unchanged_overlap", "checkpoint_version": 3, "retry_pages": 3, "jobs": 3, "detail_versions": 3},
+    {"day": "D2", "case": "one_new_job", "checkpoint_version": 4, "retry_pages": 4, "jobs": 4, "detail_versions": 4},
+    {"day": "D3", "case": "historical_job_updated_and_retopped", "checkpoint_version": 5, "retry_pages": 4, "jobs": 4, "detail_versions": 5, "retopped_job_refresh_generation": 2, "retopped_job_detail_version": 2},
+    {"day": "D4", "case": "equal_time_frontier_split_across_pages", "checkpoint_version": 6, "retry_pages": 5, "jobs": 6, "detail_versions": 7, "required_frontier_keys": ["e", "f"]},
+    {"day": "D5", "case": "unsafe_boundary_max_pages", "checkpoint_version": 6, "published_pages": 0, "published_observations": 0, "jobs": 6, "detail_versions": 7, "accepted_evidence_artifacts": 7, "accepted_failure_artifacts": 1, "work_status": "waiting_human"},
+    {"day": "D6", "case": "operator_terminated_then_causal_retry", "checkpoint_version": 7, "retry_pages": 6, "jobs": 8, "detail_versions": 9, "new_detailed_job_keys": ["g", "h"], "original_resolution": "terminated", "retry_resolution": "succeeded", "occurrence_rebound": true}
+  ],
+  "recovery_invariants": {
+    "actor_and_executor_axes_use_the_same_mysql_lineage": true,
+    "new_attempt_restarts_at_page": 1,
+    "stale_attempts_cannot_publish": true,
+    "business_jobs_are_unique": true,
+    "detail_versions_are_unique_per_generation": true,
+    "active_permits_after_each_day": 0,
+    "d5_checkpoint_unchanged": true,
+    "d5_raw_evidence_preserved_without_business_publication": true,
+    "d6_uses_public_resolve_and_retry_commands": true,
+    "d6_retry_preserves_cause_work_id": true
+  },
+  "total_fault_cuts": 12,
+  "total_test_duration_seconds": 76.14,
+  "go_package_duration_seconds": 81.163,
+  "matrix_owned_containers_removed": true,
+  "atoll_core_modified": false,
+  "result": "passed",
+  "scope_limit": "This closes the D1-D6 actor/executor OS-process matrix for P6. Remote database failover, regional disaster recovery, production outbound isolation, and third-party authorized Profile canaries remain P7-P9 gates."
+}
