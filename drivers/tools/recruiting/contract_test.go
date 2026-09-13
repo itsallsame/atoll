@@ -41,6 +41,7 @@ func TestNaturalLanguageOnboardingWordsPublishInputSchemas(t *testing.T) {
 		TypeDeepDiscoveryStart, TypeDeepDiscoveryGet, TypeDeepDiscoveryCheckpoint,
 		TypeDeepDiscoveryGraph, TypeDeepDiscoveryGuide, TypeDeepDiscoveryWait, TypeDeepDiscoveryResume, TypeDeepDiscoveryComplete, TypeDeepDiscoveryCancel,
 		TypeDeepDiscoveryBrowserObserve, TypeDeepDiscoveryBrowserGet,
+		TypeOnboardingBegin, TypeOnboardingStatus, TypeOnboardingMaterialize,
 	} {
 		schema := words[word].InputSchema
 		if len(schema) == 0 || !json.Valid(schema) {

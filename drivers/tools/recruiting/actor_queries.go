@@ -251,10 +251,11 @@ func handleDeepDiscoveryGuideQuery(sys actorbase.Sys, repository *store.Reposito
 			"Expand aliases, parent-child boundaries, brands, business units, regions, languages, social hiring, campus, internship, and special-program channels before claiming coverage.",
 			"Follow redirects and SPA route changes; record final canonical URLs, provenance URL or Artifact, relationship edges, exclusions, and blindspots.",
 			"Validate that each ListURL contains jobs in scope and exposes stable detail URLs or IDs, pagination, newest-activity ordering, and update-retop evidence before creating a Source.",
+			"Classify every validated ListURL from page or network evidence as social, campus, intern, special, or all. A special URL must retain its displayed programme name; unknown classification cannot pass validation.",
 			"Checkpoint every meaningful stage. On ambiguity, access control, captcha, or budget exhaustion, wait for human input instead of claiming completion.",
 		},
 		"stage_actions": deepDiscoveryStageActions(mission.Stage),
-		"completion_contract": map[string]any{"requires_validated_list_url": true, "requires_blindspot_review": true,
+		"completion_contract": map[string]any{"requires_validated_list_url": true, "requires_typed_list_url": true, "requires_blindspot_review": true,
 			"critical_gap_count": 0, "mathematical_all_urls_claim": false},
 		"next_action": deepDiscoveryNextAction(mission),
 	})
@@ -273,7 +274,7 @@ func deepDiscoveryStageActions(stage model.DeepDiscoveryStage) []string {
 	case model.DeepDiscoveryPoolDetection:
 		return []string{"Detect populated job pools, APIs, pagination, filters, detail links, job counts, and platform fingerprints.", "Use browser network observation and reverse-check detail pages when DOM links are incomplete.", "Record ListingPool or APIEndpoint candidates and checkpoint pools_detected."}
 	case model.DeepDiscoveryCandidateValidation:
-		return []string{"Validate every candidate against real jobs, company scope, stable identity/detail URL, pagination, and ordering.", "Reject duplicates, empty shells, unrelated aggregators, stale marketing pages, and unsafe endpoints with evidence.", "Record validated ListURL nodes and checkpoint candidates_validated."}
+		return []string{"Validate every candidate against real jobs, company scope, stable identity/detail URL, pagination, and ordering.", "Classify its audience from rendered navigation, listing content, or network evidence as social/campus/intern/special/all; retain the name of every special programme.", "Reject duplicates, empty shells, unrelated aggregators, stale marketing pages, and unsafe endpoints with evidence.", "Record typed validated ListURL nodes and checkpoint candidates_validated."}
 	case model.DeepDiscoveryCoverageReview:
 		return []string{"Audit brands, sites, regions, languages, social/campus/internship/special channels and excluded channels.", "Record each known blindspot as excluded or unresolved; unresolved important gaps increment critical_gap_count.", "Complete only with a validated ListURL, blindspots_reviewed, and zero critical gaps."}
 	default:

@@ -1,0 +1,43 @@
+{
+  "schema_version": "recruiting.company-name-typed-url-onboarding.v1",
+  "observed_at": "2026-09-13T21:19:00+08:00",
+  "deployment": {
+    "service": "atoll.service",
+    "service_status": "active",
+    "public_url": "https://staircase.justai.cool",
+    "public_http_status": 200,
+    "database": "configured remote MySQL staircase database",
+    "database_identity": "non-root application identity",
+    "docker_used": false,
+    "migration_60": "applied"
+  },
+  "journey": {
+    "entry": "natural-language agent.ask",
+    "user_supplied_internal_ids": false,
+    "company_name": "字节跳动",
+    "onboarding_word": "recruiting.onboarding.materialize",
+    "mission_id": "mission-auto-751c7b147e45e785",
+    "mission_generation": 2,
+    "mission_status": "completed",
+    "classification_complete": true,
+    "materialized_source_count": 5,
+    "materialized_source_readiness": "candidate",
+    "materialized_source_health": "healthy",
+    "agent_turn_seconds": 50.8
+  },
+  "typed_urls": [
+    {"url": "https://joinbytedance.com/search", "type": "all"},
+    {"url": "https://jobs.bytedance.com/campus/position?current=1&limit=10", "type": "campus"},
+    {"url": "https://lifeattiktok.com/search?language=en", "type": "all"},
+    {"url": "https://joinbytedance.com/earlycareers/frontiertechprogram", "type": "special", "special_program": "Global Frontier Tech Recruitment Program"},
+    {"url": "https://joinbytedance.com/earlycareers/sea-ecdp", "type": "special", "special_program": "E-Commerce Early Career Development Program"}
+  ],
+  "classification_policy": {
+    "allowed": ["social", "campus", "intern", "special", "all"],
+    "unknown_can_complete": false,
+    "special_requires_program_name": true,
+    "url_spelling_inference_allowed": false,
+    "independent_social_or_intern_source_found": false
+  },
+  "remaining_boundary": "candidate Sources still require Listing and Detail Recipe generation, validation, assignment, and baseline before production collection"
+}

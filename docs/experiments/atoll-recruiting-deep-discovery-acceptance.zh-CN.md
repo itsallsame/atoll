@@ -2,11 +2,11 @@
 
 日期：2026-09-13
 
-状态：通过（Deep Discovery v1 范围）
+状态：通过（Deep Discovery v1 + typed URL materialization 范围）
 
 ## 验收范围
 
-本验收只判断“一次性深度发现招聘入口”是否已经成为 Atoll Recruiting 的领域能力，不把后续 Source 创建、Recipe 生成/发布、baseline 或每日增量冒充为本切片成果。
+本验收判断“一次性深度发现招聘入口、证据化分类并物化候选 Source”是否已经成为 Atoll Recruiting 的领域能力，不把后续 Recipe 生成/发布、baseline 或每日增量冒充为本切片成果。
 
 实现保持 Atoll 核心冻结：`protocol/`、`runtime/`、`lib/`、`platform/`、`registry/` 相对本分支基线均无改动。正式运行使用当前生产机的 systemd Atoll 服务和已指定的远程 `staircase` MySQL；未启动 Docker 数据库，未使用 root 数据库账号，也没有通过数据库旁路推进业务状态。
 
@@ -17,6 +17,8 @@
 - 搜索轮数与外部操作预算在 Mission 创建时冻结，Browser Probe 在派发前原子消耗一次操作；
 - Evidence Graph 保存固定节点/边类型、来源、Evidence URL 或 Artifact 和判断依据；
 - Web Search 不能单独把 ListURL 提升为最终已验证候选；
+- 每个已验证 ListURL 必须由页面或网络证据分类为 `social/campus/intern/special/all`；未知类型不得完成，特殊计划必须具名；
+- 公司名自然入口自动解析 Company/Mission，Mission 完成后把 typed URL 幂等、原子地物化为 candidate Source，用户不提供内部 ID；
 - `waiting_human → resume` 保留原 checkpoint 和图，cancel 保留证据并释放活动键；
 - 所有修改命令带 command receipt、request hash、expected version、领域事件和稳定重放；
 - Browser 探测是 Recruiting Actor 创建的异步 Work，不是 Agent 绕过领域权威直接调用 Executor；
@@ -33,6 +35,16 @@
 - `https://lifeattiktok.com/search?language=en`
 
 候选不是由搜索结果直接批准：最终三个 ListURL 的 sensor 为 `network` 或 `detail_reverse`，另有 Browser、官网和排除盲区证据共同形成图。
+
+在 generation 2 的真实自然语言验收中，用户只给出“字节跳动”及业务目标，Agent 自动调用公开 onboarding 能力并完成 5 个已分类入口：
+
+- `https://joinbytedance.com/search`：综合入口；
+- `https://jobs.bytedance.com/campus/position?current=1&limit=10`：校园招聘；
+- `https://lifeattiktok.com/search?language=en`：综合入口；
+- `https://joinbytedance.com/earlycareers/frontiertechprogram`：特殊计划 `Global Frontier Tech Recruitment Program`；
+- `https://joinbytedance.com/earlycareers/sea-ecdp`：特殊计划 `E-Commerce Early Career Development Program`。
+
+随后同一公网业务入口调用 `recruiting.onboarding.materialize`，5 个 URL 全部成为 `healthy/candidate` Source。当前没有证据充分的独立社招或实习专属入口；结论表达为“本轮未发现”，而不是推断其不存在。Source 已可进入 Recipe 流程，但尚未具备生产采集资格。
 
 ## 真实 Browser 与恢复验证
 
@@ -68,4 +80,4 @@ git diff --check
 
 全仓 `go test ./...` 仍被基线已有的 `TestCoderunnerHumanJourney` 进程名/父子关系断言阻塞；在 detached `HEAD=30fa641b` 上独立复跑得到相同失败，本分支没有修改该测试或 coderunner。`make lint` 的 `web → drivers` 基线违规也在同一 detached HEAD 可复现。本验收不把这两个仓库级既有失败写成通过，也不为关闭招聘功能而修改 Atoll 核心。
 
-机读摘要：`docs/experiments/evidence/recruiting-deep-discovery-v1-20260913.json`。
+机读摘要：`docs/experiments/evidence/recruiting-deep-discovery-v1-20260913.json` 与 `docs/experiments/evidence/recruiting-company-name-typed-url-onboarding-20260913.json`。

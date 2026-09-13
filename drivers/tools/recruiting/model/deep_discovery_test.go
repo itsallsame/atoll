@@ -35,6 +35,23 @@ func TestDeepDiscoveryRequiresEvidenceGatedSequentialProgress(t *testing.T) {
 	}
 }
 
+func TestDiscoveryEvidenceSourceCategory(t *testing.T) {
+	node, err := NewDiscoveryEvidenceNodeWithType(EvidenceListURL, "https://jobs.example.test/program", "programme",
+		EvidenceValidated, SensorOfficialSite, "https://jobs.example.test", "", "official programme page",
+		RecruitmentURLSpecial, "Graduate Programme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	category, err := node.SourceCategory()
+	if err != nil || category != "special:Graduate Programme" {
+		t.Fatalf("unexpected source category %q: %v", category, err)
+	}
+	node.RecruitmentType = RecruitmentURLType("invented")
+	if _, err := node.SourceCategory(); err == nil {
+		t.Fatal("invented recruitment type produced a source category")
+	}
+}
+
 func TestDeepDiscoveryCannotCompleteWithBlindspotsOrNoCandidates(t *testing.T) {
 	company, _ := NewCompany("company-1", "Example", "https://example.com")
 	mission, _ := NewDeepDiscoveryMission("mission-1", company, 1, 5, 250)
@@ -57,8 +74,8 @@ func TestDeepDiscoveryCannotCompleteWithBlindspotsOrNoCandidates(t *testing.T) {
 }
 
 func TestDiscoveryEvidenceIsCanonicalAndStable(t *testing.T) {
-	node, err := NewDiscoveryEvidenceNode(EvidenceListURL, "HTTPS://Jobs.Example.com/openings/", "jobs", EvidenceValidated,
-		SensorBrowser, "https://example.com/careers/", "", "browser showed a populated reverse-chronological job list")
+	node, err := NewDiscoveryEvidenceNodeWithType(EvidenceListURL, "HTTPS://Jobs.Example.com/openings/", "jobs", EvidenceValidated,
+		SensorBrowser, "https://example.com/careers/", "", "browser showed a populated reverse-chronological job list", RecruitmentURLSocial, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +83,22 @@ func TestDiscoveryEvidenceIsCanonicalAndStable(t *testing.T) {
 		SensorWebSearch, "https://example.com", "", "search result")
 	if node.NodeID != again.NodeID || node.CanonicalValue != "https://jobs.example.com/openings" {
 		t.Fatalf("unstable node = %+v / %+v", node, again)
+	}
+	if node.RecruitmentType != RecruitmentURLSocial {
+		t.Fatalf("validated URL lost its recruitment type: %+v", node)
+	}
+	if _, err := NewDiscoveryEvidenceNodeWithType(EvidenceListURL, "https://jobs.example.com/campus", "campus", EvidenceValidated,
+		SensorBrowser, "https://jobs.example.com/campus", "", "page identifies campus hiring", RecruitmentURLUnknown, ""); err == nil {
+		t.Fatal("validated list URL accepted an unknown recruitment type")
+	}
+	if _, err := NewDiscoveryEvidenceNodeWithType(EvidenceListURL, "https://jobs.example.com/program", "programme", EvidenceValidated,
+		SensorBrowser, "https://jobs.example.com/program", "", "special hiring page", RecruitmentURLSpecial, ""); err == nil {
+		t.Fatal("special recruitment URL accepted without a programme name")
+	}
+	special, err := NewDiscoveryEvidenceNodeWithType(EvidenceListURL, "https://jobs.example.com/program", "programme", EvidenceValidated,
+		SensorBrowser, "https://jobs.example.com/program", "", "special hiring page", RecruitmentURLSpecial, "Young Talent")
+	if err != nil || special.SpecialProgram != "Young Talent" {
+		t.Fatalf("special programme classification=%+v err=%v", special, err)
 	}
 	if _, err := NewDiscoveryEvidenceNode(EvidenceListURL, "https://jobs.example.com", "jobs", EvidenceValidated,
 		SensorBrowser, "", "", "no provenance"); err == nil {

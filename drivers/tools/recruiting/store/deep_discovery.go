@@ -231,7 +231,7 @@ func (r *Repository) checkpointDeepDiscovery(ctx context.Context, missionID, com
 	nodeIDs := make(map[string]struct{}, len(nodes))
 	candidateCount := 0
 	for _, node := range nodes {
-		validated, err := model.NewDiscoveryEvidenceNode(node.Kind, node.CanonicalValue, node.Label, node.State, node.Sensor, node.EvidenceURL, node.EvidenceArtifactID, node.Basis)
+		validated, err := model.NewDiscoveryEvidenceNodeWithType(node.Kind, node.CanonicalValue, node.Label, node.State, node.Sensor, node.EvidenceURL, node.EvidenceArtifactID, node.Basis, node.RecruitmentType, node.SpecialProgram)
 		if err != nil || validated != node {
 			return model.DeepDiscoveryMission{}, CommandResult{}, fmt.Errorf("deep discovery node is not canonical")
 		}
@@ -486,6 +486,9 @@ func (r *Repository) updateDeepDiscoveryStatus(ctx context.Context, missionID st
 	case "resume":
 		next, err = current.Resume(expected)
 	case "complete":
+		if err = ensureDeepDiscoveryListURLClassifications(ctx, tx, current.MissionID); err != nil {
+			return model.DeepDiscoveryMission{}, CommandResult{}, err
+		}
 		next, err = current.Complete(expected)
 	case "cancel":
 		next, err = current.Cancel(expected, reason)
@@ -526,6 +529,39 @@ func (r *Repository) updateDeepDiscoveryStatus(ctx context.Context, missionID st
 		commandResult.Response = append(json.RawMessage(nil), receipt.Response...)
 	}
 	return next, commandResult, nil
+}
+
+func ensureDeepDiscoveryListURLClassifications(ctx context.Context, tx *sql.Tx, missionID string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT state_json FROM recruiting_deep_discovery_nodes
+WHERE mission_id=? AND node_kind='list_url' AND node_state='validated' FOR SHARE`, missionID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return err
+		}
+		var node model.DiscoveryEvidenceNode
+		if err := json.Unmarshal(raw, &node); err != nil {
+			return err
+		}
+		validated, validationErr := model.NewDiscoveryEvidenceNodeWithType(node.Kind, node.CanonicalValue, node.Label,
+			node.State, node.Sensor, node.EvidenceURL, node.EvidenceArtifactID, node.Basis, node.RecruitmentType, node.SpecialProgram)
+		if validationErr != nil || validated != node {
+			return fmt.Errorf("validated list URL %s lacks an evidence-backed recruitment type", node.CanonicalValue)
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("deep discovery completion requires a classified validated list URL")
+	}
+	return nil
 }
 
 func (r *Repository) ListDeepDiscoveryGraph(ctx context.Context, missionID, cursor string, limit int) (DeepDiscoveryGraphPage, error) {

@@ -139,7 +139,9 @@ scope_building
 - `pool_detection`：识别实际岗位池、列表 URL、API、分页、筛选参数和详情 URL 规则；
 - `candidate_validation`：验证入口确实含岗位、属于目标范围，且能形成后续 Listing Recipe；
 - `coverage_review`：列出已覆盖维度、排除项和盲区；关键盲区未解决时不得完成；
-- `completed`：至少存在一个已验证列表候选，之后创建一个或多个 Recruitment Source，并分别生成、验证 Listing/Detail Recipe。
+- `completed`：至少存在一个已验证且已分类的列表候选，之后原子物化一个或多个 Recruitment Source，并分别生成、验证 Listing/Detail Recipe。
+
+每个 `ListURL` 必须把招聘受众作为证据事实保存为 `social / campus / intern / special / all` 之一；`special` 还必须保存具体计划名。`unknown` 只能用于尚未验证的候选，不能通过 Mission 完成门。分类依据来自渲染页面、导航、正文或网络响应，不能根据 URL 字符串、搜索摘要或模型记忆猜测。同一个公司可以有多个招聘列表 URL，同一个 URL 在业务受众确实不同且证据充分时也可形成不同分类的数据源。
 
 Mission 默认最多 5 轮搜索、250 次外部操作；预算是创建时冻结的上限，不是必须用完的额度。每个 checkpoint 只能停留当前阶段或推进一个阶段，记录预算消耗、覆盖矩阵、节点、边和摘要。超预算、归属冲突、登录/验证码或无法判定的重要盲区进入 `waiting_human`，人工处理后从原 checkpoint 恢复，不重启探索。
 
@@ -150,7 +152,7 @@ Mission 默认最多 5 轮搜索、250 次外部操作；预算是创建时冻�
 - `recruiting.deep_discovery.start/get/checkpoint/graph`；
 - `recruiting.deep_discovery.wait/resume/complete/cancel`；同一公司同一时刻只允许一个未完成 Mission，取消保留证据并释放下一代探索；
 - `recruiting.deep_discovery.browser.observe` 是 Recruiting Actor 的公开异步命令：它先对 Mission 做版本校验并原子消耗一次冻结预算，创建 `deep_discovery_browser` Work、不可变 Probe、审计事件和定向 dispatch；现有 `browser.public` Executor 只能经统一 offer/accept/start/result 协议领取，不能由 Agent 直接调用。浏览器只允许 GET/HEAD/OPTIONS 和有界等待、滚动、同源跟链，阻断表单、写请求、下载、弹窗及跨源文档导航；DOM 和 effect trace 写入 Artifact Resource，`recruiting.deep_discovery.browser.get` 同时返回 Probe、权威 Work 状态、规范 URL、有限链接、Artifact 元数据与安全 attestation。成功后由 Agent 将判断写入 checkpoint；终态失败或人工结案后必须创建新的预算化 Probe，不能把通用 Work retry 变成脱离原 Probe 的旁路执行；
-- Mission 完成后使用 `recruiting.source.add` 将每个已验证 ListURL 变成候选 Source，再进入 Source validation 和 Recipe 发布闭环。
+- 面向用户的自然入口是 `recruiting.onboarding.begin/status/materialize`：用户只提供公司名；系统解析 Company、启动或恢复 Mission，并在完成后用 `materialize` 将全部“已验证且已分类”的 ListURL 幂等、原子地登记为候选 Source。内部 Company/Mission/Source ID 均由系统生成，不要求用户填写。底层 `recruiting.source.add` 仍保留给明确的结构化运维场景；自然语言主流程不依赖它逐条拼装结果。
 
 `DiscoveryMission` 保存公司级一次探索；`Discovery Playbook` 保存可复用的探索策略；`Listing Recipe` 和 `Detail Recipe` 保存确认后的确定性生产代码。通用链接选择器只能作为低成本启发式证据，不能作为已批准 Discovery Recipe，也不能绕过覆盖审计。
 

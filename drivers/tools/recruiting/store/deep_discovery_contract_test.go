@@ -250,7 +250,11 @@ func TestDeepDiscoveryStageEvidenceRejectsSearchOnlyValidation(t *testing.T) {
 func evidenceNode(t *testing.T, kind model.DiscoveryEvidenceKind, value string, state model.DiscoveryEvidenceState,
 	sensor model.DiscoverySensor, evidenceURL, basis string) model.DiscoveryEvidenceNode {
 	t.Helper()
-	node, err := model.NewDiscoveryEvidenceNode(kind, value, value, state, sensor, evidenceURL, "", basis)
+	recruitmentType := model.RecruitmentURLType("")
+	if kind == model.EvidenceListURL {
+		recruitmentType = model.RecruitmentURLAll
+	}
+	node, err := model.NewDiscoveryEvidenceNodeWithType(kind, value, value, state, sensor, evidenceURL, "", basis, recruitmentType, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -194,6 +194,8 @@ func run(sys actorbase.Sys, cfg Config) error {
 		case TypeDeepDiscoveryStart, TypeDeepDiscoveryCheckpoint, TypeDeepDiscoveryWait,
 			TypeDeepDiscoveryResume, TypeDeepDiscoveryComplete, TypeDeepDiscoveryCancel, TypeDeepDiscoveryBrowserObserve:
 			handleDeepDiscoveryMessage(sys, cfg, repository, msg)
+		case TypeOnboardingBegin, TypeOnboardingStatus, TypeOnboardingMaterialize:
+			handleOnboardingMessage(sys, repository, msg)
 		case TypeBaselineStart:
 			handleBaselineStart(sys, cfg, repository, msg)
 		case TypeJobCorrect:

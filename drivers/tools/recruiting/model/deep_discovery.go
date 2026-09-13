@@ -69,6 +69,21 @@ const (
 	SensorHuman         DiscoverySensor = "human"
 )
 
+// RecruitmentURLType describes the audience carried by one independently
+// addressable job-list URL. It is deliberately separate from evidence Kind:
+// two ListURL nodes can point at the same company while serving different
+// recruitment programmes and therefore become different Sources.
+type RecruitmentURLType string
+
+const (
+	RecruitmentURLSocial  RecruitmentURLType = "social"
+	RecruitmentURLCampus  RecruitmentURLType = "campus"
+	RecruitmentURLIntern  RecruitmentURLType = "intern"
+	RecruitmentURLSpecial RecruitmentURLType = "special"
+	RecruitmentURLAll     RecruitmentURLType = "all"
+	RecruitmentURLUnknown RecruitmentURLType = "unknown"
+)
+
 type DeepDiscoveryBudget struct {
 	MaxSearchRounds  int `json:"max_search_rounds"`
 	MaxOperations    int `json:"max_operations"`
@@ -116,6 +131,8 @@ type DiscoveryEvidenceNode struct {
 	EvidenceURL        string                 `json:"evidence_url,omitempty"`
 	EvidenceArtifactID string                 `json:"evidence_artifact_id,omitempty"`
 	Basis              string                 `json:"basis"`
+	RecruitmentType    RecruitmentURLType     `json:"recruitment_type,omitempty"`
+	SpecialProgram     string                 `json:"special_program,omitempty"`
 }
 
 type DiscoveryEvidenceEdge struct {
@@ -148,8 +165,15 @@ func NewDeepDiscoveryMission(id string, company Company, generation uint64, maxS
 
 func NewDiscoveryEvidenceNode(kind DiscoveryEvidenceKind, value, label string, state DiscoveryEvidenceState,
 	sensor DiscoverySensor, evidenceURL, artifactID, basis string) (DiscoveryEvidenceNode, error) {
+	return NewDiscoveryEvidenceNodeWithType(kind, value, label, state, sensor, evidenceURL, artifactID, basis, "", "")
+}
+
+func NewDiscoveryEvidenceNodeWithType(kind DiscoveryEvidenceKind, value, label string, state DiscoveryEvidenceState,
+	sensor DiscoverySensor, evidenceURL, artifactID, basis string, recruitmentType RecruitmentURLType,
+	specialProgram string) (DiscoveryEvidenceNode, error) {
 	value, label, evidenceURL, artifactID, basis = strings.TrimSpace(value), strings.TrimSpace(label),
 		strings.TrimSpace(evidenceURL), strings.TrimSpace(artifactID), strings.TrimSpace(basis)
+	specialProgram = strings.TrimSpace(specialProgram)
 	if !validEvidenceKind(kind) || value == "" || label == "" || !validEvidenceState(state) || !validSensor(sensor) ||
 		basis == "" || len(value) > 2048 || len(label) > 512 || len(basis) > 2048 || (evidenceURL == "" && artifactID == "") {
 		return DiscoveryEvidenceNode{}, fmt.Errorf("discovery evidence requires bounded identity, state, sensor, provenance, and basis")
@@ -168,10 +192,61 @@ func NewDiscoveryEvidenceNode(kind DiscoveryEvidenceKind, value, label string, s
 		}
 		value = canonical
 	}
+	if kind != EvidenceListURL {
+		if recruitmentType != "" || specialProgram != "" {
+			return DiscoveryEvidenceNode{}, fmt.Errorf("recruitment type only applies to list URL evidence")
+		}
+	} else {
+		if recruitmentType == "" {
+			recruitmentType = RecruitmentURLUnknown
+		}
+		if !validRecruitmentURLType(recruitmentType) {
+			return DiscoveryEvidenceNode{}, fmt.Errorf("unknown recruitment URL type %q", recruitmentType)
+		}
+		if recruitmentType == RecruitmentURLSpecial {
+			if specialProgram == "" || len(specialProgram) > 256 {
+				return DiscoveryEvidenceNode{}, fmt.Errorf("special recruitment URL requires a bounded programme name")
+			}
+		} else if specialProgram != "" {
+			return DiscoveryEvidenceNode{}, fmt.Errorf("special programme name requires recruitment type special")
+		}
+		if state == EvidenceValidated && recruitmentType == RecruitmentURLUnknown {
+			return DiscoveryEvidenceNode{}, fmt.Errorf("validated list URL requires an evidence-backed recruitment type")
+		}
+	}
 	sum := sha256.Sum256([]byte("recruiting.deep-discovery.node.v1\n" + string(kind) + "\n" + strings.ToLower(value)))
 	return DiscoveryEvidenceNode{NodeID: "discovery-node-" + hex.EncodeToString(sum[:16]), Kind: kind,
 		CanonicalValue: value, Label: label, State: state, Sensor: sensor, EvidenceURL: evidenceURL,
-		EvidenceArtifactID: artifactID, Basis: basis}, nil
+		EvidenceArtifactID: artifactID, Basis: basis, RecruitmentType: recruitmentType, SpecialProgram: specialProgram}, nil
+}
+
+func validRecruitmentURLType(value RecruitmentURLType) bool {
+	switch value {
+	case RecruitmentURLSocial, RecruitmentURLCampus, RecruitmentURLIntern, RecruitmentURLSpecial, RecruitmentURLAll, RecruitmentURLUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// SourceCategory converts an evidence-backed list URL classification into
+// the stable Source category consumed by downstream Recipe and run logic.
+func (n DiscoveryEvidenceNode) SourceCategory() (string, error) {
+	if n.Kind != EvidenceListURL || n.State != EvidenceValidated || !validRecruitmentURLType(n.RecruitmentType) ||
+		n.RecruitmentType == RecruitmentURLUnknown {
+		return "", fmt.Errorf("validated and classified list URL evidence is required")
+	}
+	if n.RecruitmentType == RecruitmentURLSpecial {
+		program := strings.TrimSpace(n.SpecialProgram)
+		if program == "" || len(program) > 256 {
+			return "", fmt.Errorf("special recruitment URL requires a bounded programme name")
+		}
+		return string(n.RecruitmentType) + ":" + program, nil
+	}
+	if strings.TrimSpace(n.SpecialProgram) != "" {
+		return "", fmt.Errorf("special programme name requires recruitment type special")
+	}
+	return string(n.RecruitmentType), nil
 }
 
 func NewDiscoveryEvidenceEdge(from, to, relation, basis string) (DiscoveryEvidenceEdge, error) {
