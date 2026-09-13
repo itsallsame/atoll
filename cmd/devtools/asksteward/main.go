@@ -27,6 +27,7 @@ import (
 func main() {
 	addr := flag.String("addr", "127.0.0.1:38419", "node http address")
 	password := flag.String("password", os.Getenv("ATOLL_ROOT_PASSWORD"), "root password (or ATOLL_ROOT_PASSWORD)")
+	sessionToken := flag.String("session-token", os.Getenv("ATOLL_SESSION_TOKEN"), "existing session token (or ATOLL_SESSION_TOKEN); skips login")
 	channelID := flag.String("channel", "c0", "channel id")
 	target := flag.String("actor", "", "target actor id (default: the channel's first agent member)")
 	msgType := flag.String("type", "agent.ask", "request type")
@@ -39,16 +40,21 @@ func main() {
 	base := "http://" + *addr
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Jar: jar, Timeout: 30 * time.Second}
-	login := map[string]string{"email": "root@atoll.local", "password": *password}
-	raw, _ := json.Marshal(login)
-	resp, err := client.Post(base+"/api/identity/login", "application/json", bytes.NewReader(raw))
-	if err != nil {
-		log.Fatalf("login: %v", err)
-	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		log.Fatalf("login: status=%d body=%s", resp.StatusCode, body)
+	if strings.TrimSpace(*sessionToken) != "" {
+		u, _ := url.Parse(base)
+		jar.SetCookies(u, []*http.Cookie{{Name: "atoll_session", Value: strings.TrimSpace(*sessionToken), Path: "/"}})
+	} else {
+		login := map[string]string{"email": "root@atoll.local", "password": *password}
+		raw, _ := json.Marshal(login)
+		resp, err := client.Post(base+"/api/identity/login", "application/json", bytes.NewReader(raw))
+		if err != nil {
+			log.Fatalf("login: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			log.Fatalf("login: status=%d body=%s", resp.StatusCode, body)
+		}
 	}
 	u, _ := url.Parse(base)
 	var cookies []string

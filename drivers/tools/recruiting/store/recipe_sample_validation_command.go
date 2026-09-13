@@ -345,8 +345,8 @@ func updateRecipeSampleValidationTx(ctx context.Context, tx *sql.Tx, previous ui
 	run model.RecipeSampleValidation, at time.Time) error {
 	state, _ := json.Marshal(run)
 	result, err := tx.ExecContext(ctx, `UPDATE recruiting_recipe_validation_runs
-SET run_status = ?, version = ?, state_json = ?, updated_at = ?
-WHERE validation_run_id = ? AND version = ?`, run.Status, run.Version, state, at.UTC(),
+SET work_id = ?, run_status = ?, version = ?, state_json = ?, updated_at = ?
+WHERE validation_run_id = ? AND version = ?`, run.WorkID, run.Status, run.Version, state, at.UTC(),
 		run.ValidationRunID, previous)
 	if err != nil {
 		return err

@@ -57,6 +57,17 @@ func manifest() introspect.Manifest {
 			TypeSourceDiscoveryCandidates:      {Description: "seek-page independently reviewable candidates from one source discovery"},
 			TypeSourceDiscoveryCandidateAccept: {Description: "independently accept one discovered candidate and atomically create its candidate Source"},
 			TypeSourceDiscoveryCandidateReject: {Description: "independently reject one discovered candidate with an audited reason"},
+			TypeDeepDiscoveryStart:             {Description: "start a durable agent-driven deep discovery mission for one Company; search and browser remain bounded sensors"},
+			TypeDeepDiscoveryGet:               {Description: "inspect one durable deep discovery mission, its stage, budget, coverage, and next state"},
+			TypeDeepDiscoveryCheckpoint:        {Description: "atomically append one bounded evidence-graph delta and advance at most one deep discovery stage"},
+			TypeDeepDiscoveryGraph:             {Description: "seek-page the durable evidence nodes and relationship edges of one deep discovery mission"},
+			TypeDeepDiscoveryGuide:             {Description: "get the stage-specific Deep Discovery playbook so an Agent combines search, official navigation, browser, network, and coverage review instead of guessing"},
+			TypeDeepDiscoveryWait:              {Description: "route an ambiguous or budget-blocked deep discovery mission to explicit human attention"},
+			TypeDeepDiscoveryResume:            {Description: "resume a waiting deep discovery mission without losing its evidence or checkpoint"},
+			TypeDeepDiscoveryComplete:          {Description: "complete deep discovery only after coverage review, no critical gaps, and validated list candidates"},
+			TypeDeepDiscoveryCancel:            {Description: "cancel an active or waiting Deep Discovery mission, retain its evidence, and release the Company for a new generation"},
+			TypeDeepDiscoveryBrowserObserve:    {Description: "queue one bounded read-only public-browser sensor Work inside a Deep Discovery Mission; execution is asynchronous and budgeted"},
+			TypeDeepDiscoveryBrowserGet:        {Description: "inspect one Deep Discovery browser probe and its bounded terminal links/evidence"},
 			TypeSourceGet:                      {Description: "get one recruitment source"},
 			TypeSourceList:                     {Description: "seek-page sources globally or for one company"},
 			TypeSourceEndpointHistory:          {Description: "inspect immutable staged and evidence-activated endpoint redirect or correction history"},
@@ -149,10 +160,43 @@ func manifest() introspect.Manifest {
 			"discovery_id", "work_id", "discovery_generation", "recipe_id", "recipe_version"),
 		TypeSourceDiscoveryGet:        `{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string"}}}`,
 		TypeSourceDiscoveryCandidates: `{"type":"object","additionalProperties":false,"required":["discovery_id"],"properties":{"discovery_id":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":0,"maximum":500}}}`,
-		TypeSourceList:                `{"type":"object","additionalProperties":false,"properties":{"company_id":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":0,"maximum":500}}}`,
-		TypeRecipeInspect:             `{"type":"object","additionalProperties":false,"required":["recipe_id","recipe_version"],"properties":{"recipe_id":{"type":"string"},"recipe_version":{"type":"integer","minimum":1}}}`,
-		TypeSystemStatus:              `{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"integer","minimum":0}}}`,
-		TypeCapacityStatus:            `{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"integer","minimum":0}}}`,
+		TypeDeepDiscoveryStart: mutationSchema(`,"mission_id":{"type":"string"},"discovery_generation":{"type":"integer","minimum":1},"max_search_rounds":{"type":"integer","minimum":1,"maximum":20},"max_operations":{"type":"integer","minimum":1,"maximum":2000}`,
+			"mission_id", "discovery_generation"),
+		TypeSourceAdd:               `{"type":"object","additionalProperties":false,"required":["command_id","source_id","company_id","endpoint","discovery_generation","reason"],"properties":{"command_id":{"type":"string"},"source_id":{"type":"string"},"company_id":{"type":"string"},"endpoint":{"type":"string"},"category":{"type":"string"},"discovery_generation":{"type":"integer","minimum":1},"reason":{"type":"string"}}}`,
+		TypeDeepDiscoveryGet:        `{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string"}}}`,
+		TypeDeepDiscoveryGraph:      `{"type":"object","additionalProperties":false,"required":["mission_id"],"properties":{"mission_id":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":0,"maximum":500}}}`,
+		TypeDeepDiscoveryGuide:      `{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string"}}}`,
+		TypeDeepDiscoveryCheckpoint: deepDiscoveryCheckpointSchema(),
+		TypeDeepDiscoveryWait:       mutationSchema(`,"waiting_reason":{"type":"string"}`, "waiting_reason"),
+		TypeDeepDiscoveryResume:     mutationSchema(``),
+		TypeDeepDiscoveryComplete:   mutationSchema(``),
+		TypeDeepDiscoveryCancel:     mutationSchema(``),
+		TypeDeepDiscoveryBrowserObserve: mutationSchema(`,"probe_id":{"type":"string"},"work_id":{"type":"string"},"url":{"type":"string"},"wait_selector":{"type":"string"},"scroll_repeats":{"type":"integer","minimum":0,"maximum":10},"follow_link_selector":{"type":"string"},"priority":{"type":"integer","minimum":-100,"maximum":100},"deadline_at":{"type":"string"}`,
+			"probe_id", "work_id", "url"),
+		TypeDeepDiscoveryBrowserGet: `{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string"}}}`,
+		TypeSourceList:              `{"type":"object","additionalProperties":false,"properties":{"company_id":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":0,"maximum":500}}}`,
+		TypeRecipeInspect:           `{"type":"object","additionalProperties":false,"required":["recipe_id","recipe_version"],"properties":{"recipe_id":{"type":"string"},"recipe_version":{"type":"integer","minimum":1}}}`,
+		TypeRecipePropose: mutationSchema(`,"recipe_id":{"type":"string"},"recipe_version":{"type":"integer","minimum":1},"endpoint_revision":{"type":"integer","minimum":0},"content_ref":{"type":"string"},"expected_content_hash":{"type":"string"},"capture_ref":{"type":"string"},"expected_capture_hash":{"type":"string"}`,
+			"recipe_id", "recipe_version", "content_ref", "expected_content_hash"),
+		TypeRecipeValidate: mutationSchema(`,"recipe_version":{"type":"integer","minimum":1},"source_id":{"type":"string"},"company_id":{"type":"string"},"run_id":{"type":"string"},"work_id":{"type":"string"},"sample_job_id":{"type":"string"},"profile_id":{"type":"string"},"priority":{"type":"integer","minimum":-100,"maximum":100},"deadline_at":{"type":"string"}`,
+			"recipe_version", "run_id", "work_id"),
+		TypeRecipeApprove: mutationSchema(`,"recipe_version":{"type":"integer","minimum":1},"validation_work_id":{"type":"string"}`,
+			"recipe_version", "validation_work_id"),
+		TypeWorkGet:  `{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string"}}}`,
+		TypeWorkList: `{"type":"object","additionalProperties":false,"properties":{"status":{"type":"string"},"capability":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":0,"maximum":500}}}`,
+		TypeWorkResolve: mutationSchema(`,"resolution":{"type":"string","enum":["accepted_gap","skipped","terminated"]}`,
+			"resolution"),
+		TypeWorkRetry: mutationSchema(`,"new_work_id":{"type":"string"},"not_before":{"type":"string"},"deadline_at":{"type":"string"}`,
+			"new_work_id"),
+		TypeWorkCancel:      mutationSchema(``),
+		TypeRepairGet:       `{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":0,"maximum":500}}}`,
+		TypeRepairList:      `{"type":"object","additionalProperties":false,"properties":{"status":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":0,"maximum":500}}}`,
+		TypeRepairValidate:  mutationSchema(`,"validation_work_id":{"type":"string"}`, "validation_work_id"),
+		TypeRepairResolve:   mutationSchema(`,"resolution":{"type":"string"}`, "resolution"),
+		TypeRepairRecover:   mutationSchema(`,"limit":{"type":"integer","minimum":1,"maximum":100}`, "limit"),
+		TypeSystemStatus:    `{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"integer","minimum":0}}}`,
+		TypeSystemReconcile: `{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"integer","minimum":0}}}`,
+		TypeCapacityStatus:  `{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"integer","minimum":0}}}`,
 	}
 	for word, schema := range inputSchemas {
 		spec := result.Words[word]
@@ -160,6 +204,14 @@ func manifest() introspect.Manifest {
 		result.Words[word] = spec
 	}
 	return result
+}
+
+func deepDiscoveryCheckpointSchema() string {
+	coverage := `{"type":"object","additionalProperties":false,"required":["identity_scoped","brands_reviewed","sites_enumerated","sites_explored","pools_detected","candidates_validated","blindspots_reviewed","critical_gap_count"],"properties":{"identity_scoped":{"type":"boolean"},"brands_reviewed":{"type":"boolean"},"sites_enumerated":{"type":"boolean"},"sites_explored":{"type":"boolean"},"pools_detected":{"type":"boolean"},"candidates_validated":{"type":"boolean"},"blindspots_reviewed":{"type":"boolean"},"critical_gap_count":{"type":"integer","minimum":0}}}`
+	node := `{"type":"object","additionalProperties":false,"required":["ref","kind","canonical_value","label","state","sensor","basis"],"properties":{"ref":{"type":"string","description":"Checkpoint-local readable handle used by edges; the Actor generates the durable node ID."},"kind":{"type":"string","enum":["company","brand","legal_entity","domain","site","listing_pool","api_endpoint","list_url","blindspot"]},"canonical_value":{"type":"string"},"label":{"type":"string"},"state":{"type":"string","enum":["candidate","validated","rejected","excluded"]},"sensor":{"type":"string","enum":["web_search","official_site","sitemap","robots","browser","network","ats_fingerprint","detail_reverse","human"]},"evidence_url":{"type":"string"},"evidence_artifact_id":{"type":"string"},"basis":{"type":"string"}}}`
+	edge := `{"type":"object","additionalProperties":false,"required":["from","to","relation","basis"],"properties":{"from":{"type":"string","description":"Incoming node ref or an existing durable node ID."},"to":{"type":"string","description":"Incoming node ref or an existing durable node ID."},"relation":{"type":"string"},"basis":{"type":"string"}}}`
+	return mutationSchema(`,"stage":{"type":"string","enum":["scope_building","brand_expansion","site_enumeration","site_exploration","pool_detection","candidate_validation","coverage_review"]},"summary":{"type":"string"},"search_rounds":{"type":"integer","minimum":0},"operations":{"type":"integer","minimum":0},"coverage":`+coverage+`,"nodes":{"type":"array","maxItems":200,"items":`+node+`},"edges":{"type":"array","maxItems":400,"items":`+edge+`}`,
+		"stage", "summary", "coverage", "nodes", "edges")
 }
 
 func mutationSchema(extraProperties string, extraRequired ...string) string {

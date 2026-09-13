@@ -47,6 +47,11 @@ type sourceDiscoveryCandidateListPayload struct {
 	PageRequest
 }
 
+type deepDiscoveryGraphPayload struct {
+	MissionID string `json:"mission_id"`
+	PageRequest
+}
+
 type jobListPayload struct {
 	SourceID string `json:"source_id"`
 	PageRequest
@@ -101,6 +106,18 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 	}
 	if msg.Type == TypeSourceDiscoveryCandidates {
 		handleSourceDiscoveryCandidateListQuery(sys, repository, msg)
+		return
+	}
+	if msg.Type == TypeDeepDiscoveryGraph {
+		handleDeepDiscoveryGraphQuery(sys, repository, msg)
+		return
+	}
+	if msg.Type == TypeDeepDiscoveryGuide {
+		handleDeepDiscoveryGuideQuery(sys, repository, msg)
+		return
+	}
+	if msg.Type == TypeDeepDiscoveryBrowserGet {
+		handleDeepDiscoveryBrowserGetQuery(sys, repository, msg)
 		return
 	}
 	if msg.Type == TypeJobList {
@@ -163,6 +180,8 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		value, err = repository.GetSource(msg.Ctx(), payload.ID)
 	case TypeSourceDiscoveryGet:
 		value, err = repository.GetSourceDiscovery(msg.Ctx(), payload.ID)
+	case TypeDeepDiscoveryGet:
+		value, err = repository.GetDeepDiscoveryMission(msg.Ctx(), payload.ID)
 	case TypeJobGet:
 		value, err = repository.GetJob(msg.Ctx(), payload.ID)
 	case TypeWorkGet:
@@ -181,6 +200,111 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		return
 	}
 	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "entity": value})
+}
+
+func handleDeepDiscoveryBrowserGetQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload entityGetPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.ID = strings.TrimSpace(payload.ID)
+	if payload.ID == "" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "id is required")
+		return
+	}
+	probe, work, result, err := repository.GetDeepDiscoveryBrowserResult(msg.Ctx(), payload.ID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := map[string]any{"contract_version": ContractVersion, "probe": probe, "work": work, "next_action": "await_browser_probe"}
+	if result != nil {
+		response["result"] = map[string]any{"artifact": result.Artifact, "supporting_artifacts": result.SupportingArtifacts,
+			"final_url": result.FinalURL, "content_hash": result.ContentHash, "links": result.Links, "attestation": result.Attestation}
+		response["next_action"] = "record_browser_evidence_checkpoint"
+	} else if work.Status == model.WorkWaitingHuman || work.Terminal() {
+		response["next_action"] = "resolve_work_and_create_new_browser_probe_if_needed"
+	}
+	_, _ = sys.Reply(msg, response)
+}
+
+func handleDeepDiscoveryGuideQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload entityGetPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	mission, err := repository.GetDeepDiscoveryMission(msg.Ctx(), strings.TrimSpace(payload.ID))
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{
+		"contract_version": ContractVersion,
+		"playbook_version": "recruiting.deep-discovery-playbook.v1",
+		"mission":          mission,
+		"remaining_budget": map[string]int{
+			"search_rounds": mission.Budget.MaxSearchRounds - mission.Budget.SearchRoundsUsed,
+			"operations":    mission.Budget.MaxOperations - mission.Budget.OperationsUsed,
+		},
+		"rules": []string{
+			"Web Search is one sensor, never final proof; corroborate candidates through an official site, browser, network trace, ATS fingerprint, sitemap, robots, detail reverse-validation, or explicit human evidence.",
+			"Expand aliases, parent-child boundaries, brands, business units, regions, languages, social hiring, campus, internship, and special-program channels before claiming coverage.",
+			"Follow redirects and SPA route changes; record final canonical URLs, provenance URL or Artifact, relationship edges, exclusions, and blindspots.",
+			"Validate that each ListURL contains jobs in scope and exposes stable detail URLs or IDs, pagination, newest-activity ordering, and update-retop evidence before creating a Source.",
+			"Checkpoint every meaningful stage. On ambiguity, access control, captcha, or budget exhaustion, wait for human input instead of claiming completion.",
+		},
+		"stage_actions": deepDiscoveryStageActions(mission.Stage),
+		"completion_contract": map[string]any{"requires_validated_list_url": true, "requires_blindspot_review": true,
+			"critical_gap_count": 0, "mathematical_all_urls_claim": false},
+		"next_action": deepDiscoveryNextAction(mission),
+	})
+}
+
+func deepDiscoveryStageActions(stage model.DeepDiscoveryStage) []string {
+	switch stage {
+	case model.DeepDiscoveryScopeBuilding:
+		return []string{"Confirm the requested Company identity and official evidence.", "Collect aliases, legal entities, parents, subsidiaries, and explicit exclusions.", "Checkpoint identity_scoped and advance to brand_expansion."}
+	case model.DeepDiscoveryBrandExpansion:
+		return []string{"Run iterative searches for the Company plus 招聘, careers, jobs, campus, internship, and each discovered brand.", "Separate owned brands from similarly named or sibling entities.", "Checkpoint brands_reviewed and advance to site_enumeration."}
+	case model.DeepDiscoverySiteEnumeration:
+		return []string{"Traverse official navigation and redirects; inspect sitemap and robots where available.", "Search every scoped brand and recruitment category; fingerprint known ATS domains.", "Record Domain and Site nodes, then checkpoint sites_enumerated."}
+	case model.DeepDiscoverySiteExploration:
+		return []string{"Open every candidate Site with HTTP first and Browser when JavaScript or interaction is required.", "Inspect language, region, category switches and SPA URL changes; preserve page or network Artifacts.", "Checkpoint sites_explored and advance to pool_detection."}
+	case model.DeepDiscoveryPoolDetection:
+		return []string{"Detect populated job pools, APIs, pagination, filters, detail links, job counts, and platform fingerprints.", "Use browser network observation and reverse-check detail pages when DOM links are incomplete.", "Record ListingPool or APIEndpoint candidates and checkpoint pools_detected."}
+	case model.DeepDiscoveryCandidateValidation:
+		return []string{"Validate every candidate against real jobs, company scope, stable identity/detail URL, pagination, and ordering.", "Reject duplicates, empty shells, unrelated aggregators, stale marketing pages, and unsafe endpoints with evidence.", "Record validated ListURL nodes and checkpoint candidates_validated."}
+	case model.DeepDiscoveryCoverageReview:
+		return []string{"Audit brands, sites, regions, languages, social/campus/internship/special channels and excluded channels.", "Record each known blindspot as excluded or unresolved; unresolved important gaps increment critical_gap_count.", "Complete only with a validated ListURL, blindspots_reviewed, and zero critical gaps."}
+	default:
+		return []string{"Inspect the completed graph and create one Recruitment Source per validated ListURL using this Mission discovery_generation."}
+	}
+}
+
+func handleDeepDiscoveryGraphQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload deepDiscoveryGraphPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	payload.MissionID = strings.TrimSpace(payload.MissionID)
+	if payload.Limit == 0 {
+		payload.Limit = 100
+	}
+	if payload.MissionID == "" || payload.PageRequest.Validate(500) != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "mission_id and graph page limit in [1,500] are required")
+		return
+	}
+	if _, err := repository.GetDeepDiscoveryMission(msg.Ctx(), payload.MissionID); err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	page, err := repository.ListDeepDiscoveryGraph(msg.Ctx(), payload.MissionID, payload.Cursor, payload.Limit)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "mission_id": payload.MissionID, "nodes": page.Nodes, "edges": page.Edges,
+		"page": PageInfo{NextCursor: page.NextCursor, HasMore: page.HasMore}})
 }
 
 func handleSourceEndpointHistoryQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

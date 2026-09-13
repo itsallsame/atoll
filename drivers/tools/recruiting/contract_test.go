@@ -34,6 +34,13 @@ func TestNaturalLanguageOnboardingWordsPublishInputSchemas(t *testing.T) {
 		TypeCompanyAdd, TypeCompanyGet, TypeCompanyList, TypeCompanyUpdate,
 		TypeSourceDiscover, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
 		TypeSourceList, TypeRecipeInspect, TypeSystemStatus, TypeCapacityStatus,
+		TypeRecipePropose, TypeRecipeValidate, TypeRecipeApprove,
+		TypeWorkGet, TypeWorkList, TypeRepairGet, TypeRepairList, TypeSystemReconcile,
+		TypeWorkResolve, TypeWorkRetry, TypeRepairValidate, TypeRepairResolve, TypeRepairRecover,
+		TypeWorkCancel,
+		TypeDeepDiscoveryStart, TypeDeepDiscoveryGet, TypeDeepDiscoveryCheckpoint,
+		TypeDeepDiscoveryGraph, TypeDeepDiscoveryGuide, TypeDeepDiscoveryWait, TypeDeepDiscoveryResume, TypeDeepDiscoveryComplete, TypeDeepDiscoveryCancel,
+		TypeDeepDiscoveryBrowserObserve, TypeDeepDiscoveryBrowserGet,
 	} {
 		schema := words[word].InputSchema
 		if len(schema) == 0 || !json.Valid(schema) {

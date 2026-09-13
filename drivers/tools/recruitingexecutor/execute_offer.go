@@ -9,6 +9,7 @@ import (
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/browserdriver"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/httpdriver"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
@@ -40,6 +41,7 @@ type executionControl interface {
 type executeOfferOptions struct {
 	Artifact   artifactSinkConfig
 	Compliance httpdriver.ComplianceEvidence
+	Explorer   browserdriver.Broker
 	Now        func() time.Time
 }
 
@@ -49,6 +51,9 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 	offer executioncontract.Offer, options executeOfferOptions) error {
 	if ctx == nil || control == nil || resources == nil || options.Now == nil {
 		return errors.New("offer execution requires context, control, Resource access, and clock")
+	}
+	if offer.Kind == "deep_discovery_browser" {
+		return executeDeepDiscoveryBrowser(ctx, control, resources, options.Explorer, offer, options)
 	}
 	input, expectation, contentRef, err := buildRunInput(offer, options.Now().UTC())
 	if err != nil {
@@ -300,6 +305,9 @@ func executionTargetURL(offer executioncontract.Offer) string {
 	}
 	if offer.RecipeValidation != nil {
 		return offer.RecipeValidation.EndpointURL
+	}
+	if offer.DeepDiscoveryBrowser != nil {
+		return offer.DeepDiscoveryBrowser.URL
 	}
 	return ""
 }

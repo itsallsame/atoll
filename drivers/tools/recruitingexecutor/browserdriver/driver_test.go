@@ -80,7 +80,7 @@ var browserPolicy = PolicyEvidence{TermsPolicyVersion: 1, TermsReviewedAt: "2026
 func TestExecutePageKeepsProfileOpaqueAndSavesBeforeParsing(t *testing.T) {
 	broker := &fakeBroker{result: SessionResult{FinalURL: "https://jobs.example.com/openings", ContentType: "text/html",
 		DOM: []byte(`<div class="job"><span class="key" data-id="42"></span><a class="role" href="/jobs/42">Engineer</a><span class="title">Engineer</span><time datetime="2026-09-08T10:00:00Z"></time></div>`),
-		Attestation: Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET", "HEAD"}, PublicEndpoint: true,
+		Attestation: Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET", "HEAD", "OPTIONS"}, PublicEndpoint: true,
 			RobotsAllowed: true, TermsPolicyVersion: 1, ProfileLeaseAuthorized: true}}}
 	driver, _ := New(broker)
 	sink := &memorySink{}

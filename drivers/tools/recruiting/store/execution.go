@@ -330,6 +330,11 @@ FROM recruiting_works w
 	  )) OR (w.purpose = 'profile_verify' AND EXISTS (
 	    SELECT 1 FROM recruiting_profile_repair_sessions prs
 	    WHERE prs.validation_work_id = w.work_id AND prs.session_status = 'submitted'
+	  )) OR (w.purpose = 'deep_discovery_browser' AND EXISTS (
+	    SELECT 1 FROM recruiting_deep_discovery_browser_probes ddp
+	    JOIN recruiting_deep_discovery_missions ddm ON ddm.mission_id = ddp.mission_id
+	    WHERE ddp.work_id = w.work_id AND ddp.probe_status = 'queued'
+	      AND ddm.mission_status IN ('active','waiting_human')
 	  )))
   AND NOT EXISTS (
     SELECT 1 FROM recruiting_attempts a
@@ -426,6 +431,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	var profileRepair model.ProfileRepairSession
 	var profileSecurityDomain string
 	var profileVerification *model.ProfileVerificationRecipe
+	var deepDiscoveryBrowser model.DeepDiscoveryBrowserProbe
 	var fence model.AttemptFence
 	switch work.Purpose {
 	case "listing_sync":
@@ -482,6 +488,11 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	case "profile_verify":
 		profileRepair, fence, err = loadProfileVerificationOfferFence(ctx, tx, work, placement,
 			request.ExecutorActorID, request.OfferedAt)
+	case "deep_discovery_browser":
+		deepDiscoveryBrowser, err = getDeepDiscoveryBrowserProbeWith(ctx, tx, work.TargetID, true)
+		if err == nil && (deepDiscoveryBrowser.WorkID != work.WorkID || deepDiscoveryBrowser.Status != model.DeepDiscoveryProbeQueued) {
+			err = fmt.Errorf("deep discovery browser probe is not queued for this Work")
+		}
 	default:
 		err = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)
 	}
@@ -553,6 +564,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		companyID = recipeSampleValidation.CompanyID
 	} else if work.Purpose == "source_discovery" {
 		companyID = discovery.CompanyID
+	} else if work.Purpose == "deep_discovery_browser" {
+		companyID = placement.CompanyID
 	} else if !isBudgetlessPurpose(work.Purpose) {
 		if err := tx.QueryRowContext(ctx, "SELECT company_id FROM recruiting_sources WHERE source_id = ?", sourceID).Scan(&companyID); err != nil {
 			return ExecutionOffer{}, fmt.Errorf("load execution company: %w", err)
@@ -574,6 +587,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 			attempt, err = attempt.WithBackfillFence(fence)
 		} else if work.Purpose == "recipe_validation" && recipeSampleValidation.RecipeKind == model.RecipeDiscovery {
 			attempt, err = attempt.WithCompanyRecipeFence(fence)
+		} else if work.Purpose == "deep_discovery_browser" {
+			attempt, err = attempt.WithCompanyControlFence(fence)
 		} else {
 			attempt, err = attempt.WithFence(fence)
 		}
@@ -645,6 +660,9 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		offer.ProfileRepair = &profileRepair
 	} else if work.Purpose == "historical_backfill_item" {
 		offer.Kind = "backfill_" + string(backfillInput.Backfill.Mode)
+	} else if work.Purpose == "deep_discovery_browser" {
+		offer.Kind = "deep_discovery_browser"
+		offer.DeepDiscoveryBrowser = &deepDiscoveryBrowser
 	}
 	offerState, err := json.Marshal(offer)
 	if err != nil {
@@ -744,6 +762,8 @@ func executionWorkloadClassTx(ctx context.Context, tx *sql.Tx, work model.Work) 
 	case "baseline_listing":
 		return "baseline", nil
 	case "source_validation", "recipe_validation":
+		return "calibration", nil
+	case "deep_discovery_browser":
 		return "calibration", nil
 	case "historical_backfill_item":
 		return "backfill", nil
@@ -1953,6 +1973,13 @@ func (r *Repository) transitionListingExecutionTx(ctx context.Context, tx *sql.T
 			} else {
 				currentProfileRepair, currentFence, fenceErr = loadProfileVerificationOfferFence(ctx, tx, work, placement,
 					attempt.ExecutorActorID, businessAt)
+			}
+		case "deep_discovery_browser":
+			probe, probeErr := getDeepDiscoveryBrowserProbeWith(ctx, tx, work.TargetID, true)
+			if probeErr != nil {
+				fenceErr = probeErr
+			} else if probe.WorkID != work.WorkID || probe.Status != model.DeepDiscoveryProbeQueued {
+				fenceErr = fmt.Errorf("deep discovery browser probe is no longer executable")
 			}
 		default:
 			fenceErr = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)

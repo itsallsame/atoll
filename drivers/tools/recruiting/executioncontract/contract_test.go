@@ -64,3 +64,31 @@ func TestFailureReportBindsClassificationAndArtifactToAttempt(t *testing.T) {
 		t.Fatal("duplicate supporting failure Artifact was accepted")
 	}
 }
+
+func TestDeepDiscoveryEffectAttestationRequiresConsistentReadOnlyEvidence(t *testing.T) {
+	safe := DeepDiscoveryEffectAttestation{DocumentNavigations: 1, ObservedMethods: []string{"GET", "OPTIONS"},
+		PublicEndpoint: true, RobotsAllowed: true, TermsPolicyVersion: 1}
+	if err := safe.Validate(1); err != nil {
+		t.Fatal(err)
+	}
+	blocked := safe
+	blocked.BlockedMethods, blocked.BlockedWriteRequests = []string{"POST"}, 1
+	if err := blocked.Validate(1); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*DeepDiscoveryEffectAttestation){
+		"missing observed method": func(value *DeepDiscoveryEffectAttestation) { value.ObservedMethods = nil },
+		"allowed write":           func(value *DeepDiscoveryEffectAttestation) { value.AllowedWriteRequests = 1 },
+		"safe method blocked": func(value *DeepDiscoveryEffectAttestation) {
+			value.BlockedMethods = []string{"GET"}
+			value.BlockedWriteRequests = 1
+		},
+		"missing blocked method": func(value *DeepDiscoveryEffectAttestation) { value.BlockedWriteRequests = 1 },
+	} {
+		value := safe
+		mutate(&value)
+		if err := value.Validate(1); err == nil {
+			t.Fatalf("%s attestation was accepted: %+v", name, value)
+		}
+	}
+}

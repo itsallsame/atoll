@@ -1,10 +1,10 @@
 # Atoll Recruiting：招聘数据持续采集产品设计
 
-状态：产品与架构设计草案
+状态：产品设计与 Deep Discovery v1 实现基线
 
-版本：v0.8
+版本：v0.9
 
-日期：2026-09-07
+日期：2026-09-13
 
 目标规模：维护约 10,000 家公司的招聘数据；吞吐目标由真实网站基准测试确定
 
@@ -107,13 +107,52 @@ Snowland 和 Staircase 证明或提示：
 ```text
 用户要求持续跟踪公司
   → Agent 或 UI 提交公开领域命令
-  → Recruiting Actor 创建 Target 和 bootstrap Work
-  → 自动发现或人工确认入口
+  → Recruiting Actor 创建 Company 和 DeepDiscoveryMission
+  → Agent 以 Search/HTTP/Browser/Extension 为传感器分阶段探索
+  → 每轮把证据图与覆盖 checkpoint 原子提交给 Recruiting Actor
+  → 自动验证或人工确认一个或多个入口
   → 生成候选 Recipe 并用真实页面验证
   → 必要时请求人批准高风险 Recipe
   → 执行一至两次基线全量
   → Company 及其 active Source 进入每日增量运行
 ```
+
+#### 5.2.1 Deep Discovery：一次性开放探索
+
+岗位入口发现不是一个“官网加 `/careers`”的固定 Recipe，也不是一次 Web Search。它是新公司接入、入口失效或人工复核时才运行的长期 `DeepDiscoveryMission`；日常增量不运行它。Snowland 提供的是探索范围经验，Atoll Recruiting 负责把经验变成有状态、可恢复、可审计的领域流程。
+
+```text
+scope_building
+  → brand_expansion
+  → site_enumeration
+  → site_exploration
+  → pool_detection
+  → candidate_validation
+  → coverage_review
+  → completed
+```
+
+- `scope_building`：确认目标公司、别名、母子公司和明确排除边界；
+- `brand_expansion`：扩展子品牌、业务单元、校招/社招/实习等招聘主体；
+- `site_enumeration`：通过多轮 Web Search、官网导航、重定向、sitemap、robots 和 ATS 指纹形成站点集合；
+- `site_exploration`：用 HTTP 或 Browser 进入站点，处理 SPA、语言/地区/招聘类别切换，并保存页面或网络证据；
+- `pool_detection`：识别实际岗位池、列表 URL、API、分页、筛选参数和详情 URL 规则；
+- `candidate_validation`：验证入口确实含岗位、属于目标范围，且能形成后续 Listing Recipe；
+- `coverage_review`：列出已覆盖维度、排除项和盲区；关键盲区未解决时不得完成；
+- `completed`：至少存在一个已验证列表候选，之后创建一个或多个 Recruitment Source，并分别生成、验证 Listing/Detail Recipe。
+
+Mission 默认最多 5 轮搜索、250 次外部操作；预算是创建时冻结的上限，不是必须用完的额度。每个 checkpoint 只能停留当前阶段或推进一个阶段，记录预算消耗、覆盖矩阵、节点、边和摘要。超预算、归属冲突、登录/验证码或无法判定的重要盲区进入 `waiting_human`，人工处理后从原 checkpoint 恢复，不重启探索。
+
+证据图固定表达 `Company / Brand / LegalEntity / Domain / Site / ListingPool / APIEndpoint / ListURL / Blindspot`，边表达 `owns_brand / recruits_at / hosts / contains_pool / lists_jobs_at` 等可解释关系。每个节点必须带 `web_search / official_site / sitemap / robots / browser / network / ats_fingerprint / detail_reverse / human` 中的一种来源，以及 Evidence URL 或 Artifact 引用和判断依据。Web Search 只是传感器之一；搜索结果不能直接成为已验证 Source。
+
+公开业务入口为：
+
+- `recruiting.deep_discovery.start/get/checkpoint/graph`；
+- `recruiting.deep_discovery.wait/resume/complete/cancel`；同一公司同一时刻只允许一个未完成 Mission，取消保留证据并释放下一代探索；
+- `recruiting.deep_discovery.browser.observe` 是 Recruiting Actor 的公开异步命令：它先对 Mission 做版本校验并原子消耗一次冻结预算，创建 `deep_discovery_browser` Work、不可变 Probe、审计事件和定向 dispatch；现有 `browser.public` Executor 只能经统一 offer/accept/start/result 协议领取，不能由 Agent 直接调用。浏览器只允许 GET/HEAD/OPTIONS 和有界等待、滚动、同源跟链，阻断表单、写请求、下载、弹窗及跨源文档导航；DOM 和 effect trace 写入 Artifact Resource，`recruiting.deep_discovery.browser.get` 同时返回 Probe、权威 Work 状态、规范 URL、有限链接、Artifact 元数据与安全 attestation。成功后由 Agent 将判断写入 checkpoint；终态失败或人工结案后必须创建新的预算化 Probe，不能把通用 Work retry 变成脱离原 Probe 的旁路执行；
+- Mission 完成后使用 `recruiting.source.add` 将每个已验证 ListURL 变成候选 Source，再进入 Source validation 和 Recipe 发布闭环。
+
+`DiscoveryMission` 保存公司级一次探索；`Discovery Playbook` 保存可复用的探索策略；`Listing Recipe` 和 `Detail Recipe` 保存确认后的确定性生产代码。通用链接选择器只能作为低成本启发式证据，不能作为已批准 Discovery Recipe，也不能绕过覆盖审计。
 
 ### 5.3 每日增量
 
@@ -353,7 +392,7 @@ Recipe 至少分为：
 
 - **Listing Recipe**：给定已保存的岗位列表 URL 和上次成功 Checkpoint，从顶部按最新活动时间倒序读取，输出边界前的岗位及边界证明；
 - **Detail Recipe**：给定岗位 URL，输出结构化岗位详情；
-- **Discovery Recipe/Procedure**：辅助从公司官网等入口找到候选岗位列表 URL，只在接入、入口失效或人工要求复核时运行。
+- **Discovery Playbook**：Agent 在 DeepDiscoveryMission 中选择 Search、官网遍历、sitemap、Browser、网络观察、ATS 指纹和详情反向验证等探索策略；它不是每日运行的确定性抓取 Recipe。
 
 每日主链路使用已保存的岗位列表 URL 和 Listing Recipe 获得旧活动边界之前的新增、更新岗位 URL，再执行 Detail Recipe。发现岗位列表 URL 不是每日步骤；边界之后的历史岗位不每日重复获取。
 
@@ -1258,6 +1297,7 @@ BF6 验证本地控制面两个依赖同时消失，而不是把 BF2 与 BF5 的
 26. 一个 Recruiting Actor 和一个 Executor class 都是逻辑身份，不限制 handler 或执行实例数量；不因扩容引入角色型 Worker。
 27. 共享 origin、Recipe 或 Profile 故障采用单飞修复和有界恢复，不为每个受影响岗位创建独立修复流程。
 28. 公司合并第一版采用可逆逻辑映射；完整拆分、历史物理迁移和合规硬删除不属于普通首版操作。
+29. 招聘入口发现采用公司级、非日常的 `DeepDiscoveryMission`；Agent 负责开放探索，Search/HTTP/Browser/Extension 是可组合传感器，Recruiting Actor 以顺序状态机、冻结预算、证据图、checkpoint、覆盖审计和人工接管约束其结论。通用 CSS 链接扫描不得直接生成获批 Source 或 Recipe。
 
 ## 17. 待实验后决策
 

@@ -532,8 +532,12 @@ func handleWorkRetry(sys actorbase.Sys, cfg Config, repository *store.Repository
 		failStoreError(sys, msg, err)
 		return
 	}
-	if record.Work.Purpose == "source_discovery" {
-		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "source discovery retries require an explicit new discovery generation")
+	if record.Work.Purpose == "source_discovery" || record.Work.Purpose == "deep_discovery_browser" {
+		detail := "source discovery retries require an explicit new discovery generation"
+		if record.Work.Purpose == "deep_discovery_browser" {
+			detail = "Deep Discovery browser retries require a new budgeted browser.observe Probe"
+		}
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, detail)
 		return
 	}
 	if payload.ExpectedVersion != record.Work.Version {
@@ -700,7 +704,7 @@ func applyWorkRetryFacts(repository *store.Repository, msg actorbase.Msg, comman
 func workCommandDispatch(cfg Config, work model.Work, placement store.WorkPlacement, commandID, causeKind string) (*store.ExecutionDispatchIntent, error) {
 	if work.Purpose != "listing_sync" && work.Purpose != "source_validation" && work.Purpose != "detail_sync" && work.Purpose != "company_import" &&
 		work.Purpose != "company_import_apply" && work.Purpose != "source_discovery" && work.Purpose != "baseline_listing" &&
-		work.Purpose != "recipe_validation" {
+		work.Purpose != "recipe_validation" && work.Purpose != "deep_discovery_browser" {
 		return nil, nil
 	}
 	target, found := cfg.executionDispatchTarget(placement.Capability, commandID+"\n"+work.WorkID)

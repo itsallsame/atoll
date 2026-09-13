@@ -221,3 +221,19 @@ func (r RecipeSampleValidation) Cancel(expected uint64) (RecipeSampleValidation,
 	r.Status, r.Version = RecipeSampleValidationCanceled, r.Version+1
 	return r, nil
 }
+
+// RebindWork preserves the frozen sample and candidate while moving an
+// unfinished validation run to a distinct causal retry Work.
+func (r RecipeSampleValidation) RebindWork(expected uint64, previousWorkID, retryWorkID string) (RecipeSampleValidation, error) {
+	if err := requireVersion(expected, r.Version); err != nil {
+		return RecipeSampleValidation{}, err
+	}
+	previousWorkID, retryWorkID = strings.TrimSpace(previousWorkID), strings.TrimSpace(retryWorkID)
+	if (r.Status != RecipeSampleValidationQueued && r.Status != RecipeSampleValidationRunning) ||
+		r.WorkID != previousWorkID || previousWorkID == "" || retryWorkID == "" || previousWorkID == retryWorkID {
+		return RecipeSampleValidation{}, &InvalidTransitionError{Entity: "Recipe sample validation",
+			From: string(r.Status), Action: "rebind retry work"}
+	}
+	r.WorkID, r.Version = retryWorkID, r.Version+1
+	return r, r.Validate()
+}

@@ -53,6 +53,15 @@ func TestDiscoveryRecipeSampleValidationHasNoFakeSourceFence(t *testing.T) {
 		run.ProposedAssignment != (SourceRecipeAssignment{}) || run.EndpointVersion != company.Version {
 		t.Fatalf("Discovery validation invented Source facts: %+v", run)
 	}
+	running, _ := run.Start(run.Version)
+	rebound, err := running.RebindWork(running.Version, "work-discovery", "work-discovery-retry")
+	if err != nil || rebound.WorkID != "work-discovery-retry" || rebound.Version != running.Version+1 ||
+		rebound.ValidationRunID != running.ValidationRunID || rebound.Candidate != running.Candidate {
+		t.Fatalf("Discovery validation retry did not preserve its frozen input: run=%+v err=%v", rebound, err)
+	}
+	if _, err := rebound.RebindWork(rebound.Version, "work-discovery", "another-retry"); err == nil {
+		t.Fatal("Discovery validation accepted a retry from the stale Work")
+	}
 }
 
 func TestDetailRolloutValidationUsesPublishedAssignmentWithoutMutatingJob(t *testing.T) {

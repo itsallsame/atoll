@@ -157,6 +157,9 @@ func NewRetryWork(previous Work, workID, initiatorActorID, causeMessageID string
 	if !previous.Terminal() {
 		return Work{}, fmt.Errorf("retry requires a terminal previous work")
 	}
+	if previous.Purpose == "deep_discovery_browser" {
+		return Work{}, fmt.Errorf("Deep Discovery browser retry requires a new budgeted Probe")
+	}
 	if previous.Status == WorkCompleted && previous.Resolution == ResolutionSucceeded {
 		return Work{}, fmt.Errorf("succeeded work cannot be retried")
 	}
@@ -461,6 +464,22 @@ func (a Attempt) WithCompanyRecipeFence(f AttemptFence) (Attempt, error) {
 	a.CompanyVersion, a.RecipeID, a.RecipeVersion = f.CompanyVersion, f.RecipeID, f.RecipeVersion
 	a.CompanyConfigurationVersion, a.CompanyExecutionFence = f.CompanyConfigurationVersion, f.CompanyExecutionFence
 	a.ProfileID, a.ProfileVersion = f.ProfileID, f.ProfileVersion
+	return a, nil
+}
+
+// WithCompanyControlFence binds exploratory browser I/O to the Company's
+// operational configuration without coupling it to a Source or Recipe that
+// does not exist yet.
+func (a Attempt) WithCompanyControlFence(f AttemptFence) (Attempt, error) {
+	if a.Status != AttemptOffered || f.CompanyConfigurationVersion == 0 ||
+		f.SourceVersion != 0 || f.SourceConfigurationVersion != 0 || f.SourceExecutionFence != 0 ||
+		f.AssignmentVersion != 0 || f.RecipeID != "" || f.RecipeVersion != 0 || f.CheckpointVersion != 0 ||
+		f.RefreshGeneration != 0 || f.SampleVersion != 0 || f.ProfileID != "" || f.ProfileVersion != 0 ||
+		f.BatchVersion != 0 || f.DiscoveryGeneration != 0 {
+		return Attempt{}, fmt.Errorf("offered Attempt and Company control fence are required")
+	}
+	a.CompanyVersion = f.CompanyVersion
+	a.CompanyConfigurationVersion, a.CompanyExecutionFence = f.CompanyConfigurationVersion, f.CompanyExecutionFence
 	return a, nil
 }
 

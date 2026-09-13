@@ -62,9 +62,40 @@ func TestDiscoveryRecipeValidationIsEvidenceOnly(t *testing.T) {
 		placement, receipt, event, &dispatch, now); err != nil {
 		t.Fatal(err)
 	}
+	// A human-repaired execution policy retries the Work without changing the
+	// frozen Company, Recipe, or sample. The validation aggregate must move to
+	// the causal retry atomically; otherwise the executor sees an orphan Work.
+	canceled, err := work.Cancel(work.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateWorkCAS(ctx, work.Version, canceled, now.Add(time.Second)); err != nil {
+		t.Fatalf("cancel first validation Work: work=%+v err=%v", canceled, err)
+	}
+	retry, _ := model.NewRetryWork(canceled, "discovery-validation-work-retry", "human:reviewer:1", "message-retry")
+	retryPlacement := placement
+	retryPlacement.BusinessKey = "retry|" + work.WorkID + "|" + retry.WorkID
+	retryPlacement.NotBefore = now.Add(2 * time.Second)
+	retryReceipt, _ := model.NewCommandReceipt("discovery-validation-retry-command", "recruiting.work.retry",
+		"sha256:discovery-validation-retry", json.RawMessage(`{"status":"open"}`))
+	retryEvent, _ := model.NewEventIntent("discovery-validation-retry-event", "work.retry_created", "work", retry.WorkID,
+		retry.Version, retryPlacement.NotBefore.Format(time.RFC3339Nano), retryReceipt.CommandID, json.RawMessage(`{}`))
+	if _, err := repository.ApplyRetryWorkCommand(ctx, canceled.Version, canceled.WorkID, retry, retryPlacement,
+		retryReceipt, retryEvent, retryPlacement.NotBefore); err != nil {
+		t.Fatal(err)
+	}
+	rebound, err := repository.GetRecipeSampleValidationByWork(ctx, retry.WorkID)
+	if err != nil || rebound.ValidationRunID != run.ValidationRunID || rebound.WorkID != retry.WorkID ||
+		rebound.Candidate != run.Candidate || rebound.Version != run.Version+1 {
+		t.Fatalf("rebound Discovery validation=%+v err=%v", rebound, err)
+	}
+	if _, err := repository.GetRecipeSampleValidationByWork(ctx, work.WorkID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old Work retained Discovery validation: %v", err)
+	}
+	work, placement, run = retry, retryPlacement, rebound
 	offer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "discovery-validation-attempt",
 		ExecutorActorID: "tool:discovery-validation-executor:1", ExecutorIncarnation: "boot-discovery-validation",
-		Capability: placement.Capability, Origin: placement.Origin, OfferedAt: now,
+		Capability: placement.Capability, Origin: placement.Origin, OfferedAt: retryPlacement.NotBefore,
 		BudgetPolicy: testExecutionBudgetPolicy()})
 	if err != nil || offer.Kind != "discovery" || offer.RecipeValidation == nil ||
 		offer.Attempt.CompanyVersion != company.Version || offer.Attempt.SourceVersion != 0 ||

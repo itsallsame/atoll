@@ -54,8 +54,9 @@ type policyState struct {
 	mu                   sync.Mutex
 	initialOrigin        string
 	methods              map[string]struct{}
+	blockedMethods       map[string]struct{}
 	documentNavigations  int
-	writeRequests        int
+	blockedWriteRequests int
 	crossOriginDocuments int
 	formSubmissions      int
 	downloads            int
@@ -131,7 +132,8 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	if request.PlanHash != planHash || request.AttemptID == "" || strings.TrimSpace(request.UserAgent) == "" ||
 		request.TimeoutMS < 100 || request.TimeoutMS > 60_000 ||
 		!request.SameOriginDocs || !request.BlockDownloads || !request.BlockPopups ||
-		len(request.AllowedMethods) != 2 || request.AllowedMethods[0] != http.MethodGet || request.AllowedMethods[1] != http.MethodHead {
+		len(request.AllowedMethods) != 3 || request.AllowedMethods[0] != http.MethodGet || request.AllowedMethods[1] != http.MethodHead ||
+		request.AllowedMethods[2] != http.MethodOptions {
 		return browserdriver.SessionResult{}, policyFailure(errors.New("browser session request is incomplete or unsafe"))
 	}
 	if err := request.Policy.Validate(); err != nil {
@@ -181,7 +183,7 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	tabCtx, cancelTab := chromedp.NewContext(allocatorCtx)
 	defer cancelTab()
 
-	state := &policyState{initialOrigin: origin(endpoint), methods: map[string]struct{}{}}
+	state := &policyState{initialOrigin: origin(endpoint), methods: map[string]struct{}{}, blockedMethods: map[string]struct{}{}}
 	requestTasks := newRequestTracker()
 	chromedp.ListenTarget(tabCtx, func(event any) {
 		switch value := event.(type) {
@@ -377,20 +379,25 @@ func (s *policyState) inspectRequest(ctx context.Context, runner *Runner, event 
 		return true
 	}
 	method := strings.ToUpper(strings.TrimSpace(event.Request.Method))
-	s.mu.Lock()
-	s.methods[method] = struct{}{}
-	s.mu.Unlock()
-	allowed := method == http.MethodGet || method == http.MethodHead
+	// OPTIONS is a read-only capability/preflight probe used by modern sites.
+	// It may proceed. Methods capable of application writes are blocked before
+	// reaching the origin and retained as explicit blocked-effect evidence;
+	// a document-level write is additionally a terminal navigation violation.
+	allowed := method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 	if !allowed {
 		s.mu.Lock()
-		s.writeRequests++
+		s.blockedWriteRequests++
+		s.blockedMethods[method] = struct{}{}
 		if event.ResourceType == network.ResourceTypeDocument {
 			s.formSubmissions++
+			s.setViolation(fmt.Errorf("browser document request used unsafe method %s", method))
 		}
-		s.setViolation(fmt.Errorf("browser request used unsafe method %s", method))
 		s.mu.Unlock()
 		return false
 	}
+	s.mu.Lock()
+	s.methods[method] = struct{}{}
+	s.mu.Unlock()
 	parsed, err := runner.publicURL(ctx, event.Request.URL)
 	if err != nil {
 		s.mu.Lock()
@@ -438,9 +445,15 @@ func (s *policyState) attestation(termsVersion uint64, robotsAllowed, profileLea
 		methods = append(methods, method)
 	}
 	sort.Strings(methods)
+	blockedMethods := make([]string, 0, len(s.blockedMethods))
+	for method := range s.blockedMethods {
+		blockedMethods = append(blockedMethods, method)
+	}
+	sort.Strings(blockedMethods)
 	return browserdriver.Attestation{DocumentNavigations: s.documentNavigations, ObservedMethods: methods,
-		AllowedWriteRequests: s.writeRequests, CrossOriginDocumentNavigations: s.crossOriginDocuments,
-		FormSubmissions: s.formSubmissions, Downloads: s.downloads, Popups: s.popups, PublicEndpoint: s.firstViolation == nil,
+		BlockedMethods: blockedMethods, AllowedWriteRequests: 0, BlockedWriteRequests: s.blockedWriteRequests,
+		CrossOriginDocumentNavigations: s.crossOriginDocuments,
+		FormSubmissions:                s.formSubmissions, Downloads: s.downloads, Popups: s.popups, PublicEndpoint: s.firstViolation == nil,
 		RobotsAllowed: robotsAllowed, TermsPolicyVersion: termsVersion, ProfileLeaseAuthorized: profileLeaseAuthorized}, s.firstViolation
 }
 

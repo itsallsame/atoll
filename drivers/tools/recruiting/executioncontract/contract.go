@@ -251,6 +251,7 @@ type Offer struct {
 	Recipe                *model.Recipe                    `json:"recipe,omitempty"`
 	RecipeValidation      *model.RecipeSampleValidation    `json:"recipe_validation,omitempty"`
 	ProfileRepair         *model.ProfileRepairSession      `json:"profile_repair,omitempty"`
+	DeepDiscoveryBrowser  *model.DeepDiscoveryBrowserProbe `json:"deep_discovery_browser,omitempty"`
 	ProfileSecurityDomain string                           `json:"profile_security_domain,omitempty"`
 	ProfileVerification   *model.ProfileVerificationRecipe `json:"profile_verification_recipe,omitempty"`
 	ProfileTaskExpiresAt  string                           `json:"profile_task_expires_at,omitempty"`
@@ -259,6 +260,65 @@ type Offer struct {
 	RequestedCapability   string                           `json:"requested_capability"`
 	RequestedOrigin       string                           `json:"requested_origin,omitempty"`
 	RequestedProfileID    string                           `json:"requested_profile_id,omitempty"`
+}
+
+type DeepDiscoveryLink struct {
+	URL  string `json:"url"`
+	Text string `json:"text,omitempty"`
+}
+
+type DeepDiscoveryEffectAttestation struct {
+	DocumentNavigations            int      `json:"document_navigations"`
+	ObservedMethods                []string `json:"observed_methods"`
+	BlockedMethods                 []string `json:"blocked_methods,omitempty"`
+	AllowedWriteRequests           int      `json:"allowed_write_requests"`
+	BlockedWriteRequests           int      `json:"blocked_write_requests,omitempty"`
+	CrossOriginDocumentNavigations int      `json:"cross_origin_document_navigations"`
+	FormSubmissions                int      `json:"form_submissions"`
+	Downloads                      int      `json:"downloads"`
+	Popups                         int      `json:"popups"`
+	PublicEndpoint                 bool     `json:"public_endpoint"`
+	RobotsAllowed                  bool     `json:"robots_allowed"`
+	TermsPolicyVersion             uint64   `json:"terms_policy_version"`
+}
+
+func (a DeepDiscoveryEffectAttestation) Validate(maxNavigations int) error {
+	if a.DocumentNavigations < 1 || a.DocumentNavigations > maxNavigations || a.AllowedWriteRequests != 0 ||
+		a.BlockedWriteRequests < 0 || a.CrossOriginDocumentNavigations != 0 || a.FormSubmissions != 0 ||
+		a.Downloads != 0 || a.Popups != 0 || !a.PublicEndpoint || !a.RobotsAllowed || a.TermsPolicyVersion == 0 ||
+		len(a.ObservedMethods) == 0 {
+		return fmt.Errorf("Deep Discovery browser effect attestation is unsafe")
+	}
+	for _, method := range a.ObservedMethods {
+		switch strings.ToUpper(strings.TrimSpace(method)) {
+		case "GET", "HEAD", "OPTIONS":
+		default:
+			return fmt.Errorf("Deep Discovery browser observed unsafe method")
+		}
+	}
+	for _, method := range a.BlockedMethods {
+		switch strings.ToUpper(strings.TrimSpace(method)) {
+		case "", "GET", "HEAD", "OPTIONS":
+			return fmt.Errorf("Deep Discovery browser reported invalid blocked method")
+		}
+	}
+	if (a.BlockedWriteRequests == 0) != (len(a.BlockedMethods) == 0) {
+		return fmt.Errorf("Deep Discovery browser blocked-effect evidence is inconsistent")
+	}
+	return nil
+}
+
+type DeepDiscoveryBrowserResult struct {
+	CommandID           string                         `json:"command_id"`
+	ResultKind          string                         `json:"result_kind"`
+	AttemptID           string                         `json:"attempt_id"`
+	ExecutorIncarnation string                         `json:"executor_incarnation"`
+	Artifact            model.ArtifactMetadata         `json:"artifact"`
+	SupportingArtifacts []model.ArtifactMetadata       `json:"supporting_artifacts,omitempty"`
+	FinalURL            string                         `json:"final_url"`
+	ContentHash         string                         `json:"content_hash"`
+	Links               []DeepDiscoveryLink            `json:"links"`
+	Attestation         DeepDiscoveryEffectAttestation `json:"attestation"`
 }
 
 // CompanyImportApplyItem is a bounded, immutable slice of the confirmed
@@ -484,20 +544,21 @@ type ProfileVerificationResult struct {
 }
 
 type ResultResponse struct {
-	Status              string          `json:"status"`
-	Reason              string          `json:"reason,omitempty"`
-	ContractVersion     string          `json:"contract_version"`
-	CorrelationID       string          `json:"correlation_id"`
-	RequestedBy         string          `json:"requested_by"`
-	Page                json.RawMessage `json:"page,omitempty"`
-	Completion          json.RawMessage `json:"completion,omitempty"`
-	Diagnostic          json.RawMessage `json:"diagnostic,omitempty"`
-	SourceValidation    json.RawMessage `json:"source_validation,omitempty"`
-	RecipeValidation    json.RawMessage `json:"recipe_validation,omitempty"`
-	Detail              json.RawMessage `json:"detail,omitempty"`
-	Backfill            json.RawMessage `json:"backfill,omitempty"`
-	CompanyImport       json.RawMessage `json:"company_import,omitempty"`
-	SourceDiscovery     json.RawMessage `json:"source_discovery,omitempty"`
-	ProfileRepair       json.RawMessage `json:"profile_repair,omitempty"`
-	ProfileVerification json.RawMessage `json:"profile_verification,omitempty"`
+	Status               string          `json:"status"`
+	Reason               string          `json:"reason,omitempty"`
+	ContractVersion      string          `json:"contract_version"`
+	CorrelationID        string          `json:"correlation_id"`
+	RequestedBy          string          `json:"requested_by"`
+	Page                 json.RawMessage `json:"page,omitempty"`
+	Completion           json.RawMessage `json:"completion,omitempty"`
+	Diagnostic           json.RawMessage `json:"diagnostic,omitempty"`
+	SourceValidation     json.RawMessage `json:"source_validation,omitempty"`
+	RecipeValidation     json.RawMessage `json:"recipe_validation,omitempty"`
+	Detail               json.RawMessage `json:"detail,omitempty"`
+	Backfill             json.RawMessage `json:"backfill,omitempty"`
+	CompanyImport        json.RawMessage `json:"company_import,omitempty"`
+	SourceDiscovery      json.RawMessage `json:"source_discovery,omitempty"`
+	ProfileRepair        json.RawMessage `json:"profile_repair,omitempty"`
+	ProfileVerification  json.RawMessage `json:"profile_verification,omitempty"`
+	DeepDiscoveryBrowser json.RawMessage `json:"deep_discovery_browser,omitempty"`
 }

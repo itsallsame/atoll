@@ -1,0 +1,103 @@
+{
+  "schema_version": "recruiting.deep-discovery-acceptance.v1",
+  "observed_at": "2026-09-13T19:40:31+08:00",
+  "deployment": {
+    "service": "atoll.service",
+    "service_status": "active",
+    "public_url": "https://staircase.justai.cool",
+    "public_http_status": 200,
+    "database": "configured remote MySQL staircase database",
+    "database_identity": "non-root application identity",
+    "docker_used": false,
+    "migrations": {
+      "57": "applied",
+      "58": "applied",
+      "59": "applied"
+    }
+  },
+  "bytedance_mission": {
+    "mission_id": "mission-bytedance-deep-discovery-g1-20260913",
+    "stage": "completed",
+    "status": "completed",
+    "version": 9,
+    "checkpoint_count": 7,
+    "node_count": 40,
+    "edge_count": 39,
+    "validated_candidate_count": 3,
+    "validated_list_urls": [
+      "https://joinbytedance.com/search",
+      "https://jobs.bytedance.com/campus/position?current=1&limit=10",
+      "https://lifeattiktok.com/search?language=en"
+    ],
+    "validated_candidate_sensors": [
+      "network",
+      "detail_reverse"
+    ]
+  },
+  "browser_canary": {
+    "target_url": "https://joinbytedance.com/search",
+    "mission_version": 5,
+    "mission_operations_used": 4,
+    "probe_id": "probe-deep-browser-canary-v4-20260913",
+    "probe_status": "completed",
+    "probe_version": 2,
+    "work_id": "work-deep-browser-canary-v4-20260913",
+    "work_status": "completed",
+    "work_resolution": "succeeded",
+    "attempt_id": "attempt-e61743d6b76698dfdb6aa548b279bc79",
+    "attempt_status": "succeeded",
+    "final_url": "https://joinbytedance.com/search",
+    "link_count": 29,
+    "response_artifact_id": "artifact-cf5998fbfedf7c2875cd4c1aa0839dd2",
+    "trace_artifact_id": "artifact-fa97020f5f2a44578cd1bf11c8a3348e",
+    "observed_methods": [
+      "GET",
+      "OPTIONS"
+    ],
+    "document_navigations": 1,
+    "public_endpoint": true,
+    "robots_allowed": true,
+    "allowed_write_requests": 0,
+    "form_submissions": 0,
+    "downloads": 0,
+    "popups": 0,
+    "cross_origin_document_navigations": 0,
+    "active_budget_permits_after_completion": 0,
+    "executor_acknowledgement": "completed",
+    "public_get_contains": [
+      "probe",
+      "work",
+      "result"
+    ],
+    "public_get_next_action": "record_browser_evidence_checkpoint"
+  },
+  "state_correction": {
+    "issue": "checkpoint summary was retained as waiting_reason on active or completed missions",
+    "migration": 59,
+    "migration_status": "applied",
+    "missions_with_invalid_waiting_reason_after_migration": 0,
+    "business_facts_deleted": false
+  },
+  "recovery_observation": {
+    "initial_probe_id": "probe-deep-browser-canary-20260913",
+    "attempt_statuses": [
+      "expired",
+      "succeeded"
+    ],
+    "final_probe_status": "completed",
+    "final_work_status": "completed",
+    "final_work_resolution": "succeeded",
+    "manual_database_state_change": false
+  },
+  "verification": {
+    "race_packages": "passed",
+    "recruiting_vet": "passed",
+    "boundary_check": "passed",
+    "diff_check": "passed",
+    "full_repository_test": "blocked by two independently reproduced baseline failures",
+    "baseline_failures": [
+      "TestCoderunnerHumanJourney process-child assertion",
+      "archtest web-to-drivers import edge"
+    ]
+  }
+}

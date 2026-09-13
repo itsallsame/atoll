@@ -191,6 +191,9 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleRepairMessage(sys, cfg, repository, msg)
 		case TypeSourceDiscover, TypeSourceDiscoveryCandidateAccept, TypeSourceDiscoveryCandidateReject:
 			handleSourceDiscoveryMessage(sys, cfg, repository, msg)
+		case TypeDeepDiscoveryStart, TypeDeepDiscoveryCheckpoint, TypeDeepDiscoveryWait,
+			TypeDeepDiscoveryResume, TypeDeepDiscoveryComplete, TypeDeepDiscoveryCancel, TypeDeepDiscoveryBrowserObserve:
+			handleDeepDiscoveryMessage(sys, cfg, repository, msg)
 		case TypeBaselineStart:
 			handleBaselineStart(sys, cfg, repository, msg)
 		case TypeJobCorrect:
@@ -217,6 +220,7 @@ func run(sys actorbase.Sys, cfg Config) error {
 			TypeExecutionAccept, TypeExecutionStarted, TypeExecutionFailed, TypeExecutionWakeCompleted:
 			handleExecutionControlMessage(sys, cfg, repository, state, msg)
 		case TypeSourceGet, TypeSourceList, TypeSourceEndpointHistory, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
+			TypeDeepDiscoveryGet, TypeDeepDiscoveryGraph, TypeDeepDiscoveryGuide, TypeDeepDiscoveryBrowserGet,
 			TypeJobGet, TypeJobList, TypeJobCorrectionGet, TypeProfileGet, TypeWorkGet, TypeWorkList,
 			TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary, TypeRepairGet, TypeRepairList, TypeRecipeInspect,
 			TypeRecipeRolloutBatchGet, TypeRecipeRolloutBatchItems,

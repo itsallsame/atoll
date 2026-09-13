@@ -10,7 +10,7 @@
 
 | ID | 状态 | 当前权威证据 | 尚缺内容 |
 |---|---|---|---|
-| P00 页面自然语言接入闭环 | 未完成 | 2026-09-13 正式节点真实 `agent.ask` 已完成 Company 创建、查询和 Source 空列表查询；Actor 输入 Schema 修复后不再猜字段 | 公司名到官网识别、Discovery Recipe 生成/登记/验证/选择尚无产品能力；因此不能从“字节跳动”连续推进到候选 Source，更不能开始 baseline |
+| P00 页面自然语言接入闭环 | 部分完成 | 2026-09-13 正式节点真实 `agent.ask` 已完成 Company 创建/查询、公司级 Deep Discovery 七阶段推进、40 节点/39 边证据图、3 个已验证字节跳动 ListURL，以及经统一 Work/Attempt/Executor 的真实 Browser Probe；Actor 输入 Schema 不再依赖用户猜字段 | Deep Discovery 候选到 Source 创建、Listing/Detail Recipe 生成/登记/验证/选择和 baseline 尚未串成一条无需开发者指定 ID 的自然语言旅程 |
 | S01 单个公司新增 | 完成 | `TestRecruitingCompanySourceAndWorkControlUsesMySQLAcrossServerRestart`、`TestCreateCompanyCommandIsAtomicAndReplayable` | — |
 | S02 批量导入公司 | 完成 | `TestRecruitingCompanyImportPreviewThroughResourceAndExecutor`、`recruiting-company-import-human-resolution-20260911.json` | — |
 | S03 Source Discovery | 完成 | `TestRecruitingLiveSourceDiscoveryThroughAtoll`、`TestRecruitingLiveZeroSourceDiscoveryThroughAtoll`、`TestSourceDiscoveryRepositoryContract` | — |

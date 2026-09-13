@@ -26,8 +26,9 @@ import (
 )
 
 const (
-	TypeProbe = "recruiting.execution.probe"
-	TypeWake  = executioncontract.TypeWake
+	TypeProbe                = "recruiting.execution.probe"
+	TypeWake                 = executioncontract.TypeWake
+	TypeCompanyWebsiteLookup = "recruiting.company.website.lookup"
 )
 
 type probePayload struct {
@@ -60,6 +61,8 @@ func manifest() introspect.Manifest {
 		Words: map[string]introspect.WordSpec{
 			TypeProbe: {Description: "execute the deterministic recruiting P0 fixture"},
 			TypeWake:  {Description: "claim and execute at most one available recruiting Work after an explicit control-plane wake"},
+			TypeCompanyWebsiteLookup: {Description: "look up bounded official-website candidates from Wikidata without changing recruiting facts",
+				InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["company_name"],"properties":{"company_name":{"type":"string"},"language":{"type":"string","enum":["zh","en"]}}}`)},
 		},
 	}
 }
@@ -87,6 +90,10 @@ func run(sys actorbase.Sys, cfg Config) error {
 		}
 		if msg.Type == TypeWake {
 			handleWake(sys, cfg, production, incarnation, msg)
+			continue
+		}
+		if msg.Type == TypeCompanyWebsiteLookup {
+			handleOnboardingBootstrap(sys, cfg, msg)
 			continue
 		}
 		if msg.Type != TypeProbe {
@@ -164,6 +171,7 @@ func newProductionRuntime(cfg Config) (*productionRuntime, error) {
 			return nil, fmt.Errorf("prepare public browser driver: %w", err)
 		}
 		options.Compliance = httpdriver.ComplianceEvidence{TermsPolicyVersion: cfg.TermsPolicyVersion, TermsReviewedAt: cfg.TermsReviewedAt}
+		options.Explorer = runner
 		return &productionRuntime{driver: &browserExecutionDriver{driver: driver}, options: options}, nil
 	}
 	robots, err := httpdriver.NewRobotsTxtChecker(httpdriver.RobotsPolicy{Timeout: time.Duration(cfg.RobotsTimeoutMS) * time.Millisecond,

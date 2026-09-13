@@ -180,7 +180,7 @@ func TestManifestHasOneExecutorClass(t *testing.T) {
 	if m.Class != Class {
 		t.Fatalf("manifest class=%q want %q", m.Class, Class)
 	}
-	for _, word := range []string{TypeProbe, TypeWake} {
+	for _, word := range []string{TypeProbe, TypeWake, TypeCompanyWebsiteLookup} {
 		if _, ok := m.Words[word]; !ok {
 			t.Fatalf("manifest lacks %q", word)
 		}

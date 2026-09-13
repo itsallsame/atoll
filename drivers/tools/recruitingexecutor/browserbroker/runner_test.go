@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -139,7 +140,9 @@ fetch('/write',{method:'POST',body:'forbidden'}).finally(()=>document.body.inner
 	request.Plan.Actions[0].Selector = ".done"
 	request.PlanHash, _ = request.Plan.ContentHash()
 	result, err := runner.Run(context.Background(), request)
-	if err == nil || result.Attestation.AllowedWriteRequests != 1 || result.Attestation.PublicEndpoint || writes.Load() != 0 {
+	if err != nil || result.Attestation.AllowedWriteRequests != 0 || result.Attestation.BlockedWriteRequests != 1 ||
+		!reflect.DeepEqual(result.Attestation.BlockedMethods, []string{http.MethodPost}) ||
+		!result.Attestation.PublicEndpoint || writes.Load() != 0 {
 		t.Fatalf("Chrome write was not blocked: err=%v attestation=%+v origin_writes=%d", err, result.Attestation, writes.Load())
 	}
 }
@@ -254,7 +257,7 @@ func browserRequest(endpoint string) browserdriver.SessionRequest {
 	return browserdriver.SessionRequest{EndpointURL: endpoint, UserAgent: "Atoll-Recruiting-Browser-Test/1",
 		Plan: plan, PlanHash: planHash, AttemptID: "attempt-browser-1", TimeoutMS: 15_000,
 		Policy:         browserdriver.PolicyEvidence{TermsPolicyVersion: 1, TermsReviewedAt: "2026-09-11T00:00:00Z"},
-		AllowedMethods: []string{http.MethodGet, http.MethodHead}, SameOriginDocs: true, BlockDownloads: true, BlockPopups: true}
+		AllowedMethods: []string{http.MethodGet, http.MethodHead, http.MethodOptions}, SameOriginDocs: true, BlockDownloads: true, BlockPopups: true}
 }
 
 func chromeForTest(t *testing.T) string {
@@ -302,7 +305,7 @@ func TestRunnerReadsOptInPublicWebsiteInRealChrome(t *testing.T) {
 	request := browserdriver.SessionRequest{EndpointURL: endpoint, UserAgent: "Atoll-Recruiting-Browser-Live-Test/1",
 		Plan: plan, PlanHash: planHash, AttemptID: "attempt-browser-live-1", TimeoutMS: 30_000,
 		Policy:         browserdriver.PolicyEvidence{TermsPolicyVersion: 1, TermsReviewedAt: "2026-09-11T00:00:00Z"},
-		AllowedMethods: []string{http.MethodGet, http.MethodHead}, SameOriginDocs: true,
+		AllowedMethods: []string{http.MethodGet, http.MethodHead, http.MethodOptions}, SameOriginDocs: true,
 		BlockDownloads: true, BlockPopups: true}
 	runner, err := New(chromeForTest(t))
 	if err != nil {

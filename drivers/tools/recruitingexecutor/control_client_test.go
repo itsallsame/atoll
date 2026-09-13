@@ -99,6 +99,27 @@ func TestRequestExecutionOfferRepresentsNoWorkWithoutAnError(t *testing.T) {
 	}
 }
 
+func TestRequestExecutionOfferReplaysAfterEmptyWaitWindow(t *testing.T) {
+	offer, _, _ := listingExecutionOffer(t, time.Date(2026, 9, 13, 8, 0, 0, 0, time.UTC))
+	response := executioncontract.OfferResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-replay", RequestedBy: "executor-1", Available: true, Offer: &offer}
+	timedOut := &pendingStub{}
+	caller := &callerSequenceStub{pending: []*pendingStub{timedOut,
+		{response: controlResponse(t, executioncontract.TypeOffer, response)}}}
+	request := executioncontract.OfferRequest{CommandID: "offer-replay", ExecutorIncarnation: offer.Attempt.ExecutorIncarnation,
+		Capability: offer.Attempt.Capability}
+	got, err := requestExecutionOffer(context.Background(), caller, message.Root(), "control-1",
+		offer.Attempt.ExecutorActorID, request, time.Second)
+	if err != nil || got == nil || got.Attempt.AttemptID != offer.Attempt.AttemptID {
+		t.Fatalf("replayed offer: got=%+v err=%v", got, err)
+	}
+	if !timedOut.cancelled || len(caller.operations) != 2 || caller.operations[0] != executioncontract.TypeOffer ||
+		caller.operations[1] != executioncontract.TypeOffer || !reflect.DeepEqual(caller.payloads[0], caller.payloads[1]) {
+		t.Fatalf("offer replay was not exact: cancelled=%v operations=%v payloads=%#v",
+			timedOut.cancelled, caller.operations, caller.payloads)
+	}
+}
+
 func TestBatchExecutionControlChecksOfferAndClaimBindings(t *testing.T) {
 	now := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
 	first, _, _ := listingExecutionOffer(t, now)
@@ -209,6 +230,26 @@ func TestTransitionExecutionChecksReturnedAttempt(t *testing.T) {
 	}
 }
 
+func TestTransitionExecutionReplaysAfterEmptyWaitWindow(t *testing.T) {
+	attempt := model.Attempt{AttemptID: "attempt-start", WorkID: "work-1", Status: model.AttemptRunning,
+		ExecutorActorID: "executor-1", ExecutorIncarnation: "boot-1"}
+	response := executioncontract.TransitionResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-start-replay", RequestedBy: "executor-1", Attempt: &attempt}
+	timedOut := &pendingStub{}
+	caller := &callerSequenceStub{pending: []*pendingStub{timedOut,
+		{response: controlResponse(t, executioncontract.TypeStarted, response)}}}
+	request := executioncontract.TransitionRequest{CommandID: "started-attempt-start", AttemptID: attempt.AttemptID,
+		ExecutorIncarnation: attempt.ExecutorIncarnation}
+	if err := transitionExecution(context.Background(), caller, message.Root(), "control-1", "executor-1",
+		executioncontract.TypeStarted, request, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if !timedOut.cancelled || len(caller.operations) != 2 || !reflect.DeepEqual(caller.payloads[0], caller.payloads[1]) {
+		t.Fatalf("transition replay was not exact: cancelled=%v operations=%v payloads=%#v",
+			timedOut.cancelled, caller.operations, caller.payloads)
+	}
+}
+
 func TestMessageExecutionControlCarriesFailureEvidence(t *testing.T) {
 	attempt := model.Attempt{AttemptID: "attempt-failed", WorkID: "work-1", Status: model.AttemptFailed,
 		ExecutorActorID: "executor-1", ExecutorIncarnation: "boot-1"}
@@ -274,6 +315,26 @@ func TestSubmitExecutionResultRequiresMatchingAcknowledgement(t *testing.T) {
 	if err := submitExecutionResult(context.Background(), caller, message.Root(), "control-1", "executor-1",
 		"listing_page", payload, time.Second); err == nil {
 		t.Fatal("expected cross-kind acknowledgement rejection")
+	}
+}
+
+func TestSubmitDeepDiscoveryBrowserResultAcceptsOnlyItsAcknowledgement(t *testing.T) {
+	response := executioncontract.ResultResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-deep-discovery-browser", RequestedBy: "executor-1",
+		DeepDiscoveryBrowser: json.RawMessage(`{"probe":{"probe_status":"completed"}}`)}
+	caller := &callerStub{pending: &pendingStub{response: controlResponse(t, executioncontract.TypeResult, response)}}
+	payload := executioncontract.DeepDiscoveryBrowserResult{CommandID: "deep-browser-result-1",
+		ResultKind: "deep_discovery_browser", AttemptID: "attempt-1", ExecutorIncarnation: "boot-1"}
+	if err := submitExecutionResult(context.Background(), caller, message.Root(), "control-1", "executor-1",
+		payload.ResultKind, payload, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	response.DeepDiscoveryBrowser = nil
+	response.SourceDiscovery = json.RawMessage(`{"work":{"work_status":"completed"}}`)
+	caller.pending.response = controlResponse(t, executioncontract.TypeResult, response)
+	if err := submitExecutionResult(context.Background(), caller, message.Root(), "control-1", "executor-1",
+		payload.ResultKind, payload, time.Second); err == nil {
+		t.Fatal("Deep Discovery browser result accepted a source discovery acknowledgement")
 	}
 }
 

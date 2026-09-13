@@ -92,7 +92,7 @@ func (e *controlFailure) Error() string {
 
 func requestExecutionOffer(ctx context.Context, caller executionCallFace, cause message.Cause, controlActor actor.ActorID,
 	executorActorID string, request executioncontract.OfferRequest, wait time.Duration) (*executioncontract.Offer, error) {
-	response, err := callExecutionControl(ctx, caller, cause, controlActor, executioncontract.TypeOffer, request, wait)
+	response, err := callIdempotentExecutionControl(ctx, caller, cause, controlActor, executioncontract.TypeOffer, request, wait)
 	if err != nil {
 		return nil, err
 	}
@@ -112,6 +112,19 @@ func requestExecutionOffer(ctx context.Context, caller executionCallFace, cause 
 		return nil, errors.New("recruiting control returned an offer bound to another executor")
 	}
 	return decoded.Offer, nil
+}
+
+// callIdempotentExecutionControl retries once when the caller cannot know
+// whether an idempotent control command committed. The command_id in offer
+// requests is the durable identity, so replaying the exact payload returns the
+// same business receipt instead of creating a second Attempt.
+func callIdempotentExecutionControl(ctx context.Context, caller executionCallFace, cause message.Cause,
+	controlActor actor.ActorID, operation string, request any, wait time.Duration) (actorbase.Msg, error) {
+	response, err := callExecutionControl(ctx, caller, cause, controlActor, operation, request, wait)
+	if err == nil || ctx.Err() != nil || !isAmbiguousControlDelivery(err) {
+		return response, err
+	}
+	return callExecutionControl(ctx, caller, cause, controlActor, operation, request, wait)
 }
 
 func requestExecutionOfferBatch(ctx context.Context, caller executionCallFace, cause message.Cause, controlActor actor.ActorID,
@@ -192,7 +205,7 @@ func transitionExecution(ctx context.Context, caller executionCallFace, cause me
 	default:
 		return fmt.Errorf("unsupported execution transition %q", operation)
 	}
-	response, err := callExecutionControl(ctx, caller, cause, controlActor, operation, request, wait)
+	response, err := callIdempotentExecutionControl(ctx, caller, cause, controlActor, operation, request, wait)
 	if err != nil {
 		return err
 	}
@@ -212,7 +225,7 @@ func transitionExecution(ctx context.Context, caller executionCallFace, cause me
 func submitExecutionResult(ctx context.Context, caller executionCallFace, cause message.Cause, controlActor actor.ActorID,
 	executorActorID, resultKind string, payload any, wait time.Duration) error {
 	switch resultKind {
-	case "listing_page", "listing_completion", "diagnostic", "source_validation", "recipe_validation", "recipe_sample_validation", "detail", "backfill", "source_discovery", "company_import_preview_chunk", "company_import_preview_completion", "company_import_apply", "profile_repair_submission", "profile_verification":
+	case "listing_page", "listing_completion", "diagnostic", "source_validation", "recipe_validation", "recipe_sample_validation", "detail", "backfill", "source_discovery", "company_import_preview_chunk", "company_import_preview_completion", "company_import_apply", "profile_repair_submission", "profile_verification", "deep_discovery_browser":
 	default:
 		return fmt.Errorf("unsupported execution result kind %q", resultKind)
 	}
@@ -241,7 +254,8 @@ func submitExecutionResult(ctx context.Context, caller executionCallFace, cause 
 		"source_validation": len(decoded.SourceValidation) != 0, "recipe_validation": len(decoded.RecipeValidation) != 0,
 		"source_discovery": len(decoded.SourceDiscovery) != 0, "company_import": len(decoded.CompanyImport) != 0,
 		"profile_repair_submission": len(decoded.ProfileRepair) != 0,
-		"profile_verification":      len(decoded.ProfileVerification) != 0}
+		"profile_verification":      len(decoded.ProfileVerification) != 0,
+		"deep_discovery_browser":    len(decoded.DeepDiscoveryBrowser) != 0}
 	for kind, exists := range present {
 		if exists != (kind == expectedAcknowledgement) {
 			return errors.New("recruiting control result acknowledgement does not match the submitted kind")
@@ -301,8 +315,17 @@ func callExecutionControl(ctx context.Context, caller executionCallFace, cause m
 		_ = pending.Cancel()
 		return actorbase.Msg{}, &ambiguousControlDeliveryError{operation: operation, cause: err}
 	}
+	// Pending.Wait reports a bounded wait-window expiry as an empty message
+	// with no error. This is not a response from the control actor and the
+	// command may already have committed, so classify it as ambiguous and let
+	// idempotent callers replay their durable command identity.
+	if response.Kind == "" && response.Type == "" && response.ID == "" {
+		_ = pending.Cancel()
+		return actorbase.Msg{}, &ambiguousControlDeliveryError{operation: operation, cause: context.DeadlineExceeded}
+	}
 	if response.Kind != message.KindResponse || response.Type != operation {
-		return actorbase.Msg{}, fmt.Errorf("recruiting control %s returned an unrelated response", operation)
+		return actorbase.Msg{}, fmt.Errorf("recruiting control %s returned an unrelated response (kind=%q type=%q)",
+			operation, response.Kind, response.Type)
 	}
 	var terminal struct {
 		Status    string          `json:"status"`

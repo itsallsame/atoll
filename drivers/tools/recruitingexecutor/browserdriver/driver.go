@@ -51,7 +51,9 @@ type SessionRequest struct {
 type Attestation struct {
 	DocumentNavigations            int      `json:"document_navigations"`
 	ObservedMethods                []string `json:"observed_methods"`
+	BlockedMethods                 []string `json:"blocked_methods,omitempty"`
 	AllowedWriteRequests           int      `json:"allowed_write_requests"`
+	BlockedWriteRequests           int      `json:"blocked_write_requests,omitempty"`
 	CrossOriginDocumentNavigations int      `json:"cross_origin_document_navigations"`
 	FormSubmissions                int      `json:"form_submissions"`
 	Downloads                      int      `json:"downloads"`
@@ -64,7 +66,7 @@ type Attestation struct {
 
 func (a Attestation) Validate(request SessionRequest) error {
 	if a.DocumentNavigations < 1 || a.DocumentNavigations > request.Plan.MaxNavigations ||
-		a.AllowedWriteRequests != 0 || a.CrossOriginDocumentNavigations != 0 || a.FormSubmissions != 0 ||
+		a.AllowedWriteRequests != 0 || a.BlockedWriteRequests < 0 || a.CrossOriginDocumentNavigations != 0 || a.FormSubmissions != 0 ||
 		a.Downloads != 0 || a.Popups != 0 || !a.PublicEndpoint || !a.RobotsAllowed ||
 		a.TermsPolicyVersion != request.Policy.TermsPolicyVersion ||
 		(request.ProfileRef != "" && !a.ProfileLeaseAuthorized) {
@@ -72,9 +74,18 @@ func (a Attestation) Validate(request SessionRequest) error {
 	}
 	for _, method := range a.ObservedMethods {
 		method = strings.ToUpper(strings.TrimSpace(method))
-		if method != http.MethodGet && method != http.MethodHead {
+		if method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions {
 			return fmt.Errorf("browser broker observed unsafe method %q", method)
 		}
+	}
+	for _, method := range a.BlockedMethods {
+		method = strings.ToUpper(strings.TrimSpace(method))
+		if method == "" || method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
+			return fmt.Errorf("browser broker returned invalid blocked method %q", method)
+		}
+	}
+	if (a.BlockedWriteRequests == 0) != (len(a.BlockedMethods) == 0) {
+		return fmt.Errorf("browser broker returned inconsistent blocked write evidence")
 	}
 	return nil
 }
@@ -188,7 +199,7 @@ func (d *Driver) ExecutePage(ctx context.Context, spec recipeabi.Spec, input rec
 		Plan:           plan, PlanHash: planHash, AttemptID: input.Attempt.AttemptID,
 		TimeoutMS:      spec.Request.TimeoutMS,
 		Policy:         policy,
-		AllowedMethods: []string{http.MethodGet, http.MethodHead}, SameOriginDocs: true, BlockDownloads: true, BlockPopups: true}
+		AllowedMethods: []string{http.MethodGet, http.MethodHead, http.MethodOptions}, SameOriginDocs: true, BlockDownloads: true, BlockPopups: true}
 	runContext, cancel := context.WithTimeout(ctx, time.Duration(spec.Request.TimeoutMS)*time.Millisecond)
 	defer cancel()
 	session, brokerErr := d.broker.Run(runContext, request)

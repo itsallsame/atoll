@@ -48,6 +48,10 @@ func ExecuteHTML(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 	}
 	fieldSelectors := make(map[string]cascadia.Selector, len(spec.Extraction.Fields))
 	for field, expression := range spec.Extraction.Fields {
+		if expression == ":self" {
+			fieldSelectors[field] = nil
+			continue
+		}
 		selector, err := cascadia.Compile(expression)
 		if err != nil {
 			return DocumentResult{}, fmt.Errorf("compile field %s selector: %w", field, err)
@@ -76,7 +80,10 @@ func ExecuteHTML(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 		}
 		item := make(map[string]json.RawMessage, len(fieldSelectors))
 		for field, selector := range fieldSelectors {
-			node := cascadia.Query(row, selector)
+			node := row
+			if selector != nil {
+				node = cascadia.Query(row, selector)
+			}
 			if node == nil {
 				return DocumentResult{}, fmt.Errorf("row %d field %s selector matched nothing", index, field)
 			}

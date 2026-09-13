@@ -60,6 +60,27 @@ func TestExecuteHTMLRejectsInvalidSelectorAndMissingAttribute(t *testing.T) {
 	}
 }
 
+func TestExecuteHTMLDiscoveryCanReadTheCollectionNodeItself(t *testing.T) {
+	spec := recipeabi.Spec{ABIVersion: recipeabi.Version, Kind: recipeabi.KindDiscovery,
+		RequiredCapability: "http.fetch", Transport: recipeabi.TransportHTTPHTML,
+		Request: recipeabi.ReadRequest{Method: "GET", TimeoutMS: 2_000, MaxResponseBytes: 1 << 20,
+			MaxRedirects: 1, UserAgent: "Atoll-Recruiting/1"},
+		Extraction: recipeabi.Extraction{Collection: `a[href*="career"],a[href*="/job"]`,
+			Fields:     map[string]string{"endpoint": ":self", "confidence_basis": ":self"},
+			Attributes: map[string]string{"endpoint": "href"}},
+	}
+	result, err := ExecuteHTML(spec, []byte(`<nav><a href="/careers">Join us</a><a href="/about">About</a></nav>`))
+	if err != nil || len(result.Items) != 1 {
+		t.Fatalf("discovery self extraction=%+v err=%v", result, err)
+	}
+	var endpoint, basis string
+	_ = json.Unmarshal(result.Items[0]["endpoint"], &endpoint)
+	_ = json.Unmarshal(result.Items[0]["confidence_basis"], &basis)
+	if endpoint != "/careers" || basis != "Join us" {
+		t.Fatalf("self extraction endpoint=%q basis=%q", endpoint, basis)
+	}
+}
+
 func TestExecuteHTMLNormalizesDeclaredUTCDateTimeActivity(t *testing.T) {
 	spec := htmlListingSpec()
 	spec.Listing.ActivityTimeFormat = "utc_datetime"

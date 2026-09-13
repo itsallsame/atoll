@@ -236,6 +236,32 @@ func (r *Repository) applyRetryWorkCommand(ctx context.Context, expectedPrevious
 			}
 		}
 	}
+	if retry.Purpose == "recipe_validation" {
+		run, runErr := getListingRunByWorkWith(ctx, tx, previousID, true)
+		if errors.Is(runErr, ErrNotFound) {
+			sample, sampleErr := getRecipeSampleValidationByWorkWith(ctx, tx, previousID, true)
+			if sampleErr != nil {
+				return CommandResult{}, fmt.Errorf("load Recipe sample validation for retry: %w", sampleErr)
+			}
+			rebound, sampleErr := sample.RebindWork(sample.Version, previousID, retry.WorkID)
+			if sampleErr != nil {
+				return CommandResult{}, sampleErr
+			}
+			if sampleErr := updateRecipeSampleValidationTx(ctx, tx, sample.Version, rebound, businessAt); sampleErr != nil {
+				return CommandResult{}, fmt.Errorf("rebind Recipe sample validation for retry: %w", sampleErr)
+			}
+		} else if runErr != nil {
+			return CommandResult{}, fmt.Errorf("load Listing Recipe validation for retry: %w", runErr)
+		} else {
+			rebound, runErr := run.RebindWork(run.Version, previousID, retry.WorkID)
+			if runErr != nil {
+				return CommandResult{}, runErr
+			}
+			if runErr := rebindListingRunInTx(ctx, tx, run.Version, rebound, businessAt); runErr != nil {
+				return CommandResult{}, runErr
+			}
+		}
+	}
 	if retry.Purpose == "detail_sync" && retry.ParentWorkID != "" {
 		result, err := tx.ExecContext(ctx, `UPDATE recruiting_baseline_detail_items
 SET detail_work_id = ?, version = version + 1, updated_at = ?
