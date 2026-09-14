@@ -128,7 +128,7 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		handleDeepDiscoveryPublicQueryGetQuery(sys, repository, msg)
 		return
 	}
-	if msg.Type == TypeDeepDiscoveryPublicQueryInspect {
+	if msg.Type == TypePublicQueryInspect {
 		handleDeepDiscoveryPublicQueryInspectQuery(sys, repository, msg)
 		return
 	}
