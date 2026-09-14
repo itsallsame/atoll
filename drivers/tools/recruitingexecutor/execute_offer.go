@@ -283,6 +283,11 @@ func failRunExecution(ctx context.Context, control executionControl, sink *atoll
 
 func failLocalExecution(ctx context.Context, control executionControl, sink *atollArtifactSink, offer executioncontract.Offer,
 	class, stage string, cause error) error {
+	return failLocalExecutionWithRetry(ctx, control, sink, offer, class, stage, false, cause)
+}
+
+func failLocalExecutionWithRetry(ctx context.Context, control executionControl, sink *atollArtifactSink,
+	offer executioncontract.Offer, class, stage string, retryable bool, cause error) error {
 	body, _ := json.Marshal(map[string]string{"class": class, "stage": stage})
 	ref, artifactErr := sink.Put(ctx, httpdriver.ArtifactWrite{Kind: "failure", AttemptID: offer.Attempt.AttemptID,
 		PageSequence: 1, URL: executionTargetURL(offer), ContentType: "application/json", Body: body})
@@ -291,7 +296,7 @@ func failLocalExecution(ctx context.Context, control executionControl, sink *ato
 	}
 	output := recipeabi.RunOutput{ABIVersion: recipeabi.Version, AttemptID: offer.Attempt.AttemptID,
 		Artifacts: []recipeabi.ArtifactRef{ref}, Failure: &recipeabi.Failure{Class: class, Signature: class + "." + stage, Artifact: ref,
-			NeedsRepair: class == "parse_error" || class == "quality_rejected" || class == "contract_violated"}}
+			Retryable: retryable, NeedsRepair: class == "parse_error" || class == "quality_rejected" || class == "contract_violated"}}
 	if err := failRunExecution(ctx, control, sink, offer, output); err != nil {
 		return errors.Join(fmt.Errorf("%s: %w", stage, cause), err)
 	}

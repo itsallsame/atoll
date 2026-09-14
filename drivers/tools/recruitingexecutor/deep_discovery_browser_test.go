@@ -18,6 +18,7 @@ import (
 type deepDiscoveryBrokerStub struct {
 	request browserdriver.SessionRequest
 	result  browserdriver.SessionResult
+	err     error
 }
 
 func TestBoundedDeepDiscoveryLinkTextPreservesUTF8(t *testing.T) {
@@ -30,7 +31,7 @@ func TestBoundedDeepDiscoveryLinkTextPreservesUTF8(t *testing.T) {
 
 func (s *deepDiscoveryBrokerStub) Run(_ context.Context, request browserdriver.SessionRequest) (browserdriver.SessionResult, error) {
 	s.request = request
-	return s.result, nil
+	return s.result, s.err
 }
 
 func TestExtractDeepDiscoveryLinksIsBoundedCanonicalAndRedacted(t *testing.T) {
@@ -103,6 +104,29 @@ func TestExecuteDeepDiscoveryBrowserUsesWorkLifecycleAndSubmitsEvidence(t *testi
 	if len(broker.request.PublicQueryStubs) != 1 || string(broker.request.PublicQueryStubs[0].Body) != string(stubBody) ||
 		broker.request.PublicQueryStubs[0].ContentHash != stubHash {
 		t.Fatalf("verified Artifact was not loaded into the local Browser Stub: %+v", broker.request.PublicQueryStubs)
+	}
+}
+
+func TestDeepDiscoveryBrowserTreatsUnclassifiedBrokerFailureAsRetryableTransport(t *testing.T) {
+	now := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
+	work, _ := model.NewWork("deep-browser-transport-work", "deep_discovery_probe", "deep-browser-transport-probe",
+		"deep_discovery_browser", "agent")
+	probe, _ := model.NewDeepDiscoveryBrowserProbe("deep-browser-transport-probe", "mission-transport", work.WorkID,
+		"https://search.example/query", "", 0, "", 2)
+	attempt, _ := model.NewAttempt("deep-browser-transport-attempt", work)
+	attempt, _ = attempt.BindExecutor("tool:browser:1", "boot-1", "browser.public")
+	offer := executioncontract.Offer{Kind: "deep_discovery_browser", Work: work, Attempt: attempt,
+		DeepDiscoveryBrowser: &probe, RequestedCapability: "browser.public"}
+	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}}}
+	control := &executeControlStub{}
+	options := executeTestOptions(now)
+	options.Explorer = &deepDiscoveryBrokerStub{err: context.DeadlineExceeded}
+	if err := executeOffer(context.Background(), control, resources, nil, offer, options); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.calls) != 3 || control.calls[2] != "failed" ||
+		control.failed.Class != "transport_timeout" || !control.failed.Retryable {
+		t.Fatalf("browser transport failure=%+v calls=%v", control.failed, control.calls)
 	}
 }
 

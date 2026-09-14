@@ -95,7 +95,8 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 		BlockPopups: true, PublicQueryStubs: stubs}
 	result, err := explorer.Run(ctx, request)
 	if err != nil {
-		return failLocalExecution(ctx, control, sink, offer, "unexpected_status", "deep_discovery_browser", err)
+		class, retryable := deepDiscoveryBrowserFailure(err)
+		return failLocalExecutionWithRetry(ctx, control, sink, offer, class, "deep_discovery_browser", retryable, err)
 	}
 	if err := result.Attestation.Validate(request); err != nil {
 		return failLocalExecution(ctx, control, sink, offer, "contract_violated", "deep_discovery_effect_policy", err)
@@ -143,6 +144,24 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 		return fmt.Errorf("submit Deep Discovery browser result: %w", err)
 	}
 	return nil
+}
+
+func deepDiscoveryBrowserFailure(err error) (string, bool) {
+	var classified browserdriver.ClassifiedBrokerError
+	if !errors.As(err, &classified) {
+		// Chrome navigation and broker transport errors are commonly returned as
+		// ordinary errors. Treating them as a terminal upstream status strands a
+		// discovery Mission at the first transient browser failure.
+		return "transport_timeout", true
+	}
+	switch classified.BrowserFailureClass() {
+	case "endpoint_rejected", "robots_disallowed", "auth_expired", "captcha", "parse_error":
+		return classified.BrowserFailureClass(), false
+	case "effect_policy_violated":
+		return "contract_violated", false
+	default:
+		return "transport_timeout", true
+	}
 }
 
 type deepDiscoveryLink = executioncontract.DeepDiscoveryLink
