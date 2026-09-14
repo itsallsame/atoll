@@ -147,6 +147,29 @@ func TestOnboardingAutomationAcceptsSuccessfulCausalRepairProbe(t *testing.T) {
 	}
 }
 
+func TestOnboardingAutomationSkipsAcceptedBrowserEvidenceGap(t *testing.T) {
+	company, _ := model.NewCompany("company-1", "Example", "https://example.com")
+	failedWork, _ := model.NewWork("failed-work", "deep_discovery_probe", "failed-probe", "deep_discovery_browser", "agent")
+	failedWork.Status = model.WorkCompleted
+	failedWork.Resolution = model.ResolutionAcceptedGap
+	failedProbe, _ := model.NewDeepDiscoveryBrowserProbe("failed-probe", "mission-1", failedWork.WorkID,
+		"https://search.example.com", "", 1, "", 2)
+	successWork, _ := model.NewWork("success-work", "deep_discovery_probe", "success-probe", "deep_discovery_browser", "agent")
+	successWork.Status = model.WorkCompleted
+	successWork.Resolution = model.ResolutionSucceeded
+	successProbe, _ := model.NewDeepDiscoveryBrowserProbe("success-probe", "mission-1", successWork.WorkID,
+		company.Website, "", 1, "", 3)
+	successProbe.Status = model.DeepDiscoveryProbeCompleted
+	successProbe.Version = 2
+	snapshot := store.DeepDiscoveryAutomationSnapshot{BrowserProbes: []store.DeepDiscoveryBrowserAutomationFact{
+		{Probe: failedProbe, Work: failedWork},
+		{Probe: successProbe, Work: successWork, Result: &store.DeepDiscoveryBrowserResult{}},
+	}}
+	if plan := planOnboardingAutomation(snapshot, company); plan.Action != onboardingReviewEvidence {
+		t.Fatalf("accepted browser evidence gap still blocked onboarding: %+v", plan)
+	}
+}
+
 func TestOnboardingAutomationSkipsAcceptedEphemeralQueryGap(t *testing.T) {
 	company, _ := model.NewCompany("company-1", "Example", "https://example.com")
 	probeWork, _ := model.NewWork("probe-work", "deep_discovery_probe", "probe-1", "deep_discovery_browser", "agent")

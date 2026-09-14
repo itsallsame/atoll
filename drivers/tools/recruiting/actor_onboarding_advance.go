@@ -60,6 +60,16 @@ func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
 	for index := len(snapshot.BrowserProbes) - 1; index >= 0; index-- {
 		fact := snapshot.BrowserProbes[index]
 		if fact.Probe.Status == model.DeepDiscoveryProbeQueued {
+			// A browser branch may be an optional exploration path (for example,
+			// one of several public search providers).  Once an operator has
+			// explicitly accepted that bounded evidence gap, retain the failed
+			// Probe and Work as history but do not let it permanently block newer
+			// independent evidence in the same Mission.  Other terminal
+			// resolutions still require a successful causal validation Probe.
+			if fact.Work.Status == model.WorkCompleted &&
+				fact.Work.Resolution == model.ResolutionAcceptedGap {
+				continue
+			}
 			if fact.Work.Terminal() || fact.Work.Status == model.WorkWaitingHuman || fact.Work.Status == model.WorkPaused {
 				if hasSucceededCausalBrowserProbe(snapshot, fact.Work.WorkID) {
 					continue
