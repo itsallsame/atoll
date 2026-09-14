@@ -1,6 +1,6 @@
 {
   "evidence_version": "recruiting.source-initialization-evidence-bootstrap.v1",
-  "captured_at": "2026-09-14T00:00:00Z",
+  "captured_at": "2026-09-14T05:36:53Z",
   "scope": "bootstrap bounded same-company browser evidence for materialized candidate recruitment Sources",
   "production_journey": {
     "entry": "authenticated agent.ask using only the company name and business intent",
@@ -8,7 +8,8 @@
     "pre_change_result": "five candidate Sources existed, but the latest completed Mission had no Source-bound browser evidence and the journey stopped before Recipe preparation",
     "first_post_change_result": "generation 3 and the first Source browser Work were created automatically; execution stopped at repair because the real SPA performed two same-origin document navigations against a frozen limit of one",
     "root_cause_evidence": "attestation recorded 2 document navigations, 0 cross-origin documents, 0 allowed writes, 9 blocked POST requests, 0 forms, 0 downloads, and 0 popups",
-    "post_navigation_fix_result": "pending production deployment, repair recovery, and live re-execution"
+    "post_navigation_fix_result": "commit a27f6914 was deployed and the public node returned HTTP 200; production-equivalent real Chrome execution against the same Source URL passed twice with the shared attestation contract",
+    "business_work_after_fix": "the original immutable failed Work remains waiting_human behind its Repair Incident; recovery requires a successful causal validation Work and is intentionally not bypassed"
   },
   "design": {
     "new_actor_types": 0,
