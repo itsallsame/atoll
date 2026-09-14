@@ -71,6 +71,7 @@ const (
 	TypeOnboardingBegin                = "recruiting.onboarding.begin"
 	TypeOnboardingStatus               = "recruiting.onboarding.status"
 	TypeOnboardingAdvance              = "recruiting.onboarding.advance"
+	TypeOnboardingRepairValidate       = "recruiting.onboarding.repair.validate"
 	TypeOnboardingMaterialize          = "recruiting.onboarding.materialize"
 	TypeSourceProfileBind              = "recruiting.source.profile.bind"
 	TypeSourceProfileUnbind            = "recruiting.source.profile.unbind"

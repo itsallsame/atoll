@@ -525,7 +525,20 @@ WHERE incident_id = ? AND work_id = ?`, incident.IncidentID, work.CauseWorkID).S
 	if err != nil {
 		return err
 	}
-	if !cause.Terminal() || cause.TargetType != work.TargetType || cause.TargetID != work.TargetID || cause.Purpose != work.Purpose {
+	matchingTarget := cause.TargetType == work.TargetType && cause.TargetID == work.TargetID
+	if !matchingTarget && cause.Purpose == "deep_discovery_browser" && work.Purpose == "deep_discovery_browser" {
+		var causeMissionID, causeURL, validationMissionID, validationURL string
+		err := tx.QueryRowContext(ctx, `SELECT mission_id,target_url FROM recruiting_deep_discovery_browser_probes WHERE probe_id=?`,
+			cause.TargetID).Scan(&causeMissionID, &causeURL)
+		if err == nil {
+			err = tx.QueryRowContext(ctx, `SELECT mission_id,target_url FROM recruiting_deep_discovery_browser_probes WHERE probe_id=?`,
+				work.TargetID).Scan(&validationMissionID, &validationURL)
+		}
+		matchingTarget = err == nil && causeMissionID == validationMissionID && causeURL == validationURL
+	}
+	causeEligible := cause.Terminal() || (cause.Purpose == "deep_discovery_browser" &&
+		cause.Status == model.WorkWaitingHuman && cause.BlockedByRepairWorkID == incident.RepairWorkID)
+	if !causeEligible || cause.TargetType != work.TargetType || !matchingTarget || cause.Purpose != work.Purpose {
 		return fmt.Errorf("%w: validation Work does not preserve its affected cause target and purpose", ErrRepairEvidenceRejected)
 	}
 	var succeededAttempts int

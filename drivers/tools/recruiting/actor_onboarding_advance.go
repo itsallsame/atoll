@@ -24,6 +24,7 @@ const (
 	onboardingAwaitBrowser      onboardingAutomationAction = "await_browser_probe"
 	onboardingAwaitVerification onboardingAutomationAction = "await_public_query_verification"
 	onboardingNeedsAttention    onboardingAutomationAction = "resolve_failed_discovery_work"
+	onboardingValidateRepair    onboardingAutomationAction = "create_repair_validation_browser_probe"
 	onboardingResolveIdentity   onboardingAutomationAction = "resolve_official_company_identity"
 	onboardingReviewEvidence    onboardingAutomationAction = "review_and_checkpoint_discovery_evidence"
 )
@@ -35,6 +36,7 @@ type onboardingAutomationPlan struct {
 	VerificationIDs []string
 	TargetURL       string
 	SourceID        string
+	CauseWorkID     string
 	Detail          string
 }
 
@@ -58,6 +60,9 @@ func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
 		fact := snapshot.BrowserProbes[index]
 		if fact.Probe.Status == model.DeepDiscoveryProbeQueued {
 			if fact.Work.Terminal() || fact.Work.Status == model.WorkWaitingHuman || fact.Work.Status == model.WorkPaused {
+				if hasSucceededCausalBrowserProbe(snapshot, fact.Work.WorkID) {
+					continue
+				}
 				return onboardingAutomationPlan{Action: onboardingNeedsAttention, Detail: "browser Probe Work requires operator attention before evidence completed"}
 			}
 			return onboardingAutomationPlan{Action: onboardingAwaitBrowser, SourceProbe: &fact.Probe}
@@ -132,6 +137,16 @@ func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
 	}
 	return onboardingAutomationPlan{Action: onboardingReviewEvidence,
 		Detail: "no further safe network action can be derived automatically"}
+}
+
+func hasSucceededCausalBrowserProbe(snapshot store.DeepDiscoveryAutomationSnapshot, causeWorkID string) bool {
+	for _, fact := range snapshot.BrowserProbes {
+		if fact.Work.CauseWorkID == causeWorkID && fact.Work.Status == model.WorkCompleted &&
+			fact.Work.Resolution == model.ResolutionSucceeded && fact.Probe.Status == model.DeepDiscoveryProbeCompleted {
+			return true
+		}
+	}
+	return false
 }
 
 func nextUnprobedCandidateSource(snapshot store.DeepDiscoveryAutomationSnapshot,
@@ -415,6 +430,9 @@ func handleOnboardingAdvanceBrowser(sys actorbase.Sys, cfg Config, repository *s
 			plan.SourceProbe.ScrollRepeats, plan.SourceProbe.FollowLinkSelector
 		identityInput = mission.MissionID + "|replay|" + plan.SourceProbe.ProbeID + "|" + strings.Join(plan.VerificationIDs, ",")
 	}
+	if plan.CauseWorkID != "" {
+		identityInput += "|repair-validation|" + plan.CauseWorkID
+	}
 	identity := stableDigest(identityInput)
 	probeID, workID := "probe-auto-"+identity, "work-auto-probe-"+identity
 	work, workErr := model.NewWork(workID, "deep_discovery_probe", probeID, "deep_discovery_browser", "agent")
@@ -422,7 +440,7 @@ func handleOnboardingAdvanceBrowser(sys actorbase.Sys, cfg Config, repository *s
 		err = workErr
 	}
 	if err == nil {
-		work, err = work.WithCausality(string(msg.Sender.ID), string(msg.ID), "")
+		work, err = work.WithCausality(string(msg.Sender.ID), string(msg.ID), plan.CauseWorkID)
 	}
 	probe := model.DeepDiscoveryBrowserProbe{}
 	if err == nil {
@@ -447,7 +465,8 @@ func handleOnboardingAdvanceBrowser(sys actorbase.Sys, cfg Config, repository *s
 	commandID := "onboarding-advance-" + stableDigest(string(msg.ID))
 	receipt, err := model.NewCommandReceipt(commandID, msg.Type, commandRequestHash(msg), responseBytes)
 	audit, _ := json.Marshal(map[string]any{"requested_by": string(msg.Sender.ID), "probe_id": probe.ProbeID,
-		"source_id": plan.SourceID, "stub_verification_count": len(probe.StubVerificationIDs), "automation_action": plan.Action})
+		"source_id": plan.SourceID, "cause_work_id": plan.CauseWorkID, "reason": plan.Detail,
+		"stub_verification_count": len(probe.StubVerificationIDs), "automation_action": plan.Action})
 	var event model.EventIntent
 	if err == nil {
 		event, err = model.NewEventIntent("event-"+stableDigest(commandID+"|deep.discovery.browser.queued"),

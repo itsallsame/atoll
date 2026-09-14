@@ -114,3 +114,27 @@ func TestCandidateSourcesNeedingListingRequiresOperableCandidate(t *testing.T) {
 		t.Fatal("archived candidate Source was selected")
 	}
 }
+
+func TestOnboardingAutomationAcceptsSuccessfulCausalRepairProbe(t *testing.T) {
+	company, _ := model.NewCompany("company-1", "Example", "https://example.com")
+	failedWork, _ := model.NewWork("failed-work", "deep_discovery_probe", "failed-probe", "deep_discovery_browser", "agent")
+	failedWork.Status = model.WorkWaitingHuman
+	failedWork.BlockedByRepairWorkID = "repair-work"
+	failedProbe, _ := model.NewDeepDiscoveryBrowserProbe("failed-probe", "mission-1", failedWork.WorkID,
+		"https://example.com/jobs", "", 1, "", 2)
+	validationWork, _ := model.NewWork("validation-work", "deep_discovery_probe", "validation-probe", "deep_discovery_browser", "agent")
+	validationWork, _ = validationWork.WithCausality("human:operator", "message-1", failedWork.WorkID)
+	validationWork.Status = model.WorkCompleted
+	validationWork.Resolution = model.ResolutionSucceeded
+	validationProbe, _ := model.NewDeepDiscoveryBrowserProbe("validation-probe", "mission-1", validationWork.WorkID,
+		failedProbe.URL, "", 1, "", 3)
+	validationProbe.Status = model.DeepDiscoveryProbeCompleted
+	validationProbe.Version = 2
+	snapshot := store.DeepDiscoveryAutomationSnapshot{BrowserProbes: []store.DeepDiscoveryBrowserAutomationFact{
+		{Probe: failedProbe, Work: failedWork},
+		{Probe: validationProbe, Work: validationWork, Result: &store.DeepDiscoveryBrowserResult{}},
+	}}
+	if plan := planOnboardingAutomation(snapshot, company); plan.Action != onboardingReviewEvidence {
+		t.Fatalf("successful causal repair Probe did not supersede the failed evidence attempt: %+v", plan)
+	}
+}

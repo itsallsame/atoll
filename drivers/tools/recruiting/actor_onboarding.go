@@ -49,6 +49,8 @@ func handleOnboardingMessage(sys actorbase.Sys, cfg Config, repository *store.Re
 		handleOnboardingStatus(sys, repository, msg)
 	case TypeOnboardingAdvance:
 		handleOnboardingAdvance(sys, cfg, repository, msg)
+	case TypeOnboardingRepairValidate:
+		handleOnboardingRepairValidate(sys, cfg, repository, msg)
 	case TypeOnboardingMaterialize:
 		handleOnboardingMaterialize(sys, repository, msg)
 	}
