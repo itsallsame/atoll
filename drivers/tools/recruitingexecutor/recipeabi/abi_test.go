@@ -269,6 +269,37 @@ func TestPublicQueryObservationIsCredentialFreeAndMatchesExactRequest(t *testing
 	}
 }
 
+func TestPublicQueryObservationUsesCanonicalSemanticJSON(t *testing.T) {
+	headers := map[string]string{"Content-Type": "application/json", "website-path": "en"}
+	observation, err := NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,
+		json.RawMessage(`{"filters":{"location":[],"category":[]},"limit":12,"offset":0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reordered, err := NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,
+		json.RawMessage(`{ "offset": 0, "limit": 12, "filters": { "category": [], "location": [] } }`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.BodyHash != reordered.BodyHash || !observation.MatchesObservation(reordered) {
+		t.Fatal("semantically identical JSON did not produce stable evidence")
+	}
+	request := ReadRequest{Method: "POST", Headers: headers,
+		JSONBody: json.RawMessage(`{"limit":12,"filters":{"location":[],"category":[]},"offset":0}`)}
+	if !observation.MatchesReadRequest(request) {
+		t.Fatal("database-style JSON reserialization did not match the observation")
+	}
+	tamperedHash := observation
+	tamperedHash.BodyHash = "sha256:" + strings.Repeat("0", 64)
+	if tamperedHash.MatchesObservation(observation) || tamperedHash.MatchesReadRequest(request) {
+		t.Fatal("observation comparison ignored a forged body hash")
+	}
+	if _, err := NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,
+		json.RawMessage(`{"filters":{"location":[],"location":["CN"]}}`)); err == nil {
+		t.Fatal("nested duplicate JSON object key was accepted")
+	}
+}
+
 func TestRecipeSpecRejectsWritesSecretsAndWeakIncrementalClaims(t *testing.T) {
 	for name, mutate := range map[string]func(*Spec){
 		"write method":                 func(s *Spec) { s.Request.Method = "POST" },

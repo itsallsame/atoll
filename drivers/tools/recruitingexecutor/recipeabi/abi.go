@@ -314,27 +314,41 @@ func (o PublicQueryObservation) EncodedSize() int {
 }
 
 func (o PublicQueryObservation) MatchesObservation(other PublicQueryObservation) bool {
-	if o.EndpointURL != other.EndpointURL || o.Method != other.Method || o.BodyHash != other.BodyHash ||
-		!bytes.Equal(o.JSONBody, other.JSONBody) || len(o.Headers) != len(other.Headers) {
+	if o.Validate() != nil || other.Validate() != nil {
 		return false
 	}
-	for name, value := range o.Headers {
-		if other.Headers[name] != value {
-			return false
-		}
+	left, leftErr := o.Canonicalized()
+	right, rightErr := other.Canonicalized()
+	if leftErr != nil || rightErr != nil || left.EndpointURL != right.EndpointURL || left.Method != right.Method ||
+		left.BodyHash != right.BodyHash || len(left.Headers) != len(right.Headers) {
+		return false
 	}
-	return true
+	return equalPublicHeaders(left.Headers, right.Headers)
 }
 
 func NewPublicQueryObservation(endpointURL, method string, headers map[string]string, body json.RawMessage) (PublicQueryObservation, error) {
 	observation := PublicQueryObservation{EndpointURL: strings.TrimSpace(endpointURL), Method: strings.ToUpper(strings.TrimSpace(method)),
 		Headers: headers, JSONBody: append(json.RawMessage(nil), body...)}
-	sum := sha256.Sum256(body)
-	observation.BodyHash = "sha256:" + hex.EncodeToString(sum[:])
-	if err := observation.Validate(); err != nil {
+	return observation.Canonicalized()
+}
+
+// Canonicalized returns a semantically stable observation. Database JSON
+// columns are allowed to reorder object keys and whitespace, so evidence must
+// be bound to canonical JSON rather than the original byte representation.
+// It also provides a narrow compatibility path for already-attested browser
+// evidence that was persisted with the former raw-byte hash.
+func (o PublicQueryObservation) Canonicalized() (PublicQueryObservation, error) {
+	canonicalBody, err := canonicalJSONObject(o.JSONBody)
+	if err != nil {
+		return PublicQueryObservation{}, fmt.Errorf("public-query observation JSON: %w", err)
+	}
+	o.JSONBody = canonicalBody
+	sum := sha256.Sum256(canonicalBody)
+	o.BodyHash = "sha256:" + hex.EncodeToString(sum[:])
+	if err := o.Validate(); err != nil {
 		return PublicQueryObservation{}, err
 	}
-	return observation, nil
+	return o, nil
 }
 
 func (o PublicQueryObservation) Validate() error {
@@ -365,7 +379,11 @@ func (o PublicQueryObservation) Validate() error {
 	if !strings.EqualFold(recipeHeader(o.Headers, "content-type"), "application/json") {
 		return fmt.Errorf("public-query observation requires JSON Content-Type")
 	}
-	sum := sha256.Sum256(o.JSONBody)
+	canonicalBody, err := canonicalJSONObject(o.JSONBody)
+	if err != nil {
+		return fmt.Errorf("public-query observation JSON: %w", err)
+	}
+	sum := sha256.Sum256(canonicalBody)
 	if o.BodyHash != "sha256:"+hex.EncodeToString(sum[:]) {
 		return fmt.Errorf("public-query observation body hash does not match")
 	}
@@ -373,14 +391,19 @@ func (o PublicQueryObservation) Validate() error {
 }
 
 func (o PublicQueryObservation) MatchesReadRequest(request ReadRequest) bool {
-	if o.Validate() != nil || strings.ToUpper(strings.TrimSpace(request.Method)) != o.Method {
+	if o.Validate() != nil {
 		return false
 	}
-	sum := sha256.Sum256(request.JSONBody)
-	if o.BodyHash != "sha256:"+hex.EncodeToString(sum[:]) || !equalPublicHeaders(o.Headers, request.Headers) {
+	canonical, err := o.Canonicalized()
+	if err != nil || strings.ToUpper(strings.TrimSpace(request.Method)) != canonical.Method {
 		return false
 	}
-	return bytes.Equal(bytes.TrimSpace(o.JSONBody), bytes.TrimSpace(request.JSONBody))
+	requestBody, err := canonicalJSONObject(request.JSONBody)
+	if err != nil {
+		return false
+	}
+	sum := sha256.Sum256(requestBody)
+	return canonical.BodyHash == "sha256:"+hex.EncodeToString(sum[:]) && equalPublicHeaders(canonical.Headers, request.Headers)
 }
 
 type Extraction struct {
@@ -760,6 +783,92 @@ func validatePublicQueryValue(value any, depth int) error {
 		return validatePublicQueryValues(raw, depth)
 	default:
 		return fmt.Errorf("public-query JSON contains an unsupported value")
+	}
+}
+
+func canonicalJSONObject(raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) == 0 || len(raw) > 64<<10 {
+		return nil, fmt.Errorf("JSON body exceeds its byte bound")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	value, err := decodeUniqueJSONValue(decoder, 0)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return nil, fmt.Errorf("JSON body must be an object")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, fmt.Errorf("JSON body contains trailing data")
+		}
+		return nil, err
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(canonical), nil
+}
+
+func decodeUniqueJSONValue(decoder *json.Decoder, depth int) (any, error) {
+	if depth > 6 {
+		return nil, fmt.Errorf("public-query JSON nesting exceeds its bound")
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	delimiter, isDelimiter := token.(json.Delim)
+	if !isDelimiter {
+		switch token.(type) {
+		case nil, bool, string, json.Number:
+			return token, nil
+		default:
+			return nil, fmt.Errorf("public-query JSON contains an unsupported value")
+		}
+	}
+	switch delimiter {
+	case '{':
+		result := make(map[string]any)
+		for decoder.More() {
+			keyToken, keyErr := decoder.Token()
+			if keyErr != nil {
+				return nil, keyErr
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return nil, fmt.Errorf("JSON object key must be a string")
+			}
+			if _, duplicate := result[key]; duplicate {
+				return nil, fmt.Errorf("duplicate JSON object key %q", key)
+			}
+			value, valueErr := decodeUniqueJSONValue(decoder, depth+1)
+			if valueErr != nil {
+				return nil, valueErr
+			}
+			result[key] = value
+		}
+		if _, err := decoder.Token(); err != nil {
+			return nil, err
+		}
+		return result, nil
+	case '[':
+		result := make([]any, 0)
+		for decoder.More() {
+			value, valueErr := decodeUniqueJSONValue(decoder, depth+1)
+			if valueErr != nil {
+				return nil, valueErr
+			}
+			result = append(result, value)
+		}
+		if _, err := decoder.Token(); err != nil {
+			return nil, err
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("public-query JSON contains an unsupported delimiter")
 	}
 }
 

@@ -145,6 +145,9 @@ WHERE p.probe_id=?`, strings.TrimSpace(id)).Scan(&probeRaw, &workRaw, &resultRaw
 	if err := json.Unmarshal(resultRaw, &result); err != nil {
 		return model.DeepDiscoveryBrowserProbe{}, model.Work{}, nil, err
 	}
+	if err := canonicalizeBrowserResultEvidence(&result); err != nil {
+		return model.DeepDiscoveryBrowserProbe{}, model.Work{}, nil, err
+	}
 	return probe, work, &result, nil
 }
 
@@ -225,10 +228,16 @@ func (r *Repository) AcceptDeepDiscoveryBrowserResult(ctx context.Context, input
 	}
 	seenQueries := map[string]struct{}{}
 	queryEvidenceBytes := 0
-	for _, observation := range input.PublicQueryEvidence {
+	for index, observation := range input.PublicQueryEvidence {
 		if err := observation.Validate(); err != nil {
 			return DeepDiscoveryBrowserResultOutcome{}, err
 		}
+		canonical, err := observation.Canonicalized()
+		if err != nil {
+			return DeepDiscoveryBrowserResultOutcome{}, err
+		}
+		input.PublicQueryEvidence[index] = canonical
+		observation = canonical
 		key := observation.EndpointURL + "\n" + observation.BodyHash
 		if _, duplicate := seenQueries[key]; duplicate {
 			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser result contains duplicate public-query evidence")
@@ -247,6 +256,17 @@ func (r *Repository) AcceptDeepDiscoveryBrowserResult(ctx context.Context, input
 		}
 	}
 	return outcome, err
+}
+
+func canonicalizeBrowserResultEvidence(result *DeepDiscoveryBrowserResult) error {
+	for index, observation := range result.PublicQueryEvidence {
+		canonical, err := observation.Canonicalized()
+		if err != nil {
+			return err
+		}
+		result.PublicQueryEvidence[index] = canonical
+	}
+	return nil
 }
 
 func (r *Repository) acceptDeepDiscoveryBrowserResultTx(ctx context.Context, input DeepDiscoveryBrowserResult) (DeepDiscoveryBrowserResultOutcome, error) {

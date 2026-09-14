@@ -69,6 +69,10 @@ WHERE p.mission_id=? ORDER BY p.created_at,p.probe_id LIMIT 2001`, missionID)
 				_ = rows.Close()
 				return DeepDiscoveryAutomationSnapshot{}, err
 			}
+			if err := canonicalizeBrowserResultEvidence(&result); err != nil {
+				_ = rows.Close()
+				return DeepDiscoveryAutomationSnapshot{}, err
+			}
 			fact.Result = &result
 		}
 		snapshot.BrowserProbes = append(snapshot.BrowserProbes, fact)
