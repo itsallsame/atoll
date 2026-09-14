@@ -170,6 +170,28 @@ func TestOnboardingAutomationSkipsAcceptedBrowserEvidenceGap(t *testing.T) {
 	}
 }
 
+func TestOnboardingAutomationAcceptsLaterSuccessfulProbeForSameURL(t *testing.T) {
+	company, _ := model.NewCompany("company-1", "Example", "https://example.com")
+	invalidWork, _ := model.NewWork("invalid-work", "deep_discovery_probe", "invalid-probe", "deep_discovery_browser", "agent")
+	invalidWork.Status = model.WorkCanceled
+	invalidProbe, _ := model.NewDeepDiscoveryBrowserProbe("invalid-probe", "mission-1", invalidWork.WorkID,
+		company.Website, "", 1, "", 2)
+	successWork, _ := model.NewWork("success-work", "deep_discovery_probe", "success-probe", "deep_discovery_browser", "agent")
+	successWork.Status = model.WorkCompleted
+	successWork.Resolution = model.ResolutionSucceeded
+	successProbe, _ := model.NewDeepDiscoveryBrowserProbe("success-probe", "mission-1", successWork.WorkID,
+		company.Website, "", 1, "", 3)
+	successProbe.Status = model.DeepDiscoveryProbeCompleted
+	successProbe.Version = 2
+	snapshot := store.DeepDiscoveryAutomationSnapshot{BrowserProbes: []store.DeepDiscoveryBrowserAutomationFact{
+		{Probe: invalidProbe, Work: invalidWork},
+		{Probe: successProbe, Work: successWork, Result: &store.DeepDiscoveryBrowserResult{}},
+	}}
+	if plan := planOnboardingAutomation(snapshot, company); plan.Action != onboardingReviewEvidence {
+		t.Fatalf("later successful Probe for the same URL did not supersede invalid attempt: %+v", plan)
+	}
+}
+
 func TestOnboardingAutomationSkipsAcceptedEphemeralQueryGap(t *testing.T) {
 	company, _ := model.NewCompany("company-1", "Example", "https://example.com")
 	probeWork, _ := model.NewWork("probe-work", "deep_discovery_probe", "probe-1", "deep_discovery_browser", "agent")

@@ -71,7 +71,8 @@ func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
 				continue
 			}
 			if fact.Work.Terminal() || fact.Work.Status == model.WorkWaitingHuman || fact.Work.Status == model.WorkPaused {
-				if hasSucceededCausalBrowserProbe(snapshot, fact.Work.WorkID) {
+				if hasSucceededCausalBrowserProbe(snapshot, fact.Work.WorkID) ||
+					hasSucceededReplacementBrowserProbe(snapshot, fact.Probe) {
 					continue
 				}
 				return onboardingAutomationPlan{Action: onboardingNeedsAttention, Detail: "browser Probe Work requires operator attention before evidence completed"}
@@ -154,6 +155,20 @@ func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
 	}
 	return onboardingAutomationPlan{Action: onboardingReviewEvidence,
 		Detail: "no further safe network action can be derived automatically"}
+}
+
+func hasSucceededReplacementBrowserProbe(snapshot store.DeepDiscoveryAutomationSnapshot,
+	failed model.DeepDiscoveryBrowserProbe) bool {
+	for _, fact := range snapshot.BrowserProbes {
+		if fact.Probe.MissionVersion <= failed.MissionVersion || fact.Probe.URL != failed.URL {
+			continue
+		}
+		if fact.Work.Status == model.WorkCompleted && fact.Work.Resolution == model.ResolutionSucceeded &&
+			fact.Probe.Status == model.DeepDiscoveryProbeCompleted {
+			return true
+		}
+	}
+	return false
 }
 
 func hasSucceededCausalBrowserProbe(snapshot store.DeepDiscoveryAutomationSnapshot, causeWorkID string) bool {
