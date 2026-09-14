@@ -161,3 +161,41 @@ func TestInitialDetailRecipeAssignmentRejectsCrossScopeAtomically(t *testing.T) 
 		t.Fatalf("cross-scope rejection changed Source=%+v", stored)
 	}
 }
+
+func TestInitialDetailValidationMatchRequiresExactSourceRecipeAndAssignment(t *testing.T) {
+	now := time.Date(2090, 9, 9, 4, 0, 0, 0, time.UTC)
+	source, _ := model.NewRecruitmentSource("cross-domain-source", "cross-domain-company",
+		"https://listing.example.test/jobs", "all", 1)
+	source.ReadinessStatus = model.SourceReady
+	source.HealthStatus = model.HealthHealthy
+	source.Version = 4
+	detail := activeRecipe(t, "cross-domain-detail", model.RecipeDetail, "apply.example.test", 1,
+		"sha256:cross-domain-contract")
+	assignment, _ := model.NewSourceRecipeAssignment(source.SourceID, model.RecipeDetail, detail.RecipeID,
+		detail.Version, detail.ContractHash, now.Format(time.RFC3339Nano))
+	candidate := detail
+	candidate.Status = model.RecipeValidating
+	candidate.StateVersion--
+	run := model.RecipeSampleValidation{Mode: model.RecipeSampleValidationCandidate,
+		ValidationRunID: "cross-domain-validation", WorkID: "cross-domain-work", RecipeKind: model.RecipeDetail,
+		CompanyID: source.CompanyID, CompanyVersion: 1, SourceID: source.SourceID, SourceVersion: source.Version,
+		Candidate: candidate, ProposedAssignment: assignment, SampleJobID: "cross-domain-job", SampleJobVersion: 1,
+		ExpectedFieldCount: 1, EndpointURL: "https://apply.example.test/jobs/1", EndpointVersion: 1,
+		Origin: "https://apply.example.test", Status: model.RecipeSampleValidationCompleted, Version: 3}
+	if err := run.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !initialDetailValidationMatches(run, source, detail, assignment) {
+		t.Fatal("completed exact source-bound cross-domain validation was rejected")
+	}
+	stale := run
+	stale.SourceVersion--
+	if initialDetailValidationMatches(stale, source, detail, assignment) {
+		t.Fatal("stale Source validation was accepted")
+	}
+	changed := run
+	changed.Candidate.ContentHash = "sha256:changed"
+	if initialDetailValidationMatches(changed, source, detail, assignment) {
+		t.Fatal("different validated Recipe content was accepted")
+	}
+}

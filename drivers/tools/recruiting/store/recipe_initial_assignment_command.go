@@ -13,9 +13,11 @@ import (
 )
 
 // ApplyInitialDetailAssignmentCommand creates the first Detail assignment for
-// a ready Source. The Recipe must already be active and share the exact scope
-// of the Source's active Listing Recipe. This is deliberately distinct from
-// rollout: absence is the assignment fence, and an existing row always wins.
+// a ready Source. The Recipe must already be active. A cross-scope Detail
+// Recipe is accepted only when a completed candidate validation binds its
+// immutable Recipe contents to a still-current real Job from this Source.
+// This is deliberately distinct from rollout: absence is the assignment
+// fence, and an existing row always wins.
 func (r *Repository) ApplyInitialDetailAssignmentCommand(ctx context.Context, expectedSourceVersion uint64,
 	next model.RecruitmentSource, assignment model.SourceRecipeAssignment, receipt model.CommandReceipt,
 	event model.EventIntent, businessAt time.Time) (CommandResult, error) {
@@ -75,8 +77,17 @@ func (r *Repository) ApplyInitialDetailAssignmentCommand(ctx context.Context, ex
 	}
 	if listingRecipe.Status != model.RecipeActive || listingRecipe.Kind != model.RecipeListing ||
 		targetRecipe.Status != model.RecipeActive || targetRecipe.Kind != model.RecipeDetail ||
-		targetRecipe.Scope != listingRecipe.Scope || targetRecipe.ContractHash != assignment.ContractHash {
-		return CommandResult{}, fmt.Errorf("%w: initial Detail assignment requires an active exact-scope Recipe", ErrRecipeRolloutRejected)
+		targetRecipe.ContractHash != assignment.ContractHash {
+		return CommandResult{}, fmt.Errorf("%w: initial Detail assignment requires an active Recipe", ErrRecipeRolloutRejected)
+	}
+	if targetRecipe.Scope != listingRecipe.Scope {
+		eligible, eligibilityErr := completedInitialDetailValidationForUpdate(ctx, tx, current, targetRecipe, assignment)
+		if eligibilityErr != nil {
+			return CommandResult{}, eligibilityErr
+		}
+		if !eligible {
+			return CommandResult{}, fmt.Errorf("%w: cross-scope initial Detail assignment requires completed source-bound validation", ErrRecipeRolloutRejected)
+		}
 	}
 	derived, err := current.AssignRecipe(expectedSourceVersion, assignment, false)
 	if err != nil || !reflect.DeepEqual(derived, next) {
@@ -126,4 +137,73 @@ WHERE source_id = ? AND version = ?`, endpoint.CanonicalKey, origin, next.Readin
 		return CommandResult{}, fmt.Errorf("commit initial Detail Recipe assignment: %w", err)
 	}
 	return CommandResult{Response: append(json.RawMessage(nil), receipt.Response...)}, nil
+}
+
+func completedInitialDetailValidationForUpdate(ctx context.Context, tx *sql.Tx, source model.RecruitmentSource,
+	recipe model.Recipe, assignment model.SourceRecipeAssignment) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT state_json
+FROM recruiting_recipe_validation_runs
+WHERE source_id = ? AND recipe_id = ? AND recipe_version = ? AND recipe_kind = ? AND run_status = ?
+ORDER BY updated_at DESC
+FOR UPDATE`, source.SourceID, recipe.RecipeID, recipe.Version, model.RecipeDetail,
+		model.RecipeSampleValidationCompleted)
+	if err != nil {
+		return false, fmt.Errorf("lock cross-scope Detail validation: %w", err)
+	}
+	var candidates []model.RecipeSampleValidation
+	for rows.Next() {
+		var state []byte
+		if err := rows.Scan(&state); err != nil {
+			_ = rows.Close()
+			return false, fmt.Errorf("scan cross-scope Detail validation: %w", err)
+		}
+		var run model.RecipeSampleValidation
+		if err := json.Unmarshal(state, &run); err != nil || run.Validate() != nil ||
+			!initialDetailValidationMatches(run, source, recipe, assignment) {
+			continue
+		}
+		candidates = append(candidates, run)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return false, fmt.Errorf("read cross-scope Detail validation: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return false, fmt.Errorf("close cross-scope Detail validations: %w", err)
+	}
+	for _, run := range candidates {
+		job, err := getJobWithLock(ctx, tx, run.SampleJobID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return false, err
+		}
+		if job.SourceID == source.SourceID && job.Version == run.SampleJobVersion &&
+			job.DetailURL == run.EndpointURL && job.Status == model.JobDetailPending {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func initialDetailValidationMatches(run model.RecipeSampleValidation, source model.RecruitmentSource,
+	recipe model.Recipe, assignment model.SourceRecipeAssignment) bool {
+	mode := run.Mode
+	if mode == "" {
+		mode = model.RecipeSampleValidationCandidate
+	}
+	if mode != model.RecipeSampleValidationCandidate || run.Status != model.RecipeSampleValidationCompleted ||
+		run.RecipeKind != model.RecipeDetail || run.SourceID != source.SourceID ||
+		run.SourceVersion != source.Version || run.ProposedAssignment.SourceID != assignment.SourceID ||
+		run.ProposedAssignment.Kind != assignment.Kind || run.ProposedAssignment.AssignmentVersion != 1 ||
+		run.ProposedAssignment.RecipeID != assignment.RecipeID ||
+		run.ProposedAssignment.RecipeVersion != assignment.RecipeVersion ||
+		run.ProposedAssignment.ContractHash != assignment.ContractHash {
+		return false
+	}
+	validatedRecipe := run.Candidate
+	validatedRecipe.Status = recipe.Status
+	validatedRecipe.StateVersion = recipe.StateVersion
+	return reflect.DeepEqual(validatedRecipe, recipe)
 }
