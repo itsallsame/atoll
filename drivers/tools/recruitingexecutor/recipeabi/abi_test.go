@@ -263,6 +263,10 @@ func TestPublicQueryObservationIsCredentialFreeAndMatchesExactRequest(t *testing
 		map[string]string{"Content-Type": "application/json", "Authorization": "secret"}, json.RawMessage(`{}`)); err == nil {
 		t.Fatal("authorization-bearing public-query observation was accepted")
 	}
+	if _, err := NewPublicQueryObservation("https://jobs.example/api/search?_signature=ephemeral", "POST",
+		headers, json.RawMessage(`{"offset":0}`)); err == nil {
+		t.Fatal("signature-bearing public-query URL was accepted")
+	}
 }
 
 func TestRecipeSpecRejectsWritesSecretsAndWeakIncrementalClaims(t *testing.T) {

@@ -71,6 +71,9 @@ func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
 	for index := len(snapshot.QueryVerifications) - 1; index >= 0; index-- {
 		fact := snapshot.QueryVerifications[index]
 		if fact.Verification.Status == model.DeepDiscoveryPublicQueryQueued {
+			if fact.Work.Status == model.WorkCompleted && fact.Work.Resolution == model.ResolutionAcceptedGap {
+				continue
+			}
 			if fact.Work.Terminal() || fact.Work.Status == model.WorkWaitingHuman || fact.Work.Status == model.WorkPaused {
 				return onboardingAutomationPlan{Action: onboardingNeedsAttention, Detail: "public-query verification Work requires operator attention before evidence completed"}
 			}
@@ -147,6 +150,21 @@ func hasSucceededCausalBrowserProbe(snapshot store.DeepDiscoveryAutomationSnapsh
 		}
 	}
 	return false
+}
+
+func pendingBrowserRepairFinalization(snapshot store.DeepDiscoveryAutomationSnapshot) (model.Work, string, bool) {
+	for _, failed := range snapshot.BrowserProbes {
+		if failed.Work.Status != model.WorkWaitingHuman || failed.Work.BlockedByRepairWorkID == "" {
+			continue
+		}
+		for _, validation := range snapshot.BrowserProbes {
+			if validation.Work.CauseWorkID == failed.Work.WorkID && validation.Work.Status == model.WorkCompleted &&
+				validation.Work.Resolution == model.ResolutionSucceeded && validation.Probe.Status == model.DeepDiscoveryProbeCompleted {
+				return validation.Work, failed.Work.BlockedByRepairWorkID, true
+			}
+		}
+	}
+	return model.Work{}, "", false
 }
 
 func nextUnprobedCandidateSource(snapshot store.DeepDiscoveryAutomationSnapshot,

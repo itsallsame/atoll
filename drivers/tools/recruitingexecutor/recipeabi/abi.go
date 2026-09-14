@@ -343,6 +343,15 @@ func (o PublicQueryObservation) Validate() error {
 		endpoint.User != nil || endpoint.Fragment != "" || o.Method != "POST" || len(o.JSONBody) == 0 || len(o.JSONBody) > 64<<10 {
 		return fmt.Errorf("public-query observation requires an absolute HTTP(S) POST with bounded JSON")
 	}
+	for name := range endpoint.Query() {
+		lower := strings.ToLower(strings.TrimSpace(name))
+		if strings.Contains(lower, "signature") || strings.Contains(lower, "token") ||
+			strings.Contains(lower, "secret") || strings.Contains(lower, "password") ||
+			strings.Contains(lower, "authorization") || strings.Contains(lower, "cookie") ||
+			strings.Contains(lower, "csrf") || strings.Contains(lower, "api_key") || strings.Contains(lower, "apikey") {
+			return fmt.Errorf("public-query observation URL contains an ephemeral or sensitive query parameter")
+		}
+	}
 	body, err := decodeUniqueJSONObject(o.JSONBody)
 	if err != nil {
 		return fmt.Errorf("public-query observation JSON: %w", err)

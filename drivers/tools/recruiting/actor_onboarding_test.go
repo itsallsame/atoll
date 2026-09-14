@@ -138,3 +138,27 @@ func TestOnboardingAutomationAcceptsSuccessfulCausalRepairProbe(t *testing.T) {
 		t.Fatalf("successful causal repair Probe did not supersede the failed evidence attempt: %+v", plan)
 	}
 }
+
+func TestOnboardingAutomationSkipsAcceptedEphemeralQueryGap(t *testing.T) {
+	company, _ := model.NewCompany("company-1", "Example", "https://example.com")
+	probeWork, _ := model.NewWork("probe-work", "deep_discovery_probe", "probe-1", "deep_discovery_browser", "agent")
+	probe, _ := model.NewDeepDiscoveryBrowserProbe("probe-1", "mission-1", probeWork.WorkID,
+		"https://example.com/jobs", "", 1, "", 2)
+	probe.Status = model.DeepDiscoveryProbeCompleted
+	probe.Version = 2
+	verificationWork, _ := model.NewWork("verification-work", "deep_discovery_public_query", "verification-1",
+		"deep_discovery_public_query", "agent")
+	verificationWork.Status = model.WorkCompleted
+	verificationWork.Resolution = model.ResolutionAcceptedGap
+	verification, _ := model.NewDeepDiscoveryPublicQueryVerification("verification-1", "mission-1", probe.ProbeID,
+		verificationWork.WorkID, 3, model.PublicQueryRequestEvidence{EndpointURL: "https://example.com/api?_signature=x",
+			Method: "POST", JSONBody: json.RawMessage(`{}`), BodyHash: "sha256:legacy"})
+	snapshot := store.DeepDiscoveryAutomationSnapshot{
+		BrowserProbes: []store.DeepDiscoveryBrowserAutomationFact{{Probe: probe, Work: probeWork,
+			Result: &store.DeepDiscoveryBrowserResult{}}},
+		QueryVerifications: []store.DeepDiscoveryPublicQueryAutomationFact{{Verification: verification, Work: verificationWork}},
+	}
+	if plan := planOnboardingAutomation(snapshot, company); plan.Action != onboardingReviewEvidence {
+		t.Fatalf("accepted ephemeral query gap still blocked onboarding: %+v", plan)
+	}
+}

@@ -35,6 +35,8 @@ type onboardingResponse struct {
 	AgentDirective         string                        `json:"agent_directive"`
 	ClassificationComplete bool                          `json:"classification_complete"`
 	ClassificationPolicy   string                        `json:"classification_policy"`
+	RepairWorkID           string                        `json:"repair_work_id,omitempty"`
+	RepairValidationWork   *model.Work                   `json:"repair_validation_work,omitempty"`
 }
 
 func handleOnboardingMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -258,6 +260,15 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 			plan.Action == onboardingReplayVerified {
 			next = "advance_discovery_automatically"
 			directive = "Call recruiting.onboarding.advance with only company_name. It derives all internal identities from persisted evidence. After the asynchronous Work completes, call onboarding.status and continue without asking the user for IDs."
+		}
+		if validationWork, repairWorkID, pending := pendingBrowserRepairFinalization(snapshot); pending {
+			next = "finalize_shared_repair"
+			directive = "Use repair.list/get to resolve the Repair identified here: call repair.validation.begin with repair_validation_work, then repair.resolve and repair.recover. Re-read the Repair and require resolved with no waiting Work before advancing another Source. Do not ask the user for IDs."
+			_, _ = sys.Reply(msg, onboardingResponse{ContractVersion: ContractVersion, Status: status, Company: &company,
+				Mission: &mission, ValidatedURLs: urls, Sources: sources, NextAction: next, AgentDirective: directive,
+				ClassificationComplete: classified, ClassificationPolicy: onboardingClassificationPolicy,
+				RepairWorkID: repairWorkID, RepairValidationWork: &validationWork})
+			return
 		}
 	}
 	if mission.Status == model.DeepDiscoveryDone && classified {

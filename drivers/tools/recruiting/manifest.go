@@ -209,7 +209,7 @@ func manifest() introspect.Manifest {
 		TypeWorkRetry: mutationSchema(`,"new_work_id":{"type":"string"},"not_before":{"type":"string"},"deadline_at":{"type":"string"}`,
 			"new_work_id"),
 		TypeWorkCancel:      mutationSchema(``),
-		TypeRepairGet:       `{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":0,"maximum":500}}}`,
+		TypeRepairGet:       `{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string"},"affected_cursor":{"type":"string"},"affected_limit":{"type":"integer","minimum":0,"maximum":500}}}`,
 		TypeRepairList:      `{"type":"object","additionalProperties":false,"properties":{"status":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":0,"maximum":500}}}`,
 		TypeRepairValidate:  mutationSchema(`,"validation_work_id":{"type":"string"}`, "validation_work_id"),
 		TypeRepairResolve:   mutationSchema(`,"resolution":{"type":"string"}`, "resolution"),
