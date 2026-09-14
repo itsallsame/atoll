@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -55,6 +56,7 @@ func NewDeepDiscoveryBrowserProbe(id, missionID, workID, rawURL, waitSelector st
 		}
 		seenStubs[normalizedStubs[index]] = struct{}{}
 	}
+	sort.Strings(normalizedStubs)
 	return DeepDiscoveryBrowserProbe{ProbeID: id, MissionID: missionID, MissionVersion: missionVersion,
 		WorkID: workID, URL: canonical, WaitSelector: waitSelector, ScrollRepeats: scrollRepeats,
 		FollowLinkSelector: followLinkSelector, StubVerificationIDs: normalizedStubs,

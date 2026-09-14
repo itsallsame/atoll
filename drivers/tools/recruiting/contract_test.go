@@ -41,7 +41,8 @@ func TestNaturalLanguageOnboardingWordsPublishInputSchemas(t *testing.T) {
 		TypeDeepDiscoveryStart, TypeDeepDiscoveryGet, TypeDeepDiscoveryCheckpoint,
 		TypeDeepDiscoveryGraph, TypeDeepDiscoveryGuide, TypeDeepDiscoveryWait, TypeDeepDiscoveryResume, TypeDeepDiscoveryComplete, TypeDeepDiscoveryCancel,
 		TypeDeepDiscoveryBrowserObserve, TypeDeepDiscoveryBrowserGet,
-		TypeOnboardingBegin, TypeOnboardingStatus, TypeOnboardingMaterialize,
+		TypeDeepDiscoveryPublicQueryVerify, TypeDeepDiscoveryPublicQueryGet,
+		TypeOnboardingBegin, TypeOnboardingStatus, TypeOnboardingAdvance, TypeOnboardingMaterialize,
 	} {
 		schema := words[word].InputSchema
 		if len(schema) == 0 || !json.Valid(schema) {
@@ -54,5 +55,18 @@ func TestNaturalLanguageOnboardingWordsPublishInputSchemas(t *testing.T) {
 		if err := json.Unmarshal(schema, &decoded); err != nil || decoded.Type != "object" || decoded.AdditionalProperties {
 			t.Fatalf("word %s schema is not a closed object: %s (err=%v)", word, schema, err)
 		}
+	}
+}
+
+func TestOnboardingAdvanceAcceptsOnlyCompanyName(t *testing.T) {
+	var schema struct {
+		Required   []string                   `json:"required"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(manifest().Words[TypeOnboardingAdvance].InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if len(schema.Required) != 1 || schema.Required[0] != "company_name" || len(schema.Properties) != 1 {
+		t.Fatalf("onboarding.advance exposed internal control fields: %+v", schema)
 	}
 }

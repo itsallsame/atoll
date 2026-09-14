@@ -332,6 +332,12 @@ WHERE artifact_id IN (?,?) AND rejected=TRUE`, lateArtifact.ArtifactID, lateTrac
 		stubOffer.PublicQueryStubs[0].Request.BodyHash != queryEvidence.BodyHash {
 		t.Fatalf("Stub browser offer=%+v err=%v", stubOffer, err)
 	}
+	automation, err := repository.GetDeepDiscoveryAutomationSnapshot(ctx, mission.MissionID)
+	if err != nil || len(automation.BrowserProbes) != 2 || len(automation.QueryVerifications) != 1 ||
+		automation.BrowserProbes[0].Result == nil ||
+		automation.QueryVerifications[0].Verification.Artifact == nil {
+		t.Fatalf("onboarding automation snapshot=%+v err=%v", automation, err)
+	}
 }
 
 func TestDeepDiscoveryStageEvidenceRejectsSearchOnlyValidation(t *testing.T) {

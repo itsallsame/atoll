@@ -1,0 +1,35 @@
+{
+  "evidence_version": "recruiting.onboarding-automatic-discovery-advance.v1",
+  "captured_at": "2026-09-14T04:28:23Z",
+  "scope": "company-name-only control-plane advancement for evidence-determined discovery network steps",
+  "atoll_core_modified": false,
+  "worker_types_added": 0,
+  "database_migration": false,
+  "public_word": {
+    "type": "recruiting.onboarding.advance",
+    "required_input": ["company_name"],
+    "client_supplied_internal_ids": false,
+    "client_supplied_request_or_stub_body": false
+  },
+  "actions": [
+    "create_seed_browser_probe_from_confirmed_company_website",
+    "verify_unverified_public_query_evidence",
+    "replay_completed_verification_artifacts_in_next_browser_probe",
+    "await_existing_asynchronous_work",
+    "route_non_executable_or_ambiguous_state_to_evidence_review"
+  ],
+  "bounds": {
+    "state_projection_max_per_kind": 2000,
+    "mutation_steps_per_call": 1,
+    "browser_stub_chain_max": 10,
+    "deduplication_key": "mission + canonical endpoint + request body hash"
+  },
+  "tests": [
+    "go test ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/...",
+    "go test -race ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/...",
+    "go vet ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/...",
+    "make recruiting-boundary-check"
+  ],
+  "mysql_contract": "automation projection assertion is present but requires an isolated RECRUITING_MYSQL_TEST_DSN; production is not used as a destructive test schema",
+  "remaining_boundary": "classification, coverage judgment, Recipe extraction/pagination authoring and approval remain evidence-gated steps"
+}

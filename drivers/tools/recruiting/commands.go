@@ -70,6 +70,7 @@ const (
 	TypeDeepDiscoveryPublicQueryGet    = "recruiting.deep_discovery.public_query.get"
 	TypeOnboardingBegin                = "recruiting.onboarding.begin"
 	TypeOnboardingStatus               = "recruiting.onboarding.status"
+	TypeOnboardingAdvance              = "recruiting.onboarding.advance"
 	TypeOnboardingMaterialize          = "recruiting.onboarding.materialize"
 	TypeSourceProfileBind              = "recruiting.source.profile.bind"
 	TypeSourceProfileUnbind            = "recruiting.source.profile.unbind"

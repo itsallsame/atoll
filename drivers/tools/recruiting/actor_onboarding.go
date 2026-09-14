@@ -37,7 +37,7 @@ type onboardingResponse struct {
 	ClassificationPolicy   string                        `json:"classification_policy"`
 }
 
-func handleOnboardingMessage(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+func handleOnboardingMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
 	if repository == nil {
 		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "recruiting database is not configured")
 		return
@@ -47,6 +47,8 @@ func handleOnboardingMessage(sys actorbase.Sys, repository *store.Repository, ms
 		handleOnboardingBegin(sys, repository, msg)
 	case TypeOnboardingStatus:
 		handleOnboardingStatus(sys, repository, msg)
+	case TypeOnboardingAdvance:
+		handleOnboardingAdvance(sys, cfg, repository, msg)
 	case TypeOnboardingMaterialize:
 		handleOnboardingMaterialize(sys, repository, msg)
 	}
@@ -236,6 +238,21 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 		"Continue the current stage when active; when completed, present all typed URLs and coverage gaps."
 	classified := allURLsClassified(urls)
 	var sources []model.RecruitmentSource
+	if mission.Status == model.DeepDiscoveryActive {
+		snapshot, snapshotErr := repository.GetDeepDiscoveryAutomationSnapshot(msg.Ctx(), mission.MissionID)
+		if snapshotErr != nil {
+			failStoreError(sys, msg, snapshotErr)
+			return
+		}
+		plan := planOnboardingAutomation(snapshot, company)
+		next = string(plan.Action)
+		directive = onboardingAdvanceDirective(plan.Action)
+		if plan.Action == onboardingCreateSeedBrowser || plan.Action == onboardingVerifyPublicQuery ||
+			plan.Action == onboardingReplayVerified {
+			next = "advance_discovery_automatically"
+			directive = "Call recruiting.onboarding.advance with only company_name. It derives all internal identities from persisted evidence. After the asynchronous Work completes, call onboarding.status and continue without asking the user for IDs."
+		}
+	}
 	if mission.Status == model.DeepDiscoveryDone && classified {
 		sources, err = listAllCompanySources(msg, repository, company.CompanyID)
 		if err != nil {
@@ -449,6 +466,6 @@ func firstOnboardingError(values ...error) error {
 	return errors.New("unknown onboarding error")
 }
 
-const onboardingAgentDirective = "Continue in this turn without asking the user for internal IDs: resolve official identity, call the stage guide, use real WebSearch and bounded browser observations, checkpoint evidence sequentially, classify every validated list URL as social/campus/intern/special/all from page or network evidence, use special_program for named programmes, complete the Mission, then call recruiting.onboarding.materialize with company_name. Stop only at materialized or waiting_human. Never claim absolute completeness."
+const onboardingAgentDirective = "Continue in this turn without asking the user for internal IDs: resolve official identity and call the stage guide. Once an official website is persisted, call recruiting.onboarding.advance with only company_name; poll onboarding.status and repeat advance while it offers a safe automatic network step. Checkpoint evidence sequentially, classify every validated list URL as social/campus/intern/special/all from page or network evidence, use special_program for named programmes, complete the Mission, then call recruiting.onboarding.materialize with company_name. Stop only at materialized or an evidence-backed waiting_human state. Never claim absolute completeness."
 
 const onboardingClassificationPolicy = "A URL type is a persisted evidence fact: social, campus, intern, special, or all. Unknown or missing means unverified. Never infer it from URL spelling, labels, or model memory; special requires the programme name."

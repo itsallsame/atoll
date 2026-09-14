@@ -138,6 +138,13 @@ func TestDeepDiscoveryBrowserProbeConsumesFrozenMissionBudget(t *testing.T) {
 	if err != nil || probe.URL != "https://jobs.example.com/careers" || probe.Status != DeepDiscoveryProbeQueued {
 		t.Fatalf("probe=%+v err=%v", probe, err)
 	}
+	stubIDs := []string{" verification-z ", "verification-a"}
+	stubProbe, err := NewDeepDiscoveryBrowserProbe("probe-stub", mission.MissionID, "work-stub",
+		"https://jobs.example.com/careers", "", 0, "", reserved.Version, stubIDs...)
+	if err != nil || stubIDs[0] != " verification-z " || len(stubProbe.StubVerificationIDs) != 2 ||
+		stubProbe.StubVerificationIDs[0] != "verification-a" || stubProbe.StubVerificationIDs[1] != "verification-z" {
+		t.Fatalf("canonical Stub identities probe=%+v caller=%v err=%v", stubProbe, stubIDs, err)
+	}
 	completed, err := probe.Complete(probe.Version, "artifact-1", "https://jobs.example.com/careers", "sha256:abc", 12)
 	if err != nil || completed.Status != DeepDiscoveryProbeCompleted || completed.LinkCount != 12 {
 		t.Fatalf("completed=%+v err=%v", completed, err)
