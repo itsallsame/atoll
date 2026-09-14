@@ -8,9 +8,11 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
@@ -157,7 +159,39 @@ func (d *Driver) Fetch(ctx context.Context, spec recipeabi.Spec, input recipeabi
 	if spec.Transport != recipeabi.TransportHTTPJSON && spec.Transport != recipeabi.TransportHTTPHTML {
 		return Result{}, fmt.Errorf("HTTP driver cannot run transport %q", spec.Transport)
 	}
-	endpoint, _ := url.Parse(input.Endpoint.URL)
+	return d.fetchReadRequest(ctx, input.Endpoint.URL, spec.Request, compliance)
+}
+
+// FetchPublicQuery independently verifies browser-observed, credential-free
+// POST evidence. It reuses the production HTTP policy, robots check, SSRF
+// defense, rate limiting, redirect denial, and response bound without
+// pretending that a prerequisite config response is a Listing Recipe.
+func (d *Driver) FetchPublicQuery(ctx context.Context, observation recipeabi.PublicQueryObservation,
+	compliance ComplianceEvidence) (Result, error) {
+	if err := observation.Validate(); err != nil {
+		return Result{}, err
+	}
+	if err := compliance.Validate(); err != nil {
+		return Result{}, err
+	}
+	request := recipeabi.ReadRequest{Method: observation.Method, Headers: observation.Headers,
+		JSONBody: observation.JSONBody, TimeoutMS: 30_000, MaxResponseBytes: 1 << 20, MaxRedirects: 0,
+		UserAgent: "Atoll-Recruiting-Public-Query-Verification/1"}
+	result, err := d.fetchReadRequest(ctx, observation.EndpointURL, request, compliance)
+	if err != nil {
+		return result, err
+	}
+	mediaType, _, mediaErr := mime.ParseMediaType(result.ContentType)
+	if mediaErr != nil || mediaType != "application/json" || !json.Valid(result.Body) {
+		return result, &FetchError{Class: "parse_error", Retryable: false, StatusCode: result.StatusCode,
+			Cause: errors.New("public query verification response is not valid JSON")}
+	}
+	return result, nil
+}
+
+func (d *Driver) fetchReadRequest(ctx context.Context, endpointURL string, read recipeabi.ReadRequest,
+	compliance ComplianceEvidence) (Result, error) {
+	endpoint, _ := url.Parse(endpointURL)
 	origin := normalizedOrigin(endpoint)
 	if err := d.circuitAllows(origin); err != nil {
 		return Result{}, err
@@ -167,7 +201,7 @@ func (d *Driver) Fetch(ctx context.Context, spec recipeabi.Spec, input recipeabi
 	}
 	defer func() { <-d.sem }()
 
-	robots, err := d.robots.Allowed(ctx, endpoint, spec.Request.UserAgent)
+	robots, err := d.robots.Allowed(ctx, endpoint, read.UserAgent)
 	if err != nil {
 		return Result{}, &FetchError{Class: "robots_disallowed", Retryable: true, Cause: err}
 	}
@@ -178,20 +212,20 @@ func (d *Driver) Fetch(ctx context.Context, spec recipeabi.Spec, input recipeabi
 		return Result{Robots: robots, Compliance: compliance}, &FetchError{Class: "robots_disallowed", Retryable: false}
 	}
 	d.extendOriginInterval(origin, time.Duration(robots.CrawlDelayMS)*time.Millisecond)
-	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(spec.Request.TimeoutMS)*time.Millisecond)
+	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(read.TimeoutMS)*time.Millisecond)
 	defer cancel()
-	requestCtx = context.WithValue(requestCtx, redirectLimitKey{}, spec.Request.MaxRedirects)
-	method := strings.ToUpper(strings.TrimSpace(spec.Request.Method))
+	requestCtx = context.WithValue(requestCtx, redirectLimitKey{}, read.MaxRedirects)
+	method := strings.ToUpper(strings.TrimSpace(read.Method))
 	var requestBody io.Reader
 	if method == http.MethodPost {
-		requestBody = bytes.NewReader(spec.Request.JSONBody)
+		requestBody = bytes.NewReader(read.JSONBody)
 	}
 	request, err := http.NewRequestWithContext(requestCtx, method, endpoint.String(), requestBody)
 	if err != nil {
 		return Result{}, err
 	}
-	request.Header.Set("User-Agent", spec.Request.UserAgent)
-	for name, value := range spec.Request.Headers {
+	request.Header.Set("User-Agent", read.UserAgent)
+	for name, value := range read.Headers {
 		request.Header.Set(name, value)
 	}
 	response, err := d.client.Do(request)
@@ -210,10 +244,10 @@ func (d *Driver) Fetch(ctx context.Context, spec recipeabi.Spec, input recipeabi
 		return Result{Robots: robots, Compliance: compliance}, &FetchError{Class: class, Retryable: retryable, Cause: err}
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, spec.Request.MaxResponseBytes+1))
-	tooLarge := int64(len(body)) > spec.Request.MaxResponseBytes
+	body, err := io.ReadAll(io.LimitReader(response.Body, read.MaxResponseBytes+1))
+	tooLarge := int64(len(body)) > read.MaxResponseBytes
 	if tooLarge {
-		body = body[:spec.Request.MaxResponseBytes]
+		body = body[:read.MaxResponseBytes]
 	}
 	result := Result{StatusCode: response.StatusCode, ContentType: response.Header.Get("Content-Type"), FinalURL: response.Request.URL.String(),
 		Body: body, Robots: robots, Compliance: compliance}

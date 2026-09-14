@@ -1,0 +1,57 @@
+{
+  "evidence_version": "recruiting.public-query-verification-control-plane.v1",
+  "captured_at": "2026-09-14T03:49:56Z",
+  "scope": "fenced control-plane chain from observed public-query evidence to an Artifact-backed browser stub",
+  "atoll_core_modified": false,
+  "worker_types_added": 0,
+  "migration": "000062_deep_discovery_public_query_verifications.sql",
+  "control_plane": {
+    "create_command": "recruiting.deep_discovery.public_query.verify",
+    "query_command": "recruiting.deep_discovery.public_query.get",
+    "work_purpose": "deep_discovery_public_query",
+    "executor_capability": "http.fetch",
+    "client_can_submit_stub_body": false,
+    "browser_probe_input": "completed same-Mission verification IDs only"
+  },
+  "fences": [
+    "mission and mission version",
+    "source probe and frozen endpoint/body hash",
+    "work, attempt, permit and executor incarnation",
+    "response artifact content hash",
+    "next probe frozen verification references"
+  ],
+  "automated_checks": [
+    "go test ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/...",
+    "go test -race ./drivers/tools/recruiting/executioncontract ./drivers/tools/recruitingexecutor/...",
+    "RECRUITING_LIVE_BYTEDANCE_PROBE=1 go test -count=1 -run TestFetchPublicQueryAgainstByteDanceLive -v ./drivers/tools/recruitingexecutor/httpdriver",
+    "RECRUITING_LIVE_BYTEDANCE_PROBE=1 go test -count=1 -run TestRunnerObservesByteDancePublicQueryWithoutSendingIt -v ./drivers/tools/recruitingexecutor/browserbroker"
+  ],
+  "live_result": {
+    "verified_prerequisite": "https://jobs.bytedance.com/api/v1/public/supplier/config/job/filters",
+    "artifact_media_type": "application/json",
+    "discovered_downstream": "https://jobs.bytedance.com/api/v1/public/supplier/search/job/posts",
+    "downstream_sent_by_browser": false,
+    "result": "passed"
+  },
+  "production": {
+    "database": "configured remote staircase MySQL",
+    "migration_result": "passed",
+    "service_result": "active",
+    "public_https_status": 200
+  },
+  "mysql_contract_test": {
+    "status": "skipped",
+    "reason": "RECRUITING_MYSQL_TEST_DSN is not configured; the contract creates an isolated schema and was not pointed at the production database"
+  },
+  "repository_wide_gate": {
+    "command": "make test",
+    "status": "failed_on_existing_out_of_scope_checks",
+    "failures": [
+      "archtest: web/societyconsole imports drivers/tools/society/model",
+      "e2e: TestCoderunnerHumanJourney child-presence timeout",
+      "e2e: recruiting control initial-history channel eligibility unavailable"
+    ],
+    "targeted_recruiting_e2e_rerun": "passed"
+  },
+  "remaining_boundary": "Recipe extraction/pagination preparation, approval, Source publication and baseline remain separate existing state-machine steps"
+}

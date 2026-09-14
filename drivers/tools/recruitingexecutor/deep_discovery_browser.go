@@ -51,6 +51,26 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 		return fmt.Errorf("validate Deep Discovery browser plan: %w", err)
 	}
 	planHash, _ := plan.ContentHash()
+	if len(offer.PublicQueryStubs) != len(probe.StubVerificationIDs) {
+		return errors.New("Deep Discovery browser Stub references do not match the immutable Probe")
+	}
+	stubs := make([]browserdriver.PublicQueryStub, 0, len(offer.PublicQueryStubs))
+	for index, ref := range offer.PublicQueryStubs {
+		if ref.VerificationID != probe.StubVerificationIDs[index] || ref.Request.Validate() != nil ||
+			ref.Artifact.Kind != model.ArtifactResponse || ref.Artifact.WorkID == "" {
+			return errors.New("Deep Discovery browser Stub lineage is inconsistent")
+		}
+		body, readErr := readBackfillArtifact(ctx, resources, ref.Artifact, browserdriver.MaxPublicQueryStubBytes)
+		if readErr != nil {
+			return fmt.Errorf("read verified public query Stub %q: %w", ref.VerificationID, readErr)
+		}
+		stub := browserdriver.PublicQueryStub{Request: ref.Request, StatusCode: ref.StatusCode,
+			ContentType: ref.ContentType, Body: body, ContentHash: ref.Artifact.ContentHash}
+		if err := stub.Validate(); err != nil {
+			return fmt.Errorf("validate verified public query Stub %q: %w", ref.VerificationID, err)
+		}
+		stubs = append(stubs, stub)
+	}
 	sinkConfig := options.Artifact
 	sinkConfig.WorkID, sinkConfig.AttemptID = offer.Work.WorkID, offer.Attempt.AttemptID
 	sink, err := newAtollArtifactSink(resources, sinkConfig)
@@ -67,7 +87,8 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 		AcceptLanguage: "zh-CN,zh;q=0.9,en;q=0.8", Plan: plan, PlanHash: planHash,
 		AttemptID: offer.Attempt.AttemptID, TimeoutMS: 60_000,
 		Policy:         browserdriver.PolicyEvidence{TermsPolicyVersion: options.Compliance.TermsPolicyVersion, TermsReviewedAt: options.Compliance.TermsReviewedAt},
-		AllowedMethods: []string{http.MethodGet, http.MethodHead, http.MethodOptions}, SameOriginDocs: true, BlockDownloads: true, BlockPopups: true}
+		AllowedMethods: []string{http.MethodGet, http.MethodHead, http.MethodOptions}, SameOriginDocs: true, BlockDownloads: true,
+		BlockPopups: true, PublicQueryStubs: stubs}
 	result, err := explorer.Run(ctx, request)
 	if err != nil {
 		return failLocalExecution(ctx, control, sink, offer, "unexpected_status", "deep_discovery_browser", err)

@@ -241,30 +241,40 @@ func (f FailureReport) EvidenceArtifacts() []model.ArtifactMetadata {
 // domain payload while Work/Attempt and routing stay uniform, so listing and
 // detail execution remain one executor class.
 type Offer struct {
-	Kind                  string                           `json:"kind"`
-	Attempt               model.Attempt                    `json:"attempt"`
-	Work                  model.Work                       `json:"work"`
-	Occurrence            *model.SourceOccurrence          `json:"occurrence,omitempty"`
-	ListingRun            *model.ListingRun                `json:"listing_run,omitempty"`
-	Baseline              *model.BaselineGeneration        `json:"baseline,omitempty"`
-	CompanyImport         *model.CompanyImport             `json:"company_import,omitempty"`
-	CompanyImportItems    []CompanyImportApplyItem         `json:"company_import_items,omitempty"`
-	Checkpoint            *model.IncrementalCheckpoint     `json:"checkpoint,omitempty"`
-	Detail                *DetailInput                     `json:"detail,omitempty"`
-	Backfill              *BackfillInput                   `json:"backfill,omitempty"`
-	Discovery             *model.SourceDiscovery           `json:"discovery,omitempty"`
-	Recipe                *model.Recipe                    `json:"recipe,omitempty"`
-	RecipeValidation      *model.RecipeSampleValidation    `json:"recipe_validation,omitempty"`
-	ProfileRepair         *model.ProfileRepairSession      `json:"profile_repair,omitempty"`
-	DeepDiscoveryBrowser  *model.DeepDiscoveryBrowserProbe `json:"deep_discovery_browser,omitempty"`
-	ProfileSecurityDomain string                           `json:"profile_security_domain,omitempty"`
-	ProfileVerification   *model.ProfileVerificationRecipe `json:"profile_verification_recipe,omitempty"`
-	ProfileTaskExpiresAt  string                           `json:"profile_task_expires_at,omitempty"`
-	Budget                model.BudgetPermit               `json:"budget"`
-	BudgetExpiresAt       string                           `json:"budget_expires_at"`
-	RequestedCapability   string                           `json:"requested_capability"`
-	RequestedOrigin       string                           `json:"requested_origin,omitempty"`
-	RequestedProfileID    string                           `json:"requested_profile_id,omitempty"`
+	Kind                    string                                      `json:"kind"`
+	Attempt                 model.Attempt                               `json:"attempt"`
+	Work                    model.Work                                  `json:"work"`
+	Occurrence              *model.SourceOccurrence                     `json:"occurrence,omitempty"`
+	ListingRun              *model.ListingRun                           `json:"listing_run,omitempty"`
+	Baseline                *model.BaselineGeneration                   `json:"baseline,omitempty"`
+	CompanyImport           *model.CompanyImport                        `json:"company_import,omitempty"`
+	CompanyImportItems      []CompanyImportApplyItem                    `json:"company_import_items,omitempty"`
+	Checkpoint              *model.IncrementalCheckpoint                `json:"checkpoint,omitempty"`
+	Detail                  *DetailInput                                `json:"detail,omitempty"`
+	Backfill                *BackfillInput                              `json:"backfill,omitempty"`
+	Discovery               *model.SourceDiscovery                      `json:"discovery,omitempty"`
+	Recipe                  *model.Recipe                               `json:"recipe,omitempty"`
+	RecipeValidation        *model.RecipeSampleValidation               `json:"recipe_validation,omitempty"`
+	ProfileRepair           *model.ProfileRepairSession                 `json:"profile_repair,omitempty"`
+	DeepDiscoveryBrowser    *model.DeepDiscoveryBrowserProbe            `json:"deep_discovery_browser,omitempty"`
+	PublicQueryVerification *model.DeepDiscoveryPublicQueryVerification `json:"public_query_verification,omitempty"`
+	PublicQueryStubs        []VerifiedPublicQueryStubRef                `json:"public_query_stubs,omitempty"`
+	ProfileSecurityDomain   string                                      `json:"profile_security_domain,omitempty"`
+	ProfileVerification     *model.ProfileVerificationRecipe            `json:"profile_verification_recipe,omitempty"`
+	ProfileTaskExpiresAt    string                                      `json:"profile_task_expires_at,omitempty"`
+	Budget                  model.BudgetPermit                          `json:"budget"`
+	BudgetExpiresAt         string                                      `json:"budget_expires_at"`
+	RequestedCapability     string                                      `json:"requested_capability"`
+	RequestedOrigin         string                                      `json:"requested_origin,omitempty"`
+	RequestedProfileID      string                                      `json:"requested_profile_id,omitempty"`
+}
+
+type VerifiedPublicQueryStubRef struct {
+	VerificationID string                           `json:"verification_id"`
+	Request        recipeabi.PublicQueryObservation `json:"request"`
+	Artifact       model.ArtifactMetadata           `json:"artifact"`
+	StatusCode     int                              `json:"status_code"`
+	ContentType    string                           `json:"content_type"`
 }
 
 type DeepDiscoveryLink struct {
@@ -342,6 +352,19 @@ type DeepDiscoveryBrowserResult struct {
 	Links               []DeepDiscoveryLink                `json:"links"`
 	PublicQueryEvidence []recipeabi.PublicQueryObservation `json:"public_query_evidence,omitempty"`
 	Attestation         DeepDiscoveryEffectAttestation     `json:"attestation"`
+}
+
+type PublicQueryVerificationResult struct {
+	CommandID           string                 `json:"command_id"`
+	ResultKind          string                 `json:"result_kind"`
+	AttemptID           string                 `json:"attempt_id"`
+	ExecutorIncarnation string                 `json:"executor_incarnation"`
+	Artifact            model.ArtifactMetadata `json:"artifact"`
+	StatusCode          int                    `json:"status_code"`
+	ContentType         string                 `json:"content_type"`
+	ContentHash         string                 `json:"content_hash"`
+	RequestEndpointURL  string                 `json:"request_endpoint_url"`
+	RequestBodyHash     string                 `json:"request_body_hash"`
 }
 
 // CompanyImportApplyItem is a bounded, immutable slice of the confirmed

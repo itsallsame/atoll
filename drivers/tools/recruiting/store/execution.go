@@ -353,6 +353,11 @@ FROM recruiting_works w
 	    JOIN recruiting_deep_discovery_missions ddm ON ddm.mission_id = ddp.mission_id
 	    WHERE ddp.work_id = w.work_id AND ddp.probe_status = 'queued'
 	      AND ddm.mission_status IN ('active','waiting_human')
+	  )) OR (w.purpose = 'deep_discovery_public_query' AND EXISTS (
+	    SELECT 1 FROM recruiting_deep_discovery_public_query_verifications ddq
+	    JOIN recruiting_deep_discovery_missions ddm ON ddm.mission_id = ddq.mission_id
+	    WHERE ddq.work_id = w.work_id AND ddq.verification_status = 'queued'
+	      AND ddm.mission_status IN ('active','waiting_human')
 	  )))
   AND NOT EXISTS (
     SELECT 1 FROM recruiting_attempts a
@@ -450,6 +455,8 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	var profileSecurityDomain string
 	var profileVerification *model.ProfileVerificationRecipe
 	var deepDiscoveryBrowser model.DeepDiscoveryBrowserProbe
+	var publicQueryVerification model.DeepDiscoveryPublicQueryVerification
+	var publicQueryStubs []executioncontract.VerifiedPublicQueryStubRef
 	var fence model.AttemptFence
 	switch work.Purpose {
 	case "listing_sync":
@@ -510,6 +517,14 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		deepDiscoveryBrowser, err = getDeepDiscoveryBrowserProbeWith(ctx, tx, work.TargetID, true)
 		if err == nil && (deepDiscoveryBrowser.WorkID != work.WorkID || deepDiscoveryBrowser.Status != model.DeepDiscoveryProbeQueued) {
 			err = fmt.Errorf("deep discovery browser probe is not queued for this Work")
+		}
+		if err == nil {
+			publicQueryStubs, err = loadVerifiedPublicQueryStubRefsTx(ctx, tx, deepDiscoveryBrowser)
+		}
+	case "deep_discovery_public_query":
+		publicQueryVerification, err = getPublicQueryVerificationWith(ctx, tx, work.TargetID, true)
+		if err == nil && (publicQueryVerification.WorkID != work.WorkID || publicQueryVerification.Status != model.DeepDiscoveryPublicQueryQueued) {
+			err = fmt.Errorf("public query verification is not queued for this Work")
 		}
 	default:
 		err = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)
@@ -582,7 +597,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 		companyID = recipeSampleValidation.CompanyID
 	} else if work.Purpose == "source_discovery" {
 		companyID = discovery.CompanyID
-	} else if work.Purpose == "deep_discovery_browser" {
+	} else if work.Purpose == "deep_discovery_browser" || work.Purpose == "deep_discovery_public_query" {
 		companyID = placement.CompanyID
 	} else if !isBudgetlessPurpose(work.Purpose) {
 		if err := tx.QueryRowContext(ctx, "SELECT company_id FROM recruiting_sources WHERE source_id = ?", sourceID).Scan(&companyID); err != nil {
@@ -605,7 +620,7 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 			attempt, err = attempt.WithBackfillFence(fence)
 		} else if work.Purpose == "recipe_validation" && recipeSampleValidation.RecipeKind == model.RecipeDiscovery {
 			attempt, err = attempt.WithCompanyRecipeFence(fence)
-		} else if work.Purpose == "deep_discovery_browser" {
+		} else if work.Purpose == "deep_discovery_browser" || work.Purpose == "deep_discovery_public_query" {
 			attempt, err = attempt.WithCompanyControlFence(fence)
 		} else {
 			attempt, err = attempt.WithFence(fence)
@@ -681,6 +696,10 @@ WHERE work_id = ? AND attempt_status IN ('offered', 'accepted', 'running')`, can
 	} else if work.Purpose == "deep_discovery_browser" {
 		offer.Kind = "deep_discovery_browser"
 		offer.DeepDiscoveryBrowser = &deepDiscoveryBrowser
+		offer.PublicQueryStubs = publicQueryStubs
+	} else if work.Purpose == "deep_discovery_public_query" {
+		offer.Kind = "deep_discovery_public_query"
+		offer.PublicQueryVerification = &publicQueryVerification
 	}
 	offerState, err := json.Marshal(offer)
 	if err != nil {
@@ -781,7 +800,7 @@ func executionWorkloadClassTx(ctx context.Context, tx *sql.Tx, work model.Work) 
 		return "baseline", nil
 	case "source_validation", "recipe_validation":
 		return "calibration", nil
-	case "deep_discovery_browser":
+	case "deep_discovery_browser", "deep_discovery_public_query":
 		return "calibration", nil
 	case "historical_backfill_item":
 		return "backfill", nil
@@ -2026,6 +2045,13 @@ func (r *Repository) transitionListingExecutionTx(ctx context.Context, tx *sql.T
 				fenceErr = probeErr
 			} else if probe.WorkID != work.WorkID || probe.Status != model.DeepDiscoveryProbeQueued {
 				fenceErr = fmt.Errorf("deep discovery browser probe is no longer executable")
+			}
+		case "deep_discovery_public_query":
+			verification, verificationErr := getPublicQueryVerificationWith(ctx, tx, work.TargetID, true)
+			if verificationErr != nil {
+				fenceErr = verificationErr
+			} else if verification.WorkID != work.WorkID || verification.Status != model.DeepDiscoveryPublicQueryQueued {
+				fenceErr = fmt.Errorf("public query verification is no longer executable")
 			}
 		default:
 			fenceErr = fmt.Errorf("unsupported executable work purpose %q", work.Purpose)

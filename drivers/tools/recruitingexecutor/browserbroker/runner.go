@@ -5,7 +5,9 @@ package browserbroker
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -488,8 +490,14 @@ func (s *policyState) takePublicQueryStub(observation recipeabi.PublicQueryObser
 		return browserdriver.PublicQueryStub{}, false
 	}
 	s.usedPublicQueryStubs[key] = struct{}{}
-	s.fulfilledStubHashes = append(s.fulfilledStubHashes, stub.ContentHash)
+	s.fulfilledStubHashes = append(s.fulfilledStubHashes, publicQueryStubBindingHash(stub.Request.EndpointURL,
+		stub.Request.BodyHash, stub.ContentHash))
 	return stub, true
+}
+
+func publicQueryStubBindingHash(endpointURL, requestBodyHash, responseContentHash string) string {
+	sum := sha256.Sum256([]byte(endpointURL + "\n" + requestBodyHash + "\n" + responseContentHash))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func (r *Runner) publicQueryObservation(ctx context.Context, event *fetch.EventRequestPaused) (recipeabi.PublicQueryObservation, error) {

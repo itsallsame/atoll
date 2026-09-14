@@ -2,11 +2,13 @@ package httpdriver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -63,6 +65,81 @@ func TestFetchIsReadOnlyBoundedAndCarriesEvidence(t *testing.T) {
 	result, err := driver.Fetch(context.Background(), testSpec(), testInput(server.URL), compliance)
 	if err != nil || result.StatusCode != 200 || string(result.Body) != `{"title":"Engineer"}` || !strings.HasPrefix(result.ContentHash, "sha256:") || !result.Robots.Allowed {
 		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestFetchPublicQueryUsesExactEvidenceWithoutRecipeExtraction(t *testing.T) {
+	var writes atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.Header.Get("Website-Path") != "en" {
+			t.Errorf("unexpected public query: method=%s website-path=%q", request.Method, request.Header.Get("Website-Path"))
+		}
+		writes.Add(1)
+		response.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = response.Write([]byte(`{"code":0,"data":{"locations":[]}}`))
+	}))
+	defer server.Close()
+	observation, err := recipeabi.NewPublicQueryObservation(server.URL, http.MethodPost,
+		map[string]string{"Content-Type": "application/json", "Website-Path": "en"}, []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver, _ := newDriver(testPolicy(), allowRobots{allowed: true}, true)
+	result, err := driver.FetchPublicQuery(context.Background(), observation, compliance)
+	if err != nil || writes.Load() != 1 || result.StatusCode != http.StatusOK ||
+		result.ContentType != "application/json; charset=utf-8" || len(result.Body) == 0 {
+		t.Fatalf("public query result=%+v writes=%d err=%v", result, writes.Load(), err)
+	}
+}
+
+func TestFetchPublicQueryRejectsNonJSONSuccessWithResponseEvidence(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "text/html")
+		_, _ = response.Write([]byte(`<html>not JSON</html>`))
+	}))
+	defer server.Close()
+	observation, _ := recipeabi.NewPublicQueryObservation(server.URL+"/config", http.MethodPost,
+		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{}`))
+	driver, _ := newDriver(testPolicy(), allowRobots{allowed: true}, true)
+	result, err := driver.FetchPublicQuery(context.Background(), observation, ComplianceEvidence{
+		TermsPolicyVersion: 1, TermsReviewedAt: "2026-09-14T00:00:00Z"})
+	var fetchErr *FetchError
+	if !errors.As(err, &fetchErr) || fetchErr.Class != "parse_error" || string(result.Body) != `<html>not JSON</html>` ||
+		result.ContentHash == "" {
+		t.Fatalf("non-JSON verification result=%+v err=%v", result, err)
+	}
+}
+
+func TestFetchPublicQueryAgainstByteDanceLive(t *testing.T) {
+	if os.Getenv("RECRUITING_LIVE_BYTEDANCE_PROBE") != "1" {
+		t.Skip("set RECRUITING_LIVE_BYTEDANCE_PROBE=1 for the real public site")
+	}
+	observation, err := recipeabi.NewPublicQueryObservation(
+		"https://jobs.bytedance.com/api/v1/public/supplier/config/job/filters", http.MethodPost,
+		map[string]string{"Accept": "*/*", "Accept-Language": "en-US,en;q=0.9", "Content-Type": "application/json", "Website-Path": "en"},
+		json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	robots, err := NewRobotsTxtChecker(RobotsPolicy{Timeout: 10 * time.Second, MaxBytes: 1 << 20, CacheTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver, err := New(Policy{MaxConcurrency: 1, CircuitThreshold: 2, CircuitCooldown: time.Minute}, robots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := driver.FetchPublicQuery(context.Background(), observation,
+		ComplianceEvidence{TermsPolicyVersion: 1, TermsReviewedAt: "2026-09-14T00:00:00Z"})
+	var envelope struct {
+		Code int `json:"code"`
+	}
+	decodeErr := json.Unmarshal(result.Body, &envelope)
+	if err != nil || decodeErr != nil || result.StatusCode != http.StatusOK || envelope.Code != 0 ||
+		!strings.HasPrefix(result.ContentType, "application/json") || len(result.Body) == 0 || len(result.Body) > 1<<20 ||
+		!result.Robots.Allowed || !strings.HasPrefix(result.ContentHash, "sha256:") {
+		t.Fatalf("ByteDance public query verification status=%d type=%q bytes=%d code=%d robots=%+v err=%v decode=%v",
+			result.StatusCode, result.ContentType, len(result.Body), envelope.Code, result.Robots, err, decodeErr)
 	}
 }
 

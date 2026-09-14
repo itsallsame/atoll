@@ -120,6 +120,10 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		handleDeepDiscoveryBrowserGetQuery(sys, repository, msg)
 		return
 	}
+	if msg.Type == TypeDeepDiscoveryPublicQueryGet {
+		handleDeepDiscoveryPublicQueryGetQuery(sys, repository, msg)
+		return
+	}
 	if msg.Type == TypeJobList {
 		handleJobListQuery(sys, repository, msg)
 		return
@@ -200,6 +204,26 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		return
 	}
 	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "entity": value})
+}
+
+func handleDeepDiscoveryPublicQueryGetQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload entityGetPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	verification, work, err := repository.GetPublicQueryVerification(msg.Ctx(), strings.TrimSpace(payload.ID))
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	nextAction := "await_public_query_verification"
+	if verification.Status == model.DeepDiscoveryPublicQueryCompleted {
+		nextAction = "create_browser_probe_with_stub_verification"
+	} else if work.Status == model.WorkWaitingHuman || work.Terminal() {
+		nextAction = "resolve_and_create_new_verification_if_needed"
+	}
+	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "verification": verification,
+		"work": work, "next_action": nextAction})
 }
 
 func handleDeepDiscoveryBrowserGetQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

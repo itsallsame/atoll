@@ -852,3 +852,11 @@ Browser Broker 新增严格受限的 `PublicQueryStub`：请求侧必须与前�
 真实 Chrome fixture 使用两次 Probe 证明：第一次只观察前置 `/config`，第二次本地回放已验证 JSON 后才能触发 `/jobs`；测试 origin 的 POST 计数始终为 0，只有 `/jobs` 被计为未知阻断请求。真实字节测试先观察并阻断 `config/job/filters`，再由独立 HTTP 请求取得 2xx JSON 并校验哈希，第二次 Browser Session 本地回放后成功观察且继续阻断 `search/job/posts`。证据见 `evidence/recruiting-verified-public-query-stub-bytedance-20260914.json`。
 
 本阶段只关闭 Browser 数据面的安全推进能力。正式产品链仍缺少一个控制面命令：它应通过统一 `http.fetch` Work/Attempt 执行前置验证、先保存响应 Artifact，再用 Mission/Company/Probe/request hash/Artifact hash fence 创建下一 Probe 的不可变 Stub 引用。该链完成前，生产命令不能接收客户端直接提交的 Stub body，也不能宣称字节 Source 已接入完成。
+
+## 25. 2026-09-14 公开查询验证控制面阶段
+
+本阶段补齐上一阶段明确保留的控制面缺口，仍未修改 Atoll core，也没有新增 Worker/Actor 类型。自然语言 Agent 可从 `deep_discovery.browser.get` 返回的冻结证据选择公开查询，通过 `recruiting.deep_discovery.public_query.verify` 创建一次有预算、可审计的 `deep_discovery_public_query` Work；同一个 Recruiting Executor class 使用既有 `http.fetch` capability 执行。模型和 migration 62 分别保存 Verification 状态机与规范化索引，Mission、来源 Probe、请求 endpoint/body hash、Work、Attempt、Permit、Executor incarnation 和响应 Artifact 全部参与结果围栏。验证只接受 2xx JSON，先保存最多 1 MiB 的 response Artifact，再原子完成 Verification、Attempt 和 Work；迟到结果保留为 rejected evidence，但不能改变业务状态。系统仍可按统一失败策略对同一 Work 做有界瞬态恢复；人工不能用通用 `work.retry` 克隆该业务目标，终结后若需再次验证，必须创建一次消耗 Mission 预算的新 Verification。
+
+后续 `recruiting.deep_discovery.browser.observe` 只接收最多 10 个已完成、同 Mission 的 Verification ID，不接收 Stub body。创建 Probe 时控制面检查这些引用；执行 offer 再从权威表生成 request + Artifact 引用。Executor 在启动 Chrome 前读取 Resource，验证大小和 SHA-256，与冻结请求组成 Broker Stub；Broker attestation 使用 `endpoint + request body hash + response Artifact hash` 的绑定摘要，结果事务只接受本次 Probe 冻结的集合。这样相同 JSON 响应也不能被跨 endpoint 或跨请求替换。已经完成的 Probe/Verification 是不可变证据，命令创建只锁 Mission aggregate，避免与结果提交形成反向行锁。
+
+自动合同覆盖 `Probe evidence → Verification Work offer/accept/start → Artifact result → frozen next Probe offer`，Executor 单元合同覆盖 Artifact-before-result，Browser Executor 合同覆盖 Resource 回读与哈希复核，HTTP Driver 合同覆盖精确 POST 和非 JSON 失败关闭。生产 HTTP Driver 对字节前置配置接口、真实 Browser Broker 对本地回放后发现下游岗位查询的 Live Smoke 均通过。紧凑记录见 `evidence/recruiting-public-query-verification-control-plane-20260914.json`。该阶段关闭可信 Stub 的控制面链，不代表已自动生成 Extraction/pagination、审批 Listing Recipe、发布 Source 或完成字节 baseline；这些仍须走既有 `recipe.prepare → source.update → recipe.propose → recipe.validate → recipe.approve → baseline` 产品状态机。

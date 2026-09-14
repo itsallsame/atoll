@@ -66,6 +66,8 @@ const (
 	TypeDeepDiscoveryCancel            = "recruiting.deep_discovery.cancel"
 	TypeDeepDiscoveryBrowserObserve    = "recruiting.deep_discovery.browser.observe"
 	TypeDeepDiscoveryBrowserGet        = "recruiting.deep_discovery.browser.get"
+	TypeDeepDiscoveryPublicQueryVerify = "recruiting.deep_discovery.public_query.verify"
+	TypeDeepDiscoveryPublicQueryGet    = "recruiting.deep_discovery.public_query.get"
 	TypeOnboardingBegin                = "recruiting.onboarding.begin"
 	TypeOnboardingStatus               = "recruiting.onboarding.status"
 	TypeOnboardingMaterialize          = "recruiting.onboarding.materialize"

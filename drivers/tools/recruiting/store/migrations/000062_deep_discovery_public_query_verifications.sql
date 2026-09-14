@@ -1,0 +1,21 @@
+CREATE TABLE recruiting_deep_discovery_public_query_verifications (
+  verification_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  mission_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  probe_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  work_id VARCHAR(191) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  mission_version BIGINT UNSIGNED NOT NULL,
+  request_key VARCHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  verification_status VARCHAR(32) CHARACTER SET ascii NOT NULL,
+  version BIGINT UNSIGNED NOT NULL,
+  state_json JSON NOT NULL,
+  result_json JSON NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  PRIMARY KEY (verification_id),
+  UNIQUE KEY uq_recruiting_dd_public_query_work (work_id),
+  UNIQUE KEY uq_recruiting_dd_public_query_request (mission_id, probe_id, request_key),
+  KEY ix_recruiting_dd_public_query_status (verification_status, updated_at, verification_id),
+  CONSTRAINT fk_recruiting_dd_public_query_mission FOREIGN KEY (mission_id) REFERENCES recruiting_deep_discovery_missions(mission_id),
+  CONSTRAINT fk_recruiting_dd_public_query_probe FOREIGN KEY (probe_id) REFERENCES recruiting_deep_discovery_browser_probes(probe_id),
+  CONSTRAINT fk_recruiting_dd_public_query_work FOREIGN KEY (work_id) REFERENCES recruiting_works(work_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

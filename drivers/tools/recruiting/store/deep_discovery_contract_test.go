@@ -183,7 +183,7 @@ func TestDeepDiscoveryBrowserProbeRunsThroughWorkAttemptAndBudget(t *testing.T) 
 	if err != nil || !replayedPreparation.Replayed || string(replayedPreparation.Response) != string(preparedResponse) {
 		t.Fatalf("replayed Recipe preparation=%+v err=%v", replayedPreparation, err)
 	}
-	mission, _ := model.NewDeepDiscoveryMission("deep-browser-mission", company, 1, 5, 2)
+	mission, _ := model.NewDeepDiscoveryMission("deep-browser-mission", company, 1, 5, 4)
 	if err := repository.CreateDeepDiscoveryMission(ctx, company.Version, mission, now); err != nil {
 		t.Fatal(err)
 	}
@@ -258,6 +258,79 @@ func TestDeepDiscoveryBrowserProbeRunsThroughWorkAttemptAndBudget(t *testing.T) 
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_artifacts
 WHERE artifact_id IN (?,?) AND rejected=TRUE`, lateArtifact.ArtifactID, lateTrace.ArtifactID).Scan(&rejected); err != nil || rejected != 2 {
 		t.Fatalf("rejected browser evidence=%d err=%v", rejected, err)
+	}
+
+	verificationMission, _ := storedMission.ConsumeOperations(storedMission.Version, 1)
+	verificationWork, _ := model.NewWork("deep-public-query-work", "deep_discovery_public_query",
+		"deep-public-query-verification", "deep_discovery_public_query", "agent")
+	verification, _ := model.NewDeepDiscoveryPublicQueryVerification("deep-public-query-verification", mission.MissionID,
+		probe.ProbeID, verificationWork.WorkID, verificationMission.Version, model.PublicQueryRequestEvidence{
+			EndpointURL: queryEvidence.EndpointURL, Method: queryEvidence.Method, Headers: queryEvidence.Headers,
+			JSONBody: queryEvidence.JSONBody, BodyHash: queryEvidence.BodyHash})
+	verificationPlacement := WorkPlacement{BusinessKey: "deep-public-query-verification", CompanyID: company.CompanyID,
+		Capability: "http.fetch", Origin: "https://api.example.com", NotBefore: now.Add(6 * time.Second)}
+	verificationResponse, _ := json.Marshal(map[string]any{"verification": verification, "mission": verificationMission})
+	verificationReceipt, _ := model.NewCommandReceipt("deep-public-query-create", "recruiting.deep_discovery.public_query.verify",
+		"sha256:deep-public-query-create", verificationResponse)
+	verificationEvent, _ := model.NewEventIntent("event-deep-public-query-create", "deep.discovery.public_query.queued",
+		"deep_discovery", mission.MissionID, verificationMission.Version, now.Add(6*time.Second).Format(time.RFC3339Nano),
+		verificationReceipt.CommandID, json.RawMessage(`{"verification_id":"deep-public-query-verification"}`))
+	if _, err := repository.ApplyCreatePublicQueryVerificationCommand(ctx, storedMission, verificationMission, verification,
+		verificationWork, verificationPlacement, verificationReceipt, verificationEvent, nil, now.Add(6*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	verificationOffer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "deep-public-query-attempt",
+		ExecutorActorID: "tool:http:1", ExecutorIncarnation: "boot-http-1", Capability: "http.fetch",
+		Origin: "https://api.example.com", OfferedAt: now.Add(7 * time.Second), BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil || verificationOffer.Kind != "deep_discovery_public_query" || verificationOffer.PublicQueryVerification == nil {
+		t.Fatalf("public query verification offer=%+v err=%v", verificationOffer, err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, verificationOffer.Attempt.AttemptID, "tool:http:1", "boot-http-1", now.Add(8*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, verificationOffer.Attempt.AttemptID, "tool:http:1", "boot-http-1", now.Add(9*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	verifiedHash := "sha256:" + strings.Repeat("d", 64)
+	verifiedArtifact, _ := model.NewArtifactMetadata("deep-public-query-response", model.ArtifactResponse, verifiedHash,
+		"file://worker/recruiting/deep-public-query-response", verificationWork.WorkID, verificationOffer.Attempt.AttemptID,
+		"operators", "30d", false)
+	verifiedOutcome, err := repository.AcceptPublicQueryVerificationResult(ctx, PublicQueryVerificationResult{
+		CommandID: "deep-public-query-result", RequestHash: "sha256:deep-public-query-result",
+		AttemptID: verificationOffer.Attempt.AttemptID, ExecutorActorID: "tool:http:1", ExecutorIncarnation: "boot-http-1",
+		Artifact: verifiedArtifact, StatusCode: 200, ContentType: "application/json; charset=utf-8",
+		ContentHash: verifiedHash, RequestEndpointURL: queryEvidence.EndpointURL, RequestBodyHash: queryEvidence.BodyHash,
+		ObservedAt: now.Add(10 * time.Second)})
+	if err != nil || verifiedOutcome.Verification.Status != model.DeepDiscoveryPublicQueryCompleted ||
+		verifiedOutcome.Work.Status != model.WorkCompleted {
+		t.Fatalf("public query verification outcome=%+v err=%v", verifiedOutcome, err)
+	}
+
+	currentMission, _ := repository.GetDeepDiscoveryMission(ctx, mission.MissionID)
+	stubMission, _ := currentMission.ConsumeOperations(currentMission.Version, 1)
+	stubWork, _ := model.NewWork("deep-stub-browser-work", "deep_discovery_probe", "deep-stub-browser-probe",
+		"deep_discovery_browser", "agent")
+	stubProbe, _ := model.NewDeepDiscoveryBrowserProbe("deep-stub-browser-probe", mission.MissionID, stubWork.WorkID,
+		"https://example.com/careers", "", 0, "", stubMission.Version, verification.VerificationID)
+	stubPlacement := WorkPlacement{BusinessKey: "deep-stub-browser-probe", CompanyID: company.CompanyID,
+		Capability: "browser.public", Origin: "https://example.com", NotBefore: now.Add(11 * time.Second)}
+	stubResponse, _ := json.Marshal(map[string]any{"probe": stubProbe, "mission": stubMission})
+	stubReceipt, _ := model.NewCommandReceipt("deep-stub-browser-create", "recruiting.deep_discovery.browser.observe",
+		"sha256:deep-stub-browser-create", stubResponse)
+	stubEvent, _ := model.NewEventIntent("event-deep-stub-browser-create", "deep.discovery.browser.queued", "deep_discovery",
+		mission.MissionID, stubMission.Version, now.Add(11*time.Second).Format(time.RFC3339Nano), stubReceipt.CommandID,
+		json.RawMessage(`{"probe_id":"deep-stub-browser-probe"}`))
+	if _, err := repository.ApplyCreateDeepDiscoveryBrowserProbeCommand(ctx, currentMission, stubMission, stubProbe,
+		stubWork, stubPlacement, stubReceipt, stubEvent, nil, now.Add(11*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	stubOffer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "deep-stub-browser-attempt",
+		ExecutorActorID: "tool:browser:1", ExecutorIncarnation: "boot-1", Capability: "browser.public",
+		OfferedAt: now.Add(12 * time.Second), BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil || len(stubOffer.PublicQueryStubs) != 1 ||
+		stubOffer.PublicQueryStubs[0].Artifact.ArtifactID != verifiedArtifact.ArtifactID ||
+		stubOffer.PublicQueryStubs[0].Request.BodyHash != queryEvidence.BodyHash {
+		t.Fatalf("Stub browser offer=%+v err=%v", stubOffer, err)
 	}
 }
 

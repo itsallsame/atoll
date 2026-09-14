@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,6 +61,16 @@ func (r *Repository) ApplyCreateDeepDiscoveryBrowserProbeCommand(ctx context.Con
 	calculated, err := locked.ConsumeOperations(current.Version, 1)
 	if err != nil || calculated != next {
 		return CommandResult{}, fmt.Errorf("deep discovery browser budget transition does not match locked state")
+	}
+	for _, verificationID := range probe.StubVerificationIDs {
+		// Completed verification evidence is immutable. The Mission lock fences
+		// this command; taking verification locks here would invert the result
+		// acceptance lock order (verification -> Mission).
+		verification, verificationErr := getPublicQueryVerificationWith(ctx, tx, verificationID, false)
+		if verificationErr != nil || verification.MissionID != current.MissionID ||
+			verification.Status != model.DeepDiscoveryPublicQueryCompleted || verification.Artifact == nil {
+			return CommandResult{}, fmt.Errorf("browser Probe Stub requires a completed public query verification in the same Mission")
+		}
 	}
 	if err := reserveCommandReceipt(ctx, tx, receipt, at); err != nil {
 		if errors.Is(err, ErrCommandConflict) {
@@ -273,6 +285,22 @@ func (r *Repository) acceptDeepDiscoveryBrowserResultTx(ctx context.Context, inp
 	}
 	if err := input.Attestation.Validate(maxNavigations); err != nil {
 		return DeepDiscoveryBrowserResultOutcome{}, err
+	}
+	allowedStubHashes := make(map[string]struct{}, len(probe.StubVerificationIDs))
+	for _, verificationID := range probe.StubVerificationIDs {
+		verification, verificationErr := getPublicQueryVerificationWith(ctx, tx, verificationID, true)
+		if verificationErr != nil || verification.MissionID != probe.MissionID ||
+			verification.Status != model.DeepDiscoveryPublicQueryCompleted || verification.Artifact == nil {
+			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser Stub verification is no longer available")
+		}
+		bindingSum := sha256.Sum256([]byte(verification.Request.EndpointURL + "\n" + verification.Request.BodyHash + "\n" +
+			verification.Artifact.ContentHash))
+		allowedStubHashes["sha256:"+hex.EncodeToString(bindingSum[:])] = struct{}{}
+	}
+	for _, fulfilledHash := range input.Attestation.FulfilledPublicQueryHashes {
+		if _, allowed := allowedStubHashes[fulfilledHash]; !allowed {
+			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser fulfilled an unbound Stub response")
+		}
 	}
 	mission, err := getDeepDiscoveryMissionWith(ctx, tx, probe.MissionID, true)
 	if err != nil {

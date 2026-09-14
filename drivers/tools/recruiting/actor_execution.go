@@ -22,24 +22,25 @@ type listingOfferPayload = executioncontract.OfferRequest
 type executionTransitionPayload = executioncontract.TransitionRequest
 
 type executionControlResponse struct {
-	ContractVersion      string                                   `json:"contract_version"`
-	CorrelationID        string                                   `json:"correlation_id"`
-	RequestedBy          string                                   `json:"requested_by"`
-	Available            bool                                     `json:"available,omitempty"`
-	Offer                *store.ExecutionOffer                    `json:"offer,omitempty"`
-	Attempt              *model.Attempt                           `json:"attempt,omitempty"`
-	Page                 *store.ListingPageOutcome                `json:"page,omitempty"`
-	Completion           *store.ListingCompletionOutcome          `json:"completion,omitempty"`
-	Diagnostic           *store.DiagnosticResultOutcome           `json:"diagnostic,omitempty"`
-	SourceValidation     *store.DiagnosticResultOutcome           `json:"source_validation,omitempty"`
-	RecipeValidation     any                                      `json:"recipe_validation,omitempty"`
-	Detail               *store.DetailResultOutcome               `json:"detail,omitempty"`
-	Backfill             *store.BackfillResultOutcome             `json:"backfill,omitempty"`
-	CompanyImport        *store.CompanyImportResultOutcome        `json:"company_import,omitempty"`
-	SourceDiscovery      *store.SourceDiscoveryResultOutcome      `json:"source_discovery,omitempty"`
-	ProfileRepair        *store.ProfileRepairSubmissionOutcome    `json:"profile_repair,omitempty"`
-	ProfileVerification  *store.ProfileVerificationOutcome        `json:"profile_verification,omitempty"`
-	DeepDiscoveryBrowser *store.DeepDiscoveryBrowserResultOutcome `json:"deep_discovery_browser,omitempty"`
+	ContractVersion         string                                      `json:"contract_version"`
+	CorrelationID           string                                      `json:"correlation_id"`
+	RequestedBy             string                                      `json:"requested_by"`
+	Available               bool                                        `json:"available,omitempty"`
+	Offer                   *store.ExecutionOffer                       `json:"offer,omitempty"`
+	Attempt                 *model.Attempt                              `json:"attempt,omitempty"`
+	Page                    *store.ListingPageOutcome                   `json:"page,omitempty"`
+	Completion              *store.ListingCompletionOutcome             `json:"completion,omitempty"`
+	Diagnostic              *store.DiagnosticResultOutcome              `json:"diagnostic,omitempty"`
+	SourceValidation        *store.DiagnosticResultOutcome              `json:"source_validation,omitempty"`
+	RecipeValidation        any                                         `json:"recipe_validation,omitempty"`
+	Detail                  *store.DetailResultOutcome                  `json:"detail,omitempty"`
+	Backfill                *store.BackfillResultOutcome                `json:"backfill,omitempty"`
+	CompanyImport           *store.CompanyImportResultOutcome           `json:"company_import,omitempty"`
+	SourceDiscovery         *store.SourceDiscoveryResultOutcome         `json:"source_discovery,omitempty"`
+	ProfileRepair           *store.ProfileRepairSubmissionOutcome       `json:"profile_repair,omitempty"`
+	ProfileVerification     *store.ProfileVerificationOutcome           `json:"profile_verification,omitempty"`
+	DeepDiscoveryBrowser    *store.DeepDiscoveryBrowserResultOutcome    `json:"deep_discovery_browser,omitempty"`
+	PublicQueryVerification *store.PublicQueryVerificationResultOutcome `json:"public_query_verification,omitempty"`
 }
 
 type listingPageResultPayload = executioncontract.ListingPageResult
@@ -57,6 +58,7 @@ type sourceDiscoveryResultPayload = executioncontract.SourceDiscoveryResult
 type profileRepairSubmissionPayload = executioncontract.ProfileRepairSubmission
 type profileVerificationResultPayload = executioncontract.ProfileVerificationResult
 type deepDiscoveryBrowserResultPayload = executioncontract.DeepDiscoveryBrowserResult
+type publicQueryVerificationResultPayload = executioncontract.PublicQueryVerificationResult
 
 func handleAnyExecutionResult(sys actorbase.Sys, cfg Config, repository *store.Repository, state *storedState, msg actorbase.Msg) {
 	var discriminator struct {
@@ -101,9 +103,37 @@ func handleAnyExecutionResult(sys actorbase.Sys, cfg Config, repository *store.R
 		handleProfileVerificationResult(sys, repository, msg)
 	case "deep_discovery_browser":
 		handleDeepDiscoveryBrowserResult(sys, repository, msg)
+	case "deep_discovery_public_query":
+		handlePublicQueryVerificationResult(sys, repository, msg)
 	default:
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "unknown execution result_kind")
 	}
+}
+
+func handlePublicQueryVerificationResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload publicQueryVerificationResultPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if strings.TrimSpace(payload.CommandID) == "" || payload.ResultKind != "deep_discovery_public_query" ||
+		strings.TrimSpace(payload.AttemptID) == "" || strings.TrimSpace(payload.ExecutorIncarnation) == "" ||
+		strings.TrimSpace(payload.RequestEndpointURL) == "" || strings.TrimSpace(payload.RequestBodyHash) == "" {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "complete public query verification result identity is required")
+		return
+	}
+	outcome, err := repository.AcceptPublicQueryVerificationResult(msg.Ctx(), store.PublicQueryVerificationResult{
+		CommandID: payload.CommandID, RequestHash: executionCommandRequestHash(msg), AttemptID: payload.AttemptID,
+		ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
+		Artifact: payload.Artifact, StatusCode: payload.StatusCode, ContentType: payload.ContentType,
+		ContentHash: payload.ContentHash, RequestEndpointURL: payload.RequestEndpointURL,
+		RequestBodyHash: payload.RequestBodyHash, ObservedAt: time.UnixMilli(msg.TS).UTC()})
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, executionControlResponse{ContractVersion: executioncontract.Version,
+		CorrelationID: string(msg.CorrelationID), RequestedBy: string(msg.Sender.ID),
+		PublicQueryVerification: &outcome})
 }
 
 func handleDeepDiscoveryBrowserResult(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
