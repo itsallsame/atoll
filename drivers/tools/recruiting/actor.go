@@ -224,7 +224,7 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleExecutionControlMessage(sys, cfg, repository, state, msg)
 		case TypeSourceGet, TypeSourceList, TypeSourceEndpointHistory, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
 			TypeDeepDiscoveryGet, TypeDeepDiscoveryGraph, TypeDeepDiscoveryGuide, TypeDeepDiscoveryBrowserGet,
-			TypeDeepDiscoveryPublicQueryGet,
+			TypeDeepDiscoveryPublicQueryGet, TypeDeepDiscoveryPublicQueryInspect,
 			TypeJobGet, TypeJobList, TypeJobCorrectionGet, TypeProfileGet, TypeWorkGet, TypeWorkList,
 			TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary, TypeRepairGet, TypeRepairList, TypeRecipeInspect,
 			TypeRecipeRolloutBatchGet, TypeRecipeRolloutBatchItems,
