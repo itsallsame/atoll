@@ -400,15 +400,38 @@ func runAction(ctx context.Context, state *policyState, runner *Runner, initial 
 		return nil
 	case browserdriver.ActionFollowLink:
 		selector := strconv.Quote(action.Selector)
-		var target string
-		if err := chromedp.Run(ctx, chromedp.Evaluate(`(()=>{const node=document.querySelector(`+selector+`);return node&&node.href||""})()`, &target)); err != nil {
+		var candidate struct {
+			Href  string `json:"href"`
+			JobID string `json:"job_id"`
+		}
+		if err := chromedp.Run(ctx, chromedp.Evaluate(`(()=>{const node=document.querySelector(`+selector+`);return {href:node&&node.href||"",job_id:node&&node.getAttribute&&node.getAttribute("data-jobunionid")||""}})()`, &candidate)); err != nil {
 			return err
 		}
-		next, err := runner.publicURL(ctx, target)
-		if err != nil || origin(next) != origin(initial) {
-			return policyFailure(errors.New("follow_link target is missing, non-public, or cross-origin"))
+		if candidate.Href != "" {
+			next, err := runner.publicURL(ctx, candidate.Href)
+			if err != nil || origin(next) != origin(initial) {
+				return policyFailure(errors.New("follow_link target is missing, non-public, or cross-origin"))
+			}
+			return chromedp.Run(ctx, chromedp.Navigate(next.String()))
 		}
-		return chromedp.Run(ctx, chromedp.Navigate(next.String()))
+		if strings.TrimSpace(candidate.JobID) == "" {
+			return policyFailure(errors.New("follow_link target is neither a public link nor an identified job element"))
+		}
+		// Some recruitment sites expose job cards as SPA-controlled divs. The
+		// explicit stable job identity is required before activation; the Broker
+		// still blocks writes, downloads, popups, and cross-origin documents.
+		if err := chromedp.Run(ctx, chromedp.Click(action.Selector, chromedp.ByQuery), chromedp.Sleep(500*time.Millisecond)); err != nil {
+			return err
+		}
+		var currentURL string
+		if err := chromedp.Run(ctx, chromedp.Location(&currentURL)); err != nil {
+			return err
+		}
+		current, err := runner.publicURL(ctx, currentURL)
+		if err != nil || origin(current) != origin(initial) {
+			return policyFailure(errors.New("identified job element navigated outside the public origin"))
+		}
+		return nil
 	default:
 		return fmt.Errorf("unsupported browser action %q", action.Kind)
 	}

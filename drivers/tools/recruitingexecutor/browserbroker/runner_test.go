@@ -42,6 +42,28 @@ func TestRunnerExecutesImmutablePlanInRealChrome(t *testing.T) {
 	}
 }
 
+func TestRunnerActivatesIdentifiedSPAJobElement(t *testing.T) {
+	chrome := chromeForTest(t)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "text/html")
+		_, _ = response.Write([]byte(`<!doctype html><html><body>
+<div class="job" data-jobunionid="job-42" onclick="history.pushState({},'', '/jobs/job-42');document.body.innerHTML='<main class=detail>Engineer detail</main>'">Engineer</div>
+</body></html>`))
+	}))
+	defer server.Close()
+	runner := &Runner{chromePath: chrome, allowPrivate: true}
+	request := browserRequest(server.URL)
+	request.Plan.Actions = []browserdriver.Action{
+		{Kind: browserdriver.ActionWaitSelector, Selector: ".job", TimeoutMS: 5_000},
+		{Kind: browserdriver.ActionFollowLink, Selector: ".job[data-jobunionid]"},
+	}
+	request.PlanHash, _ = request.Plan.ContentHash()
+	result, err := runner.Run(context.Background(), request)
+	if err != nil || result.FinalURL != server.URL+"/jobs/job-42" || !strings.Contains(string(result.DOM), "Engineer detail") {
+		t.Fatalf("identified SPA job element was not activated: result=%+v err=%v", result, err)
+	}
+}
+
 func TestProfileRunnerUsesLocalLeaseAndReturnsSanitizedDOM(t *testing.T) {
 	chrome := chromeForTest(t)
 	var authenticatedReads atomic.Int64

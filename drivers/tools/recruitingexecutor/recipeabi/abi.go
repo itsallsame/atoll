@@ -197,8 +197,8 @@ const (
 )
 
 // BrowserAction intentionally has no script, input, form submit, or generic
-// click primitive. FollowLink reads an anchor href and navigates with GET only
-// after the broker verifies that the destination remains same-origin.
+// click primitive. FollowLink navigates a same-origin anchor or activates an
+// explicitly identified job card while the broker continues to fence effects.
 type BrowserAction struct {
 	Kind       BrowserActionKind `json:"kind"`
 	Selector   string            `json:"selector,omitempty"`
