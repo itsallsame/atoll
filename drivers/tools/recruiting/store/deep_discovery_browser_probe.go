@@ -324,7 +324,17 @@ func (r *Repository) acceptDeepDiscoveryBrowserResultTx(ctx context.Context, inp
 			verification.Status != model.DeepDiscoveryPublicQueryCompleted || verification.Artifact == nil {
 			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser Stub verification is no longer available")
 		}
-		bindingSum := sha256.Sum256([]byte(verification.Request.EndpointURL + "\n" + verification.Request.BodyHash + "\n" +
+		request, canonicalErr := (recipeabi.PublicQueryObservation{
+			EndpointURL: verification.Request.EndpointURL,
+			Method:      verification.Request.Method,
+			Headers:     verification.Request.Headers,
+			JSONBody:    verification.Request.JSONBody,
+			BodyHash:    verification.Request.BodyHash,
+		}).Canonicalized()
+		if canonicalErr != nil {
+			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser Stub verification is invalid: %w", canonicalErr)
+		}
+		bindingSum := sha256.Sum256([]byte(request.EndpointURL + "\n" + request.BodyHash + "\n" +
 			verification.Artifact.ContentHash))
 		allowedStubHashes["sha256:"+hex.EncodeToString(bindingSum[:])] = struct{}{}
 	}
