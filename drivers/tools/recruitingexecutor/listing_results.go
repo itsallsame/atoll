@@ -25,7 +25,7 @@ type listingSubmissions struct {
 	Completion executioncontract.ListingCompletionResult
 }
 
-const maxDiagnosticPageEvidence = 100
+const maxDiagnosticPageEvidence = 3
 
 type diagnosticTrace struct {
 	Schema        string                  `json:"schema"`
@@ -41,11 +41,9 @@ func prepareDiagnosticSubmission(ctx context.Context, offer executioncontract.Of
 		offer.Occurrence != nil || run.Output.Failure != nil || run.Output.AttemptID != offer.Attempt.AttemptID || len(run.Output.Artifacts) == 0 {
 		return executioncontract.DiagnosticResult{}, errors.New("successful standalone diagnostic run and artifacts are required")
 	}
-	// The control plane accepts at most 101 diagnostic Artifacts: 100 page
-	// Artifacts followed by one trace. Listing Recipes may legitimately scan
-	// more than 100 pages, so retain both ends of a large scan and put the
-	// complete ordered page manifest in the trace instead of producing a result
-	// that the control plane can never accept.
+	// Keep the control message small regardless of Recipe page limits. The
+	// first, middle, and terminal pages are representative evidence; the trace
+	// carries the complete ordered page manifest for audit and retrieval.
 	pageEvidence := diagnosticPageEvidence(run.Output.Artifacts)
 	artifacts := make([]model.ArtifactMetadata, 0, len(pageEvidence)+1)
 	for _, ref := range pageEvidence {
@@ -91,9 +89,7 @@ func diagnosticPageEvidence(refs []recipeabi.ArtifactRef) []recipeabi.ArtifactRe
 	if len(refs) <= maxDiagnosticPageEvidence {
 		return refs
 	}
-	selected := make([]recipeabi.ArtifactRef, 0, maxDiagnosticPageEvidence)
-	selected = append(selected, refs[:maxDiagnosticPageEvidence-1]...)
-	return append(selected, refs[len(refs)-1])
+	return []recipeabi.ArtifactRef{refs[0], refs[len(refs)/2], refs[len(refs)-1]}
 }
 
 func prepareListingSubmissions(ctx context.Context, offer executioncontract.Offer, spec recipeabi.Spec,

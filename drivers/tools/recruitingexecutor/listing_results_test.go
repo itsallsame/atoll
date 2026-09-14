@@ -143,9 +143,9 @@ func TestDiagnosticPageEvidenceStaysWithinControlPlaneBound(t *testing.T) {
 	if len(selected) != maxDiagnosticPageEvidence {
 		t.Fatalf("selected page evidence=%d want=%d", len(selected), maxDiagnosticPageEvidence)
 	}
-	if selected[0].ArtifactID != "page-001" || selected[len(selected)-2].ArtifactID != "page-099" ||
+	if selected[0].ArtifactID != "page-001" || selected[1].ArtifactID != "page-059" ||
 		selected[len(selected)-1].ArtifactID != "page-117" {
-		t.Fatalf("large validation did not retain its ordered beginning and terminal page: %+v", selected)
+		t.Fatalf("large validation did not retain its beginning, middle, and terminal page: %+v", selected)
 	}
 	if got := diagnosticPageEvidence(refs[:2]); len(got) != 2 || got[1].ArtifactID != "page-002" {
 		t.Fatalf("small validation evidence changed: %+v", got)
