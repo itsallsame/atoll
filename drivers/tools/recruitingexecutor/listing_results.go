@@ -25,6 +25,14 @@ type listingSubmissions struct {
 	Completion executioncontract.ListingCompletionResult
 }
 
+const maxDiagnosticPageEvidence = 100
+
+type diagnosticTrace struct {
+	Schema        string                  `json:"schema"`
+	Result        json.RawMessage         `json:"result"`
+	PageArtifacts []recipeabi.ArtifactRef `json:"page_artifacts"`
+}
+
 func prepareDiagnosticSubmission(ctx context.Context, offer executioncontract.Offer, run httpdriver.ListingRunResult,
 	sink *atollArtifactSink) (executioncontract.DiagnosticResult, error) {
 	if ctx == nil || sink == nil || offer.ListingRun == nil ||
@@ -33,17 +41,28 @@ func prepareDiagnosticSubmission(ctx context.Context, offer executioncontract.Of
 		offer.Occurrence != nil || run.Output.Failure != nil || run.Output.AttemptID != offer.Attempt.AttemptID || len(run.Output.Artifacts) == 0 {
 		return executioncontract.DiagnosticResult{}, errors.New("successful standalone diagnostic run and artifacts are required")
 	}
-	artifacts := make([]model.ArtifactMetadata, 0, len(run.Output.Artifacts)+1)
-	for _, ref := range run.Output.Artifacts {
+	// The control plane accepts at most 101 diagnostic Artifacts: 100 page
+	// Artifacts followed by one trace. Listing Recipes may legitimately scan
+	// more than 100 pages, so retain both ends of a large scan and put the
+	// complete ordered page manifest in the trace instead of producing a result
+	// that the control plane can never accept.
+	pageEvidence := diagnosticPageEvidence(run.Output.Artifacts)
+	artifacts := make([]model.ArtifactMetadata, 0, len(pageEvidence)+1)
+	for _, ref := range pageEvidence {
 		metadata, err := sink.metadata(ref, model.ArtifactPage)
 		if err != nil {
 			return executioncontract.DiagnosticResult{}, err
 		}
 		artifacts = append(artifacts, metadata)
 	}
+	traceBody, err := json.Marshal(diagnosticTrace{Schema: "recruiting.diagnostic-trace.v1",
+		Result: run.Output.Result, PageArtifacts: run.Output.Artifacts})
+	if err != nil {
+		return executioncontract.DiagnosticResult{}, fmt.Errorf("encode diagnostic trace: %w", err)
+	}
 	trace, err := sink.Put(ctx, httpdriver.ArtifactWrite{Kind: "trace", AttemptID: offer.Attempt.AttemptID,
 		PageSequence: len(run.Output.Artifacts) + 1, URL: offer.ListingRun.ListingExecution.Endpoint.URL,
-		ContentType: "application/json", Body: run.Output.Result})
+		ContentType: "application/json", Body: traceBody})
 	if err != nil {
 		return executioncontract.DiagnosticResult{}, fmt.Errorf("save diagnostic trace: %w", err)
 	}
@@ -66,6 +85,15 @@ func prepareDiagnosticSubmission(ctx context.Context, offer executioncontract.Of
 			PaginationStable: quality.PaginationStable, PreviousFrontierReached: quality.PreviousFrontierReached,
 			OverlapCompleted: quality.OverlapCompleted, ItemCount: quality.ItemCount},
 	}, nil
+}
+
+func diagnosticPageEvidence(refs []recipeabi.ArtifactRef) []recipeabi.ArtifactRef {
+	if len(refs) <= maxDiagnosticPageEvidence {
+		return refs
+	}
+	selected := make([]recipeabi.ArtifactRef, 0, maxDiagnosticPageEvidence)
+	selected = append(selected, refs[:maxDiagnosticPageEvidence-1]...)
+	return append(selected, refs[len(refs)-1])
 }
 
 func prepareListingSubmissions(ctx context.Context, offer executioncontract.Offer, spec recipeabi.Spec,

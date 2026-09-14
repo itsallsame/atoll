@@ -3,6 +3,7 @@ package recruitingexecutor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -130,6 +131,24 @@ func TestPrepareListingSubmissionsRejectsCountAndPageContractMismatch(t *testing
 	run.Pages[0].Sequence = 2
 	if _, err := prepareListingSubmissions(context.Background(), offer, spec, run, sink); err == nil {
 		t.Fatal("expected page sequence mismatch")
+	}
+}
+
+func TestDiagnosticPageEvidenceStaysWithinControlPlaneBound(t *testing.T) {
+	refs := make([]recipeabi.ArtifactRef, 117)
+	for index := range refs {
+		refs[index].ArtifactID = fmt.Sprintf("page-%03d", index+1)
+	}
+	selected := diagnosticPageEvidence(refs)
+	if len(selected) != maxDiagnosticPageEvidence {
+		t.Fatalf("selected page evidence=%d want=%d", len(selected), maxDiagnosticPageEvidence)
+	}
+	if selected[0].ArtifactID != "page-001" || selected[len(selected)-2].ArtifactID != "page-099" ||
+		selected[len(selected)-1].ArtifactID != "page-117" {
+		t.Fatalf("large validation did not retain its ordered beginning and terminal page: %+v", selected)
+	}
+	if got := diagnosticPageEvidence(refs[:2]); len(got) != 2 || got[1].ArtifactID != "page-002" {
+		t.Fatalf("small validation evidence changed: %+v", got)
 	}
 }
 
