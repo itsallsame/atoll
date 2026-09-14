@@ -267,6 +267,20 @@ func TestPublicQueryObservationIsCredentialFreeAndMatchesExactRequest(t *testing
 		headers, json.RawMessage(`{"offset":0}`)); err == nil {
 		t.Fatal("signature-bearing public-query URL was accepted")
 	}
+	for name, candidate := range map[string]struct {
+		url  string
+		body json.RawMessage
+	}{
+		"browser telemetry": {url: "https://mon.example.com/monitor_browser/collect/batch", body: json.RawMessage(`{"list":[]}`)},
+		"generic write":     {url: "https://jobs.example.com/api/submit", body: json.RawMessage(`{"value":"x"}`)},
+		"GraphQL mutation":  {url: "https://jobs.example.com/graphql", body: json.RawMessage(`{"query":"mutation Apply { apply }"}`)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewPublicQueryObservation(candidate.url, "POST", headers, candidate.body); err == nil {
+				t.Fatal("non-read public POST was accepted as query evidence")
+			}
+		})
+	}
 }
 
 func TestPublicQueryObservationUsesCanonicalSemanticJSON(t *testing.T) {

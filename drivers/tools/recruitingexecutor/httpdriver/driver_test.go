@@ -79,7 +79,7 @@ func TestFetchPublicQueryUsesExactEvidenceWithoutRecipeExtraction(t *testing.T) 
 		_, _ = response.Write([]byte(`{"code":0,"data":{"locations":[]}}`))
 	}))
 	defer server.Close()
-	observation, err := recipeabi.NewPublicQueryObservation(server.URL, http.MethodPost,
+	observation, err := recipeabi.NewPublicQueryObservation(server.URL+"/api/jobs/search", http.MethodPost,
 		map[string]string{"Content-Type": "application/json", "Website-Path": "en"}, []byte(`{}`))
 	if err != nil {
 		t.Fatal(err)

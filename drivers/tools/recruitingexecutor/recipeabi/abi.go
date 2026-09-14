@@ -373,6 +373,9 @@ func (o PublicQueryObservation) Validate() error {
 	if err := validatePublicQueryValues(body, 0); err != nil {
 		return err
 	}
+	if err := validatePublicQueryReadIntent(endpoint, body); err != nil {
+		return err
+	}
 	if err := validatePublicQueryHeaders(o.Headers); err != nil {
 		return err
 	}
@@ -706,6 +709,37 @@ func validatePublicQueryHeaders(headers map[string]string) error {
 	return nil
 }
 
+func validatePublicQueryReadIntent(endpoint *url.URL, body map[string]json.RawMessage) error {
+	hostPath := strings.ToLower(endpoint.Hostname() + endpoint.EscapedPath())
+	for _, denied := range []string{"analytics", "telemetry", "monitor", "metrics", "beacon", "/collect", "/track", "/report", "/logs", "/events"} {
+		if strings.Contains(hostPath, denied) {
+			return fmt.Errorf("public-query observation endpoint is not a read-like recruiting query")
+		}
+	}
+	readLike := false
+	path := strings.ToLower(endpoint.EscapedPath())
+	for _, allowed := range []string{"search", "query", "job", "position", "vacanc", "opening", "config", "filter", "graphql"} {
+		if strings.Contains(path, allowed) {
+			readLike = true
+			break
+		}
+	}
+	if !readLike {
+		return fmt.Errorf("public-query observation endpoint is not a read-like recruiting query")
+	}
+	if strings.Contains(hostPath, "graphql") {
+		query, found := body["query"]
+		if !found {
+			return fmt.Errorf("public GraphQL observation requires a query document")
+		}
+		var document string
+		if json.Unmarshal(query, &document) != nil || strings.Contains(strings.ToLower(document), "mutation") {
+			return fmt.Errorf("public GraphQL observation cannot contain a mutation")
+		}
+	}
+	return nil
+}
+
 func equalPublicHeaders(left, right map[string]string) bool {
 	normalize := func(values map[string]string) map[string]string {
 		result := make(map[string]string, len(values))
@@ -736,7 +770,8 @@ func validatePublicQueryValues(object map[string]json.RawMessage, depth int) err
 			strings.Contains(lower, "token") || strings.Contains(lower, "secret") ||
 			strings.Contains(lower, "password") || strings.Contains(lower, "authorization") ||
 			strings.Contains(lower, "signature") || strings.Contains(lower, "cookie") ||
-			strings.Contains(lower, "api_key") || strings.Contains(lower, "apikey") || strings.Contains(lower, "csrf") {
+			strings.Contains(lower, "api_key") || strings.Contains(lower, "apikey") || strings.Contains(lower, "csrf") ||
+			lower == "user_id" || lower == "device_id" || lower == "session_id" {
 			return fmt.Errorf("public-query JSON contains a sensitive or invalid field")
 		}
 		var value any
