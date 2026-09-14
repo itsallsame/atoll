@@ -313,6 +313,19 @@ func (o PublicQueryObservation) EncodedSize() int {
 	return size
 }
 
+func (o PublicQueryObservation) MatchesObservation(other PublicQueryObservation) bool {
+	if o.EndpointURL != other.EndpointURL || o.Method != other.Method || o.BodyHash != other.BodyHash ||
+		!bytes.Equal(o.JSONBody, other.JSONBody) || len(o.Headers) != len(other.Headers) {
+		return false
+	}
+	for name, value := range o.Headers {
+		if other.Headers[name] != value {
+			return false
+		}
+	}
+	return true
+}
+
 func NewPublicQueryObservation(endpointURL, method string, headers map[string]string, body json.RawMessage) (PublicQueryObservation, error) {
 	observation := PublicQueryObservation{EndpointURL: strings.TrimSpace(endpointURL), Method: strings.ToUpper(strings.TrimSpace(method)),
 		Headers: headers, JSONBody: append(json.RawMessage(nil), body...)}

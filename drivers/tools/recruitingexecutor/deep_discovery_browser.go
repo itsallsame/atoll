@@ -112,6 +112,8 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 			CrossOriginDocumentNavigations: result.Attestation.CrossOriginDocumentNavigations, FormSubmissions: result.Attestation.FormSubmissions,
 			Downloads: result.Attestation.Downloads, Popups: result.Attestation.Popups, PublicEndpoint: result.Attestation.PublicEndpoint,
 			RobotsAllowed: result.Attestation.RobotsAllowed, TermsPolicyVersion: result.Attestation.TermsPolicyVersion}}
+	submission.Attestation.FulfilledPublicQueries = result.Attestation.FulfilledPublicQueries
+	submission.Attestation.FulfilledPublicQueryHashes = result.Attestation.FulfilledPublicQueryHashes
 	if err := control.Submit(ctx, submission.ResultKind, submission); err != nil {
 		return fmt.Errorf("submit Deep Discovery browser result: %w", err)
 	}

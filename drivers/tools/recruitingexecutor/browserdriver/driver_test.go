@@ -2,13 +2,44 @@ package browserdriver
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
+
+func TestPublicQueryStubRejectsUnverifiedOrUnsafeResponses(t *testing.T) {
+	observation, err := recipeabi.NewPublicQueryObservation("https://jobs.example.com/api/config", "POST",
+		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"data":{}}`)
+	sum := sha256.Sum256(body)
+	valid := PublicQueryStub{Request: observation, StatusCode: 200, ContentType: "application/json; charset=utf-8",
+		Body: body, ContentHash: fmt.Sprintf("sha256:%x", sum)}
+	if err := valid.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*PublicQueryStub){
+		"hash drift":     func(stub *PublicQueryStub) { stub.ContentHash = "sha256:" + strings.Repeat("0", 64) },
+		"non success":    func(stub *PublicQueryStub) { stub.StatusCode = 500 },
+		"non JSON":       func(stub *PublicQueryStub) { stub.ContentType = "text/html" },
+		"oversized body": func(stub *PublicQueryStub) { stub.Body = make([]byte, MaxPublicQueryStubBytes+1) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("unsafe public query stub was accepted")
+			}
+		})
+	}
+}
 
 type fakeBroker struct {
 	request SessionRequest

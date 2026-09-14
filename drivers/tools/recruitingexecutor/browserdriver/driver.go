@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -32,20 +33,56 @@ const (
 )
 
 type SessionRequest struct {
-	EndpointURL    string         `json:"endpoint_url"`
-	UserAgent      string         `json:"user_agent"`
-	AcceptLanguage string         `json:"accept_language,omitempty"`
-	ProfileRef     string         `json:"profile_ref,omitempty"`
-	ProfileVersion uint64         `json:"profile_version,omitempty"`
-	Plan           Plan           `json:"plan"`
-	PlanHash       string         `json:"plan_hash"`
-	AttemptID      string         `json:"attempt_id"`
-	TimeoutMS      int            `json:"timeout_ms"`
-	Policy         PolicyEvidence `json:"policy"`
-	AllowedMethods []string       `json:"allowed_methods"`
-	SameOriginDocs bool           `json:"same_origin_documents"`
-	BlockDownloads bool           `json:"block_downloads"`
-	BlockPopups    bool           `json:"block_popups"`
+	EndpointURL      string            `json:"endpoint_url"`
+	UserAgent        string            `json:"user_agent"`
+	AcceptLanguage   string            `json:"accept_language,omitempty"`
+	ProfileRef       string            `json:"profile_ref,omitempty"`
+	ProfileVersion   uint64            `json:"profile_version,omitempty"`
+	Plan             Plan              `json:"plan"`
+	PlanHash         string            `json:"plan_hash"`
+	AttemptID        string            `json:"attempt_id"`
+	TimeoutMS        int               `json:"timeout_ms"`
+	Policy           PolicyEvidence    `json:"policy"`
+	AllowedMethods   []string          `json:"allowed_methods"`
+	SameOriginDocs   bool              `json:"same_origin_documents"`
+	BlockDownloads   bool              `json:"block_downloads"`
+	BlockPopups      bool              `json:"block_popups"`
+	PublicQueryStubs []PublicQueryStub `json:"public_query_stubs,omitempty"`
+}
+
+const (
+	MaxPublicQueryStubBytes      = 1 << 20
+	MaxPublicQueryStubCount      = 10
+	MaxPublicQueryStubTotalBytes = 4 << 20
+)
+
+// PublicQueryStub is a response captured by a separate, audited public HTTP
+// verification. The browser may fulfill exactly one matching request locally;
+// it never turns POST into an origin-side browser capability.
+type PublicQueryStub struct {
+	Request     recipeabi.PublicQueryObservation `json:"request"`
+	StatusCode  int                              `json:"status_code"`
+	ContentType string                           `json:"content_type"`
+	Body        []byte                           `json:"-"`
+	ContentHash string                           `json:"content_hash"`
+}
+
+func (s PublicQueryStub) Validate() error {
+	if err := s.Request.Validate(); err != nil {
+		return fmt.Errorf("validate public query stub request: %w", err)
+	}
+	if s.StatusCode < 200 || s.StatusCode > 299 || len(s.Body) == 0 || len(s.Body) > MaxPublicQueryStubBytes {
+		return fmt.Errorf("public query stub requires one bounded successful response")
+	}
+	contentType, _, err := mime.ParseMediaType(strings.TrimSpace(s.ContentType))
+	if err != nil || contentType != "application/json" {
+		return fmt.Errorf("public query stub response must be JSON")
+	}
+	sum := sha256.Sum256(s.Body)
+	if s.ContentHash != "sha256:"+hex.EncodeToString(sum[:]) {
+		return fmt.Errorf("public query stub response hash mismatch")
+	}
+	return nil
 }
 
 type Attestation struct {
@@ -62,6 +99,8 @@ type Attestation struct {
 	RobotsAllowed                  bool     `json:"robots_allowed"`
 	TermsPolicyVersion             uint64   `json:"terms_policy_version"`
 	ProfileLeaseAuthorized         bool     `json:"profile_lease_authorized"`
+	FulfilledPublicQueries         int      `json:"fulfilled_public_queries,omitempty"`
+	FulfilledPublicQueryHashes     []string `json:"fulfilled_public_query_hashes,omitempty"`
 }
 
 func (a Attestation) Validate(request SessionRequest) error {
@@ -86,6 +125,21 @@ func (a Attestation) Validate(request SessionRequest) error {
 	}
 	if (a.BlockedWriteRequests == 0) != (len(a.BlockedMethods) == 0) {
 		return fmt.Errorf("browser broker returned inconsistent blocked write evidence")
+	}
+	if a.FulfilledPublicQueries != len(a.FulfilledPublicQueryHashes) || a.FulfilledPublicQueries > len(request.PublicQueryStubs) {
+		return fmt.Errorf("browser broker returned inconsistent public query stub evidence")
+	}
+	seenStubHashes := make(map[string]struct{}, len(a.FulfilledPublicQueryHashes))
+	for _, value := range a.FulfilledPublicQueryHashes {
+		encoded := strings.TrimPrefix(value, "sha256:")
+		decoded, err := hex.DecodeString(encoded)
+		if err != nil || len(decoded) != sha256.Size {
+			return fmt.Errorf("browser broker returned invalid public query stub hash")
+		}
+		if _, duplicate := seenStubHashes[value]; duplicate {
+			return fmt.Errorf("browser broker returned duplicate public query stub hash")
+		}
+		seenStubHashes[value] = struct{}{}
 	}
 	return nil
 }

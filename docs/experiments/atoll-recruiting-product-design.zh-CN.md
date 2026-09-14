@@ -702,7 +702,7 @@ Recipe 的生产入口是“按 scope 查找 active 版本并执行”，不是�
 
 列表 API 只返回岗位 ID 而不返回详情链接时，JSON Extraction 可对 Listing 的 `detail_url_field` 使用一个绝对 HTTP(S) 模板，并只把 URL-path escaped 的单个标量替换进 `{value}`。模板、字段映射和分页均进入 Recipe content/contract hash。API Endpoint 仍必须作为 Source 的候选 Endpoint 经网络证据、Recipe validation 和 Source publication 独立验证；页面入口只保留为发现证据，不能让 Recipe 在运行时暗中把 Source 改到另一个 API。
 
-网络发现也不能假装一次浏览必然看见全部 API。若目标岗位查询只有在另一个被阻断 POST 成功后才会发起，当前 Probe 只能保存已实际观察到的前置公开查询；不得为“继续页面”自动放行未知 POST。此类依赖链要么由授权浏览器插件提供完整网络证据，要么经过“候选查询独立 HTTP 验证→以已验证响应作为本地 stub→下一次 Browser Probe”的后续安全链路。覆盖审计必须把尚未观察到的岗位查询记为 gap，而不是把前置配置接口误当成岗位列表 Source。
+网络发现也不能假装一次浏览必然看见全部 API。若目标岗位查询只有在另一个被阻断 POST 成功后才会发起，首个 Probe 只能保存已实际观察到的前置公开查询；不得为“继续页面”自动放行未知 POST。Browser Broker 已实现“候选查询独立 HTTP 验证→以已验证响应作为本地 stub→下一次 Browser Probe”的数据面原语：Stub 必须逐字节匹配规范 URL、公开 header、JSON body/body hash，只接受 2xx JSON、单项不超过 1 MiB、每 Session 最多 10 项且合计不超过 4 MiB；每项最多 fulfill 一次，只返回 Content-Type、no-store 和绑定页面 origin 的 CORS header，不透传 Set-Cookie。fulfill 发生在 Chrome 本地，既不增加允许写请求数，也不会把未知 POST 发给网站；未命中或重复请求仍被阻断。真实字节页面已证明：本地回放独立 HTTP 验证的 `config/job/filters` 响应后，Browser 能继续观察并阻断 `search/job/posts`。控制面仍必须把独立 HTTP 验证结果持久化为 Artifact、以 Mission/Probe/Attempt fence 冻结后才能向生产 Probe 提供 Stub；在该命令链完成前，只有 Broker 原语和真实站点证据，不能把任意客户端响应当作可信 Stub。覆盖审计继续把尚未观察到的岗位查询记为 gap，而不是把前置配置接口误当成岗位列表 Source。
 
 ```text
 draft → validating → active → superseded

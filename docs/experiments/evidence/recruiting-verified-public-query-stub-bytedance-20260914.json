@@ -1,0 +1,35 @@
+{
+  "evidence_version": "recruiting.verified-public-query-stub.v1",
+  "captured_at": "2026-09-14T03:12:58Z",
+  "scope": "browser broker data-plane primitive; no production control-plane stub command",
+  "atoll_core_modified": false,
+  "database_migration": false,
+  "constraints": {
+    "status": "2xx",
+    "media_type": "application/json",
+    "max_stub_bytes": 1048576,
+    "max_stub_count": 10,
+    "max_session_stub_bytes": 4194304,
+    "use_count_per_stub": 1,
+    "origin_post_allowed": false
+  },
+  "fixture": {
+    "first_probe": "observed and blocked prerequisite POST",
+    "second_probe": "fulfilled exact verified prerequisite locally and observed downstream POST",
+    "origin_post_count": 0,
+    "result": "passed"
+  },
+  "live_site": {
+    "landing_url": "https://joinbytedance.com/search",
+    "verified_prerequisite": "https://jobs.bytedance.com/api/v1/public/supplier/config/job/filters",
+    "discovered_downstream": "https://jobs.bytedance.com/api/v1/public/supplier/search/job/posts",
+    "prerequisite_fulfilled_locally": 1,
+    "downstream_sent_by_browser": false,
+    "result": "passed"
+  },
+  "commands": [
+    "go test ./drivers/tools/recruitingexecutor/browserbroker ./drivers/tools/recruitingexecutor/browserdriver ./drivers/tools/recruitingexecutor/recipeabi",
+    "RECRUITING_LIVE_BYTEDANCE_PROBE=1 go test -count=1 -run TestRunnerObservesByteDancePublicQueryWithoutSendingIt -v ./drivers/tools/recruitingexecutor/browserbroker"
+  ],
+  "remaining_gap": "persist prerequisite verification as an Artifact through a fenced http.fetch Work and pass only immutable Artifact references into a later browser Probe"
+}

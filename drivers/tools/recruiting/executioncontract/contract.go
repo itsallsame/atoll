@@ -4,6 +4,8 @@
 package executioncontract
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -13,6 +15,8 @@ import (
 )
 
 const Version = "recruiting.execution.v1"
+
+const maxDeepDiscoveryPublicQueryStubs = 10
 
 const (
 	TypeOffer         = "recruiting.execution.offer"
@@ -281,6 +285,8 @@ type DeepDiscoveryEffectAttestation struct {
 	PublicEndpoint                 bool     `json:"public_endpoint"`
 	RobotsAllowed                  bool     `json:"robots_allowed"`
 	TermsPolicyVersion             uint64   `json:"terms_policy_version"`
+	FulfilledPublicQueries         int      `json:"fulfilled_public_queries,omitempty"`
+	FulfilledPublicQueryHashes     []string `json:"fulfilled_public_query_hashes,omitempty"`
 }
 
 func (a DeepDiscoveryEffectAttestation) Validate(maxNavigations int) error {
@@ -305,6 +311,21 @@ func (a DeepDiscoveryEffectAttestation) Validate(maxNavigations int) error {
 	}
 	if (a.BlockedWriteRequests == 0) != (len(a.BlockedMethods) == 0) {
 		return fmt.Errorf("Deep Discovery browser blocked-effect evidence is inconsistent")
+	}
+	if a.FulfilledPublicQueries != len(a.FulfilledPublicQueryHashes) || a.FulfilledPublicQueries > maxDeepDiscoveryPublicQueryStubs {
+		return fmt.Errorf("Deep Discovery browser stub evidence is inconsistent")
+	}
+	seenStubHashes := make(map[string]struct{}, len(a.FulfilledPublicQueryHashes))
+	for _, value := range a.FulfilledPublicQueryHashes {
+		encoded := strings.TrimPrefix(value, "sha256:")
+		decoded, err := hex.DecodeString(encoded)
+		if err != nil || len(decoded) != sha256.Size {
+			return fmt.Errorf("Deep Discovery browser stub hash is invalid")
+		}
+		if _, duplicate := seenStubHashes[value]; duplicate {
+			return fmt.Errorf("Deep Discovery browser stub evidence is duplicated")
+		}
+		seenStubHashes[value] = struct{}{}
 	}
 	return nil
 }

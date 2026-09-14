@@ -844,3 +844,11 @@ Deep Discovery Browser Broker 现在会在继续阻断 POST 的同时，从隔�
 验证分四层：真实 Chrome fixture 证明 JSON POST 未到 origin 但证据被捕获；Recipe ABI 负向合同证明认证 header、敏感/重复 JSON 和请求漂移均拒绝；Actor 纯合同证明跨 Company、未知 body hash、变更请求不能生成 Resource，且同 content 重放不覆盖；真实字节 Browser Broker 观察到公开 `config/job/filters` POST 并继续阻断，上一阶段生产 HTTP Driver 仍独立验证真实 `search/job/posts` Recipe 返回 200。没有 migration，本阶段只扩展既有 Probe `result_json`。
 
 字节页面的岗位查询依赖前置配置 POST 成功；由于安全策略正确阻断前置请求，本阶段的自动 Probe 不会继续看见后续岗位 POST。这是明确未关闭的 gap，不通过放开 Browser POST 规避。下一切片应实现“已验证公开查询响应的本地 browser stub”或由授权 Extension 捕获完整链路，然后才能用生产数据完成 `prepare → source.update → propose → validate → publish → baseline`；当前不能宣称字节公司已完成接入。
+
+## 24. 2026-09-14 已验证响应本地 Stub 数据面阶段
+
+Browser Broker 新增严格受限的 `PublicQueryStub`：请求侧必须与前一 Probe 保存的公开查询证据逐字节一致，响应侧只接受哈希匹配的 2xx JSON；单项最大 1 MiB、每 Session 最多 10 项、合计最大 4 MiB 且每项只能使用一次。命中后通过 Chrome DevTools Protocol 在本地 fulfill，返回已验证 Content-Type、`Cache-Control: no-store` 和绑定初始页面 origin 的 CORS header，不透传 Cookie、Set-Cookie 或网站响应 header；未命中、漂移和第二次使用仍按未知 POST 阻断。attestation 新增 fulfill 数量和响应 SHA-256 列表，Executor 的 trace 与结果合同保留该证据。Atoll core、Actor/Worker 类型和数据库均未改变。
+
+真实 Chrome fixture 使用两次 Probe 证明：第一次只观察前置 `/config`，第二次本地回放已验证 JSON 后才能触发 `/jobs`；测试 origin 的 POST 计数始终为 0，只有 `/jobs` 被计为未知阻断请求。真实字节测试先观察并阻断 `config/job/filters`，再由独立 HTTP 请求取得 2xx JSON 并校验哈希，第二次 Browser Session 本地回放后成功观察且继续阻断 `search/job/posts`。证据见 `evidence/recruiting-verified-public-query-stub-bytedance-20260914.json`。
+
+本阶段只关闭 Browser 数据面的安全推进能力。正式产品链仍缺少一个控制面命令：它应通过统一 `http.fetch` Work/Attempt 执行前置验证、先保存响应 Artifact，再用 Mission/Company/Probe/request hash/Artifact hash fence 创建下一 Probe 的不可变 Stub 引用。该链完成前，生产命令不能接收客户端直接提交的 Stub body，也不能宣称字节 Source 已接入完成。
