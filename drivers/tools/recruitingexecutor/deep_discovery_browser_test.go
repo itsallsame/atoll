@@ -75,7 +75,7 @@ func TestExecuteDeepDiscoveryBrowserUsesWorkLifecycleAndSubmitsEvidence(t *testi
 		PublicQueryStubs: []executioncontract.VerifiedPublicQueryStubRef{{VerificationID: "verification-1",
 			Request: observation, Artifact: stubArtifact, StatusCode: 200, ContentType: "application/json"}}}
 	broker := &deepDiscoveryBrokerStub{result: browserdriver.SessionResult{FinalURL: "https://jobs.example/careers",
-		ContentType: "text/html", DOM: []byte(`<a href="/jobs/1?token=secret">Engineer</a>`),
+		ContentType: "text/html", DOM: []byte(`<div class="job-card" data-job-id="42" data-token="secret"><a href="/jobs/1?token=secret">Engineer</a></div>`),
 		Attestation: browserdriver.Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET"},
 			PublicEndpoint: true, RobotsAllowed: true, TermsPolicyVersion: 1}}}
 	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}},
@@ -92,7 +92,9 @@ func TestExecuteDeepDiscoveryBrowserUsesWorkLifecycleAndSubmitsEvidence(t *testi
 	}
 	result, ok := control.submissions[0].(executioncontract.DeepDiscoveryBrowserResult)
 	if !ok || result.Artifact.Kind != model.ArtifactResponse || len(result.SupportingArtifacts) != 1 ||
-		len(result.Links) != 1 || result.Links[0].URL != "https://jobs.example/jobs/1" {
+		len(result.Links) != 1 || result.Links[0].URL != "https://jobs.example/jobs/1" || len(result.DOMPreview) != 2 ||
+		result.DOMPreview[0].Attributes["data-job-id"] != "42" || result.DOMPreview[0].Attributes["data-token"] != "" ||
+		result.DOMPreview[1].Attributes["href"] != "https://jobs.example/jobs/1" {
 		t.Fatalf("submission=%#v", control.submissions)
 	}
 	if broker.request.AllowedMethods[0] != "GET" || !broker.request.SameOriginDocs || !broker.request.BlockDownloads || !broker.request.BlockPopups {

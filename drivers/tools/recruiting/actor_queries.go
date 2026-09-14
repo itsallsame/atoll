@@ -282,7 +282,7 @@ func handleDeepDiscoveryBrowserGetQuery(sys actorbase.Sys, repository *store.Rep
 	if result != nil {
 		response["result"] = map[string]any{"artifact": result.Artifact, "supporting_artifacts": result.SupportingArtifacts,
 			"final_url": result.FinalURL, "content_hash": result.ContentHash, "links": result.Links,
-			"public_query_evidence": result.PublicQueryEvidence, "attestation": result.Attestation}
+			"dom_preview": result.DOMPreview, "public_query_evidence": result.PublicQueryEvidence, "attestation": result.Attestation}
 		response["next_action"] = "record_browser_evidence_checkpoint"
 	} else if work.Status == model.WorkWaitingHuman || work.Terminal() {
 		response["next_action"] = "resolve_work_and_create_new_browser_probe_if_needed"

@@ -123,6 +123,7 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 	}
 	bodySum := sha256.Sum256(result.DOM)
 	links := extractDeepDiscoveryLinks(finalURL, result.DOM, 200)
+	domPreview := extractDeepDiscoveryDOMPreview(finalURL, result.DOM, 400)
 	wireLinks := make([]executioncontract.DeepDiscoveryLink, len(links))
 	for index := range links {
 		wireLinks[index] = executioncontract.DeepDiscoveryLink(links[index])
@@ -130,7 +131,7 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 	submission := executioncontract.DeepDiscoveryBrowserResult{CommandID: "deep-discovery-browser-result-" + offer.Attempt.AttemptID,
 		ResultKind: "deep_discovery_browser", AttemptID: offer.Attempt.AttemptID,
 		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Artifact: primary, SupportingArtifacts: supporting,
-		FinalURL: finalURL, ContentHash: "sha256:" + hex.EncodeToString(bodySum[:]), Links: wireLinks,
+		FinalURL: finalURL, ContentHash: "sha256:" + hex.EncodeToString(bodySum[:]), Links: wireLinks, DOMPreview: domPreview,
 		PublicQueryEvidence: result.PublicQueryEvidence,
 		Attestation: executioncontract.DeepDiscoveryEffectAttestation{DocumentNavigations: result.Attestation.DocumentNavigations,
 			ObservedMethods: result.Attestation.ObservedMethods, BlockedMethods: result.Attestation.BlockedMethods,
@@ -210,6 +211,93 @@ func extractDeepDiscoveryLinks(baseURL string, document []byte, limit int) []dee
 	walk(root)
 	sort.SliceStable(result, func(i, j int) bool { return result[i].URL < result[j].URL })
 	return result
+}
+
+func extractDeepDiscoveryDOMPreview(baseURL string, document []byte, limit int) []executioncontract.DeepDiscoveryDOMElement {
+	base, err := url.Parse(baseURL)
+	if err != nil || limit < 1 {
+		return nil
+	}
+	root, err := html.Parse(bytes.NewReader(document))
+	if err != nil {
+		return nil
+	}
+	result := make([]executioncontract.DeepDiscoveryDOMElement, 0, limit)
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if len(result) >= limit {
+			return
+		}
+		if node.Type == html.ElementNode && domPreviewCandidate(node) {
+			attributes := make(map[string]string)
+			for _, attribute := range node.Attr {
+				name := strings.ToLower(strings.TrimSpace(attribute.Key))
+				if !allowedDOMPreviewAttribute(name) || sensitiveDOMPreviewAttribute(name) || len(attributes) >= 12 {
+					continue
+				}
+				value := strings.TrimSpace(attribute.Val)
+				if name == "href" {
+					target, parseErr := base.Parse(value)
+					if parseErr != nil || (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" || target.User != nil {
+						continue
+					}
+					target.Fragment = ""
+					stripSensitiveQuery(target)
+					value = target.String()
+				}
+				if len(value) > 256 {
+					value = value[:256]
+				}
+				attributes[name] = value
+			}
+			text := boundedLinkText(node, 200)
+			if text != "" || len(attributes) != 0 {
+				result = append(result, executioncontract.DeepDiscoveryDOMElement{
+					Tag: strings.ToLower(node.Data), Attributes: attributes, Text: text,
+				})
+			}
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(root)
+	return result
+}
+
+func domPreviewCandidate(node *html.Node) bool {
+	tag := strings.ToLower(node.Data)
+	if tag == "a" || tag == "button" || tag == "li" || tag == "article" {
+		return true
+	}
+	for _, attribute := range node.Attr {
+		name, value := strings.ToLower(attribute.Key), strings.ToLower(attribute.Val)
+		if name == "role" || strings.HasPrefix(name, "data-") {
+			return true
+		}
+		if name == "class" {
+			for _, marker := range []string{"job", "position", "vacancy", "opening", "card", "result-item", "list-item"} {
+				if strings.Contains(value, marker) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func allowedDOMPreviewAttribute(name string) bool {
+	return name == "id" || name == "class" || name == "role" || name == "href" ||
+		name == "aria-label" || strings.HasPrefix(name, "data-")
+}
+
+func sensitiveDOMPreviewAttribute(name string) bool {
+	for _, marker := range []string{"token", "secret", "password", "session", "auth", "signature", "cookie", "api-key", "apikey", "csrf"} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func stripSensitiveQuery(value *url.URL) {

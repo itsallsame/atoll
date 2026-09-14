@@ -183,6 +183,7 @@ type DeepDiscoveryBrowserResult struct {
 	FinalURL            string
 	ContentHash         string
 	Links               []executioncontract.DeepDiscoveryLink
+	DOMPreview          []executioncontract.DeepDiscoveryDOMElement
 	PublicQueryEvidence []recipeabi.PublicQueryObservation
 	Attestation         executioncontract.DeepDiscoveryEffectAttestation
 	ObservedAt          time.Time
@@ -190,7 +191,7 @@ type DeepDiscoveryBrowserResult struct {
 
 func (r *Repository) AcceptDeepDiscoveryBrowserResult(ctx context.Context, input DeepDiscoveryBrowserResult) (DeepDiscoveryBrowserResultOutcome, error) {
 	if input.CommandID == "" || input.RequestHash == "" || input.AttemptID == "" || input.ExecutorActorID == "" ||
-		input.ExecutorIncarnation == "" || input.ObservedAt.IsZero() || len(input.Links) > 200 ||
+		input.ExecutorIncarnation == "" || input.ObservedAt.IsZero() || len(input.Links) > 200 || len(input.DOMPreview) > 400 ||
 		len(input.PublicQueryEvidence) > 20 || len(input.SupportingArtifacts) > 9 {
 		return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser result requires bounded execution evidence")
 	}
@@ -225,6 +226,16 @@ func (r *Repository) AcceptDeepDiscoveryBrowserResult(ctx context.Context, input
 			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser result contains duplicate link")
 		}
 		seen[link.URL] = struct{}{}
+	}
+	for _, element := range input.DOMPreview {
+		if element.Tag == "" || len(element.Tag) > 32 || len(element.Text) > 200 || len(element.Attributes) > 12 {
+			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser result contains invalid DOM preview element")
+		}
+		for name, value := range element.Attributes {
+			if name == "" || len(name) > 64 || len(value) > 256 {
+				return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser result contains invalid DOM preview attribute")
+			}
+		}
 	}
 	seenQueries := map[string]struct{}{}
 	queryEvidenceBytes := 0

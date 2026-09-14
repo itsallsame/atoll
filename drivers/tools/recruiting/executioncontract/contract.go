@@ -282,6 +282,12 @@ type DeepDiscoveryLink struct {
 	Text string `json:"text,omitempty"`
 }
 
+type DeepDiscoveryDOMElement struct {
+	Tag        string            `json:"tag"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+	Text       string            `json:"text,omitempty"`
+}
+
 type DeepDiscoveryEffectAttestation struct {
 	DocumentNavigations            int      `json:"document_navigations"`
 	ObservedMethods                []string `json:"observed_methods"`
@@ -350,6 +356,7 @@ type DeepDiscoveryBrowserResult struct {
 	FinalURL            string                             `json:"final_url"`
 	ContentHash         string                             `json:"content_hash"`
 	Links               []DeepDiscoveryLink                `json:"links"`
+	DOMPreview          []DeepDiscoveryDOMElement          `json:"dom_preview,omitempty"`
 	PublicQueryEvidence []recipeabi.PublicQueryObservation `json:"public_query_evidence,omitempty"`
 	Attestation         DeepDiscoveryEffectAttestation     `json:"attestation"`
 }
