@@ -32,6 +32,13 @@ const (
 	DeepDiscoveryCanceled     DeepDiscoveryStatus = "canceled"
 )
 
+type DeepDiscoveryPurpose string
+
+const (
+	DeepDiscoveryPurposeCompanySources       DeepDiscoveryPurpose = "company_source_discovery"
+	DeepDiscoveryPurposeSourceInitialization DeepDiscoveryPurpose = "source_initialization_evidence"
+)
+
 type DiscoveryEvidenceKind string
 
 const (
@@ -103,22 +110,23 @@ type DiscoveryCoverage struct {
 }
 
 type DeepDiscoveryMission struct {
-	MissionID       string              `json:"mission_id"`
-	CompanyID       string              `json:"company_id"`
-	Generation      uint64              `json:"discovery_generation"`
-	CompanyVersion  uint64              `json:"company_version"`
-	CompanyName     string              `json:"company_name"`
-	SeedWebsite     string              `json:"seed_website,omitempty"`
-	Stage           DeepDiscoveryStage  `json:"stage"`
-	Status          DeepDiscoveryStatus `json:"status"`
-	Budget          DeepDiscoveryBudget `json:"budget"`
-	Coverage        DiscoveryCoverage   `json:"coverage"`
-	CheckpointCount uint64              `json:"checkpoint_count"`
-	NodeCount       int                 `json:"node_count"`
-	EdgeCount       int                 `json:"edge_count"`
-	CandidateCount  int                 `json:"candidate_count"`
-	WaitingReason   string              `json:"waiting_reason,omitempty"`
-	Version         uint64              `json:"version"`
+	MissionID       string               `json:"mission_id"`
+	CompanyID       string               `json:"company_id"`
+	Generation      uint64               `json:"discovery_generation"`
+	CompanyVersion  uint64               `json:"company_version"`
+	CompanyName     string               `json:"company_name"`
+	SeedWebsite     string               `json:"seed_website,omitempty"`
+	Purpose         DeepDiscoveryPurpose `json:"purpose,omitempty"`
+	Stage           DeepDiscoveryStage   `json:"stage"`
+	Status          DeepDiscoveryStatus  `json:"status"`
+	Budget          DeepDiscoveryBudget  `json:"budget"`
+	Coverage        DiscoveryCoverage    `json:"coverage"`
+	CheckpointCount uint64               `json:"checkpoint_count"`
+	NodeCount       int                  `json:"node_count"`
+	EdgeCount       int                  `json:"edge_count"`
+	CandidateCount  int                  `json:"candidate_count"`
+	WaitingReason   string               `json:"waiting_reason,omitempty"`
+	Version         uint64               `json:"version"`
 }
 
 type DiscoveryEvidenceNode struct {
@@ -144,9 +152,18 @@ type DiscoveryEvidenceEdge struct {
 }
 
 func NewDeepDiscoveryMission(id string, company Company, generation uint64, maxSearchRounds, maxOperations int) (DeepDiscoveryMission, error) {
+	return NewDeepDiscoveryMissionForPurpose(id, company, generation, maxSearchRounds, maxOperations,
+		DeepDiscoveryPurposeCompanySources)
+}
+
+func NewDeepDiscoveryMissionForPurpose(id string, company Company, generation uint64, maxSearchRounds, maxOperations int,
+	purpose DeepDiscoveryPurpose) (DeepDiscoveryMission, error) {
 	id = strings.TrimSpace(id)
 	if id == "" || company.CompanyID == "" || company.Version == 0 || generation == 0 || strings.TrimSpace(company.Name) == "" {
 		return DeepDiscoveryMission{}, fmt.Errorf("deep discovery requires mission identity and a versioned Company")
+	}
+	if purpose != DeepDiscoveryPurposeCompanySources && purpose != DeepDiscoveryPurposeSourceInitialization {
+		return DeepDiscoveryMission{}, fmt.Errorf("deep discovery purpose is invalid")
 	}
 	if maxSearchRounds == 0 {
 		maxSearchRounds = 5
@@ -158,9 +175,33 @@ func NewDeepDiscoveryMission(id string, company Company, generation uint64, maxS
 		return DeepDiscoveryMission{}, fmt.Errorf("deep discovery budget must be bounded")
 	}
 	return DeepDiscoveryMission{MissionID: id, CompanyID: company.CompanyID, Generation: generation, CompanyVersion: company.Version,
-		CompanyName: company.Name, SeedWebsite: company.Website, Stage: DeepDiscoveryScopeBuilding,
+		CompanyName: company.Name, SeedWebsite: company.Website, Purpose: purpose, Stage: DeepDiscoveryScopeBuilding,
 		Status: DeepDiscoveryActive, Budget: DeepDiscoveryBudget{MaxSearchRounds: maxSearchRounds,
 			MaxOperations: maxOperations}, Version: 1}, nil
+}
+
+// IsSourceInitializationEvidence recognizes the explicit purpose and the
+// short-lived pre-purpose identity emitted by the first production rollout.
+// The compatibility branch can be removed after those Missions are terminal.
+func (m DeepDiscoveryMission) IsSourceInitializationEvidence() bool {
+	return m.Purpose == DeepDiscoveryPurposeSourceInitialization ||
+		(m.Purpose == "" && strings.HasPrefix(m.MissionID, "mission-auto-initialization-"))
+}
+
+// CompleteSourceInitializationEvidence closes the bounded evidence-collection
+// lifecycle without fabricating the company-discovery coverage graph. The
+// repository independently proves that every candidate Source has a completed
+// real browser Probe before allowing this transition.
+func (m DeepDiscoveryMission) CompleteSourceInitializationEvidence(expected uint64, candidateCount int) (DeepDiscoveryMission, error) {
+	if err := requireVersion(expected, m.Version); err != nil {
+		return DeepDiscoveryMission{}, err
+	}
+	if !m.IsSourceInitializationEvidence() || m.Status != DeepDiscoveryActive || candidateCount < 1 {
+		return DeepDiscoveryMission{}, fmt.Errorf("active source initialization evidence Mission with candidates is required")
+	}
+	m.Stage, m.Status, m.WaitingReason, m.CandidateCount, m.Version =
+		DeepDiscoveryCompleted, DeepDiscoveryDone, "", candidateCount, m.Version+1
+	return m, nil
 }
 
 func NewDiscoveryEvidenceNode(kind DiscoveryEvidenceKind, value, label string, state DiscoveryEvidenceState,

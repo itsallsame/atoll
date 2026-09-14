@@ -27,6 +27,7 @@ const (
 	onboardingValidateRepair    onboardingAutomationAction = "create_repair_validation_browser_probe"
 	onboardingResolveIdentity   onboardingAutomationAction = "resolve_official_company_identity"
 	onboardingReviewEvidence    onboardingAutomationAction = "review_and_checkpoint_discovery_evidence"
+	onboardingCompleteEvidence  onboardingAutomationAction = "complete_source_initialization_evidence"
 )
 
 type onboardingAutomationPlan struct {
@@ -286,6 +287,12 @@ func handleOnboardingAdvance(sys actorbase.Sys, cfg Config, repository *store.Re
 		failStoreError(sys, msg, err)
 		return
 	}
+	if mission.Status == model.DeepDiscoveryDone && mission.IsSourceInitializationEvidence() {
+		_, _ = sys.Reply(msg, onboardingAdvanceResponse{ContractVersion: ContractVersion, Status: "not_advanced",
+			Company: company, Mission: mission, Action: onboardingCompleteEvidence, NextAction: "initialize_candidate_sources",
+			AgentDirective: "Source initialization evidence is complete. Continue with Recipe preparation for each candidate Source; do not start another discovery Mission."})
+		return
+	}
 	if mission.Status == model.DeepDiscoveryDone && hasCandidateSourcesNeedingListing(sources) {
 		handleOnboardingStartEvidenceMission(sys, repository, msg, company, mission, sources)
 		return
@@ -302,6 +309,10 @@ func handleOnboardingAdvance(sys actorbase.Sys, cfg Config, repository *store.Re
 		return
 	}
 	plan := planOnboardingAutomation(snapshot, company, sources...)
+	if plan.Action == onboardingReviewEvidence && mission.IsSourceInitializationEvidence() {
+		handleOnboardingCompleteEvidence(sys, repository, msg, company, mission, sources)
+		return
+	}
 	switch plan.Action {
 	case onboardingCreateSeedBrowser, onboardingReplayVerified:
 		handleOnboardingAdvanceBrowser(sys, cfg, repository, msg, company, mission, plan)
@@ -316,6 +327,47 @@ func handleOnboardingAdvance(sys actorbase.Sys, cfg Config, repository *store.Re
 			Company: company, Mission: mission, Action: plan.Action, NextAction: string(plan.Action), Detail: plan.Detail,
 			AgentDirective: onboardingAdvanceDirective(plan.Action)})
 	}
+}
+
+func handleOnboardingCompleteEvidence(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg,
+	company model.Company, mission model.DeepDiscoveryMission, sources []model.RecruitmentSource) {
+	candidateCount := 0
+	for _, source := range sources {
+		if source.ControlStatus == model.ControlActive && source.HealthStatus == model.HealthHealthy &&
+			source.ReadinessStatus == model.SourceCandidate && source.ListingAssignment == nil && source.CandidateEndpoint != nil {
+			candidateCount++
+		}
+	}
+	next, err := mission.CompleteSourceInitializationEvidence(mission.Version, candidateCount)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response := onboardingAdvanceResponse{ContractVersion: ContractVersion, Status: "advanced", Company: company,
+		Mission: next, Action: onboardingCompleteEvidence, NextAction: "initialize_candidate_sources",
+		AgentDirective: "The real browser evidence is complete for every candidate Source. Continue with Listing Recipe preparation, validation, approval, Source publication, and the first baseline without asking the user for internal IDs."}
+	responseBytes, _ := json.Marshal(response)
+	commandID := "onboarding-advance-" + stableDigest(string(msg.ID))
+	receipt, err := model.NewCommandReceipt(commandID, msg.Type, commandRequestHash(msg), responseBytes)
+	at := time.UnixMilli(msg.TS).UTC()
+	audit, _ := json.Marshal(map[string]any{"requested_by": string(msg.Sender.ID), "company_id": company.CompanyID,
+		"candidate_source_count": candidateCount, "purpose": model.DeepDiscoveryPurposeSourceInitialization})
+	var event model.EventIntent
+	if err == nil {
+		event, err = model.NewEventIntent("event-"+stableDigest(commandID+"|deep.discovery.initialization.completed"),
+			"deep.discovery.initialization.completed", "deep_discovery", mission.MissionID, next.Version,
+			at.Format(time.RFC3339Nano), commandID, audit)
+	}
+	var result store.CommandResult
+	if err == nil {
+		result, err = repository.ApplyCompleteSourceInitializationEvidenceCommand(msg.Ctx(), mission.MissionID,
+			mission.Version, receipt, event, at)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
 }
 
 func hasCandidateSourcesNeedingListing(sources []model.RecruitmentSource) bool {
@@ -339,8 +391,8 @@ func handleOnboardingStartEvidenceMission(sys actorbase.Sys, repository *store.R
 		maxOperations = 2000
 	}
 	missionID := "mission-auto-initialization-" + stableDigest(company.CompanyID+"|"+fmt.Sprint(generation))
-	mission, err := model.NewDeepDiscoveryMission(missionID, company, generation,
-		previous.Budget.MaxSearchRounds, maxOperations)
+	mission, err := model.NewDeepDiscoveryMissionForPurpose(missionID, company, generation,
+		previous.Budget.MaxSearchRounds, maxOperations, model.DeepDiscoveryPurposeSourceInitialization)
 	if err != nil {
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
 		return
@@ -515,6 +567,8 @@ func onboardingAdvanceDirective(action onboardingAutomationAction) string {
 		return "Explain the failed discovery Work and ask for repair only if automatic retry is exhausted; do not bypass its evidence fence."
 	case onboardingResolveIdentity:
 		return "Use the Deep Discovery guide, real search and official ownership evidence to resolve the Company website, then persist it through the normal Company command. Do not guess from name similarity."
+	case onboardingCompleteEvidence:
+		return "Source initialization evidence is complete. Continue directly to Listing Recipe preparation; do not create company-discovery checkpoints."
 	default:
 		return "Review the accumulated browser and network evidence, checkpoint only evidence-backed URL/type facts, then continue or complete the Mission."
 	}

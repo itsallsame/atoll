@@ -150,6 +150,19 @@ func handleExistingCompanyOnboarding(sys actorbase.Sys, repository *store.Reposi
 			return
 		}
 		status, next, directive := "resumed", deepDiscoveryNextAction(mission), onboardingAgentDirective
+		if mission.Status == model.DeepDiscoveryDone && mission.IsSourceInitializationEvidence() {
+			sources, sourceErr := listAllCompanySources(msg, repository, company.CompanyID)
+			if sourceErr != nil {
+				failStoreError(sys, msg, sourceErr)
+				return
+			}
+			_, _ = sys.Reply(msg, onboardingResponse{ContractVersion: ContractVersion, Status: "completed",
+				Company: &company, Mission: &mission, ValidatedURLs: urls, Sources: sources,
+				NextAction:             "initialize_candidate_sources",
+				AgentDirective:         "Source initialization evidence is complete. Continue with Listing Recipe preparation and the first baseline; do not start another discovery Mission.",
+				ClassificationComplete: candidateSourcesHaveCategories(sources), ClassificationPolicy: onboardingClassificationPolicy})
+			return
+		}
 		if mission.Status == model.DeepDiscoveryDone && allURLsClassified(urls) {
 			status, next = "completed", "materialize_validated_urls"
 			directive = "Call recruiting.onboarding.materialize with only company_name, then present every validated URL with its type, special programme, evidence basis, and coverage gaps."
@@ -256,6 +269,10 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 		plan := planOnboardingAutomation(snapshot, company, sources...)
 		next = string(plan.Action)
 		directive = onboardingAdvanceDirective(plan.Action)
+		if plan.Action == onboardingReviewEvidence && mission.IsSourceInitializationEvidence() {
+			next = "complete_source_initialization_evidence"
+			directive = "Call recruiting.onboarding.advance with only company_name. It will close this evidence Mission after transactionally proving every candidate Source has a successful real browser Probe; do not create company-discovery checkpoints."
+		}
 		if plan.Action == onboardingCreateSeedBrowser || plan.Action == onboardingVerifyPublicQuery ||
 			plan.Action == onboardingReplayVerified {
 			next = "advance_discovery_automatically"
@@ -271,7 +288,16 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 			return
 		}
 	}
-	if mission.Status == model.DeepDiscoveryDone && classified {
+	if mission.Status == model.DeepDiscoveryDone && mission.IsSourceInitializationEvidence() {
+		sources, err = listAllCompanySources(msg, repository, company.CompanyID)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+		classified = candidateSourcesHaveCategories(sources)
+		next = "initialize_candidate_sources"
+		directive = "Initialization evidence is complete. For each candidate Source, prepare and validate a Listing Recipe from its persisted Probe evidence, publish the Source, then run its first baseline. Do not start another discovery generation."
+	} else if mission.Status == model.DeepDiscoveryDone && classified {
 		sources, err = listAllCompanySources(msg, repository, company.CompanyID)
 		if err != nil {
 			failStoreError(sys, msg, err)
@@ -288,13 +314,28 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 			directive = "For each candidate Source, use recruiting.recipe.prepare when a completed browser Probe exposes public_query_evidence; otherwise generate a Resource-backed Listing Recipe from real page evidence. Internally stage an observed API with recruiting.source.update, then call recruiting.recipe.propose and recruiting.recipe.validate. Approve only successful evidence, validate and publish the Source, then start its first baseline. After the baseline exposes a pending sample Job, generate and validate the first Detail Recipe, approve and assign it. Continue without asking the user for internal IDs; report only evidence-backed blockers."
 		}
 	}
-	if mission.Status == model.DeepDiscoveryDone && !classified {
+	if mission.Status == model.DeepDiscoveryDone && !classified && !mission.IsSourceInitializationEvidence() {
 		status, next = "needs_classification", "begin_new_discovery_generation"
 		directive = "These are legacy unclassified URL facts. State that their recruitment types are unverified; do not infer types from labels, URL text, or memory. Call recruiting.onboarding.begin to start an evidence-backed classification generation when the user requested discovery."
 	}
 	_, _ = sys.Reply(msg, onboardingResponse{ContractVersion: ContractVersion, Status: status, Company: &company,
 		Mission: &mission, ValidatedURLs: urls, Sources: sources, NextAction: next, AgentDirective: directive,
 		ClassificationComplete: classified, ClassificationPolicy: onboardingClassificationPolicy})
+}
+
+func candidateSourcesHaveCategories(sources []model.RecruitmentSource) bool {
+	count := 0
+	for _, source := range sources {
+		if source.ControlStatus != model.ControlActive || source.CandidateEndpoint == nil || source.ListingAssignment != nil {
+			continue
+		}
+		count++
+		category := strings.TrimSpace(source.CandidateEndpoint.Category)
+		if category == "" || category == string(model.RecruitmentURLUnknown) {
+			return false
+		}
+	}
+	return count > 0
 }
 
 func handleOnboardingMaterialize(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

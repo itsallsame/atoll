@@ -73,6 +73,27 @@ func TestDeepDiscoveryCannotCompleteWithBlindspotsOrNoCandidates(t *testing.T) {
 	}
 }
 
+func TestSourceInitializationEvidenceCompletesWithoutFabricatedDiscoveryGraph(t *testing.T) {
+	company, _ := NewCompany("company-init", "Example", "https://example.com")
+	mission, err := NewDeepDiscoveryMissionForPurpose("mission-init", company, 2, 5, 20,
+		DeepDiscoveryPurposeSourceInitialization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := mission.CompleteSourceInitializationEvidence(mission.Version, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Status != DeepDiscoveryDone || next.Stage != DeepDiscoveryCompleted || next.CandidateCount != 3 ||
+		next.Coverage != (DiscoveryCoverage{}) {
+		t.Fatalf("unexpected source initialization completion: %+v", next)
+	}
+	regular, _ := NewDeepDiscoveryMission("mission-regular", company, 3, 5, 20)
+	if _, err := regular.CompleteSourceInitializationEvidence(regular.Version, 1); err == nil {
+		t.Fatal("regular company discovery must not use source initialization completion")
+	}
+}
+
 func TestDiscoveryEvidenceIsCanonicalAndStable(t *testing.T) {
 	node, err := NewDiscoveryEvidenceNodeWithType(EvidenceListURL, "HTTPS://Jobs.Example.com/openings/", "jobs", EvidenceValidated,
 		SensorBrowser, "https://example.com/careers/", "", "browser showed a populated reverse-chronological job list", RecruitmentURLSocial, "")
