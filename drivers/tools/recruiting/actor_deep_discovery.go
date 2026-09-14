@@ -253,6 +253,9 @@ func handleDeepDiscoveryBrowserObserve(sys actorbase.Sys, cfg Config, repository
 			payload.URL, payload.WaitSelector, payload.ScrollRepeats, payload.FollowLinkSelector, next.Version,
 			payload.StubVerificationIDs...)
 	}
+	if err == nil {
+		err = validateDeepDiscoveryBrowserProbePlan(probe)
+	}
 	parsed, parseErr := url.Parse(probe.URL)
 	if err == nil && parseErr != nil {
 		err = parseErr
@@ -299,6 +302,30 @@ func handleDeepDiscoveryBrowserObserve(sys actorbase.Sys, cfg Config, repository
 		return
 	}
 	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
+}
+
+func validateDeepDiscoveryBrowserProbePlan(probe model.DeepDiscoveryBrowserProbe) error {
+	actions := make([]recipeabi.BrowserAction, 0, 3)
+	if probe.WaitSelector != "" {
+		actions = append(actions, recipeabi.BrowserAction{Kind: recipeabi.BrowserActionWaitSelector,
+			Selector: probe.WaitSelector, TimeoutMS: 10_000})
+	}
+	if probe.ScrollRepeats > 0 {
+		actions = append(actions, recipeabi.BrowserAction{Kind: recipeabi.BrowserActionScrollPage,
+			MaxRepeats: probe.ScrollRepeats})
+	}
+	maxNavigations := 3
+	if probe.FollowLinkSelector != "" {
+		actions = append(actions, recipeabi.BrowserAction{Kind: recipeabi.BrowserActionFollowLink,
+			Selector: probe.FollowLinkSelector})
+		maxNavigations = 4
+	}
+	plan := recipeabi.BrowserPlan{Version: recipeabi.BrowserPlanVersion, Actions: actions,
+		MaxNavigations: maxNavigations, MaxDOMBytes: 1}
+	if err := plan.Validate(); err != nil {
+		return fmt.Errorf("invalid Deep Discovery browser actions: %w", err)
+	}
+	return nil
 }
 
 func handleDeepDiscoveryStart(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

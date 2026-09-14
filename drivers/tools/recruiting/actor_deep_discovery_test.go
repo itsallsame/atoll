@@ -1,10 +1,27 @@
 package recruiting
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 )
+
+func TestDeepDiscoveryBrowserProbePlanIsValidatedBeforeWorkCreation(t *testing.T) {
+	probe, err := model.NewDeepDiscoveryBrowserProbe("probe-invalid-selector", "mission-1", "work-1",
+		"https://example.test", "", 1, `a[href*="job"],a[href*="career"]`, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDeepDiscoveryBrowserProbePlan(probe); err == nil ||
+		!strings.Contains(err.Error(), "invalid Deep Discovery browser actions") {
+		t.Fatalf("selector-list plan validation err=%v", err)
+	}
+	probe.FollowLinkSelector = `a[href*="job"]`
+	if err := validateDeepDiscoveryBrowserProbePlan(probe); err != nil {
+		t.Fatalf("valid single selector rejected: %v", err)
+	}
+}
 
 func TestDeepDiscoveryCheckpointResolvesReadableGraphRefs(t *testing.T) {
 	nodes, edges, err := normalizeDeepDiscoveryGraph([]deepDiscoveryNodeInput{

@@ -536,6 +536,9 @@ func handleOnboardingAdvanceBrowser(sys actorbase.Sys, cfg Config, repository *s
 		probe, err = model.NewDeepDiscoveryBrowserProbe(probeID, mission.MissionID, work.WorkID, targetURL,
 			waitSelector, scrollRepeats, followSelector, next.Version, plan.VerificationIDs...)
 	}
+	if err == nil {
+		err = validateDeepDiscoveryBrowserProbePlan(probe)
+	}
 	parsed, parseErr := url.Parse(probe.URL)
 	if err == nil {
 		err = parseErr
