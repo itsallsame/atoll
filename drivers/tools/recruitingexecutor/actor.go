@@ -29,6 +29,7 @@ const (
 	TypeProbe                = "recruiting.execution.probe"
 	TypeWake                 = executioncontract.TypeWake
 	TypeCompanyWebsiteLookup = "recruiting.company.website.lookup"
+	maxExecutionLifetime     = 15 * time.Minute
 )
 
 type probePayload struct {
@@ -216,7 +217,9 @@ func handleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, in
 
 func handleSingleWake(sys actorbase.Sys, cfg Config, production *productionRuntime, incarnation string,
 	msg actorbase.Msg, payload wakePayload) {
-	offer, err := requestExecutionOffer(msg.Ctx(), sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()), executioncontract.OfferRequest{
+	executionCtx, cancelExecution := boundedExecutionContext(msg.Ctx())
+	defer cancelExecution()
+	offer, err := requestExecutionOffer(executionCtx, sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()), executioncontract.OfferRequest{
 		CommandID: wakeOfferCommandID(incarnation, payload.CommandID, string(msg.ID)), DispatchID: payload.CommandID,
 		ExecutorIncarnation: incarnation,
 		Capability:          cfg.Capability, Origin: payload.Origin, ProfileID: payload.ProfileID,
@@ -236,14 +239,14 @@ func handleSingleWake(sys actorbase.Sys, cfg Config, production *productionRunti
 	control := messageExecutionControl{caller: sys, cause: msg.Cause(), controlActor: cfg.ControlActorID,
 		executorActorID: string(sys.Self()), wait: time.Duration(cfg.ControlWaitMS) * time.Millisecond}
 	if offer.Kind == "profile_repair" || offer.Kind == "profile_verification" {
-		err = executeProfileOffer(msg.Ctx(), control, sys.Resource(), *offer, profileExecutionOptions{
+		err = executeProfileOffer(executionCtx, control, sys.Resource(), *offer, profileExecutionOptions{
 			Artifact: production.options.Artifact, Broker: production.broker, Now: production.options.Now})
 	} else if offer.Kind == "company_import" {
-		err = executeCompanyImportOffer(msg.Ctx(), control, sys.Resource(), *offer, production.batchOptions)
+		err = executeCompanyImportOffer(executionCtx, control, sys.Resource(), *offer, production.batchOptions)
 	} else if offer.Kind == "company_import_apply" {
-		err = executeCompanyImportApplyOffer(msg.Ctx(), control, *offer)
+		err = executeCompanyImportApplyOffer(executionCtx, control, *offer)
 	} else {
-		err = executeOffer(msg.Ctx(), control, sys.Resource(), production.driver, *offer, production.options)
+		err = executeOffer(executionCtx, control, sys.Resource(), production.driver, *offer, production.options)
 	}
 	if err != nil {
 		_, _ = sys.Fail(msg, "runtime_failed", err.Error(), map[string]any{"attempt_id": offer.Attempt.AttemptID, "work_id": offer.Work.WorkID})
@@ -289,6 +292,8 @@ func (c preclaimedExecutionControl) Submit(_ context.Context, resultKind string,
 
 func handleBatchWake(sys actorbase.Sys, cfg Config, production *productionRuntime, incarnation string,
 	msg actorbase.Msg, payload wakePayload) {
+	executionCtx, cancelExecution := boundedExecutionContext(msg.Ctx())
+	defer cancelExecution()
 	wait := time.Duration(cfg.ControlWaitMS) * time.Millisecond
 	nextDispatchID, deliveryToken := payload.CommandID, string(msg.ID)
 	totalHandled := 0
@@ -297,7 +302,7 @@ func handleBatchWake(sys actorbase.Sys, cfg Config, production *productionRuntim
 	const maxBatchesPerWake = 4
 	for wave := 0; wave < maxBatchesPerWake; wave++ {
 		batchCommandID := wakeBatchOfferCommandID(incarnation, nextDispatchID, deliveryToken)
-		batch, err := requestExecutionOfferBatch(msg.Ctx(), sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()),
+		batch, err := requestExecutionOfferBatch(executionCtx, sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()),
 			executioncontract.OfferBatchRequest{CommandID: batchCommandID, DispatchID: nextDispatchID,
 				ExecutorIncarnation: incarnation, Capability: cfg.Capability, Origin: payload.Origin,
 				ProfileID: payload.ProfileID, Limit: cfg.ExecutionBatchSize}, wait)
@@ -329,7 +334,7 @@ func handleBatchWake(sys actorbase.Sys, cfg Config, production *productionRuntim
 			attemptIDs[index] = offer.Attempt.AttemptID
 			claimed[offer.Attempt.AttemptID] = struct{}{}
 		}
-		if err := claimExecutionBatch(msg.Ctx(), sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()),
+		if err := claimExecutionBatch(executionCtx, sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()),
 			executioncontract.ClaimBatchRequest{CommandID: wakeBatchClaimCommandID(batch.SupplyBatchID),
 				SupplyBatchID: batch.SupplyBatchID, ExecutorIncarnation: incarnation, AttemptIDs: attemptIDs}, wait); err != nil {
 			_, _ = sys.Fail(msg, "channel_unavailable", err.Error())
@@ -340,7 +345,7 @@ func handleBatchWake(sys actorbase.Sys, cfg Config, production *productionRuntim
 			controlActor: cfg.ControlActorID, executorActorID: string(sys.Self()), wait: wait}, claimed: claimed,
 			bufferedItems: &bufferedItems}
 		for _, offer := range batch.Offers {
-			if err := executeOffer(msg.Ctx(), control, sys.Resource(), production.driver, offer, production.options); err != nil {
+			if err := executeOffer(executionCtx, control, sys.Resource(), production.driver, offer, production.options); err != nil {
 				_, _ = sys.Fail(msg, "runtime_failed", err.Error(), map[string]any{"attempt_id": offer.Attempt.AttemptID,
 					"work_id": offer.Work.WorkID, "supply_batch_id": batch.SupplyBatchID})
 				return
@@ -350,7 +355,7 @@ func handleBatchWake(sys actorbase.Sys, cfg Config, production *productionRuntim
 		if len(bufferedItems) == 0 {
 			break
 		}
-		continuation, err := submitExecutionResultBatch(msg.Ctx(), sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()),
+		continuation, err := submitExecutionResultBatch(executionCtx, sys, msg.Cause(), cfg.ControlActorID, string(sys.Self()),
 			executioncontract.ResultBatchRequest{SupplyBatchID: batch.SupplyBatchID, Items: bufferedItems}, wait)
 		if err != nil {
 			_, _ = sys.Fail(msg, "result_unknown", err.Error(), map[string]any{"supply_batch_id": batch.SupplyBatchID})
@@ -361,6 +366,14 @@ func handleBatchWake(sys actorbase.Sys, cfg Config, production *productionRuntim
 	_, _ = sys.Reply(msg, map[string]any{"status": "handled", "attempt_id": first.Attempt.AttemptID,
 		"work_id": first.Work.WorkID, "kind": first.Kind, "executor_incarnation": incarnation,
 		"supply_batch_id": lastSupplyBatchID, "handled_count": totalHandled})
+}
+
+// A Wake is a delivery notification, not the lifetime owner of a durable
+// Attempt. Large bounded listings may outlive the request context used to
+// deliver the Wake. Preserve its values but give execution an explicit upper
+// bound so a delivery timeout cannot discard a successfully fetched result.
+func boundedExecutionContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), maxExecutionLifetime)
 }
 
 func completeWake(sys actorbase.Sys, controlActor actor.ActorID, msg actorbase.Msg, dispatchID, status, attemptID, workID string) error {
