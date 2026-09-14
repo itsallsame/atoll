@@ -116,6 +116,9 @@ func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
 		sort.Strings(desired)
 		for evidenceIndex := range fact.Result.PublicQueryEvidence {
 			observation := fact.Result.PublicQueryEvidence[evidenceIndex]
+			if observation.Validate() != nil {
+				continue
+			}
 			if !hasQueryVerification(snapshot, observation) {
 				if len(desired) >= 10 {
 					return onboardingAutomationPlan{Action: onboardingReviewEvidence,
@@ -181,7 +184,9 @@ func nextUnprobedCandidateSource(snapshot store.DeepDiscoveryAutomationSnapshot,
 	for _, source := range candidates {
 		observed := false
 		for _, fact := range snapshot.BrowserProbes {
-			if fact.Probe.URL == source.CandidateEndpoint.URL {
+			if fact.Probe.URL == source.CandidateEndpoint.URL && fact.Probe.Status == model.DeepDiscoveryProbeCompleted &&
+				fact.Work.Status == model.WorkCompleted && fact.Work.Resolution == model.ResolutionSucceeded &&
+				sourceProbeEvidenceIsSufficient(fact) {
 				observed = true
 				break
 			}
@@ -191,6 +196,19 @@ func nextUnprobedCandidateSource(snapshot store.DeepDiscoveryAutomationSnapshot,
 		}
 	}
 	return model.RecruitmentSource{}, false
+}
+
+func sourceProbeEvidenceIsSufficient(fact store.DeepDiscoveryBrowserAutomationFact) bool {
+	if fact.Result != nil {
+		for _, observation := range fact.Result.PublicQueryEvidence {
+			if observation.Validate() == nil {
+				return true
+			}
+		}
+	}
+	// A full bounded scroll is also meaningful negative evidence: some public
+	// pages are DOM-only and must continue through the extension Recipe path.
+	return fact.Probe.ScrollRepeats >= 10
 }
 
 func probeByID(snapshot store.DeepDiscoveryAutomationSnapshot, id string) *model.DeepDiscoveryBrowserProbe {
@@ -493,8 +511,9 @@ func handleOnboardingAdvanceBrowser(sys actorbase.Sys, cfg Config, repository *s
 	targetURL, waitSelector, scrollRepeats, followSelector := company.Website, "", 1, ""
 	if plan.TargetURL != "" {
 		targetURL = plan.TargetURL
+		scrollRepeats = 10
 	}
-	identityInput := mission.MissionID + "|seed|" + targetURL
+	identityInput := mission.MissionID + "|seed|" + targetURL + "|scroll|" + fmt.Sprint(scrollRepeats)
 	if plan.SourceProbe != nil {
 		targetURL, waitSelector, scrollRepeats, followSelector = plan.SourceProbe.URL, plan.SourceProbe.WaitSelector,
 			plan.SourceProbe.ScrollRepeats, plan.SourceProbe.FollowLinkSelector

@@ -94,9 +94,17 @@ func TestOnboardingAutomationSeedsCandidateSourcesBeforeCompanyWebsite(t *testin
 	probe, _ := model.NewDeepDiscoveryBrowserProbe("probe-1", "mission-1", work.WorkID,
 		sourceA.CandidateEndpoint.URL, "", 1, "", 2)
 	probe.Status = model.DeepDiscoveryProbeCompleted
+	work.Status = model.WorkCompleted
+	work.Resolution = model.ResolutionSucceeded
 	snapshot := store.DeepDiscoveryAutomationSnapshot{BrowserProbes: []store.DeepDiscoveryBrowserAutomationFact{{
 		Probe: probe, Work: work, Result: &store.DeepDiscoveryBrowserResult{},
 	}}}
+	plan = planOnboardingAutomation(snapshot, company, sourceB, sourceA)
+	if plan.Action != onboardingCreateSeedBrowser || plan.SourceID != sourceA.SourceID {
+		t.Fatalf("shallow DOM-only Probe was treated as sufficient evidence: %+v", plan)
+	}
+	probe.ScrollRepeats = 10
+	snapshot.BrowserProbes[0].Probe = probe
 	plan = planOnboardingAutomation(snapshot, company, sourceB, sourceA)
 	if plan.Action != onboardingCreateSeedBrowser || plan.SourceID != sourceB.SourceID ||
 		plan.TargetURL != sourceB.CandidateEndpoint.URL {
