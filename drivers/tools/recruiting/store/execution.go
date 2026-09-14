@@ -303,7 +303,12 @@ FROM recruiting_works w
 	      ON candidate_recipe.recipe_id = rv.recipe_id AND candidate_recipe.recipe_version = rv.recipe_version
 	    JOIN recruiting_source_jobs sample_job ON sample_job.job_id = rv.sample_job_id AND sample_job.source_id = rv.source_id
 	    WHERE rv.work_id = w.work_id AND rv.recipe_kind = 'detail' AND rv.run_status IN ('queued', 'running')
-	      AND sample_company.onboarding_status = 'ready' AND sample_company.control_status = 'active'
+	      -- PrepareDetailRecipeValidation is the authority that distinguishes a
+	      -- normal ready-company validation from the first Detail Recipe
+	      -- bootstrap backed by a finalized-baseline sample. The immutable run
+	      -- and the version fences below keep that decision valid until offer.
+	      AND sample_company.onboarding_status IN ('ready', 'discovering_sources', 'initializing')
+	      AND sample_company.control_status = 'active'
 	      AND sample_source.readiness_status = 'ready' AND sample_source.control_status = 'active'
 	      AND sample_source.health_status = 'healthy'
 	      AND ((candidate_recipe.status = 'validating' AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(rv.state_json, '$.validation_mode')), 'candidate') = 'candidate')
