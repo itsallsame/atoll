@@ -260,7 +260,7 @@ func (r *Repository) AcceptDeepDiscoveryBrowserResult(ctx context.Context, input
 
 func canonicalizeBrowserResultEvidence(result *DeepDiscoveryBrowserResult) error {
 	for index, observation := range result.PublicQueryEvidence {
-		canonical, err := observation.Canonicalized()
+		canonical, err := observation.CanonicalizedAttestedEvidence()
 		if err != nil {
 			return err
 		}

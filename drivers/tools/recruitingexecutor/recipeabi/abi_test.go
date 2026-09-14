@@ -314,6 +314,18 @@ func TestPublicQueryObservationUsesCanonicalSemanticJSON(t *testing.T) {
 	}
 }
 
+func TestAttestedLegacyEvidenceCanBeReadButNotExecuted(t *testing.T) {
+	legacy := PublicQueryObservation{EndpointURL: "https://mon.example.com/monitor_browser/collect/batch", Method: "POST",
+		Headers: map[string]string{"Content-Type": "application/json"}, JSONBody: json.RawMessage(`{"list":[]}`)}
+	readable, err := legacy.CanonicalizedAttestedEvidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readable.Validate() == nil {
+		t.Fatal("attested non-read evidence became executable")
+	}
+}
+
 func TestRecipeSpecRejectsWritesSecretsAndWeakIncrementalClaims(t *testing.T) {
 	for name, mutate := range map[string]func(*Spec){
 		"write method":                 func(s *Spec) { s.Request.Method = "POST" },

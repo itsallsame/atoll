@@ -338,6 +338,17 @@ func NewPublicQueryObservation(endpointURL, method string, headers map[string]st
 // It also provides a narrow compatibility path for already-attested browser
 // evidence that was persisted with the former raw-byte hash.
 func (o PublicQueryObservation) Canonicalized() (PublicQueryObservation, error) {
+	return o.canonicalized(true)
+}
+
+// CanonicalizedAttestedEvidence normalizes evidence already accepted from an
+// authenticated browser result without asserting that it still satisfies the
+// current execution policy. Callers must use Validate before any execution.
+func (o PublicQueryObservation) CanonicalizedAttestedEvidence() (PublicQueryObservation, error) {
+	return o.canonicalized(false)
+}
+
+func (o PublicQueryObservation) canonicalized(requireReadIntent bool) (PublicQueryObservation, error) {
 	canonicalBody, err := canonicalJSONObject(o.JSONBody)
 	if err != nil {
 		return PublicQueryObservation{}, fmt.Errorf("public-query observation JSON: %w", err)
@@ -345,13 +356,17 @@ func (o PublicQueryObservation) Canonicalized() (PublicQueryObservation, error) 
 	o.JSONBody = canonicalBody
 	sum := sha256.Sum256(canonicalBody)
 	o.BodyHash = "sha256:" + hex.EncodeToString(sum[:])
-	if err := o.Validate(); err != nil {
+	if err := o.validate(requireReadIntent); err != nil {
 		return PublicQueryObservation{}, err
 	}
 	return o, nil
 }
 
 func (o PublicQueryObservation) Validate() error {
+	return o.validate(true)
+}
+
+func (o PublicQueryObservation) validate(requireReadIntent bool) error {
 	endpoint, err := url.Parse(o.EndpointURL)
 	if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" ||
 		endpoint.User != nil || endpoint.Fragment != "" || o.Method != "POST" || len(o.JSONBody) == 0 || len(o.JSONBody) > 64<<10 {
@@ -373,8 +388,10 @@ func (o PublicQueryObservation) Validate() error {
 	if err := validatePublicQueryValues(body, 0); err != nil {
 		return err
 	}
-	if err := validatePublicQueryReadIntent(endpoint, body); err != nil {
-		return err
+	if requireReadIntent {
+		if err := validatePublicQueryReadIntent(endpoint, body); err != nil {
+			return err
+		}
 	}
 	if err := validatePublicQueryHeaders(o.Headers); err != nil {
 		return err
@@ -770,8 +787,7 @@ func validatePublicQueryValues(object map[string]json.RawMessage, depth int) err
 			strings.Contains(lower, "token") || strings.Contains(lower, "secret") ||
 			strings.Contains(lower, "password") || strings.Contains(lower, "authorization") ||
 			strings.Contains(lower, "signature") || strings.Contains(lower, "cookie") ||
-			strings.Contains(lower, "api_key") || strings.Contains(lower, "apikey") || strings.Contains(lower, "csrf") ||
-			lower == "user_id" || lower == "device_id" || lower == "session_id" {
+			strings.Contains(lower, "api_key") || strings.Contains(lower, "apikey") || strings.Contains(lower, "csrf") {
 			return fmt.Errorf("public-query JSON contains a sensitive or invalid field")
 		}
 		var value any
