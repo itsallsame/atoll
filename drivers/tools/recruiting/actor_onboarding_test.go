@@ -78,3 +78,39 @@ func TestOnboardingAutomationPlansEvidenceBoundedNetworkSteps(t *testing.T) {
 		t.Fatalf("fully replayed plan=%+v", plan)
 	}
 }
+
+func TestOnboardingAutomationSeedsCandidateSourcesBeforeCompanyWebsite(t *testing.T) {
+	company, _ := model.NewCompany("company-1", "Example", "https://example.com")
+	sourceB, _ := model.NewRecruitmentSource("source-b", company.CompanyID, "https://jobs.example.com/b", "social", 1)
+	sourceA, _ := model.NewRecruitmentSource("source-a", company.CompanyID, "https://jobs.example.com/a", "campus", 1)
+
+	plan := planOnboardingAutomation(store.DeepDiscoveryAutomationSnapshot{}, company, sourceB, sourceA)
+	if plan.Action != onboardingCreateSeedBrowser || plan.SourceID != sourceA.SourceID ||
+		plan.TargetURL != sourceA.CandidateEndpoint.URL {
+		t.Fatalf("candidate Source seed plan=%+v", plan)
+	}
+
+	work, _ := model.NewWork("probe-work", "deep_discovery_probe", "probe-1", "deep_discovery_browser", "agent")
+	probe, _ := model.NewDeepDiscoveryBrowserProbe("probe-1", "mission-1", work.WorkID,
+		sourceA.CandidateEndpoint.URL, "", 1, "", 2)
+	probe.Status = model.DeepDiscoveryProbeCompleted
+	snapshot := store.DeepDiscoveryAutomationSnapshot{BrowserProbes: []store.DeepDiscoveryBrowserAutomationFact{{
+		Probe: probe, Work: work, Result: &store.DeepDiscoveryBrowserResult{},
+	}}}
+	plan = planOnboardingAutomation(snapshot, company, sourceB, sourceA)
+	if plan.Action != onboardingCreateSeedBrowser || plan.SourceID != sourceB.SourceID ||
+		plan.TargetURL != sourceB.CandidateEndpoint.URL {
+		t.Fatalf("next candidate Source seed plan=%+v", plan)
+	}
+}
+
+func TestCandidateSourcesNeedingListingRequiresOperableCandidate(t *testing.T) {
+	source, _ := model.NewRecruitmentSource("source-1", "company-1", "https://jobs.example.com", "social", 1)
+	if !hasCandidateSourcesNeedingListing([]model.RecruitmentSource{source}) {
+		t.Fatal("operable candidate Source was ignored")
+	}
+	source.ControlStatus = model.ControlArchived
+	if hasCandidateSourcesNeedingListing([]model.RecruitmentSource{source}) {
+		t.Fatal("archived candidate Source was selected")
+	}
+}

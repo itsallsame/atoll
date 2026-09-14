@@ -2,6 +2,7 @@ package recruiting
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"sort"
 	"strings"
@@ -17,6 +18,7 @@ type onboardingAutomationAction string
 
 const (
 	onboardingCreateSeedBrowser onboardingAutomationAction = "create_seed_browser_probe"
+	onboardingStartEvidence     onboardingAutomationAction = "start_source_initialization_evidence"
 	onboardingVerifyPublicQuery onboardingAutomationAction = "verify_public_query"
 	onboardingReplayVerified    onboardingAutomationAction = "replay_verified_queries"
 	onboardingAwaitBrowser      onboardingAutomationAction = "await_browser_probe"
@@ -31,6 +33,8 @@ type onboardingAutomationPlan struct {
 	SourceProbe     *model.DeepDiscoveryBrowserProbe
 	Observation     *recipeabi.PublicQueryObservation
 	VerificationIDs []string
+	TargetURL       string
+	SourceID        string
 	Detail          string
 }
 
@@ -49,7 +53,7 @@ type onboardingAdvanceResponse struct {
 }
 
 func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
-	company model.Company) onboardingAutomationPlan {
+	company model.Company, sources ...model.RecruitmentSource) onboardingAutomationPlan {
 	for index := len(snapshot.BrowserProbes) - 1; index >= 0; index-- {
 		fact := snapshot.BrowserProbes[index]
 		if fact.Probe.Status == model.DeepDiscoveryProbeQueued {
@@ -69,6 +73,10 @@ func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
 		}
 	}
 	if len(snapshot.BrowserProbes) == 0 {
+		if source, found := nextUnprobedCandidateSource(snapshot, sources); found {
+			return onboardingAutomationPlan{Action: onboardingCreateSeedBrowser, TargetURL: source.CandidateEndpoint.URL,
+				SourceID: source.SourceID}
+		}
 		if company.Website == "" {
 			return onboardingAutomationPlan{Action: onboardingResolveIdentity, Detail: "official website is not yet evidenced"}
 		}
@@ -118,8 +126,37 @@ func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
 				VerificationIDs: desired}
 		}
 	}
+	if source, found := nextUnprobedCandidateSource(snapshot, sources); found {
+		return onboardingAutomationPlan{Action: onboardingCreateSeedBrowser, TargetURL: source.CandidateEndpoint.URL,
+			SourceID: source.SourceID}
+	}
 	return onboardingAutomationPlan{Action: onboardingReviewEvidence,
 		Detail: "no further safe network action can be derived automatically"}
+}
+
+func nextUnprobedCandidateSource(snapshot store.DeepDiscoveryAutomationSnapshot,
+	sources []model.RecruitmentSource) (model.RecruitmentSource, bool) {
+	candidates := make([]model.RecruitmentSource, 0, len(sources))
+	for _, source := range sources {
+		if source.ControlStatus == model.ControlActive && source.HealthStatus == model.HealthHealthy &&
+			source.ReadinessStatus == model.SourceCandidate && source.ListingAssignment == nil && source.CandidateEndpoint != nil {
+			candidates = append(candidates, source)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].SourceID < candidates[j].SourceID })
+	for _, source := range candidates {
+		observed := false
+		for _, fact := range snapshot.BrowserProbes {
+			if fact.Probe.URL == source.CandidateEndpoint.URL {
+				observed = true
+				break
+			}
+		}
+		if !observed {
+			return source, true
+		}
+	}
+	return model.RecruitmentSource{}, false
 }
 
 func probeByID(snapshot store.DeepDiscoveryAutomationSnapshot, id string) *model.DeepDiscoveryBrowserProbe {
@@ -211,6 +248,15 @@ func handleOnboardingAdvance(sys actorbase.Sys, cfg Config, repository *store.Re
 		failStoreError(sys, msg, err)
 		return
 	}
+	sources, err := listAllCompanySources(msg, repository, company.CompanyID)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	if mission.Status == model.DeepDiscoveryDone && hasCandidateSourcesNeedingListing(sources) {
+		handleOnboardingStartEvidenceMission(sys, repository, msg, company, mission, sources)
+		return
+	}
 	if mission.Status != model.DeepDiscoveryActive {
 		_, _ = sys.Reply(msg, onboardingAdvanceResponse{ContractVersion: ContractVersion, Status: "not_advanced",
 			Company: company, Mission: mission, Action: onboardingReviewEvidence, NextAction: deepDiscoveryNextAction(mission),
@@ -222,7 +268,7 @@ func handleOnboardingAdvance(sys actorbase.Sys, cfg Config, repository *store.Re
 		failStoreError(sys, msg, err)
 		return
 	}
-	plan := planOnboardingAutomation(snapshot, company)
+	plan := planOnboardingAutomation(snapshot, company, sources...)
 	switch plan.Action {
 	case onboardingCreateSeedBrowser, onboardingReplayVerified:
 		handleOnboardingAdvanceBrowser(sys, cfg, repository, msg, company, mission, plan)
@@ -237,6 +283,59 @@ func handleOnboardingAdvance(sys actorbase.Sys, cfg Config, repository *store.Re
 			Company: company, Mission: mission, Action: plan.Action, NextAction: string(plan.Action), Detail: plan.Detail,
 			AgentDirective: onboardingAdvanceDirective(plan.Action)})
 	}
+}
+
+func hasCandidateSourcesNeedingListing(sources []model.RecruitmentSource) bool {
+	for _, source := range sources {
+		if source.ControlStatus == model.ControlActive && source.HealthStatus == model.HealthHealthy &&
+			source.ReadinessStatus == model.SourceCandidate && source.ListingAssignment == nil && source.CandidateEndpoint != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func handleOnboardingStartEvidenceMission(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg,
+	company model.Company, previous model.DeepDiscoveryMission, sources []model.RecruitmentSource) {
+	generation := previous.Generation + 1
+	maxOperations := previous.Budget.MaxOperations
+	if required := len(sources) * 10; maxOperations < required {
+		maxOperations = required
+	}
+	if maxOperations > 2000 {
+		maxOperations = 2000
+	}
+	missionID := "mission-auto-initialization-" + stableDigest(company.CompanyID+"|"+fmt.Sprint(generation))
+	mission, err := model.NewDeepDiscoveryMission(missionID, company, generation,
+		previous.Budget.MaxSearchRounds, maxOperations)
+	if err != nil {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
+		return
+	}
+	response := onboardingAdvanceResponse{ContractVersion: ContractVersion, Status: "advanced", Company: company,
+		Mission: mission, Action: onboardingStartEvidence, NextAction: string(onboardingCreateSeedBrowser),
+		AgentDirective: "Call recruiting.onboarding.advance again with only company_name. The new Mission will collect bounded real network evidence for each candidate Source."}
+	responseBytes, _ := json.Marshal(response)
+	commandID := "onboarding-advance-" + stableDigest(string(msg.ID))
+	receipt, err := model.NewCommandReceipt(commandID, msg.Type, commandRequestHash(msg), responseBytes)
+	at := time.UnixMilli(msg.TS).UTC()
+	audit, _ := json.Marshal(map[string]any{"requested_by": string(msg.Sender.ID), "company_id": company.CompanyID,
+		"discovery_generation": generation, "candidate_source_count": len(sources), "purpose": "source_initialization_evidence"})
+	var event model.EventIntent
+	if err == nil {
+		event, err = model.NewEventIntent("event-"+stableDigest(commandID+"|deep.discovery.initialization.started"),
+			"deep.discovery.initialization.started", "deep_discovery", mission.MissionID, mission.Version,
+			at.Format(time.RFC3339Nano), commandID, audit)
+	}
+	var result store.CommandResult
+	if err == nil {
+		result, err = repository.ApplyCreateDeepDiscoveryMissionCommand(msg.Ctx(), company.Version, mission, receipt, event, at)
+	}
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
 }
 
 func handleOnboardingAdvanceVerification(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg,
@@ -307,7 +406,10 @@ func handleOnboardingAdvanceBrowser(sys actorbase.Sys, cfg Config, repository *s
 	company model.Company, mission model.DeepDiscoveryMission, plan onboardingAutomationPlan) {
 	next, err := mission.ConsumeOperations(mission.Version, 1)
 	targetURL, waitSelector, scrollRepeats, followSelector := company.Website, "", 1, ""
-	identityInput := mission.MissionID + "|seed|" + company.Website
+	if plan.TargetURL != "" {
+		targetURL = plan.TargetURL
+	}
+	identityInput := mission.MissionID + "|seed|" + targetURL
 	if plan.SourceProbe != nil {
 		targetURL, waitSelector, scrollRepeats, followSelector = plan.SourceProbe.URL, plan.SourceProbe.WaitSelector,
 			plan.SourceProbe.ScrollRepeats, plan.SourceProbe.FollowLinkSelector
@@ -345,7 +447,7 @@ func handleOnboardingAdvanceBrowser(sys actorbase.Sys, cfg Config, repository *s
 	commandID := "onboarding-advance-" + stableDigest(string(msg.ID))
 	receipt, err := model.NewCommandReceipt(commandID, msg.Type, commandRequestHash(msg), responseBytes)
 	audit, _ := json.Marshal(map[string]any{"requested_by": string(msg.Sender.ID), "probe_id": probe.ProbeID,
-		"stub_verification_count": len(probe.StubVerificationIDs), "automation_action": plan.Action})
+		"source_id": plan.SourceID, "stub_verification_count": len(probe.StubVerificationIDs), "automation_action": plan.Action})
 	var event model.EventIntent
 	if err == nil {
 		event, err = model.NewEventIntent("event-"+stableDigest(commandID+"|deep.discovery.browser.queued"),

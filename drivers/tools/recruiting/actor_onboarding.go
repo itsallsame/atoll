@@ -239,12 +239,17 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 	classified := allURLsClassified(urls)
 	var sources []model.RecruitmentSource
 	if mission.Status == model.DeepDiscoveryActive {
+		sources, err = listAllCompanySources(msg, repository, company.CompanyID)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
 		snapshot, snapshotErr := repository.GetDeepDiscoveryAutomationSnapshot(msg.Ctx(), mission.MissionID)
 		if snapshotErr != nil {
 			failStoreError(sys, msg, snapshotErr)
 			return
 		}
-		plan := planOnboardingAutomation(snapshot, company)
+		plan := planOnboardingAutomation(snapshot, company, sources...)
 		next = string(plan.Action)
 		directive = onboardingAdvanceDirective(plan.Action)
 		if plan.Action == onboardingCreateSeedBrowser || plan.Action == onboardingVerifyPublicQuery ||
@@ -262,6 +267,9 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 		if len(sources) == 0 {
 			next = "materialize_validated_urls"
 			directive = "Call recruiting.onboarding.materialize with only company_name before presenting the typed URL result."
+		} else if hasCandidateSourcesNeedingListing(sources) {
+			next = "advance_source_initialization_evidence"
+			directive = "Call recruiting.onboarding.advance with only company_name. It will start a bounded evidence Mission and probe each candidate Source before any Listing Recipe is proposed. Continue without asking the user for internal IDs or URLs."
 		} else {
 			next = "initialize_candidate_sources"
 			directive = "For each candidate Source, use recruiting.recipe.prepare when a completed browser Probe exposes public_query_evidence; otherwise generate a Resource-backed Listing Recipe from real page evidence. Internally stage an observed API with recruiting.source.update, then call recruiting.recipe.propose and recruiting.recipe.validate. Approve only successful evidence, validate and publish the Source, then start its first baseline. After the baseline exposes a pending sample Job, generate and validate the first Detail Recipe, approve and assign it. Continue without asking the user for internal IDs; report only evidence-backed blockers."

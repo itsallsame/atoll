@@ -868,3 +868,11 @@ Browser Broker 新增严格受限的 `PublicQueryStub`：请求侧必须与前�
 自动去重以同 Mission 内的规范 endpoint + request body hash 为键，而不是 Probe ID：本地 Stub 回放时再次观察到前置请求，不会重复访问网站或消耗一次验证预算。后续 Probe 的 Stub 集合是“来源 Probe 已继承的引用 + 本轮观察中已经完成的 Verification”，规范排序并上限 10；到达上限后明确记录 coverage gap，不继续验证一个无法安全回放的第 11 项。命令 ID、Probe/Verification/Work ID 均由消息与冻结证据确定性生成，命令重投先读取 receipt；页面和 Agent 都不能提交内部 ID、Stub body、Artifact hash 或 endpoint。`onboarding.status` 现在会在确有安全自动步骤时明确指示 Agent 只用公司名调用 `advance`，否则停在证据复核、Mission checkpoint/complete 或人工修复边界。
 
 纯规划合同覆盖 seed、异步等待、首次验证、Artifact 完成后的累计回放，以及回放中重复观察前置查询不重复验证；模型合同覆盖 Stub ID 规范排序且不修改调用方输入；Repository 的隔离 MySQL 合同扩展为回读完整自动化投影。该投影测试仍要求独立 `RECRUITING_MYSQL_TEST_DSN`，不得指向正式库。没有新 migration、Worker 或 Atoll core 修改。紧凑证据见 `evidence/recruiting-onboarding-automatic-discovery-advance-20260914.json`。本阶段只自动化“可以由已持久证据唯一决定”的网络动作；URL 业务类型、覆盖是否足够、Extraction/pagination 和 Recipe 审批仍由证据门与人工可干预状态机决定，不能被自动猜测。
+
+## 27. 2026-09-14 候选 Source 初始化证据阶段
+
+正式节点用现有登录会话、经公网页面相同的 `agent.ask` 协议继续“字节跳动”接入时，Agent 已能只凭公司名完成状态查询和自动推进，但 generation 2 在 URL 分类和 Source 物化后已经结束；5 个候选 Source 与早期 Browser Probe 不属于同一公司 Mission 证据链，因而 `recipe.prepare` 正确地拒绝跨公司、跨 Mission 复用证据。这个真实流程暴露的断点不是缺少 Recipe API，而是缺少“已物化 Source → 为每个候选 Endpoint 获取可绑定证据”的显式阶段。
+
+本阶段让 `onboarding.status/advance` 在最新 Mission 已完成且存在 active、healthy、candidate、无 Listing Assignment 的 Source 时，确定性创建下一代“来源初始化证据 Mission”。新 Mission 继承有界搜索轮次并按 Source 数量设置不超过 2000 次的操作上限，不重新搜索或重复物化 URL。自动规划按稳定 Source ID 顺序选择尚未探测的候选 Endpoint，每次只创建一个现有 `deep_discovery_browser` Work；完成后继续复用公开查询 Verification、Artifact Stub 回放和 Mission 内 endpoint + body hash 去重。所有候选 Endpoint 都有 Probe 后，系统停在证据复核/Recipe 推导门，而不是从 URL 或 DOM 猜测 Extraction、pagination 和活动边界。
+
+该实现没有新增 Actor/Worker 类型、数据库迁移或调度器，也没有修改 Atoll core。纯规划合同覆盖“候选 Endpoint 优先于公司官网”和“完成一个 Source 后选择下一个 Source”；普通测试、race、vet 与核心边界检查通过。正式节点的自然语言与真实浏览器执行结果记录于 `evidence/recruiting-source-initialization-evidence-bootstrap-20260914.json`。

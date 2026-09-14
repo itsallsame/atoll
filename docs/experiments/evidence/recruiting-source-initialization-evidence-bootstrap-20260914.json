@@ -1,0 +1,27 @@
+{
+  "evidence_version": "recruiting.source-initialization-evidence-bootstrap.v1",
+  "captured_at": "2026-09-14T00:00:00Z",
+  "scope": "bootstrap bounded same-company browser evidence for materialized candidate recruitment Sources",
+  "production_journey": {
+    "entry": "authenticated agent.ask using only the company name and business intent",
+    "company_name": "字节跳动",
+    "pre_change_result": "five candidate Sources existed, but the latest completed Mission had no Source-bound browser evidence and the journey stopped before Recipe preparation",
+    "post_change_result": "pending production deployment and live execution"
+  },
+  "design": {
+    "new_actor_types": 0,
+    "new_worker_types": 0,
+    "database_migration": false,
+    "atoll_core_modified": false,
+    "mutation_steps_per_advance": 1,
+    "source_order": "stable source_id order",
+    "recipe_inference_without_evidence": false
+  },
+  "tests": [
+    "go test ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/...",
+    "go test -race ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/...",
+    "go vet ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/...",
+    "make recruiting-boundary-check"
+  ],
+  "remaining_boundary": "derive and validate Listing Recipe behavior from collected page/network evidence, then publish each Source and run its baseline"
+}
