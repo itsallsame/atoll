@@ -74,6 +74,9 @@ func (r *Repository) ApplyCreatePublicQueryVerificationCommand(ctx context.Conte
 	if err := json.Unmarshal(probeResultRaw, &probeResult); err != nil {
 		return CommandResult{}, err
 	}
+	if err := canonicalizeBrowserResultEvidence(&probeResult); err != nil {
+		return CommandResult{}, err
+	}
 	matched := false
 	for _, observation := range probeResult.PublicQueryEvidence {
 		matched = matched || verification.Request.Matches(model.PublicQueryRequestEvidence{EndpointURL: observation.EndpointURL,
