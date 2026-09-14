@@ -349,7 +349,7 @@ func (o PublicQueryObservation) CanonicalizedAttestedEvidence() (PublicQueryObse
 }
 
 func (o PublicQueryObservation) canonicalized(requireReadIntent bool) (PublicQueryObservation, error) {
-	canonicalBody, err := canonicalJSONObject(o.JSONBody)
+	canonicalBody, err := canonicalPublicQueryJSONObject(o.JSONBody)
 	if err != nil {
 		return PublicQueryObservation{}, fmt.Errorf("public-query observation JSON: %w", err)
 	}
@@ -360,6 +360,47 @@ func (o PublicQueryObservation) canonicalized(requireReadIntent bool) (PublicQue
 		return PublicQueryObservation{}, err
 	}
 	return o, nil
+}
+
+// canonicalPublicQueryJSONObject removes only browser-generated correlation
+// identifiers that have no effect on a public query's result. Keeping this
+// allowlist exact ensures filters and pagination remain evidence-bound while
+// the same verified query can be replayed across short-lived browser sessions.
+func canonicalPublicQueryJSONObject(raw json.RawMessage) (json.RawMessage, error) {
+	canonical, err := canonicalJSONObject(raw)
+	if err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(canonical))
+	decoder.UseNumber()
+	value, err := decodeUniqueJSONValue(decoder, 0)
+	if err != nil {
+		return nil, err
+	}
+	stripPublicQueryCorrelationIDs(value)
+	stable, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(stable), nil
+}
+
+func stripPublicQueryCorrelationIDs(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for name, child := range typed {
+			switch strings.ToLower(name) {
+			case "r_query_id", "u_query_id":
+				delete(typed, name)
+			default:
+				stripPublicQueryCorrelationIDs(child)
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			stripPublicQueryCorrelationIDs(child)
+		}
+	}
 }
 
 func (o PublicQueryObservation) Validate() error {

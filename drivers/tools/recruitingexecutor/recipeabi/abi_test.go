@@ -1,6 +1,8 @@
 package recipeabi
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"maps"
 	"strings"
@@ -311,6 +313,56 @@ func TestPublicQueryObservationUsesCanonicalSemanticJSON(t *testing.T) {
 	if _, err := NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,
 		json.RawMessage(`{"filters":{"location":[],"location":["CN"]}}`)); err == nil {
 		t.Fatal("nested duplicate JSON object key was accepted")
+	}
+}
+
+func TestPublicQueryObservationOmitsOnlyKnownCorrelationIDs(t *testing.T) {
+	headers := map[string]string{"Content-Type": "application/json"}
+	first, err := NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,
+		json.RawMessage(`{"keyword":"","page":{"pageNo":1},"r_query_id":"first","u_query_id":"user-1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,
+		json.RawMessage(`{"keyword":"","page":{"pageNo":1},"r_query_id":"second","u_query_id":"user-2"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.BodyHash != second.BodyHash || !first.MatchesObservation(second) ||
+		strings.Contains(string(first.JSONBody), "query_id") {
+		t.Fatalf("known correlation IDs were not omitted: %s", first.JSONBody)
+	}
+	withBusinessQueryID, err := NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,
+		json.RawMessage(`{"keyword":"","page":{"pageNo":1},"query_id":"business-key"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.BodyHash == withBusinessQueryID.BodyHash {
+		t.Fatal("non-allowlisted query_id was omitted")
+	}
+	volatileRequest := ReadRequest{Method: "POST", Headers: headers,
+		JSONBody: json.RawMessage(`{"keyword":"","page":{"pageNo":1},"r_query_id":"new"}`)}
+	if first.MatchesReadRequest(volatileRequest) {
+		t.Fatal("Recipe request containing a browser correlation ID matched stable evidence")
+	}
+	stableRequest := ReadRequest{Method: "POST", Headers: headers,
+		JSONBody: json.RawMessage(`{"keyword":"","page":{"pageNo":1}}`)}
+	if !first.MatchesReadRequest(stableRequest) {
+		t.Fatal("stable Recipe request did not match normalized evidence")
+	}
+
+	legacyBody, err := canonicalJSONObject(json.RawMessage(`{"keyword":"","page":{"pageNo":1},"r_query_id":"old"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySum := sha256.Sum256(legacyBody)
+	legacy := PublicQueryObservation{EndpointURL: "https://jobs.example/api/search", Method: "POST", Headers: headers,
+		JSONBody: legacyBody, BodyHash: "sha256:" + hex.EncodeToString(legacySum[:])}
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("legacy evidence no longer validates: %v", err)
+	}
+	if !legacy.MatchesObservation(first) {
+		t.Fatal("legacy evidence did not normalize to the stable observation")
 	}
 }
 

@@ -64,11 +64,15 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 			ref.Artifact.Kind != model.ArtifactResponse || ref.Artifact.WorkID == "" {
 			return errors.New("Deep Discovery browser Stub lineage is inconsistent")
 		}
+		request, canonicalErr := ref.Request.Canonicalized()
+		if canonicalErr != nil {
+			return fmt.Errorf("canonicalize verified public query Stub %q: %w", ref.VerificationID, canonicalErr)
+		}
 		body, readErr := readBackfillArtifact(ctx, resources, ref.Artifact, browserdriver.MaxPublicQueryStubBytes)
 		if readErr != nil {
 			return fmt.Errorf("read verified public query Stub %q: %w", ref.VerificationID, readErr)
 		}
-		stub := browserdriver.PublicQueryStub{Request: ref.Request, StatusCode: ref.StatusCode,
+		stub := browserdriver.PublicQueryStub{Request: request, StatusCode: ref.StatusCode,
 			ContentType: ref.ContentType, Body: body, ContentHash: ref.Artifact.ContentHash}
 		if err := stub.Validate(); err != nil {
 			return fmt.Errorf("validate verified public query Stub %q: %w", ref.VerificationID, err)
