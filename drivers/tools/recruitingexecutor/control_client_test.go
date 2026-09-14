@@ -338,6 +338,26 @@ func TestSubmitDeepDiscoveryBrowserResultAcceptsOnlyItsAcknowledgement(t *testin
 	}
 }
 
+func TestSubmitPublicQueryVerificationAcceptsOnlyItsAcknowledgement(t *testing.T) {
+	response := executioncontract.ResultResponse{Status: message.StatusCompleted, ContractVersion: executioncontract.Version,
+		CorrelationID: "correlation-public-query", RequestedBy: "executor-1",
+		PublicQueryVerification: json.RawMessage(`{"verification":{"verification_status":"completed"}}`)}
+	caller := &callerStub{pending: &pendingStub{response: controlResponse(t, executioncontract.TypeResult, response)}}
+	payload := executioncontract.PublicQueryVerificationResult{CommandID: "public-query-result-1",
+		ResultKind: "deep_discovery_public_query", AttemptID: "attempt-1", ExecutorIncarnation: "boot-1"}
+	if err := submitExecutionResult(context.Background(), caller, message.Root(), "control-1", "executor-1",
+		payload.ResultKind, payload, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	response.PublicQueryVerification = nil
+	response.DeepDiscoveryBrowser = json.RawMessage(`{"probe":{"probe_status":"completed"}}`)
+	caller.pending.response = controlResponse(t, executioncontract.TypeResult, response)
+	if err := submitExecutionResult(context.Background(), caller, message.Root(), "control-1", "executor-1",
+		payload.ResultKind, payload, time.Second); err == nil {
+		t.Fatal("public query result accepted a browser acknowledgement")
+	}
+}
+
 func TestMessageExecutionControlRetriesAmbiguousResultResponseWithExactCommand(t *testing.T) {
 	waitErr := errors.New("connection closed after request delivery")
 	first := &pendingStub{err: waitErr}

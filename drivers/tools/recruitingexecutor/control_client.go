@@ -225,7 +225,7 @@ func transitionExecution(ctx context.Context, caller executionCallFace, cause me
 func submitExecutionResult(ctx context.Context, caller executionCallFace, cause message.Cause, controlActor actor.ActorID,
 	executorActorID, resultKind string, payload any, wait time.Duration) error {
 	switch resultKind {
-	case "listing_page", "listing_completion", "diagnostic", "source_validation", "recipe_validation", "recipe_sample_validation", "detail", "backfill", "source_discovery", "company_import_preview_chunk", "company_import_preview_completion", "company_import_apply", "profile_repair_submission", "profile_verification", "deep_discovery_browser":
+	case "listing_page", "listing_completion", "diagnostic", "source_validation", "recipe_validation", "recipe_sample_validation", "detail", "backfill", "source_discovery", "company_import_preview_chunk", "company_import_preview_completion", "company_import_apply", "profile_repair_submission", "profile_verification", "deep_discovery_browser", "deep_discovery_public_query":
 	default:
 		return fmt.Errorf("unsupported execution result kind %q", resultKind)
 	}
@@ -253,9 +253,10 @@ func submitExecutionResult(ctx context.Context, caller executionCallFace, cause 
 		"backfill":          len(decoded.Backfill) != 0,
 		"source_validation": len(decoded.SourceValidation) != 0, "recipe_validation": len(decoded.RecipeValidation) != 0,
 		"source_discovery": len(decoded.SourceDiscovery) != 0, "company_import": len(decoded.CompanyImport) != 0,
-		"profile_repair_submission": len(decoded.ProfileRepair) != 0,
-		"profile_verification":      len(decoded.ProfileVerification) != 0,
-		"deep_discovery_browser":    len(decoded.DeepDiscoveryBrowser) != 0}
+		"profile_repair_submission":   len(decoded.ProfileRepair) != 0,
+		"profile_verification":        len(decoded.ProfileVerification) != 0,
+		"deep_discovery_browser":      len(decoded.DeepDiscoveryBrowser) != 0,
+		"deep_discovery_public_query": len(decoded.PublicQueryVerification) != 0}
 	for kind, exists := range present {
 		if exists != (kind == expectedAcknowledgement) {
 			return errors.New("recruiting control result acknowledgement does not match the submitted kind")

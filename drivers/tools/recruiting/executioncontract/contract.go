@@ -590,21 +590,22 @@ type ProfileVerificationResult struct {
 }
 
 type ResultResponse struct {
-	Status               string          `json:"status"`
-	Reason               string          `json:"reason,omitempty"`
-	ContractVersion      string          `json:"contract_version"`
-	CorrelationID        string          `json:"correlation_id"`
-	RequestedBy          string          `json:"requested_by"`
-	Page                 json.RawMessage `json:"page,omitempty"`
-	Completion           json.RawMessage `json:"completion,omitempty"`
-	Diagnostic           json.RawMessage `json:"diagnostic,omitempty"`
-	SourceValidation     json.RawMessage `json:"source_validation,omitempty"`
-	RecipeValidation     json.RawMessage `json:"recipe_validation,omitempty"`
-	Detail               json.RawMessage `json:"detail,omitempty"`
-	Backfill             json.RawMessage `json:"backfill,omitempty"`
-	CompanyImport        json.RawMessage `json:"company_import,omitempty"`
-	SourceDiscovery      json.RawMessage `json:"source_discovery,omitempty"`
-	ProfileRepair        json.RawMessage `json:"profile_repair,omitempty"`
-	ProfileVerification  json.RawMessage `json:"profile_verification,omitempty"`
-	DeepDiscoveryBrowser json.RawMessage `json:"deep_discovery_browser,omitempty"`
+	Status                  string          `json:"status"`
+	Reason                  string          `json:"reason,omitempty"`
+	ContractVersion         string          `json:"contract_version"`
+	CorrelationID           string          `json:"correlation_id"`
+	RequestedBy             string          `json:"requested_by"`
+	Page                    json.RawMessage `json:"page,omitempty"`
+	Completion              json.RawMessage `json:"completion,omitempty"`
+	Diagnostic              json.RawMessage `json:"diagnostic,omitempty"`
+	SourceValidation        json.RawMessage `json:"source_validation,omitempty"`
+	RecipeValidation        json.RawMessage `json:"recipe_validation,omitempty"`
+	Detail                  json.RawMessage `json:"detail,omitempty"`
+	Backfill                json.RawMessage `json:"backfill,omitempty"`
+	CompanyImport           json.RawMessage `json:"company_import,omitempty"`
+	SourceDiscovery         json.RawMessage `json:"source_discovery,omitempty"`
+	ProfileRepair           json.RawMessage `json:"profile_repair,omitempty"`
+	ProfileVerification     json.RawMessage `json:"profile_verification,omitempty"`
+	DeepDiscoveryBrowser    json.RawMessage `json:"deep_discovery_browser,omitempty"`
+	PublicQueryVerification json.RawMessage `json:"public_query_verification,omitempty"`
 }
