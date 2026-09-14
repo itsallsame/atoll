@@ -876,3 +876,5 @@ Browser Broker 新增严格受限的 `PublicQueryStub`：请求侧必须与前�
 本阶段让 `onboarding.status/advance` 在最新 Mission 已完成且存在 active、healthy、candidate、无 Listing Assignment 的 Source 时，确定性创建下一代“来源初始化证据 Mission”。新 Mission 继承有界搜索轮次并按 Source 数量设置不超过 2000 次的操作上限，不重新搜索或重复物化 URL。自动规划按稳定 Source ID 顺序选择尚未探测的候选 Endpoint，每次只创建一个现有 `deep_discovery_browser` Work；完成后继续复用公开查询 Verification、Artifact Stub 回放和 Mission 内 endpoint + body hash 去重。所有候选 Endpoint 都有 Probe 后，系统停在证据复核/Recipe 推导门，而不是从 URL 或 DOM 猜测 Extraction、pagination 和活动边界。
 
 该实现没有新增 Actor/Worker 类型、数据库迁移或调度器，也没有修改 Atoll core。纯规划合同覆盖“候选 Endpoint 优先于公司官网”和“完成一个 Source 后选择下一个 Source”；普通测试、race、vet 与核心边界检查通过。正式节点的自然语言与真实浏览器执行结果记录于 `evidence/recruiting-source-initialization-evidence-bootstrap-20260914.json`。
+
+首次正式执行还暴露了真实 SPA 的导航计数边界：`lifeattiktok.com` 在相同输入下可能只执行一次文档导航，也可能在约 30 秒后执行第二次同源文档导航。原 Deep Discovery Plan 将上限固定为 1，导致一次“0 个跨源导航、0 次允许写、9 次 POST 均已阻断”的安全会话仍被消费侧判为 `contract_violated`。现为探索会话冻结 3 次同源文档导航预算（声明一次 Follow Link 时为 4），Broker 在请求侧阻断超过预算的文档导航；跨源文档、写请求、下载、弹窗和表单策略不变。真实 Chrome 使用生产 User-Agent、语言、滚动和共享 Attestation 校验复现并通过该页面，避免把扩大导航预算误写成放宽效果策略。

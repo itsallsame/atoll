@@ -41,10 +41,14 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 	if probe.ScrollRepeats > 0 {
 		actions = append(actions, recipeabi.BrowserAction{Kind: recipeabi.BrowserActionScrollPage, MaxRepeats: probe.ScrollRepeats})
 	}
-	maxNavigations := 1
+	// Recruitment SPAs may perform a bounded same-origin document transition
+	// while resolving locale or application state. Reserve two such transitions
+	// in addition to the requested entry navigation; cross-origin documents and
+	// all browser-side writes remain blocked by the Broker.
+	maxNavigations := 3
 	if probe.FollowLinkSelector != "" {
 		actions = append(actions, recipeabi.BrowserAction{Kind: recipeabi.BrowserActionFollowLink, Selector: probe.FollowLinkSelector})
-		maxNavigations = 2
+		maxNavigations = 4
 	}
 	plan := recipeabi.BrowserPlan{Version: recipeabi.BrowserPlanVersion, Actions: actions, MaxNavigations: maxNavigations, MaxDOMBytes: options.Artifact.MaxBytes}
 	if err := plan.Validate(); err != nil {

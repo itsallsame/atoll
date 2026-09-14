@@ -97,6 +97,9 @@ func TestExecuteDeepDiscoveryBrowserUsesWorkLifecycleAndSubmitsEvidence(t *testi
 	if broker.request.AllowedMethods[0] != "GET" || !broker.request.SameOriginDocs || !broker.request.BlockDownloads || !broker.request.BlockPopups {
 		t.Fatalf("unsafe browser request=%+v", broker.request)
 	}
+	if broker.request.Plan.MaxNavigations != 3 {
+		t.Fatalf("Deep Discovery did not reserve the bounded same-origin SPA navigation budget: %+v", broker.request.Plan)
+	}
 	if len(broker.request.PublicQueryStubs) != 1 || string(broker.request.PublicQueryStubs[0].Body) != string(stubBody) ||
 		broker.request.PublicQueryStubs[0].ContentHash != stubHash {
 		t.Fatalf("verified Artifact was not loaded into the local Browser Stub: %+v", broker.request.PublicQueryStubs)

@@ -58,6 +58,7 @@ func policyFailure(cause error) error {
 type policyState struct {
 	mu                   sync.Mutex
 	initialOrigin        string
+	maxNavigations       int
 	methods              map[string]struct{}
 	blockedMethods       map[string]struct{}
 	documentNavigations  int
@@ -218,7 +219,8 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	tabCtx, cancelTab := chromedp.NewContext(allocatorCtx)
 	defer cancelTab()
 
-	state := &policyState{initialOrigin: origin(endpoint), methods: map[string]struct{}{}, blockedMethods: map[string]struct{}{},
+	state := &policyState{initialOrigin: origin(endpoint), maxNavigations: request.Plan.MaxNavigations,
+		methods: map[string]struct{}{}, blockedMethods: map[string]struct{}{},
 		publicQueries: map[string]recipeabi.PublicQueryObservation{}, publicQueryStubs: stubs,
 		usedPublicQueryStubs: map[string]struct{}{}}
 	requestTasks := newRequestTracker()
@@ -464,7 +466,10 @@ func (s *policyState) inspectRequest(ctx context.Context, runner *Runner, event 
 	if event.ResourceType == network.ResourceTypeDocument {
 		s.mu.Lock()
 		s.documentNavigations++
-		if origin(parsed) != s.initialOrigin {
+		if s.documentNavigations > s.maxNavigations {
+			s.setViolation(errors.New("browser document navigation exceeded its bound"))
+			allowed = false
+		} else if origin(parsed) != s.initialOrigin {
 			s.crossOriginDocuments++
 			s.setViolation(errors.New("browser document navigation crossed origin"))
 			allowed = false

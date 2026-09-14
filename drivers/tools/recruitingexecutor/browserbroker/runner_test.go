@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/fetch"
+	"github.com/chromedp/cdproto/network"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/browserdriver"
 )
 
@@ -231,6 +233,25 @@ func TestRunnerBlocksCrossOriginDocumentBeforeItReachesOrigin(t *testing.T) {
 	}
 }
 
+func TestPolicyStateBlocksDocumentNavigationAbovePlanBound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	runner := &Runner{allowPrivate: true}
+	state := &policyState{initialOrigin: server.URL, maxNavigations: 1,
+		methods: map[string]struct{}{}, blockedMethods: map[string]struct{}{}}
+	event := &fetch.EventRequestPaused{Request: &network.Request{URL: server.URL, Method: http.MethodGet},
+		ResourceType: network.ResourceTypeDocument}
+	if decision := state.inspectRequest(context.Background(), runner, event); !decision.allow {
+		t.Fatal("entry document navigation was blocked")
+	}
+	if decision := state.inspectRequest(context.Background(), runner, event); decision.allow {
+		t.Fatal("document navigation above the immutable plan bound was allowed")
+	}
+	if state.firstViolation == nil || state.documentNavigations != 2 {
+		t.Fatalf("navigation overflow was not attested: count=%d violation=%v", state.documentNavigations, state.firstViolation)
+	}
+}
+
 func TestRunnerEnforcesRobotsBeforeOpeningPage(t *testing.T) {
 	var pageReads atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -359,10 +380,12 @@ func TestRunnerReadsOptInPublicWebsiteInRealChrome(t *testing.T) {
 	if endpoint == "" {
 		t.Skip("set ATOLL_RECRUITING_LIVE_BROWSER_URL to run the public-site Browser Broker test")
 	}
-	plan := browserdriver.Plan{Version: browserdriver.PlanVersion, MaxNavigations: 1, MaxDOMBytes: 1 << 20}
+	plan := browserdriver.Plan{Version: browserdriver.PlanVersion, MaxNavigations: 1, MaxDOMBytes: 1 << 20,
+		Actions: []browserdriver.Action{{Kind: browserdriver.ActionScrollPage, MaxRepeats: 1}}}
 	planHash, _ := plan.ContentHash()
-	request := browserdriver.SessionRequest{EndpointURL: endpoint, UserAgent: "Atoll-Recruiting-Browser-Live-Test/1",
-		Plan: plan, PlanHash: planHash, AttemptID: "attempt-browser-live-1", TimeoutMS: 30_000,
+	request := browserdriver.SessionRequest{EndpointURL: endpoint, UserAgent: "Atoll-Recruiting-Deep-Discovery/1",
+		AcceptLanguage: "zh-CN,zh;q=0.9,en;q=0.8", Plan: plan, PlanHash: planHash,
+		AttemptID: "attempt-browser-live-1", TimeoutMS: 60_000,
 		Policy:         browserdriver.PolicyEvidence{TermsPolicyVersion: 1, TermsReviewedAt: "2026-09-11T00:00:00Z"},
 		AllowedMethods: []string{http.MethodGet, http.MethodHead, http.MethodOptions}, SameOriginDocs: true,
 		BlockDownloads: true, BlockPopups: true}
@@ -374,6 +397,10 @@ func TestRunnerReadsOptInPublicWebsiteInRealChrome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := result.Attestation.Validate(request); err != nil {
+		t.Fatalf("public-site attestation did not satisfy the shared contract: %v: %+v", err, result.Attestation)
+	}
+	t.Logf("attestation=%+v final_url=%s", result.Attestation, result.FinalURL)
 	if len(result.DOM) == 0 || !result.Attestation.PublicEndpoint || !result.Attestation.RobotsAllowed ||
 		result.Attestation.DocumentNavigations != 1 {
 		t.Fatalf("public-site result did not satisfy Broker contract: %+v", result)

@@ -6,7 +6,9 @@
     "entry": "authenticated agent.ask using only the company name and business intent",
     "company_name": "字节跳动",
     "pre_change_result": "five candidate Sources existed, but the latest completed Mission had no Source-bound browser evidence and the journey stopped before Recipe preparation",
-    "post_change_result": "pending production deployment and live execution"
+    "first_post_change_result": "generation 3 and the first Source browser Work were created automatically; execution stopped at repair because the real SPA performed two same-origin document navigations against a frozen limit of one",
+    "root_cause_evidence": "attestation recorded 2 document navigations, 0 cross-origin documents, 0 allowed writes, 9 blocked POST requests, 0 forms, 0 downloads, and 0 popups",
+    "post_navigation_fix_result": "pending production deployment, repair recovery, and live re-execution"
   },
   "design": {
     "new_actor_types": 0,
@@ -15,13 +17,17 @@
     "atoll_core_modified": false,
     "mutation_steps_per_advance": 1,
     "source_order": "stable source_id order",
+    "deep_discovery_same_origin_navigation_limit": 3,
+    "follow_link_navigation_limit": 4,
+    "navigation_above_frozen_limit_blocked_by_broker": true,
     "recipe_inference_without_evidence": false
   },
   "tests": [
     "go test ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/...",
     "go test -race ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/...",
     "go vet ./drivers/tools/recruiting/... ./drivers/tools/recruitingexecutor/...",
-    "make recruiting-boundary-check"
+    "make recruiting-boundary-check",
+    "ATOLL_RECRUITING_LIVE_BROWSER_URL=https://lifeattiktok.com/search?language=en go test -run TestRunnerReadsOptInPublicWebsiteInRealChrome -count=2 -v ./drivers/tools/recruitingexecutor/browserbroker"
   ],
   "remaining_boundary": "derive and validate Listing Recipe behavior from collected page/network evidence, then publish each Source and run its baseline"
 }
