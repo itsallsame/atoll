@@ -324,6 +324,7 @@ WHERE artifact_id IN (?,?) AND rejected=TRUE`, lateArtifact.ArtifactID, lateTrac
 		AttemptID: verificationOffer.Attempt.AttemptID, ExecutorActorID: "tool:http:1", ExecutorIncarnation: "boot-http-1",
 		Artifact: verifiedArtifact, StatusCode: 200, ContentType: "application/json; charset=utf-8",
 		ContentHash: verifiedHash, RequestEndpointURL: queryEvidence.EndpointURL, RequestBodyHash: queryEvidence.BodyHash,
+		ResponsePreview: json.RawMessage(`{"data":{"list":[{"jobId":"1"}]}}`), ResponsePreviewTruncated: false,
 		ObservedAt: now.Add(10 * time.Second)})
 	if err != nil || verifiedOutcome.Verification.Status != model.DeepDiscoveryPublicQueryCompleted ||
 		verifiedOutcome.Work.Status != model.WorkCompleted {

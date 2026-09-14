@@ -1,18 +1,15 @@
 package recruiting
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 	"github.com/wanpengxie/atoll/lib/actorbase"
-	"github.com/wanpengxie/atoll/protocol/resource"
 )
 
 type entityGetPayload struct {
@@ -234,8 +231,6 @@ func handleDeepDiscoveryPublicQueryGetQuery(sys actorbase.Sys, repository *store
 		"work": work, "next_action": nextAction})
 }
 
-const maxPublicQueryInspectBytes = 2 << 20
-
 func handleDeepDiscoveryPublicQueryInspectQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
 	var payload entityGetPayload
 	if !decode(sys, msg, &payload) {
@@ -253,82 +248,19 @@ func handleDeepDiscoveryPublicQueryInspectQuery(sys actorbase.Sys, repository *s
 		_, _ = sys.Fail(msg, ErrorQualityRejected, "inspection requires one completed successful public-query JSON response Artifact")
 		return
 	}
-	outcome, readErr := sys.Resource().Read(resource.ResourceID(verification.Artifact.ObjectRef))
-	if readErr != nil || !outcome.Accepted() || !outcome.Found {
-		_, _ = sys.Fail(msg, ErrorQualityRejected, "verified public-query response Artifact is not readable")
+	if len(verification.ResponsePreview) == 0 || !json.Valid(verification.ResponsePreview) {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, "verified public-query response predates persisted bounded inspection evidence")
 		return
 	}
-	if len(outcome.Value) == 0 || len(outcome.Value) > maxPublicQueryInspectBytes {
-		_, _ = sys.Fail(msg, ErrorQualityRejected, "verified public-query response exceeds the bounded inspection size")
-		return
-	}
-	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(outcome.Value))
-	if digest != verification.Artifact.ContentHash {
-		_, _ = sys.Fail(msg, ErrorQualityRejected, "verified public-query response content hash changed")
-		return
-	}
-	var decoded any
-	if err := json.Unmarshal(outcome.Value, &decoded); err != nil {
-		_, _ = sys.Fail(msg, ErrorQualityRejected, "verified public-query response is not valid JSON")
-		return
-	}
-	budget := 512
-	truncated := false
-	preview := boundedJSONPreview(decoded, 0, &budget, &truncated)
 	_, _ = sys.Reply(msg, map[string]any{
 		"contract_version": ContractVersion,
 		"verification_id":  verification.VerificationID,
 		"endpoint_url":     verification.Request.EndpointURL,
 		"artifact_id":      verification.Artifact.ArtifactID,
 		"content_hash":     verification.Artifact.ContentHash,
-		"byte_size":        len(outcome.Value),
-		"response_preview": preview,
-		"truncated":        truncated,
+		"response_preview": verification.ResponsePreview,
+		"truncated":        verification.ResponsePreviewTruncated,
 	})
-}
-
-func boundedJSONPreview(value any, depth int, budget *int, truncated *bool) any {
-	if *budget <= 0 || depth > 10 {
-		*truncated = true
-		return "<truncated>"
-	}
-	*budget = *budget - 1
-	switch typed := value.(type) {
-	case map[string]any:
-		keys := make([]string, 0, len(typed))
-		for key := range typed {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		if len(keys) > 64 {
-			keys = keys[:64]
-			*truncated = true
-		}
-		result := make(map[string]any, len(keys))
-		for _, key := range keys {
-			result[key] = boundedJSONPreview(typed[key], depth+1, budget, truncated)
-		}
-		return result
-	case []any:
-		limit := len(typed)
-		if limit > 5 {
-			limit = 5
-			*truncated = true
-		}
-		result := make([]any, limit)
-		for index := 0; index < limit; index++ {
-			result[index] = boundedJSONPreview(typed[index], depth+1, budget, truncated)
-		}
-		return result
-	case string:
-		if len(typed) > 512 {
-			*truncated = true
-			return typed[:512]
-		}
-		return typed
-	default:
-		return typed
-	}
 }
 
 func handleDeepDiscoveryBrowserGetQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

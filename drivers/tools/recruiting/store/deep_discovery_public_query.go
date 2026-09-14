@@ -181,18 +181,20 @@ func loadVerifiedPublicQueryStubRefsTx(ctx context.Context, tx *sql.Tx,
 }
 
 type PublicQueryVerificationResult struct {
-	CommandID           string
-	RequestHash         string
-	AttemptID           string
-	ExecutorActorID     string
-	ExecutorIncarnation string
-	Artifact            model.ArtifactMetadata
-	StatusCode          int
-	ContentType         string
-	ContentHash         string
-	RequestEndpointURL  string
-	RequestBodyHash     string
-	ObservedAt          time.Time
+	CommandID                string
+	RequestHash              string
+	AttemptID                string
+	ExecutorActorID          string
+	ExecutorIncarnation      string
+	Artifact                 model.ArtifactMetadata
+	StatusCode               int
+	ContentType              string
+	ContentHash              string
+	RequestEndpointURL       string
+	RequestBodyHash          string
+	ResponsePreview          json.RawMessage
+	ResponsePreviewTruncated bool
+	ObservedAt               time.Time
 }
 
 func (r *Repository) AcceptPublicQueryVerificationResult(ctx context.Context,
@@ -260,7 +262,8 @@ func (r *Repository) acceptPublicQueryVerificationResultTx(ctx context.Context,
 	if err := canAcceptResultTx(ctx, tx, attempt, work, fence, input.ExecutorActorID, input.ExecutorIncarnation); err != nil {
 		return PublicQueryVerificationResultOutcome{}, fmt.Errorf("%w: %v", ErrResultFenced, err)
 	}
-	next, err := verification.Complete(verification.Version, input.Artifact, input.StatusCode, input.ContentType)
+	next, err := verification.Complete(verification.Version, input.Artifact, input.StatusCode, input.ContentType,
+		input.ResponsePreview, input.ResponsePreviewTruncated)
 	if err != nil {
 		return PublicQueryVerificationResultOutcome{}, err
 	}

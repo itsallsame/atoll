@@ -161,7 +161,8 @@ func TestExecuteOfferVerifiesPublicQueryAndPersistsResponseBeforeSubmitting(t *t
 	}
 	submission, ok := control.submissions[0].(executioncontract.PublicQueryVerificationResult)
 	if !ok || submission.Artifact.Kind != model.ArtifactResponse || submission.ContentHash != run.ContentHash ||
-		submission.Artifact.ObjectRef == "" {
+		submission.Artifact.ObjectRef == "" || !json.Valid(submission.ResponsePreview) ||
+		!strings.Contains(string(submission.ResponsePreview), `"code":0`) {
 		t.Fatalf("public query submission=%+v", control.submissions[0])
 	}
 }

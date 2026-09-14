@@ -40,17 +40,19 @@ const (
 // an independently fetched response Artifact. It is immutable after terminal
 // completion and therefore safe to reference from a later Browser Probe.
 type DeepDiscoveryPublicQueryVerification struct {
-	VerificationID string                         `json:"verification_id"`
-	MissionID      string                         `json:"mission_id"`
-	MissionVersion uint64                         `json:"mission_version"`
-	ProbeID        string                         `json:"probe_id"`
-	WorkID         string                         `json:"work_id"`
-	Request        PublicQueryRequestEvidence     `json:"request"`
-	Status         DeepDiscoveryPublicQueryStatus `json:"status"`
-	Artifact       *ArtifactMetadata              `json:"artifact,omitempty"`
-	StatusCode     int                            `json:"status_code,omitempty"`
-	ContentType    string                         `json:"content_type,omitempty"`
-	Version        uint64                         `json:"version"`
+	VerificationID           string                         `json:"verification_id"`
+	MissionID                string                         `json:"mission_id"`
+	MissionVersion           uint64                         `json:"mission_version"`
+	ProbeID                  string                         `json:"probe_id"`
+	WorkID                   string                         `json:"work_id"`
+	Request                  PublicQueryRequestEvidence     `json:"request"`
+	Status                   DeepDiscoveryPublicQueryStatus `json:"status"`
+	Artifact                 *ArtifactMetadata              `json:"artifact,omitempty"`
+	StatusCode               int                            `json:"status_code,omitempty"`
+	ContentType              string                         `json:"content_type,omitempty"`
+	ResponsePreview          json.RawMessage                `json:"response_preview,omitempty"`
+	ResponsePreviewTruncated bool                           `json:"response_preview_truncated,omitempty"`
+	Version                  uint64                         `json:"version"`
 }
 
 func NewDeepDiscoveryPublicQueryVerification(id, missionID, probeID, workID string, missionVersion uint64,
@@ -68,17 +70,20 @@ func NewDeepDiscoveryPublicQueryVerification(id, missionID, probeID, workID stri
 }
 
 func (v DeepDiscoveryPublicQueryVerification) Complete(expected uint64, artifact ArtifactMetadata,
-	statusCode int, contentType string) (DeepDiscoveryPublicQueryVerification, error) {
+	statusCode int, contentType string, responsePreview json.RawMessage, previewTruncated bool) (DeepDiscoveryPublicQueryVerification, error) {
 	mediaType, _, mediaErr := mime.ParseMediaType(strings.TrimSpace(contentType))
 	if expected != v.Version || v.Status != DeepDiscoveryPublicQueryQueued || artifact.ArtifactID == "" ||
 		artifact.WorkID != v.WorkID || artifact.Kind != ArtifactResponse || statusCode < 200 || statusCode > 299 ||
-		mediaErr != nil || mediaType != "application/json" {
+		mediaErr != nil || mediaType != "application/json" || len(responsePreview) == 0 ||
+		len(responsePreview) > 256*1024 || !json.Valid(responsePreview) {
 		return DeepDiscoveryPublicQueryVerification{}, fmt.Errorf("queued public query verification requires one bound successful JSON response Artifact")
 	}
 	v.Status = DeepDiscoveryPublicQueryCompleted
 	v.Artifact = &artifact
 	v.StatusCode = statusCode
 	v.ContentType = strings.TrimSpace(contentType)
+	v.ResponsePreview = append(json.RawMessage(nil), responsePreview...)
+	v.ResponsePreviewTruncated = previewTruncated
 	v.Version++
 	return v, nil
 }

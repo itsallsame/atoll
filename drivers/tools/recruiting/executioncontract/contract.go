@@ -355,16 +355,18 @@ type DeepDiscoveryBrowserResult struct {
 }
 
 type PublicQueryVerificationResult struct {
-	CommandID           string                 `json:"command_id"`
-	ResultKind          string                 `json:"result_kind"`
-	AttemptID           string                 `json:"attempt_id"`
-	ExecutorIncarnation string                 `json:"executor_incarnation"`
-	Artifact            model.ArtifactMetadata `json:"artifact"`
-	StatusCode          int                    `json:"status_code"`
-	ContentType         string                 `json:"content_type"`
-	ContentHash         string                 `json:"content_hash"`
-	RequestEndpointURL  string                 `json:"request_endpoint_url"`
-	RequestBodyHash     string                 `json:"request_body_hash"`
+	CommandID                string                 `json:"command_id"`
+	ResultKind               string                 `json:"result_kind"`
+	AttemptID                string                 `json:"attempt_id"`
+	ExecutorIncarnation      string                 `json:"executor_incarnation"`
+	Artifact                 model.ArtifactMetadata `json:"artifact"`
+	StatusCode               int                    `json:"status_code"`
+	ContentType              string                 `json:"content_type"`
+	ContentHash              string                 `json:"content_hash"`
+	RequestEndpointURL       string                 `json:"request_endpoint_url"`
+	RequestBodyHash          string                 `json:"request_body_hash"`
+	ResponsePreview          json.RawMessage        `json:"response_preview"`
+	ResponsePreviewTruncated bool                   `json:"response_preview_truncated,omitempty"`
 }
 
 // CompanyImportApplyItem is a bounded, immutable slice of the confirmed

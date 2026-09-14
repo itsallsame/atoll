@@ -126,7 +126,8 @@ func handlePublicQueryVerificationResult(sys actorbase.Sys, repository *store.Re
 		ExecutorActorID: string(msg.Sender.ID), ExecutorIncarnation: payload.ExecutorIncarnation,
 		Artifact: payload.Artifact, StatusCode: payload.StatusCode, ContentType: payload.ContentType,
 		ContentHash: payload.ContentHash, RequestEndpointURL: payload.RequestEndpointURL,
-		RequestBodyHash: payload.RequestBodyHash, ObservedAt: time.UnixMilli(msg.TS).UTC()})
+		RequestBodyHash: payload.RequestBodyHash, ResponsePreview: payload.ResponsePreview,
+		ResponsePreviewTruncated: payload.ResponsePreviewTruncated, ObservedAt: time.UnixMilli(msg.TS).UTC()})
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return

@@ -58,11 +58,16 @@ func executePublicQueryVerification(ctx context.Context, control executionContro
 	if err != nil {
 		return err
 	}
+	preview, previewTruncated, err := recipeabi.BuildJSONPreview(result.Body)
+	if err != nil {
+		return fmt.Errorf("build public query response preview: %w", err)
+	}
 	submission := executioncontract.PublicQueryVerificationResult{CommandID: "deep-discovery-public-query-result-" + offer.Attempt.AttemptID,
 		ResultKind: "deep_discovery_public_query", AttemptID: offer.Attempt.AttemptID,
 		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Artifact: metadata,
 		StatusCode: result.StatusCode, ContentType: result.ContentType, ContentHash: result.ContentHash,
-		RequestEndpointURL: request.EndpointURL, RequestBodyHash: request.BodyHash}
+		RequestEndpointURL: request.EndpointURL, RequestBodyHash: request.BodyHash,
+		ResponsePreview: preview, ResponsePreviewTruncated: previewTruncated}
 	if err := control.Submit(ctx, submission.ResultKind, submission); err != nil {
 		return fmt.Errorf("submit public query verification result: %w", err)
 	}
