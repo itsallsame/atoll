@@ -1130,6 +1130,11 @@ func loadRecipeSampleValidationOfferFence(ctx context.Context, tx *sql.Tx, run m
 		}
 		expectedRecipe, expectedRun, err := current.NewRun(run.ValidationRunID, run.WorkID,
 			run.ExpectedFieldCount, run.ProposedAssignment.EffectiveAt)
+		// NewRun reconstructs the immutable validation input at its queued
+		// lifecycle point. Accept/start legitimately advance only the stored
+		// run status and version, so compare the reconstructed business fence
+		// at the lifecycle point currently being checked.
+		expectedRun.Status, expectedRun.Version = run.Status, run.Version
 		if err != nil || expectedRecipe != current.Recipe || !reflect.DeepEqual(expectedRun, run) {
 			return model.AttemptFence{}, fmt.Errorf("Detail Recipe validation run is fenced by changed candidate or sample Job")
 		}
