@@ -262,7 +262,7 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 		}
 	})
 
-	preventEffects := `(()=>{globalThis.__atollBlockedDownloads=0;globalThis.__atollBlockedPopups=0;const stop=e=>{e.preventDefault();e.stopImmediatePropagation()};document.addEventListener('submit',stop,true);document.addEventListener('click',e=>{const a=e.target&&e.target.closest&&e.target.closest('a[download]');if(a){globalThis.__atollBlockedDownloads++;stop(e)}},true);window.open=()=>{globalThis.__atollBlockedPopups++;return null}})()`
+	preventEffects := `(()=>{globalThis.__atollBlockedDownloads=0;globalThis.__atollBlockedPopups=0;globalThis.__atollCaptureJobPopup=false;globalThis.__atollJobPopupTarget="";const stop=e=>{e.preventDefault();e.stopImmediatePropagation()};document.addEventListener('submit',stop,true);document.addEventListener('click',e=>{const a=e.target&&e.target.closest&&e.target.closest('a[download]');if(a){globalThis.__atollBlockedDownloads++;stop(e)}},true);window.open=url=>{if(globalThis.__atollCaptureJobPopup){globalThis.__atollJobPopupTarget=String(url||"");return null}globalThis.__atollBlockedPopups++;return null}})()`
 	setupErr := chromedp.Run(tabCtx,
 		fetch.Enable().WithPatterns([]*fetch.RequestPattern{
 			{URLPattern: "*", RequestStage: fetch.RequestStageRequest},
@@ -420,8 +420,27 @@ func runAction(ctx context.Context, state *policyState, runner *Runner, initial 
 		// Some recruitment sites expose job cards as SPA-controlled divs. The
 		// explicit stable job identity is required before activation; the Broker
 		// still blocks writes, downloads, popups, and cross-origin documents.
-		if err := chromedp.Run(ctx, chromedp.Click(action.Selector, chromedp.ByQuery), chromedp.Sleep(500*time.Millisecond)); err != nil {
+		if err := chromedp.Run(ctx,
+			chromedp.Evaluate(`globalThis.__atollJobPopupTarget="";globalThis.__atollCaptureJobPopup=true`, nil),
+			chromedp.Click(action.Selector, chromedp.ByQuery),
+			chromedp.Evaluate(`globalThis.__atollCaptureJobPopup=false`, nil),
+			chromedp.Sleep(500*time.Millisecond)); err != nil {
 			return err
+		}
+		var popupTarget string
+		if err := chromedp.Run(ctx, chromedp.Evaluate(`globalThis.__atollJobPopupTarget||""`, &popupTarget)); err != nil {
+			return err
+		}
+		if popupTarget != "" {
+			reference, parseErr := url.Parse(popupTarget)
+			if parseErr != nil {
+				return policyFailure(errors.New("identified job element produced an invalid popup target"))
+			}
+			next, publicErr := runner.publicURL(ctx, initial.ResolveReference(reference).String())
+			if publicErr != nil || origin(next) != origin(initial) {
+				return policyFailure(errors.New("identified job element produced a non-public or cross-origin popup target"))
+			}
+			return chromedp.Run(ctx, chromedp.Navigate(next.String()))
 		}
 		var currentURL string
 		if err := chromedp.Run(ctx, chromedp.Location(&currentURL)); err != nil {

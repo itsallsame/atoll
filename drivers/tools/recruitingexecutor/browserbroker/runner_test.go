@@ -64,6 +64,33 @@ func TestRunnerActivatesIdentifiedSPAJobElement(t *testing.T) {
 	}
 }
 
+func TestRunnerConvertsIdentifiedJobPopupToSameTabNavigation(t *testing.T) {
+	chrome := chromeForTest(t)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "text/html")
+		if request.URL.Path == "/jobs/job-42" {
+			_, _ = response.Write([]byte(`<!doctype html><html><body><main class="detail">Engineer detail</main></body></html>`))
+			return
+		}
+		_, _ = response.Write([]byte(`<!doctype html><html><body>
+<div class="job" data-jobunionid="job-42" onclick="window.open('/jobs/job-42?jobUnionId=job-42')">Engineer</div>
+</body></html>`))
+	}))
+	defer server.Close()
+	runner := &Runner{chromePath: chrome, allowPrivate: true}
+	request := browserRequest(server.URL)
+	request.Plan.Actions = []browserdriver.Action{
+		{Kind: browserdriver.ActionWaitSelector, Selector: ".job", TimeoutMS: 5_000},
+		{Kind: browserdriver.ActionFollowLink, Selector: ".job[data-jobunionid]"},
+	}
+	request.PlanHash, _ = request.Plan.ContentHash()
+	result, err := runner.Run(context.Background(), request)
+	if err != nil || result.FinalURL != server.URL+"/jobs/job-42?jobUnionId=job-42" ||
+		result.Attestation.Popups != 0 || !strings.Contains(string(result.DOM), "Engineer detail") {
+		t.Fatalf("identified job popup was not converted safely: result=%+v err=%v", result, err)
+	}
+}
+
 func TestProfileRunnerUsesLocalLeaseAndReturnsSanitizedDOM(t *testing.T) {
 	chrome := chromeForTest(t)
 	var authenticatedReads atomic.Int64
