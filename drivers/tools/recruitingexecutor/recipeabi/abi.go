@@ -335,17 +335,8 @@ func NewPublicQueryObservation(endpointURL, method string, headers map[string]st
 // Canonicalized returns a semantically stable observation. Database JSON
 // columns are allowed to reorder object keys and whitespace, so evidence must
 // be bound to canonical JSON rather than the original byte representation.
-// It also provides a narrow compatibility path for already-attested browser
-// evidence that was persisted with the former raw-byte hash.
 func (o PublicQueryObservation) Canonicalized() (PublicQueryObservation, error) {
 	return o.canonicalized(true)
-}
-
-// CanonicalizedAttestedEvidence normalizes evidence already accepted from an
-// authenticated browser result without asserting that it still satisfies the
-// current execution policy. Callers must use Validate before any execution.
-func (o PublicQueryObservation) CanonicalizedAttestedEvidence() (PublicQueryObservation, error) {
-	return o.canonicalized(false)
 }
 
 func (o PublicQueryObservation) canonicalized(requireReadIntent bool) (PublicQueryObservation, error) {
@@ -443,6 +434,13 @@ func (o PublicQueryObservation) validate(requireReadIntent bool) error {
 	canonicalBody, err := canonicalJSONObject(o.JSONBody)
 	if err != nil {
 		return fmt.Errorf("public-query observation JSON: %w", err)
+	}
+	stableBody, err := canonicalPublicQueryJSONObject(o.JSONBody)
+	if err != nil {
+		return fmt.Errorf("public-query observation JSON: %w", err)
+	}
+	if !bytes.Equal(canonicalBody, stableBody) {
+		return fmt.Errorf("public-query observation must omit browser correlation IDs")
 	}
 	sum := sha256.Sum256(canonicalBody)
 	if o.BodyHash != "sha256:"+hex.EncodeToString(sum[:]) {

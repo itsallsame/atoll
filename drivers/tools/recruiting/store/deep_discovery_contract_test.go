@@ -2,8 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -15,28 +13,6 @@ import (
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
-
-func TestCanonicalizeBrowserResultEvidenceRecoversAttestedLegacyJSONHash(t *testing.T) {
-	legacyBody := json.RawMessage(`{"offset":0,"limit":12,"filters":{"location":[],"category":[]}}`)
-	sum := sha256.Sum256(legacyBody)
-	result := DeepDiscoveryBrowserResult{PublicQueryEvidence: []recipeabi.PublicQueryObservation{{
-		EndpointURL: "https://jobs.example.com/api/search", Method: "POST",
-		Headers:  map[string]string{"Content-Type": "application/json"},
-		JSONBody: legacyBody, BodyHash: "sha256:" + hex.EncodeToString(sum[:]),
-	}}}
-	if err := canonicalizeBrowserResultEvidence(&result); err != nil {
-		t.Fatal(err)
-	}
-	canonical, err := recipeabi.NewPublicQueryObservation("https://jobs.example.com/api/search", "POST",
-		map[string]string{"Content-Type": "application/json"},
-		json.RawMessage(`{"filters":{"category":[],"location":[]},"limit":12,"offset":0}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.PublicQueryEvidence[0].MatchesObservation(canonical) {
-		t.Fatal("legacy database evidence was not normalized to its semantic request")
-	}
-}
 
 func TestDeepDiscoveryRepositoryContract(t *testing.T) {
 	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")

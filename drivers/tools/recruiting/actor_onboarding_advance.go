@@ -108,21 +108,29 @@ func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
 		if fact.Probe.Status != model.DeepDiscoveryProbeCompleted || fact.Result == nil {
 			continue
 		}
-		desired := append([]string(nil), fact.Probe.StubVerificationIDs...)
-		seen := make(map[string]struct{}, len(desired))
-		for _, id := range desired {
-			seen[id] = struct{}{}
+		latest := latestCompletedQueryVerifications(snapshot)
+		desiredByKey := make(map[string]string, len(fact.Probe.StubVerificationIDs))
+		for _, id := range fact.Probe.StubVerificationIDs {
+			if key, found := queryVerificationKeyByID(snapshot, id); found {
+				if replacement, exists := latest[key]; exists {
+					desiredByKey[key] = replacement
+				}
+			}
 		}
 		for _, verificationFact := range snapshot.QueryVerifications {
 			verification := verificationFact.Verification
-			if verification.Status != model.DeepDiscoveryPublicQueryCompleted ||
-				!resultContainsPublicQuery(fact.Result, verification.Request.EndpointURL, verification.Request.BodyHash) {
+			key, valid := canonicalQueryVerificationKey(verification)
+			if verification.Status != model.DeepDiscoveryPublicQueryCompleted || !valid ||
+				!resultContainsPublicQuery(fact.Result, verification) {
 				continue
 			}
-			if _, found := seen[verification.VerificationID]; !found {
-				desired = append(desired, verification.VerificationID)
-				seen[verification.VerificationID] = struct{}{}
+			if replacement, exists := latest[key]; exists {
+				desiredByKey[key] = replacement
 			}
+		}
+		desired := make([]string, 0, len(desiredByKey))
+		for _, id := range desiredByKey {
+			desired = append(desired, id)
 		}
 		sort.Strings(desired)
 		for evidenceIndex := range fact.Result.PublicQueryEvidence {
@@ -143,7 +151,7 @@ func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
 			return onboardingAutomationPlan{Action: onboardingReviewEvidence,
 				Detail: "verified browser Stub chain exceeds its frozen bound of 10 and requires evidence review"}
 		}
-		if len(desired) > len(fact.Probe.StubVerificationIDs) && len(desired) <= 10 &&
+		if !sameStringSet(desired, fact.Probe.StubVerificationIDs) && len(desired) <= 10 &&
 			!hasBrowserProbeWithStubs(snapshot, fact.Probe.URL, desired) {
 			return onboardingAutomationPlan{Action: onboardingReplayVerified, SourceProbe: &fact.Probe,
 				VerificationIDs: desired}
@@ -155,6 +163,22 @@ func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
 	}
 	return onboardingAutomationPlan{Action: onboardingReviewEvidence,
 		Detail: "no further safe network action can be derived automatically"}
+}
+
+func sameStringSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	values := make(map[string]struct{}, len(left))
+	for _, value := range left {
+		values[value] = struct{}{}
+	}
+	for _, value := range right {
+		if _, found := values[value]; !found {
+			return false
+		}
+	}
+	return true
 }
 
 func hasSucceededReplacementBrowserProbe(snapshot store.DeepDiscoveryAutomationSnapshot,
@@ -248,25 +272,62 @@ func probeByID(snapshot store.DeepDiscoveryAutomationSnapshot, id string) *model
 
 func hasQueryVerification(snapshot store.DeepDiscoveryAutomationSnapshot, observation recipeabi.PublicQueryObservation) bool {
 	for _, fact := range snapshot.QueryVerifications {
-		verification := fact.Verification
-		if verification.Request.EndpointURL == observation.EndpointURL &&
-			verification.Request.BodyHash == observation.BodyHash {
+		verificationObservation := publicQueryObservation(fact.Verification)
+		if fact.Verification.Status == model.DeepDiscoveryPublicQueryCompleted &&
+			verificationObservation.MatchesObservation(observation) {
 			return true
 		}
 	}
 	return false
 }
 
-func resultContainsPublicQuery(result *store.DeepDiscoveryBrowserResult, endpointURL, bodyHash string) bool {
+func resultContainsPublicQuery(result *store.DeepDiscoveryBrowserResult,
+	verification model.DeepDiscoveryPublicQueryVerification) bool {
 	if result == nil {
 		return false
 	}
+	verified := publicQueryObservation(verification)
 	for _, observation := range result.PublicQueryEvidence {
-		if observation.EndpointURL == endpointURL && observation.BodyHash == bodyHash {
+		if verified.MatchesObservation(observation) {
 			return true
 		}
 	}
 	return false
+}
+
+func publicQueryObservation(verification model.DeepDiscoveryPublicQueryVerification) recipeabi.PublicQueryObservation {
+	return recipeabi.PublicQueryObservation{EndpointURL: verification.Request.EndpointURL, Method: verification.Request.Method,
+		Headers: verification.Request.Headers, JSONBody: verification.Request.JSONBody, BodyHash: verification.Request.BodyHash}
+}
+
+func canonicalQueryVerificationKey(verification model.DeepDiscoveryPublicQueryVerification) (string, bool) {
+	canonical, err := publicQueryObservation(verification).Canonicalized()
+	if err != nil {
+		return "", false
+	}
+	return canonical.EndpointURL + "\n" + canonical.BodyHash, true
+}
+
+func latestCompletedQueryVerifications(snapshot store.DeepDiscoveryAutomationSnapshot) map[string]string {
+	latest := make(map[string]string)
+	for _, fact := range snapshot.QueryVerifications {
+		if fact.Verification.Status != model.DeepDiscoveryPublicQueryCompleted {
+			continue
+		}
+		if key, valid := canonicalQueryVerificationKey(fact.Verification); valid {
+			latest[key] = fact.Verification.VerificationID
+		}
+	}
+	return latest
+}
+
+func queryVerificationKeyByID(snapshot store.DeepDiscoveryAutomationSnapshot, id string) (string, bool) {
+	for _, fact := range snapshot.QueryVerifications {
+		if fact.Verification.VerificationID == id {
+			return canonicalQueryVerificationKey(fact.Verification)
+		}
+	}
+	return "", false
 }
 
 func hasBrowserProbeWithStubs(snapshot store.DeepDiscoveryAutomationSnapshot, targetURL string, ids []string) bool {

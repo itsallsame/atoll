@@ -1,8 +1,6 @@
 package recipeabi
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"maps"
 	"strings"
@@ -351,30 +349,10 @@ func TestPublicQueryObservationOmitsOnlyKnownCorrelationIDs(t *testing.T) {
 		t.Fatal("stable Recipe request did not match normalized evidence")
 	}
 
-	legacyBody, err := canonicalJSONObject(json.RawMessage(`{"keyword":"","page":{"pageNo":1},"r_query_id":"old"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacySum := sha256.Sum256(legacyBody)
-	legacy := PublicQueryObservation{EndpointURL: "https://jobs.example/api/search", Method: "POST", Headers: headers,
-		JSONBody: legacyBody, BodyHash: "sha256:" + hex.EncodeToString(legacySum[:])}
-	if err := legacy.Validate(); err != nil {
-		t.Fatalf("legacy evidence no longer validates: %v", err)
-	}
-	if !legacy.MatchesObservation(first) {
-		t.Fatal("legacy evidence did not normalize to the stable observation")
-	}
-}
-
-func TestAttestedLegacyEvidenceCanBeReadButNotExecuted(t *testing.T) {
-	legacy := PublicQueryObservation{EndpointURL: "https://mon.example.com/monitor_browser/collect/batch", Method: "POST",
-		Headers: map[string]string{"Content-Type": "application/json"}, JSONBody: json.RawMessage(`{"list":[]}`)}
-	readable, err := legacy.CanonicalizedAttestedEvidence()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if readable.Validate() == nil {
-		t.Fatal("attested non-read evidence became executable")
+	legacy := first
+	legacy.JSONBody = json.RawMessage(`{"keyword":"","page":{"pageNo":1},"r_query_id":"old"}`)
+	if err := legacy.Validate(); err == nil || legacy.MatchesObservation(first) {
+		t.Fatal("legacy correlation-bearing evidence remained executable")
 	}
 }
 

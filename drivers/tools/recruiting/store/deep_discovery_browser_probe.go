@@ -62,6 +62,7 @@ func (r *Repository) ApplyCreateDeepDiscoveryBrowserProbeCommand(ctx context.Con
 	if err != nil || calculated != next {
 		return CommandResult{}, fmt.Errorf("deep discovery browser budget transition does not match locked state")
 	}
+	seenStubRequests := make(map[string]string, len(probe.StubVerificationIDs))
 	for _, verificationID := range probe.StubVerificationIDs {
 		// Completed verification evidence is immutable. The Mission lock fences
 		// this command; taking verification locks here would invert the result
@@ -71,6 +72,18 @@ func (r *Repository) ApplyCreateDeepDiscoveryBrowserProbeCommand(ctx context.Con
 			verification.Status != model.DeepDiscoveryPublicQueryCompleted || verification.Artifact == nil {
 			return CommandResult{}, fmt.Errorf("browser Probe Stub requires a completed public query verification in the same Mission")
 		}
+		canonical, canonicalErr := (recipeabi.PublicQueryObservation{EndpointURL: verification.Request.EndpointURL,
+			Method: verification.Request.Method, Headers: verification.Request.Headers,
+			JSONBody: verification.Request.JSONBody, BodyHash: verification.Request.BodyHash}).Canonicalized()
+		if canonicalErr != nil {
+			return CommandResult{}, fmt.Errorf("browser Probe Stub verification is invalid: %w", canonicalErr)
+		}
+		key := canonical.EndpointURL + "\n" + canonical.BodyHash
+		if previous, duplicate := seenStubRequests[key]; duplicate {
+			return CommandResult{}, fmt.Errorf("browser Probe Stub verifications %q and %q describe the same canonical request",
+				previous, verificationID)
+		}
+		seenStubRequests[key] = verificationID
 	}
 	if err := reserveCommandReceipt(ctx, tx, receipt, at); err != nil {
 		if errors.Is(err, ErrCommandConflict) {
@@ -271,7 +284,7 @@ func (r *Repository) AcceptDeepDiscoveryBrowserResult(ctx context.Context, input
 
 func canonicalizeBrowserResultEvidence(result *DeepDiscoveryBrowserResult) error {
 	for index, observation := range result.PublicQueryEvidence {
-		canonical, err := observation.CanonicalizedAttestedEvidence()
+		canonical, err := observation.Canonicalized()
 		if err != nil {
 			return err
 		}
