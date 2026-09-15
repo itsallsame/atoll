@@ -317,13 +317,45 @@ func (o PublicQueryObservation) MatchesObservation(other PublicQueryObservation)
 	if o.Validate() != nil || other.Validate() != nil {
 		return false
 	}
-	left, leftErr := o.Canonicalized()
-	right, rightErr := other.Canonicalized()
-	if leftErr != nil || rightErr != nil || left.EndpointURL != right.EndpointURL || left.Method != right.Method ||
-		left.BodyHash != right.BodyHash || len(left.Headers) != len(right.Headers) {
-		return false
+	left, leftErr := o.StableIdentityKey()
+	right, rightErr := other.StableIdentityKey()
+	return leftErr == nil && rightErr == nil && left == right
+}
+
+// StableIdentityKey identifies the semantics of a public listing query while
+// retaining the full observed URL for the real verification request. Some
+// sites append a short-lived anti-bot signature on every page load; that value
+// is transport evidence, not a new listing query. The allowlist is deliberately
+// exact so business filters, pagination, and unknown parameters remain bound.
+func (o PublicQueryObservation) StableIdentityKey() (string, error) {
+	canonical, err := o.Canonicalized()
+	if err != nil {
+		return "", err
 	}
-	return equalPublicHeaders(left.Headers, right.Headers)
+	endpoint, err := stablePublicQueryEndpoint(canonical.EndpointURL)
+	if err != nil {
+		return "", err
+	}
+	headers, err := json.Marshal(canonical.Headers)
+	if err != nil {
+		return "", err
+	}
+	return endpoint + "\n" + canonical.Method + "\n" + canonical.BodyHash + "\n" + string(headers), nil
+}
+
+func stablePublicQueryEndpoint(raw string) (string, error) {
+	endpoint, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	query := endpoint.Query()
+	for name := range query {
+		if strings.EqualFold(strings.TrimSpace(name), "mtgsig") {
+			query.Del(name)
+		}
+	}
+	endpoint.RawQuery = query.Encode()
+	return endpoint.String(), nil
 }
 
 func NewPublicQueryObservation(endpointURL, method string, headers map[string]string, body json.RawMessage) (PublicQueryObservation, error) {

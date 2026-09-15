@@ -21,9 +21,10 @@ type onboardingBeginPayload struct {
 }
 
 type onboardingStatusPayload struct {
-	CompanyName string `json:"company_name"`
-	CompanyID   string `json:"company_id,omitempty"`
-	MissionID   string `json:"mission_id,omitempty"`
+	CompanyName            string `json:"company_name"`
+	CompanyID              string `json:"company_id,omitempty"`
+	MissionID              string `json:"mission_id,omitempty"`
+	ExpectedMissionVersion uint64 `json:"expected_mission_version,omitempty"`
 }
 
 type onboardingResponse struct {

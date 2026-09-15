@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/google/uuid"
+
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 	"github.com/wanpengxie/atoll/lib/actorbase"
@@ -36,12 +38,12 @@ func onboardingContinuationRequest(self actor.ActorID, mission model.DeepDiscove
 		return behavior.RequestSpec{}, fmt.Errorf("active source-initialization Mission and actor identity are required")
 	}
 	payload, err := json.Marshal(onboardingStatusPayload{CompanyName: mission.CompanyName, CompanyID: mission.CompanyID,
-		MissionID: mission.MissionID})
+		MissionID: mission.MissionID, ExpectedMissionVersion: mission.Version})
 	if err != nil {
 		return behavior.RequestSpec{}, err
 	}
 	return behavior.RequestSpec{
-		ID:       message.ID("onboarding-continuation-" + stableDigest(fmt.Sprintf("%s|%d", mission.MissionID, mission.Version))),
+		ID:       message.ID("onboarding-continuation-" + stableDigest(fmt.Sprintf("%s|%d|%s", mission.MissionID, mission.Version, uuid.NewString()))),
 		Type:     TypeOnboardingAdvance,
 		Payload:  payload,
 		Audience: message.Audience{self},

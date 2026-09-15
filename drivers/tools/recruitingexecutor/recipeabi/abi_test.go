@@ -314,6 +314,34 @@ func TestPublicQueryObservationUsesCanonicalSemanticJSON(t *testing.T) {
 	}
 }
 
+func TestPublicQueryObservationTreatsMeituanSignatureAsTransportEvidence(t *testing.T) {
+	headers := map[string]string{"Content-Type": "application/json"}
+	first, err := NewPublicQueryObservation(
+		"https://goodjob.meituan.com/api/goodjob/portal/job/list?csecversion=4.3.0&mtgsig=first",
+		"POST", headers, json.RawMessage(`{"page":{"pageNo":1,"pageSize":10}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewPublicQueryObservation(
+		"https://goodjob.meituan.com/api/goodjob/portal/job/list?mtgsig=second&csecversion=4.3.0",
+		"POST", headers, json.RawMessage(`{"page":{"pageSize":10,"pageNo":1}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.EndpointURL == second.EndpointURL || !first.MatchesObservation(second) {
+		t.Fatal("short-lived mtgsig changed stable query identity")
+	}
+	changedFilter, err := NewPublicQueryObservation(
+		"https://goodjob.meituan.com/api/goodjob/portal/job/list?csecversion=4.4.0&mtgsig=third",
+		"POST", headers, json.RawMessage(`{"page":{"pageNo":1,"pageSize":10}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.MatchesObservation(changedFilter) {
+		t.Fatal("non-allowlisted query parameter was ignored")
+	}
+}
+
 func TestPublicQueryObservationOmitsOnlyKnownCorrelationIDs(t *testing.T) {
 	headers := map[string]string{"Content-Type": "application/json"}
 	first, err := NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,

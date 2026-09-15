@@ -28,6 +28,7 @@ const (
 	onboardingResolveIdentity   onboardingAutomationAction = "resolve_official_company_identity"
 	onboardingReviewEvidence    onboardingAutomationAction = "review_and_checkpoint_discovery_evidence"
 	onboardingCompleteEvidence  onboardingAutomationAction = "complete_source_initialization_evidence"
+	onboardingStaleContinuation onboardingAutomationAction = "stale_automatic_continuation"
 )
 
 type onboardingAutomationPlan struct {
@@ -302,14 +303,11 @@ func publicQueryObservation(verification model.DeepDiscoveryPublicQueryVerificat
 
 func canonicalQueryVerificationKey(verification model.DeepDiscoveryPublicQueryVerification) (string, bool) {
 	observation := publicQueryObservation(verification)
-	if err := observation.Validate(); err != nil {
-		return "", false
-	}
-	canonical, err := observation.Canonicalized()
+	key, err := observation.StableIdentityKey()
 	if err != nil {
 		return "", false
 	}
-	return canonical.EndpointURL + "\n" + canonical.BodyHash, true
+	return key, true
 }
 
 func latestCompletedQueryVerifications(snapshot store.DeepDiscoveryAutomationSnapshot) map[string]string {
@@ -411,6 +409,12 @@ func handleOnboardingAdvance(sys actorbase.Sys, cfg Config, repository *store.Re
 			failStoreError(sys, msg, err)
 			return
 		}
+	}
+	if payload.ExpectedMissionVersion != 0 && mission.Version != payload.ExpectedMissionVersion {
+		_, _ = sys.Reply(msg, onboardingAdvanceResponse{ContractVersion: ContractVersion, Status: "not_advanced",
+			Company: company, Mission: mission, Action: onboardingStaleContinuation, NextAction: string(onboardingStaleContinuation),
+			AgentDirective: "This automatic continuation targeted an older Mission version and was safely ignored; do not retry it manually."})
+		return
 	}
 	sources, err := listAllCompanySources(msg, repository, company.CompanyID)
 	if err != nil {

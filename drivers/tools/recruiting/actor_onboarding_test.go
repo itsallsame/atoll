@@ -109,6 +109,35 @@ func TestOnboardingAutomationUsesLatestDuplicateCanonicalVerification(t *testing
 	}
 }
 
+func TestOnboardingAutomationDoesNotLoopOnRotatingMeituanSignature(t *testing.T) {
+	company, _ := model.NewCompany("company-1", "Meituan", "https://www.meituan.com")
+	verified, _ := recipeabi.NewPublicQueryObservation(
+		"https://goodjob.meituan.com/api/goodjob/portal/job/list?csecversion=4.3.0&mtgsig=old",
+		"POST", map[string]string{"Content-Type": "application/json"},
+		json.RawMessage(`{"page":{"pageNo":1,"pageSize":10}}`))
+	observed, _ := recipeabi.NewPublicQueryObservation(
+		"https://goodjob.meituan.com/api/goodjob/portal/job/list?mtgsig=new&csecversion=4.3.0",
+		"POST", map[string]string{"Content-Type": "application/json"},
+		json.RawMessage(`{"page":{"pageSize":10,"pageNo":1}}`))
+	work, _ := model.NewWork("probe-work", "deep_discovery_probe", "probe-1", "deep_discovery_browser", "agent")
+	work.Status, work.Resolution = model.WorkCompleted, model.ResolutionSucceeded
+	probe, _ := model.NewDeepDiscoveryBrowserProbe("probe-1", "mission-1", work.WorkID,
+		"https://goodjob.meituan.com/m/jobs", "", 10, "", 3, "verification-1")
+	probe.Status = model.DeepDiscoveryProbeCompleted
+	verification, _ := model.NewDeepDiscoveryPublicQueryVerification("verification-1", "mission-1", probe.ProbeID,
+		"verification-work", 2, model.PublicQueryRequestEvidence{EndpointURL: verified.EndpointURL,
+			Method: verified.Method, Headers: verified.Headers, JSONBody: verified.JSONBody, BodyHash: verified.BodyHash})
+	verification.Status, verification.Version = model.DeepDiscoveryPublicQueryCompleted, 2
+	snapshot := store.DeepDiscoveryAutomationSnapshot{
+		BrowserProbes: []store.DeepDiscoveryBrowserAutomationFact{{Probe: probe, Work: work,
+			Result: &store.DeepDiscoveryBrowserResult{PublicQueryEvidence: []recipeabi.PublicQueryObservation{observed}}}},
+		QueryVerifications: []store.DeepDiscoveryPublicQueryAutomationFact{{Verification: verification}},
+	}
+	if plan := planOnboardingAutomation(snapshot, company); plan.Action != onboardingReviewEvidence {
+		t.Fatalf("rotating mtgsig caused another verification/replay cycle: %+v", plan)
+	}
+}
+
 func TestOnboardingAutomationSeedsCandidateSourcesBeforeCompanyWebsite(t *testing.T) {
 	company, _ := model.NewCompany("company-1", "Example", "https://example.com")
 	sourceB, _ := model.NewRecruitmentSource("source-b", company.CompanyID, "https://jobs.example.com/b", "social", 1)

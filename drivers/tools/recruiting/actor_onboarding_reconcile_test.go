@@ -29,6 +29,7 @@ func TestAutomaticOnboardingContinuationIsNarrow(t *testing.T) {
 		onboardingValidateRepair,
 		onboardingResolveIdentity,
 		onboardingCompleteEvidence,
+		onboardingStaleContinuation,
 	}
 	for _, action := range blocked {
 		if automaticOnboardingContinuation(action) {
@@ -37,7 +38,7 @@ func TestAutomaticOnboardingContinuationIsNarrow(t *testing.T) {
 	}
 }
 
-func TestOnboardingContinuationRequestIsStableAndMissionScoped(t *testing.T) {
+func TestOnboardingContinuationRequestIsRetryableAndMissionScoped(t *testing.T) {
 	mission := model.DeepDiscoveryMission{
 		MissionID:   "mission-auto-initialization-example",
 		CompanyID:   "company-example",
@@ -54,8 +55,8 @@ func TestOnboardingContinuationRequestIsStableAndMissionScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.ID != second.ID || first.ID == "" {
-		t.Fatalf("same Mission version must produce one stable request ID: %q != %q", first.ID, second.ID)
+	if first.ID == second.ID || first.ID == "" || second.ID == "" {
+		t.Fatalf("recovery attempts need unique request IDs: %q, %q", first.ID, second.ID)
 	}
 	if len(first.Audience) != 1 || first.Audience[0] != actor.ActorID("recruiting-control") {
 		t.Fatalf("continuation must be self-addressed: %#v", first.Audience)
@@ -64,7 +65,8 @@ func TestOnboardingContinuationRequestIsStableAndMissionScoped(t *testing.T) {
 	if err := json.Unmarshal(first.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.MissionID != mission.MissionID || payload.CompanyID != mission.CompanyID {
+	if payload.MissionID != mission.MissionID || payload.CompanyID != mission.CompanyID ||
+		payload.ExpectedMissionVersion != mission.Version {
 		t.Fatalf("continuation lost Mission identity: %#v", payload)
 	}
 	mission.Version++
@@ -74,5 +76,12 @@ func TestOnboardingContinuationRequestIsStableAndMissionScoped(t *testing.T) {
 	}
 	if third.ID == first.ID {
 		t.Fatal("a new Mission version must produce a new continuation request")
+	}
+	var thirdPayload onboardingStatusPayload
+	if err := json.Unmarshal(third.Payload, &thirdPayload); err != nil {
+		t.Fatal(err)
+	}
+	if thirdPayload.ExpectedMissionVersion != mission.Version {
+		t.Fatalf("continuation did not fence Mission version: %#v", thirdPayload)
 	}
 }
