@@ -88,6 +88,11 @@ type outboxReconcileResponse struct {
 	ScopeControlDispatches      int    `json:"scope_control_dispatches"`
 	ScopeControlCompleted       bool   `json:"scope_control_completed"`
 	ScopeControlConflict        bool   `json:"scope_control_conflict"`
+	OnboardingMissionsScanned   int    `json:"onboarding_missions_scanned"`
+	OnboardingContinuations     int    `json:"onboarding_continuations_posted"`
+	OnboardingWaiting           int    `json:"onboarding_waiting"`
+	OnboardingConflicts         int    `json:"onboarding_conflicts"`
+	OnboardingErrors            int    `json:"onboarding_errors"`
 }
 
 type outboxReconcileDuePayload struct {
@@ -246,6 +251,16 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 		response.BackfillID = materializedBackfill.BackfillID
 	}
 	response.BackfillMaterialized, response.BackfillDispatches = materializedBackfill.Queued, materializedBackfill.Dispatches
+	onboarding, err := reconcileOnboardingContinuations(msg.Ctx(), sys, repository, payload.Limit, msg.Cause())
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	response.OnboardingMissionsScanned = onboarding.MissionsScanned
+	response.OnboardingContinuations = onboarding.ContinuationsPosted
+	response.OnboardingWaiting = onboarding.Waiting
+	response.OnboardingConflicts = onboarding.Conflicts
+	response.OnboardingErrors = onboarding.Errors
 	dispatch, err := reconcileExecutionDispatches(msg.Ctx(), sys, repository, payload.Limit, now,
 		time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond)
 	if err != nil {
@@ -399,6 +414,7 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 		_, _ = repository.CancelNextBackfillPage(msg.Ctx(), cfg.BackfillMaterializeLimit, now)
 		_, _ = repository.MaterializeNextBackfillPage(msg.Ctx(), cfg.BackfillMaterializeLimit, now,
 			cfg.executionDispatchTargets())
+		_, _ = reconcileOnboardingContinuations(msg.Ctx(), sys, repository, defaultReconcileLimit, msg.Cause())
 		_, _ = reconcileExecutionDispatches(msg.Ctx(), sys, repository, defaultReconcileLimit, now,
 			time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond)
 	}

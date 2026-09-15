@@ -363,8 +363,10 @@ func handleOnboardingAdvance(sys actorbase.Sys, cfg Config, repository *store.Re
 		return
 	}
 	payload.CompanyName = strings.TrimSpace(payload.CompanyName)
-	if payload.CompanyName == "" || len(payload.CompanyName) > 200 {
-		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "bounded company_name is required")
+	payload.CompanyID, payload.MissionID = strings.TrimSpace(payload.CompanyID), strings.TrimSpace(payload.MissionID)
+	if (payload.CompanyName == "" && payload.MissionID == "") || len(payload.CompanyName) > 200 ||
+		len(payload.CompanyID) > 191 || len(payload.MissionID) > 191 {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "bounded company_name or mission_id is required")
 		return
 	}
 	commandID := "onboarding-advance-" + stableDigest(string(msg.ID))
@@ -375,20 +377,40 @@ func handleOnboardingAdvance(sys actorbase.Sys, cfg Config, repository *store.Re
 		_, _ = sys.Reply(msg, json.RawMessage(replay.Response))
 		return
 	}
-	matches, err := repository.FindCompaniesByExactName(msg.Ctx(), payload.CompanyName, 3)
-	if err != nil {
-		failStoreError(sys, msg, err)
-		return
-	}
-	if len(matches) != 1 {
-		_, _ = sys.Fail(msg, ErrorWaitingHuman, "company name must resolve to exactly one Company")
-		return
-	}
-	company := matches[0]
-	mission, err := repository.GetLatestDeepDiscoveryMissionForCompany(msg.Ctx(), company.CompanyID)
-	if err != nil {
-		failStoreError(sys, msg, err)
-		return
+	var company model.Company
+	var mission model.DeepDiscoveryMission
+	if payload.MissionID != "" {
+		var err error
+		mission, err = repository.GetDeepDiscoveryMission(msg.Ctx(), payload.MissionID)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+		if payload.CompanyID != "" && payload.CompanyID != mission.CompanyID {
+			_, _ = sys.Fail(msg, ErrorPayloadInvalid, "company_id does not own mission_id")
+			return
+		}
+		company, err = repository.GetCompany(msg.Ctx(), mission.CompanyID)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+	} else {
+		matches, err := repository.FindCompaniesByExactName(msg.Ctx(), payload.CompanyName, 3)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
+		if len(matches) != 1 {
+			_, _ = sys.Fail(msg, ErrorWaitingHuman, "company name must resolve to exactly one Company")
+			return
+		}
+		company = matches[0]
+		mission, err = repository.GetLatestDeepDiscoveryMissionForCompany(msg.Ctx(), company.CompanyID)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
 	}
 	sources, err := listAllCompanySources(msg, repository, company.CompanyID)
 	if err != nil {
@@ -433,7 +455,7 @@ func handleOnboardingAdvance(sys actorbase.Sys, cfg Config, repository *store.Re
 		}
 		_, _ = sys.Reply(msg, onboardingAdvanceResponse{ContractVersion: ContractVersion, Status: status,
 			Company: company, Mission: mission, Action: plan.Action, NextAction: string(plan.Action), Detail: plan.Detail,
-			AgentDirective: onboardingAdvanceDirective(plan.Action)})
+			AgentDirective: onboardingAdvanceDirective(plan.Action, mission.IsSourceInitializationEvidence())})
 	}
 }
 
@@ -567,7 +589,7 @@ func handleOnboardingAdvanceVerification(sys actorbase.Sys, cfg Config, reposito
 		CompanyID: company.CompanyID, Capability: "http.fetch", Origin: endpoint.Scheme + "://" + endpoint.Host, NotBefore: at}
 	response := onboardingAdvanceResponse{ContractVersion: ContractVersion, Status: "advanced", Company: company,
 		Mission: next, Action: plan.Action, Work: &work, Verification: &verification,
-		NextAction: string(onboardingAwaitVerification), AgentDirective: onboardingAdvanceDirective(onboardingAwaitVerification)}
+		NextAction: string(onboardingAwaitVerification), AgentDirective: onboardingAdvanceDirective(onboardingAwaitVerification, mission.IsSourceInitializationEvidence())}
 	responseBytes, _ := json.Marshal(response)
 	commandID := "onboarding-advance-" + stableDigest(string(msg.ID))
 	receipt, err := model.NewCommandReceipt(commandID, msg.Type, commandRequestHash(msg), responseBytes)
@@ -642,7 +664,7 @@ func handleOnboardingAdvanceBrowser(sys actorbase.Sys, cfg Config, repository *s
 		CompanyID: company.CompanyID, Capability: "browser.public", Origin: parsed.Scheme + "://" + parsed.Host, NotBefore: at}
 	response := onboardingAdvanceResponse{ContractVersion: ContractVersion, Status: "advanced", Company: company,
 		Mission: next, Action: plan.Action, Work: &work, Probe: &probe, NextAction: string(onboardingAwaitBrowser),
-		AgentDirective: onboardingAdvanceDirective(onboardingAwaitBrowser)}
+		AgentDirective: onboardingAdvanceDirective(onboardingAwaitBrowser, mission.IsSourceInitializationEvidence())}
 	responseBytes, _ := json.Marshal(response)
 	commandID := "onboarding-advance-" + stableDigest(string(msg.ID))
 	receipt, err := model.NewCommandReceipt(commandID, msg.Type, commandRequestHash(msg), responseBytes)
@@ -671,9 +693,12 @@ func handleOnboardingAdvanceBrowser(sys actorbase.Sys, cfg Config, repository *s
 	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
 }
 
-func onboardingAdvanceDirective(action onboardingAutomationAction) string {
+func onboardingAdvanceDirective(action onboardingAutomationAction, automatic bool) string {
 	switch action {
 	case onboardingAwaitBrowser, onboardingAwaitVerification:
+		if automatic {
+			return "The asynchronous Work is queued and the Recruiting state machine will continue from its durable result. Do not poll, create duplicates, or ask the user to advance it."
+		}
 		return "The asynchronous Work is already queued. Do not create duplicates. Poll recruiting.onboarding.status, then call recruiting.onboarding.advance again when it reports an actionable step."
 	case onboardingNeedsAttention:
 		return "Explain the failed discovery Work and ask for repair only if automatic retry is exhausted; do not bypass its evidence fence."

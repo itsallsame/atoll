@@ -29,6 +29,51 @@ type DeepDiscoveryAutomationSnapshot struct {
 	QueryVerifications []DeepDiscoveryPublicQueryAutomationFact
 }
 
+type SourceInitializationMission struct {
+	Mission model.DeepDiscoveryMission
+	Company model.Company
+}
+
+// ListActiveSourceInitializationMissions is the durable recovery view for the
+// onboarding state machine. It deliberately excludes ordinary research and
+// repair Missions: only the bounded source-initialization workflow is safe to
+// advance without a human or Steward decision.
+func (r *Repository) ListActiveSourceInitializationMissions(ctx context.Context, limit int) ([]SourceInitializationMission, error) {
+	if limit < 1 || limit > 500 {
+		return nil, fmt.Errorf("limit must be in [1,500]")
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT m.state_json,c.state_json
+FROM recruiting_deep_discovery_missions m
+JOIN recruiting_companies c ON c.company_id=m.company_id
+WHERE m.mission_status='active'
+  AND (JSON_UNQUOTE(JSON_EXTRACT(m.state_json,'$.purpose'))=?
+       OR (JSON_EXTRACT(m.state_json,'$.purpose') IS NULL
+           AND m.mission_id LIKE 'mission-auto-initialization-%'))
+ORDER BY m.updated_at,m.mission_id LIMIT ?`, model.DeepDiscoveryPurposeSourceInitialization, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]SourceInitializationMission, 0)
+	for rows.Next() {
+		var missionRaw, companyRaw []byte
+		if err := rows.Scan(&missionRaw, &companyRaw); err != nil {
+			return nil, err
+		}
+		var item SourceInitializationMission
+		if err := json.Unmarshal(missionRaw, &item.Mission); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(companyRaw, &item.Company); err != nil {
+			return nil, err
+		}
+		if item.Mission.Status == model.DeepDiscoveryActive && item.Mission.IsSourceInitializationEvidence() {
+			result = append(result, item)
+		}
+	}
+	return result, rows.Err()
+}
+
 func (r *Repository) GetDeepDiscoveryAutomationSnapshot(ctx context.Context,
 	missionID string) (DeepDiscoveryAutomationSnapshot, error) {
 	missionID = strings.TrimSpace(missionID)

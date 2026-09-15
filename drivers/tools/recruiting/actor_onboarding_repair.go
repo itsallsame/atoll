@@ -65,7 +65,7 @@ func handleOnboardingRepairValidate(sys actorbase.Sys, cfg Config, repository *s
 				_, _ = sys.Reply(msg, onboardingAdvanceResponse{ContractVersion: ContractVersion, Status: "waiting",
 					Company: company, Mission: mission, Action: onboardingAwaitBrowser, Work: &candidate.Work,
 					Probe: &candidate.Probe, NextAction: string(onboardingAwaitBrowser),
-					AgentDirective: onboardingAdvanceDirective(onboardingAwaitBrowser)})
+					AgentDirective: onboardingAdvanceDirective(onboardingAwaitBrowser, mission.IsSourceInitializationEvidence())})
 				return
 			}
 			if candidate.Work.Status == model.WorkCompleted && candidate.Work.Resolution == model.ResolutionSucceeded {

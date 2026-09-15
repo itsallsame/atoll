@@ -132,6 +132,7 @@ func handlePublicQueryVerificationResult(sys actorbase.Sys, repository *store.Re
 		failStoreError(sys, msg, err)
 		return
 	}
+	postOnboardingContinuation(msg.Ctx(), sys, repository, outcome.Verification.MissionID, msg.Cause())
 	_, _ = sys.Reply(msg, executionControlResponse{ContractVersion: executioncontract.Version,
 		CorrelationID: string(msg.CorrelationID), RequestedBy: string(msg.Sender.ID),
 		PublicQueryVerification: &outcome})
@@ -160,6 +161,7 @@ func handleDeepDiscoveryBrowserResult(sys actorbase.Sys, repository *store.Repos
 		failStoreError(sys, msg, err)
 		return
 	}
+	postOnboardingContinuation(msg.Ctx(), sys, repository, outcome.Probe.MissionID, msg.Cause())
 	_, _ = sys.Reply(msg, executionControlResponse{ContractVersion: executioncontract.Version,
 		CorrelationID: string(msg.CorrelationID), RequestedBy: string(msg.Sender.ID),
 		DeepDiscoveryBrowser: &outcome})

@@ -1,6 +1,7 @@
 package recruiting
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,8 @@ type onboardingBeginPayload struct {
 
 type onboardingStatusPayload struct {
 	CompanyName string `json:"company_name"`
+	CompanyID   string `json:"company_id,omitempty"`
+	MissionID   string `json:"mission_id,omitempty"`
 }
 
 type onboardingResponse struct {
@@ -268,15 +271,15 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 		}
 		plan := planOnboardingAutomation(snapshot, company, sources...)
 		next = string(plan.Action)
-		directive = onboardingAdvanceDirective(plan.Action)
+		directive = onboardingAdvanceDirective(plan.Action, mission.IsSourceInitializationEvidence())
 		if plan.Action == onboardingReviewEvidence && mission.IsSourceInitializationEvidence() {
 			next = "complete_source_initialization_evidence"
-			directive = "Call recruiting.onboarding.advance with only company_name. It will close this evidence Mission after transactionally proving every candidate Source has a successful real browser Probe; do not create company-discovery checkpoints."
+			directive = "The Recruiting state machine will close this evidence Mission after transactionally proving every candidate Source has a successful real browser Probe; do not create company-discovery checkpoints."
 		}
 		if plan.Action == onboardingCreateSeedBrowser || plan.Action == onboardingVerifyPublicQuery ||
 			plan.Action == onboardingReplayVerified {
 			next = "advance_discovery_automatically"
-			directive = "Call recruiting.onboarding.advance with only company_name. It derives all internal identities from persisted evidence. After the asynchronous Work completes, call onboarding.status and continue without asking the user for IDs."
+			directive = "The Recruiting state machine derives all internal identities from persisted evidence and advances automatically. Report status when asked; do not poll or ask the user for IDs."
 		}
 		if validationWork, repairWorkID, pending := pendingBrowserRepairFinalization(snapshot); pending {
 			next = "finalize_shared_repair"
@@ -492,9 +495,13 @@ func handleOnboardingMaterialize(sys actorbase.Sys, repository *store.Repository
 }
 
 func listAllCompanySources(msg actorbase.Msg, repository *store.Repository, companyID string) ([]model.RecruitmentSource, error) {
+	return listAllCompanySourcesContext(msg.Ctx(), repository, companyID)
+}
+
+func listAllCompanySourcesContext(ctx context.Context, repository *store.Repository, companyID string) ([]model.RecruitmentSource, error) {
 	result, cursor := make([]model.RecruitmentSource, 0), ""
 	for len(result) <= 2000 {
-		page, err := repository.ListSources(msg.Ctx(), companyID, cursor, 500)
+		page, err := repository.ListSources(ctx, companyID, cursor, 500)
 		if err != nil {
 			return nil, err
 		}
