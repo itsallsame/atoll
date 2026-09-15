@@ -412,7 +412,8 @@ func handleDeepDiscoveryCheckpoint(sys actorbase.Sys, repository *store.Reposito
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
 		return
 	}
-	nodes, edges, err = repository.PrepareDeepDiscoveryGraphDelta(msg.Ctx(), payload.Target.ID, nodes, edges)
+	var addedNodes, candidates int
+	nodes, edges, addedNodes, candidates, err = repository.PrepareDeepDiscoveryGraphDelta(msg.Ctx(), payload.Target.ID, nodes, edges)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
@@ -422,13 +423,7 @@ func handleDeepDiscoveryCheckpoint(sys actorbase.Sys, repository *store.Reposito
 		failStoreError(sys, msg, err)
 		return
 	}
-	candidates := 0
-	for _, node := range nodes {
-		if node.Kind == model.EvidenceListURL && node.State == model.EvidenceValidated {
-			candidates++
-		}
-	}
-	next, err := current.Checkpoint(payload.ExpectedVersion, payload.Stage, payload.Coverage, payload.SearchRounds, payload.Operations, len(nodes), len(edges), candidates)
+	next, err := current.Checkpoint(payload.ExpectedVersion, payload.Stage, payload.Coverage, payload.SearchRounds, payload.Operations, addedNodes, len(edges), candidates)
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
@@ -543,6 +538,9 @@ func handleDeepDiscoveryStatus(sys actorbase.Sys, repository *store.Repository, 
 		return
 	}
 	response := map[string]any{"contract_version": ContractVersion, "requested_by": ctx.RequestedBy, "mission": next, "target": Target{Type: "deep_discovery", ID: next.MissionID}, "next_action": deepDiscoveryNextAction(next)}
+	if next.Status == model.DeepDiscoveryDone && !next.IsSourceInitializationEvidence() {
+		response["agent_directive"] = "Continue in this turn by calling recruiting.onboarding.materialize with only company_name; do not stop after discovery completion."
+	}
 	responseBytes, _ := json.Marshal(response)
 	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, requestHash, responseBytes)
 	businessAt := time.UnixMilli(msg.TS).UTC()
@@ -568,7 +566,10 @@ func deepDiscoveryNextAction(m model.DeepDiscoveryMission) string {
 		return "human_review"
 	}
 	if m.Status == model.DeepDiscoveryDone {
-		return "review_validated_candidates"
+		if m.IsSourceInitializationEvidence() {
+			return "initialize_candidate_sources"
+		}
+		return "materialize_validated_urls"
 	}
 	if m.Status == model.DeepDiscoveryCanceled {
 		return "start_new_discovery_generation_if_needed"

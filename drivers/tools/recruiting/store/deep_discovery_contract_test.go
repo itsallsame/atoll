@@ -85,8 +85,8 @@ func TestDeepDiscoveryRepositoryContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	newNodes, newEdges, err := repository.PrepareDeepDiscoveryGraphDelta(ctx, mission.MissionID, []model.DiscoveryEvidenceNode{companyNode, brandNode}, []model.DiscoveryEvidenceEdge{edge})
-	if err != nil || len(newNodes) != 0 || len(newEdges) != 0 {
+	newNodes, newEdges, addedNodes, addedCandidates, err := repository.PrepareDeepDiscoveryGraphDelta(ctx, mission.MissionID, []model.DiscoveryEvidenceNode{companyNode, brandNode}, []model.DiscoveryEvidenceEdge{edge})
+	if err != nil || len(newNodes) != 0 || len(newEdges) != 0 || addedNodes != 0 || addedCandidates != 0 {
 		t.Fatalf("repeated graph reference=%+v/%+v err=%v", newNodes, newEdges, err)
 	}
 
@@ -108,26 +108,44 @@ func TestDeepDiscoveryRepositoryContract(t *testing.T) {
 	}
 	poolNode := evidenceNode(t, model.EvidenceListingPool, "https://jobs.example.com/search", model.EvidenceCandidate, model.SensorNetwork, "https://jobs.example.com/careers", "browser network exposed the pool")
 	poolEdge, _ := model.NewDiscoveryEvidenceEdge(siteNode.NodeID, poolNode.NodeID, "contains_pool", "network observation")
+	listCandidate := evidenceNode(t, model.EvidenceListURL, "https://jobs.example.com/search?sort=updated", model.EvidenceCandidate, model.SensorOfficialSite, "https://jobs.example.com/careers", "official site exposed a candidate job list")
+	listEdge, _ := model.NewDiscoveryEvidenceEdge(poolNode.NodeID, listCandidate.NodeID, "lists_jobs_at", "official navigation")
 	coverage.SitesExplored = true
-	mission, err = repository.CheckpointDeepDiscovery(ctx, mission.MissionID, "deep-checkpoint-4", "job pools detected", mission.Version, model.DeepDiscoveryPoolDetection, coverage, 0, 5, []model.DiscoveryEvidenceNode{poolNode}, []model.DiscoveryEvidenceEdge{poolEdge}, now.Add(4*time.Second))
+	mission, err = repository.CheckpointDeepDiscovery(ctx, mission.MissionID, "deep-checkpoint-4", "job pools detected", mission.Version, model.DeepDiscoveryPoolDetection, coverage, 0, 5, []model.DiscoveryEvidenceNode{poolNode, listCandidate}, []model.DiscoveryEvidenceEdge{poolEdge, listEdge}, now.Add(4*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
 	listNode := evidenceNode(t, model.EvidenceListURL, "https://jobs.example.com/search?sort=updated", model.EvidenceValidated, model.SensorBrowser, "https://jobs.example.com/search?sort=updated", "populated newest-first job list")
-	listEdge, _ := model.NewDiscoveryEvidenceEdge(poolNode.NodeID, listNode.NodeID, "lists_jobs_at", "browser validation")
 	coverage.PoolsDetected = true
-	mission, err = repository.CheckpointDeepDiscovery(ctx, mission.MissionID, "deep-checkpoint-5", "candidate validated", mission.Version, model.DeepDiscoveryCandidateValidation, coverage, 0, 5, []model.DiscoveryEvidenceNode{listNode}, []model.DiscoveryEvidenceEdge{listEdge}, now.Add(5*time.Second))
+	mission, err = repository.CheckpointDeepDiscovery(ctx, mission.MissionID, "deep-checkpoint-5", "candidate validated", mission.Version, model.DeepDiscoveryCandidateValidation, coverage, 0, 5, []model.DiscoveryEvidenceNode{listNode}, nil, now.Add(5*time.Second))
 	if err != nil {
 		t.Fatal(err)
+	}
+	var projectedState string
+	var claimCount int
+	if err := db.QueryRowContext(ctx, `SELECT n.node_state,COUNT(c.claim_revision)
+FROM recruiting_deep_discovery_nodes n JOIN recruiting_deep_discovery_node_claims c
+  ON c.mission_id=n.mission_id AND c.node_id=n.node_id
+WHERE n.mission_id=? AND n.node_id=? GROUP BY n.node_state`, mission.MissionID, listNode.NodeID).Scan(&projectedState, &claimCount); err != nil || projectedState != string(model.EvidenceValidated) || claimCount != 2 {
+		t.Fatalf("candidate promotion projection=%q claims=%d err=%v", projectedState, claimCount, err)
 	}
 	blindspot := evidenceNode(t, model.EvidenceBlindspot, "campus recruitment", model.EvidenceExcluded, model.SensorHuman, "https://example.com/careers", "outside agreed company scope")
+	unresolved := evidenceNode(t, model.EvidenceListURL, "https://jobs.example.com/graduate", model.EvidenceCandidate, model.SensorOfficialSite, "https://jobs.example.com/careers", "official site exposed a second candidate")
 	coverage.CandidatesValidated = true
 	coverage.BlindspotsReviewed = true
-	mission, err = repository.CheckpointDeepDiscovery(ctx, mission.MissionID, "deep-checkpoint-6", "coverage reviewed", mission.Version, model.DeepDiscoveryCoverageReview, coverage, 0, 1, []model.DiscoveryEvidenceNode{blindspot}, nil, now.Add(6*time.Second))
+	mission, err = repository.CheckpointDeepDiscovery(ctx, mission.MissionID, "deep-checkpoint-6", "coverage reviewed", mission.Version, model.DeepDiscoveryCoverageReview, coverage, 0, 1, []model.DiscoveryEvidenceNode{blindspot, unresolved}, nil, now.Add(6*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	mission, err = repository.UpdateDeepDiscoveryStatus(ctx, mission.MissionID, mission.Version, "complete", "", now.Add(7*time.Second))
+	if _, err := repository.UpdateDeepDiscoveryStatus(ctx, mission.MissionID, mission.Version, "complete", "", now.Add(7*time.Second)); err == nil || !strings.Contains(err.Error(), "every list URL candidate") {
+		t.Fatalf("mission completed with unresolved list URL: %v", err)
+	}
+	resolved := evidenceNode(t, model.EvidenceListURL, unresolved.CanonicalValue, model.EvidenceExcluded, model.SensorHuman, unresolved.EvidenceURL, "operator confirmed the second route duplicates the primary pool")
+	mission, err = repository.CheckpointDeepDiscovery(ctx, mission.MissionID, "deep-checkpoint-7", "remaining candidate resolved", mission.Version, model.DeepDiscoveryCoverageReview, coverage, 0, 0, []model.DiscoveryEvidenceNode{resolved}, nil, now.Add(8*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mission, err = repository.UpdateDeepDiscoveryStatus(ctx, mission.MissionID, mission.Version, "complete", "", now.Add(9*time.Second))
 	if err != nil || mission.Status != model.DeepDiscoveryDone {
 		t.Fatalf("completion=%+v err=%v", mission, err)
 	}
@@ -148,7 +166,7 @@ func TestDeepDiscoveryRepositoryContract(t *testing.T) {
 		}
 		cursor = page.NextCursor
 	}
-	if seenNodes != 7 || seenEdges != 5 {
+	if seenNodes != 8 || seenEdges != 5 {
 		t.Fatalf("paged graph nodes=%d edges=%d", seenNodes, seenEdges)
 	}
 	second, _ := model.NewDeepDiscoveryMission("deep-mission-2", company, 2, 5, 250)

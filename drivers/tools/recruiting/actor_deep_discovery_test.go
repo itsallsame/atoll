@@ -38,3 +38,11 @@ func TestDeepDiscoveryCheckpointResolvesReadableGraphRefs(t *testing.T) {
 		t.Fatal("duplicate local refs accepted")
 	}
 }
+
+func TestCompletedCompanyDiscoveryDirectsImmediateMaterialization(t *testing.T) {
+	mission := model.DeepDiscoveryMission{Status: model.DeepDiscoveryDone, Stage: model.DeepDiscoveryCompleted,
+		Purpose: model.DeepDiscoveryPurposeCompanySources}
+	if action := deepDiscoveryNextAction(mission); action != "materialize_validated_urls" {
+		t.Fatalf("completed discovery next action=%q", action)
+	}
+}

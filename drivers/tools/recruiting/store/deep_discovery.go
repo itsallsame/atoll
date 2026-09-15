@@ -115,54 +115,81 @@ func (r *Repository) GetDeepDiscoveryMission(ctx context.Context, missionID stri
 	return getDeepDiscoveryMissionWith(ctx, r.db, strings.TrimSpace(missionID), false)
 }
 
-// PrepareDeepDiscoveryGraphDelta removes evidence identities already present
-// in the Mission. Agents commonly cite a known brand or site again while
-// advancing stages; that is a reference, not a second graph node.
+// PrepareDeepDiscoveryGraphDelta removes unchanged evidence identities and
+// retains monotonic candidate resolutions. The node row is the current graph
+// projection; checkpoint claims preserve every accepted state transition.
 func (r *Repository) PrepareDeepDiscoveryGraphDelta(ctx context.Context, missionID string,
-	nodes []model.DiscoveryEvidenceNode, edges []model.DiscoveryEvidenceEdge) ([]model.DiscoveryEvidenceNode, []model.DiscoveryEvidenceEdge, error) {
+	nodes []model.DiscoveryEvidenceNode, edges []model.DiscoveryEvidenceEdge) ([]model.DiscoveryEvidenceNode, []model.DiscoveryEvidenceEdge, int, int, error) {
 	missionID = strings.TrimSpace(missionID)
 	if missionID == "" {
-		return nil, nil, fmt.Errorf("mission ID is required")
+		return nil, nil, 0, 0, fmt.Errorf("mission ID is required")
 	}
-	newNodes := make([]model.DiscoveryEvidenceNode, 0, len(nodes))
+	return prepareDeepDiscoveryGraphDeltaWith(ctx, r.db, missionID, nodes, edges)
+}
+
+type deepDiscoveryRowQuerier interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func prepareDeepDiscoveryGraphDeltaWith(ctx context.Context, query deepDiscoveryRowQuerier, missionID string,
+	nodes []model.DiscoveryEvidenceNode, edges []model.DiscoveryEvidenceEdge) ([]model.DiscoveryEvidenceNode, []model.DiscoveryEvidenceEdge, int, int, error) {
+	claims := make([]model.DiscoveryEvidenceNode, 0, len(nodes))
+	addedNodes, validatedCandidates := 0, 0
 	for _, node := range nodes {
 		var state []byte
-		err := r.db.QueryRowContext(ctx, `SELECT state_json FROM recruiting_deep_discovery_nodes WHERE mission_id=? AND node_id=?`, missionID, node.NodeID).Scan(&state)
+		err := query.QueryRowContext(ctx, `SELECT state_json FROM recruiting_deep_discovery_nodes WHERE mission_id=? AND node_id=?`, missionID, node.NodeID).Scan(&state)
 		if errors.Is(err, sql.ErrNoRows) {
-			newNodes = append(newNodes, node)
+			claims = append(claims, node)
+			addedNodes++
+			if node.Kind == model.EvidenceListURL && node.State == model.EvidenceValidated {
+				validatedCandidates++
+			}
 			continue
 		}
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, 0, 0, err
 		}
 		var existing model.DiscoveryEvidenceNode
 		if err := json.Unmarshal(state, &existing); err != nil {
-			return nil, nil, err
+			return nil, nil, 0, 0, err
 		}
 		if existing.Kind != node.Kind || existing.CanonicalValue != node.CanonicalValue {
-			return nil, nil, fmt.Errorf("deep discovery node identity collision")
+			return nil, nil, 0, 0, fmt.Errorf("deep discovery node identity collision")
+		}
+		if existing.State == node.State {
+			continue
+		}
+		if existing.State != model.EvidenceCandidate || node.State == model.EvidenceCandidate {
+			return nil, nil, 0, 0, fmt.Errorf("deep discovery evidence may only resolve a candidate to a terminal state")
+		}
+		if node.State != model.EvidenceValidated && node.State != model.EvidenceRejected && node.State != model.EvidenceExcluded {
+			return nil, nil, 0, 0, fmt.Errorf("deep discovery candidate resolution state is invalid")
+		}
+		claims = append(claims, node)
+		if node.Kind == model.EvidenceListURL && node.State == model.EvidenceValidated {
+			validatedCandidates++
 		}
 	}
 	newEdges := make([]model.DiscoveryEvidenceEdge, 0, len(edges))
 	for _, edge := range edges {
 		var state []byte
-		err := r.db.QueryRowContext(ctx, `SELECT state_json FROM recruiting_deep_discovery_edges WHERE mission_id=? AND edge_id=?`, missionID, edge.EdgeID).Scan(&state)
+		err := query.QueryRowContext(ctx, `SELECT state_json FROM recruiting_deep_discovery_edges WHERE mission_id=? AND edge_id=?`, missionID, edge.EdgeID).Scan(&state)
 		if errors.Is(err, sql.ErrNoRows) {
 			newEdges = append(newEdges, edge)
 			continue
 		}
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, 0, 0, err
 		}
 		var existing model.DiscoveryEvidenceEdge
 		if err := json.Unmarshal(state, &existing); err != nil {
-			return nil, nil, err
+			return nil, nil, 0, 0, err
 		}
 		if existing.FromNodeID != edge.FromNodeID || existing.ToNodeID != edge.ToNodeID || existing.Relation != edge.Relation {
-			return nil, nil, fmt.Errorf("deep discovery edge identity collision")
+			return nil, nil, 0, 0, fmt.Errorf("deep discovery edge identity collision")
 		}
 	}
-	return newNodes, newEdges, nil
+	return claims, newEdges, addedNodes, validatedCandidates, nil
 }
 
 func getDeepDiscoveryMissionWith(ctx context.Context, query interface {
@@ -229,7 +256,6 @@ func (r *Repository) checkpointDeepDiscovery(ctx context.Context, missionID, com
 		}
 	}
 	nodeIDs := make(map[string]struct{}, len(nodes))
-	candidateCount := 0
 	for _, node := range nodes {
 		validated, err := model.NewDiscoveryEvidenceNodeWithType(node.Kind, node.CanonicalValue, node.Label, node.State, node.Sensor, node.EvidenceURL, node.EvidenceArtifactID, node.Basis, node.RecruitmentType, node.SpecialProgram)
 		if err != nil || validated != node {
@@ -239,9 +265,6 @@ func (r *Repository) checkpointDeepDiscovery(ctx context.Context, missionID, com
 			return model.DeepDiscoveryMission{}, CommandResult{}, fmt.Errorf("duplicate deep discovery node")
 		}
 		nodeIDs[node.NodeID] = struct{}{}
-		if node.Kind == model.EvidenceListURL && node.State == model.EvidenceValidated {
-			candidateCount++
-		}
 	}
 	edgeIDs := make(map[string]struct{}, len(edges))
 	for _, edge := range edges {
@@ -270,10 +293,22 @@ func (r *Repository) checkpointDeepDiscovery(ctx context.Context, missionID, com
 	if err != nil {
 		return model.DeepDiscoveryMission{}, CommandResult{}, err
 	}
+	nodes, edges, addedNodes, candidateCount, err := prepareDeepDiscoveryGraphDeltaWith(ctx, tx, missionID, nodes, edges)
+	if err != nil {
+		return model.DeepDiscoveryMission{}, CommandResult{}, err
+	}
+	nodeIDs = make(map[string]struct{}, len(nodes))
+	for _, node := range nodes {
+		nodeIDs[node.NodeID] = struct{}{}
+	}
+	edgeIDs = make(map[string]struct{}, len(edges))
+	for _, edge := range edges {
+		edgeIDs[edge.EdgeID] = struct{}{}
+	}
 	if err := validateDeepDiscoveryStageEvidence(ctx, tx, missionID, nextStage, nodes); err != nil {
 		return model.DeepDiscoveryMission{}, CommandResult{}, err
 	}
-	next, err := current.Checkpoint(expected, nextStage, coverage, searchRounds, operations, len(nodes), len(edges), candidateCount)
+	next, err := current.Checkpoint(expected, nextStage, coverage, searchRounds, operations, addedNodes, len(edges), candidateCount)
 	if err != nil {
 		return model.DeepDiscoveryMission{}, CommandResult{}, err
 	}
@@ -291,14 +326,41 @@ func (r *Repository) checkpointDeepDiscovery(ctx context.Context, missionID, com
 			}
 		}
 	}
-	for index, node := range nodes {
+	createdNodes := 0
+	for _, node := range nodes {
 		encoded, _ := json.Marshal(node)
-		_, err = tx.ExecContext(ctx, `INSERT INTO recruiting_deep_discovery_nodes(
-mission_id,node_id,node_ordinal,node_kind,node_state,canonical_value,state_json,created_at) VALUES (?,?,?,?,?,?,?,?)`, missionID, node.NodeID, current.NodeCount+index, node.Kind, node.State, node.CanonicalValue, encoded, at.UTC())
+		var previousState string
+		err = tx.QueryRowContext(ctx, `SELECT node_state FROM recruiting_deep_discovery_nodes WHERE mission_id=? AND node_id=?`, missionID, node.NodeID).Scan(&previousState)
+		revision := uint64(1)
+		if errors.Is(err, sql.ErrNoRows) {
+			_, err = tx.ExecContext(ctx, `INSERT INTO recruiting_deep_discovery_nodes(
+mission_id,node_id,node_ordinal,node_kind,node_state,canonical_value,state_json,created_at) VALUES (?,?,?,?,?,?,?,?)`, missionID, node.NodeID, current.NodeCount+createdNodes, node.Kind, node.State, node.CanonicalValue, encoded, at.UTC())
+			createdNodes++
+		} else if err == nil {
+			result, updateErr := tx.ExecContext(ctx, `UPDATE recruiting_deep_discovery_nodes SET node_state=?,state_json=?
+WHERE mission_id=? AND node_id=? AND node_state='candidate'`, node.State, encoded, missionID, node.NodeID)
+			if updateErr != nil {
+				return model.DeepDiscoveryMission{}, CommandResult{}, updateErr
+			}
+			if changed, _ := result.RowsAffected(); changed != 1 {
+				return model.DeepDiscoveryMission{}, CommandResult{}, fmt.Errorf("deep discovery candidate state changed concurrently")
+			}
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(claim_revision),0)+1 FROM recruiting_deep_discovery_node_claims
+WHERE mission_id=? AND node_id=?`, missionID, node.NodeID).Scan(&revision); err != nil {
+				return model.DeepDiscoveryMission{}, CommandResult{}, err
+			}
+		} else {
+			return model.DeepDiscoveryMission{}, CommandResult{}, err
+		}
 		if err != nil {
 			if isDuplicateKey(err) {
 				return model.DeepDiscoveryMission{}, CommandResult{}, fmt.Errorf("%w: deep discovery node", ErrBusinessKeyExists)
 			}
+			return model.DeepDiscoveryMission{}, CommandResult{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO recruiting_deep_discovery_node_claims(
+mission_id,node_id,claim_revision,checkpoint_sequence,command_id,node_state,state_json,created_at) VALUES (?,?,?,?,?,?,?,?)`,
+			missionID, node.NodeID, revision, next.CheckpointCount, commandID, node.State, encoded, at.UTC()); err != nil {
 			return model.DeepDiscoveryMission{}, CommandResult{}, err
 		}
 	}
@@ -321,7 +383,7 @@ mission_id,edge_id,edge_ordinal,from_node_id,to_node_id,relation_kind,state_json
 	if changed, _ := result.RowsAffected(); changed != 1 {
 		return model.DeepDiscoveryMission{}, CommandResult{}, &model.VersionConflictError{Expected: expected, Actual: current.Version}
 	}
-	checkpoint, _ := json.Marshal(map[string]any{"mission": next, "node_ids": mapKeys(nodeIDs), "edge_ids": mapKeys(edgeIDs)})
+	checkpoint, _ := json.Marshal(map[string]any{"mission": next, "node_ids": mapKeys(nodeIDs), "edge_ids": mapKeys(edgeIDs), "node_claims": nodes})
 	_, err = tx.ExecContext(ctx, `INSERT INTO recruiting_deep_discovery_checkpoints(mission_id,checkpoint_sequence,command_id,mission_version,stage_name,summary,state_json,created_at) VALUES (?,?,?,?,?,?,?,?)`, missionID, next.CheckpointCount, commandID, next.Version, next.Stage, summary, checkpoint, at.UTC())
 	if err != nil {
 		if isDuplicateKey(err) {
@@ -537,12 +599,12 @@ func (r *Repository) updateDeepDiscoveryStatus(ctx context.Context, missionID st
 
 func ensureDeepDiscoveryListURLClassifications(ctx context.Context, tx *sql.Tx, missionID string) error {
 	rows, err := tx.QueryContext(ctx, `SELECT state_json FROM recruiting_deep_discovery_nodes
-WHERE mission_id=? AND node_kind='list_url' AND node_state='validated' FOR SHARE`, missionID)
+WHERE mission_id=? AND node_kind='list_url' FOR SHARE`, missionID)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	count := 0
+	validatedCount, unresolvedCount := 0, 0
 	for rows.Next() {
 		var raw []byte
 		if err := rows.Scan(&raw); err != nil {
@@ -552,17 +614,25 @@ WHERE mission_id=? AND node_kind='list_url' AND node_state='validated' FOR SHARE
 		if err := json.Unmarshal(raw, &node); err != nil {
 			return err
 		}
-		validated, validationErr := model.NewDiscoveryEvidenceNodeWithType(node.Kind, node.CanonicalValue, node.Label,
-			node.State, node.Sensor, node.EvidenceURL, node.EvidenceArtifactID, node.Basis, node.RecruitmentType, node.SpecialProgram)
-		if validationErr != nil || validated != node {
-			return fmt.Errorf("validated list URL %s lacks an evidence-backed recruitment type", node.CanonicalValue)
+		switch node.State {
+		case model.EvidenceCandidate:
+			unresolvedCount++
+		case model.EvidenceValidated:
+			validated, validationErr := model.NewDiscoveryEvidenceNodeWithType(node.Kind, node.CanonicalValue, node.Label,
+				node.State, node.Sensor, node.EvidenceURL, node.EvidenceArtifactID, node.Basis, node.RecruitmentType, node.SpecialProgram)
+			if validationErr != nil || validated != node {
+				return fmt.Errorf("validated list URL %s lacks an evidence-backed recruitment type", node.CanonicalValue)
+			}
+			validatedCount++
 		}
-		count++
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if count == 0 {
+	if unresolvedCount != 0 {
+		return fmt.Errorf("deep discovery completion requires every list URL candidate to be validated, rejected, or excluded")
+	}
+	if validatedCount == 0 {
 		return fmt.Errorf("deep discovery completion requires a classified validated list URL")
 	}
 	return nil
