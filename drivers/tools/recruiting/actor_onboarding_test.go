@@ -79,7 +79,7 @@ func TestOnboardingAutomationPlansEvidenceBoundedNetworkSteps(t *testing.T) {
 	}
 }
 
-func TestOnboardingAutomationReplacesDuplicateLegacyVerification(t *testing.T) {
+func TestOnboardingAutomationUsesLatestDuplicateCanonicalVerification(t *testing.T) {
 	company, _ := model.NewCompany("company-1", "Example", "https://example.com")
 	work, _ := model.NewWork("probe-work", "deep_discovery_probe", "probe-1", "deep_discovery_browser", "agent")
 	probe, _ := model.NewDeepDiscoveryBrowserProbe("probe-1", "mission-1", work.WorkID,
@@ -89,10 +89,9 @@ func TestOnboardingAutomationReplacesDuplicateLegacyVerification(t *testing.T) {
 	observation, _ := recipeabi.NewPublicQueryObservation("https://jobs.example.com/api/search", "POST",
 		map[string]string{"Content-Type": "application/json"},
 		json.RawMessage(`{"keyword":"","page":{"pageNo":1},"r_query_id":"current"}`))
-	oldBody := json.RawMessage(`{"keyword":"","page":{"pageNo":1},"r_query_id":"old"}`)
 	old, _ := model.NewDeepDiscoveryPublicQueryVerification("verification-old", "mission-1", probe.ProbeID,
 		"verification-work-old", 2, model.PublicQueryRequestEvidence{EndpointURL: observation.EndpointURL,
-			Method: observation.Method, Headers: observation.Headers, JSONBody: oldBody, BodyHash: "sha256:old"})
+			Method: observation.Method, Headers: observation.Headers, JSONBody: observation.JSONBody, BodyHash: observation.BodyHash})
 	old.Status, old.Version = model.DeepDiscoveryPublicQueryCompleted, 2
 	newVerification, _ := model.NewDeepDiscoveryPublicQueryVerification("verification-new", "mission-1", probe.ProbeID,
 		"verification-work-new", 3, model.PublicQueryRequestEvidence{EndpointURL: observation.EndpointURL,
@@ -106,7 +105,7 @@ func TestOnboardingAutomationReplacesDuplicateLegacyVerification(t *testing.T) {
 	plan := planOnboardingAutomation(snapshot, company)
 	if plan.Action != onboardingReplayVerified || len(plan.VerificationIDs) != 1 ||
 		plan.VerificationIDs[0] != newVerification.VerificationID {
-		t.Fatalf("legacy verification was not replaced by the latest canonical request: %+v", plan)
+		t.Fatalf("duplicate verification was not replaced by the latest canonical request: %+v", plan)
 	}
 }
 

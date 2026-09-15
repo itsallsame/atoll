@@ -301,7 +301,11 @@ func publicQueryObservation(verification model.DeepDiscoveryPublicQueryVerificat
 }
 
 func canonicalQueryVerificationKey(verification model.DeepDiscoveryPublicQueryVerification) (string, bool) {
-	canonical, err := publicQueryObservation(verification).Canonicalized()
+	observation := publicQueryObservation(verification)
+	if err := observation.Validate(); err != nil {
+		return "", false
+	}
+	canonical, err := observation.Canonicalized()
 	if err != nil {
 		return "", false
 	}
