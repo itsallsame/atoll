@@ -29,6 +29,30 @@ func TestDeepDiscoveryRepositoryContract(t *testing.T) {
 	migrateTestDatabase(t, ctx, db)
 	repository, _ := NewRepository(db)
 	now := time.Date(2026, 9, 13, 8, 0, 0, 0, time.UTC)
+	noBrandCompany, _ := model.NewCompany("deep-company-no-brand", "No Brand Company", "https://no-brand.example.com")
+	if err := repository.CreateCompany(ctx, noBrandCompany, now); err != nil {
+		t.Fatal(err)
+	}
+	noBrandMission, _ := model.NewDeepDiscoveryMission("deep-mission-no-brand", noBrandCompany, 1, 5, 250)
+	if err := repository.CreateDeepDiscoveryMission(ctx, noBrandCompany.Version, noBrandMission, now); err != nil {
+		t.Fatal(err)
+	}
+	noBrandCompanyNode := evidenceNode(t, model.EvidenceCompany, noBrandCompany.Name, model.EvidenceValidated,
+		model.SensorHuman, noBrandCompany.Website, "canonical requested company")
+	noBrandCoverage := model.DiscoveryCoverage{IdentityScoped: true}
+	noBrandMission, err = repository.CheckpointDeepDiscovery(ctx, noBrandMission.MissionID, "no-brand-scope",
+		"company identity scoped", noBrandMission.Version, model.DeepDiscoveryBrandExpansion, noBrandCoverage,
+		0, 1, []model.DiscoveryEvidenceNode{noBrandCompanyNode}, nil, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	noBrandCoverage.BrandsReviewed = true
+	if _, err := repository.CheckpointDeepDiscovery(ctx, noBrandMission.MissionID, "no-brand-reviewed",
+		"brand review found no separate brands", noBrandMission.Version, model.DeepDiscoverySiteEnumeration,
+		noBrandCoverage, 0, 1, nil, nil, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("no-brand company could not advance after an explicit completed review: %v", err)
+	}
+
 	company, _ := model.NewCompany("deep-company", "Deep Company", "https://example.com")
 	if err := repository.CreateCompany(ctx, company, now); err != nil {
 		t.Fatal(err)

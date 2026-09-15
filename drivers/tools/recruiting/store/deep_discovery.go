@@ -357,7 +357,11 @@ func validateDeepDiscoveryStageEvidence(ctx context.Context, tx *sql.Tx, mission
 	case model.DeepDiscoveryBrandExpansion:
 		requiredKinds = []model.DiscoveryEvidenceKind{model.EvidenceCompany}
 	case model.DeepDiscoverySiteEnumeration:
-		requiredKinds = []model.DiscoveryEvidenceKind{model.EvidenceBrand, model.EvidenceLegalEntity}
+		// Brand review can legitimately conclude that the requested Company has
+		// no separately modelled brands or legal entities. Checkpoint enforces
+		// BrandsReviewed independently; the validated Company identity keeps the
+		// evidence graph grounded without fabricating a child Brand node.
+		requiredKinds = []model.DiscoveryEvidenceKind{model.EvidenceCompany, model.EvidenceBrand, model.EvidenceLegalEntity}
 	case model.DeepDiscoverySiteExploration:
 		requiredKinds = []model.DiscoveryEvidenceKind{model.EvidenceDomain, model.EvidenceSite}
 	case model.DeepDiscoveryPoolDetection:
