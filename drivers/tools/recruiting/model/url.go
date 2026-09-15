@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/url"
@@ -85,5 +86,15 @@ func CanonicalSourceKey(endpoint, category string) (string, error) {
 		return "", fmt.Errorf("source endpoint is required")
 	}
 	category = strings.ToLower(strings.TrimSpace(category))
-	return SourceKeyNormalizationVersion + "|" + canonical + "|" + category, nil
+	categoryKey := category
+	for _, value := range []byte(category) {
+		if value >= 0x80 {
+			// Storage identity columns are deliberately ASCII. Keep common
+			// categories byte-for-byte compatible while encoding localized
+			// special-program names without discarding their identity.
+			categoryKey = "utf8hex:" + hex.EncodeToString([]byte(category))
+			break
+		}
+	}
+	return SourceKeyNormalizationVersion + "|" + canonical + "|" + categoryKey, nil
 }

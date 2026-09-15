@@ -15,6 +15,18 @@ func TestCanonicalHTTPURLNormalizesIdentityWithoutNetwork(t *testing.T) {
 	if key1 != key2 {
 		t.Fatalf("equivalent source keys differ:\n%s\n%s", key1, key2)
 	}
+	localized, err := CanonicalSourceKey("https://jobs.example.com/special", "special:大模型人才校招")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []byte(localized) {
+		if value >= 0x80 {
+			t.Fatalf("localized canonical source key is not ASCII: %q", localized)
+		}
+	}
+	if localized == "" || localized == key1 {
+		t.Fatalf("localized source key lost its category identity: %q", localized)
+	}
 }
 
 func TestCanonicalHTTPURLRejectsUnsafeIdentityForms(t *testing.T) {
