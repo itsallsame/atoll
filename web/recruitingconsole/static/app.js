@@ -418,7 +418,7 @@ async function loadIdentity(){
   return true;
 }
 function showLoading(){$('auth-view').classList.add('hidden');$('loading-view').classList.remove('hidden');$('error-view').classList.add('hidden');$('view-root').classList.add('hidden');}
-function showLogin(){document.body.classList.add('auth-required');$('loading-view').classList.add('hidden');$('error-view').classList.add('hidden');$('view-root').classList.add('hidden');$('auth-view').classList.remove('hidden');$('account-label').textContent='尚未登录';$('logout-button').classList.add('hidden');setConnection('auth');window.setTimeout(()=>$('login-email').focus(),0);}
+function showLogin(){document.body.classList.add('auth-required');$('eyebrow').textContent='Staircase';$('page-title').textContent='欢迎使用招聘数据指挥台';$('loading-view').classList.add('hidden');$('error-view').classList.add('hidden');$('view-root').classList.add('hidden');$('auth-view').classList.remove('hidden');$('account-label').textContent='尚未登录';$('logout-button').classList.add('hidden');setConnection('auth');window.setTimeout(()=>$('login-email').focus(),0);}
 function showFatal(title,detail){$('auth-view').classList.add('hidden');$('loading-view').classList.add('hidden');$('view-root').classList.add('hidden');$('error-view').classList.remove('hidden');$('error-title').textContent=title;$('error-detail').textContent=detail;}
 async function login(event){
   event.preventDefault();

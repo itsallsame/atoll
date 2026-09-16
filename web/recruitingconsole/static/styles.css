@@ -26,6 +26,9 @@ button { cursor: pointer; }
 button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline: 3px solid #7db7aa; outline-offset: 2px; }
 .hidden { display: none !important; }
 .auth-required #primary-nav, .auth-required .top-actions, .auth-required .assistant-panel, .auth-required .menu-button { display: none; }
+.auth-required .app-shell { display: block; }
+.auth-required .sidebar { display: none; }
+.auth-required .workspace { padding-bottom: 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 .app-shell { display: grid; grid-template-columns: 226px 1fr; min-height: 100vh; }
 .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 28px 18px 20px; border-right: 1px solid #dce6f1; color: #243a5e; background: #f8fbff; }
