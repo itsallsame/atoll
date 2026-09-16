@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	mysql "github.com/go-sql-driver/mysql"
@@ -48,6 +49,35 @@ WHERE recipe_id = ? AND recipe_version = ?`, recipeID, version).Scan(&state)
 	var recipe model.Recipe
 	if err := json.Unmarshal(state, &recipe); err != nil {
 		return model.Recipe{}, fmt.Errorf("decode recipe: %w", err)
+	}
+	return recipe, nil
+}
+
+// GetLatestSourceRecipe follows immutable Source provenance rather than a
+// published assignment. This keeps an onboarding workflow resumable while its
+// first Listing Recipe is validated but the Source is still a candidate.
+func (r *Repository) GetLatestSourceRecipe(ctx context.Context, sourceID string,
+	kind model.RecipeKind) (model.Recipe, error) {
+	var state []byte
+	err := r.db.QueryRowContext(ctx, `SELECT recipe.state_json
+FROM recruiting_recipe_source_provenance provenance
+JOIN recruiting_recipes recipe
+  ON recipe.recipe_id=provenance.recipe_id AND recipe.recipe_version=provenance.recipe_version
+WHERE provenance.source_id=? AND recipe.recipe_kind=?
+ORDER BY provenance.created_at DESC,provenance.recipe_id DESC,provenance.recipe_version DESC LIMIT 1`,
+		strings.TrimSpace(sourceID), kind).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Recipe{}, ErrNotFound
+	}
+	if err != nil {
+		return model.Recipe{}, fmt.Errorf("get latest Source Recipe: %w", err)
+	}
+	var recipe model.Recipe
+	if err := json.Unmarshal(state, &recipe); err != nil {
+		return model.Recipe{}, fmt.Errorf("decode latest Source Recipe: %w", err)
+	}
+	if err := recipe.Validate(); err != nil {
+		return model.Recipe{}, fmt.Errorf("invalid latest Source Recipe: %w", err)
 	}
 	return recipe, nil
 }

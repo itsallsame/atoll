@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 	"github.com/wanpengxie/atoll/lib/actorbase"
 )
 
@@ -34,6 +36,7 @@ type onboardingResponse struct {
 	Mission                *model.DeepDiscoveryMission   `json:"mission,omitempty"`
 	ValidatedURLs          []model.DiscoveryEvidenceNode `json:"validated_urls"`
 	Sources                []model.RecruitmentSource     `json:"sources,omitempty"`
+	RecipeContexts         []recipePreparationContext    `json:"recipe_contexts,omitempty"`
 	Matches                []model.Company               `json:"matches,omitempty"`
 	NextAction             string                        `json:"next_action"`
 	AgentDirective         string                        `json:"agent_directive"`
@@ -41,6 +44,23 @@ type onboardingResponse struct {
 	ClassificationPolicy   string                        `json:"classification_policy"`
 	RepairWorkID           string                        `json:"repair_work_id,omitempty"`
 	RepairValidationWork   *model.Work                   `json:"repair_validation_work,omitempty"`
+}
+
+// recipePreparationContext is the bounded hand-off from source initialization
+// to Recipe preparation. It prevents the Agent from searching the complete
+// Work history for internal IDs and binds every suggested input to successful,
+// immutable verification evidence.
+type recipePreparationContext struct {
+	SourceID         string                          `json:"source_id"`
+	SourceVersion    uint64                          `json:"source_version"`
+	Category         string                          `json:"category"`
+	CandidateURL     string                          `json:"candidate_url"`
+	ProbeID          string                          `json:"probe_id"`
+	VerificationID   string                          `json:"verification_id"`
+	EndpointURL      string                          `json:"endpoint_url"`
+	BodyHash         string                          `json:"body_hash"`
+	Recipe           *model.Recipe                   `json:"recipe,omitempty"`
+	SourceValidation *store.SourceValidationSnapshot `json:"source_validation,omitempty"`
 }
 
 func handleOnboardingMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -160,10 +180,15 @@ func handleExistingCompanyOnboarding(sys actorbase.Sys, repository *store.Reposi
 				failStoreError(sys, msg, sourceErr)
 				return
 			}
+			contexts, contextErr := loadRecipePreparationContexts(msg.Ctx(), repository, mission.MissionID, sources)
+			if contextErr != nil {
+				failStoreError(sys, msg, contextErr)
+				return
+			}
 			_, _ = sys.Reply(msg, onboardingResponse{ContractVersion: ContractVersion, Status: "completed",
-				Company: &company, Mission: &mission, ValidatedURLs: urls, Sources: sources,
+				Company: &company, Mission: &mission, ValidatedURLs: urls, Sources: sources, RecipeContexts: contexts,
 				NextAction:             "initialize_candidate_sources",
-				AgentDirective:         "Source initialization evidence is complete. Continue with Listing Recipe preparation and the first baseline; do not start another discovery Mission.",
+				AgentDirective:         "Source initialization evidence is complete. For each recipe_context, inspect verification_id, derive only its semantic mapping, and call recruiting.recipe.prepare with the supplied source/probe/body identities; do not scan Work history or invent a low-level Recipe spec.",
 				ClassificationComplete: candidateSourcesHaveCategories(sources), ClassificationPolicy: onboardingClassificationPolicy})
 			return
 		}
@@ -259,6 +284,7 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 		"Continue the current stage when active; when completed, present all typed URLs and coverage gaps."
 	classified := allURLsClassified(urls)
 	var sources []model.RecruitmentSource
+	var recipeContexts []recipePreparationContext
 	if mission.Status == model.DeepDiscoveryActive {
 		sources, err = listAllCompanySources(msg, repository, company.CompanyID)
 		if err != nil {
@@ -299,8 +325,13 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 			return
 		}
 		classified = candidateSourcesHaveCategories(sources)
+		recipeContexts, err = loadRecipePreparationContexts(msg.Ctx(), repository, mission.MissionID, sources)
+		if err != nil {
+			failStoreError(sys, msg, err)
+			return
+		}
 		next = "initialize_candidate_sources"
-		directive = "Initialization evidence is complete. For each candidate Source, prepare and validate a Listing Recipe from its persisted Probe evidence, publish the Source, then run its first baseline. Do not start another discovery generation."
+		directive = "Initialization evidence is complete. For each recipe_context, inspect verification_id, derive only its semantic mapping, and call recruiting.recipe.prepare with the supplied source/probe/body identities. Do not scan Work history or invent a low-level Recipe spec."
 	} else if mission.Status == model.DeepDiscoveryDone && classified {
 		sources, err = listAllCompanySources(msg, repository, company.CompanyID)
 		if err != nil {
@@ -315,7 +346,7 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 			directive = "Call recruiting.onboarding.advance with only company_name. It will start a bounded evidence Mission and probe each candidate Source before any Listing Recipe is proposed. Continue without asking the user for internal IDs or URLs."
 		} else {
 			next = "initialize_candidate_sources"
-			directive = "For each candidate Source, use recruiting.recipe.prepare when a completed browser Probe exposes public_query_evidence; otherwise generate a Resource-backed Listing Recipe from real page evidence. Internally stage an observed API with recruiting.source.update, then call recruiting.recipe.propose and recruiting.recipe.validate. Approve only successful evidence, validate and publish the Source, then start its first baseline. After the baseline exposes a pending sample Job, generate and validate the first Detail Recipe, approve and assign it. Continue without asking the user for internal IDs; report only evidence-backed blockers."
+			directive = "For each candidate Source, inspect its verified public-query response and call recruiting.recipe.prepare with only the evidence-backed semantic mapping; the control plane constructs the low-level Listing Recipe ABI. Otherwise generate a Resource-backed Listing Recipe from real page evidence. Internally stage an observed API with recruiting.source.update, then call recruiting.recipe.propose and recruiting.recipe.validate. Approve only successful evidence, validate and publish the Source, then start its first baseline. After the baseline exposes a pending sample Job, generate and validate the first Detail Recipe, approve and assign it. Continue without asking the user for internal IDs; report only evidence-backed blockers."
 		}
 	}
 	if mission.Status == model.DeepDiscoveryDone && !classified && !mission.IsSourceInitializationEvidence() {
@@ -323,8 +354,120 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 		directive = "These are legacy unclassified URL facts. State that their recruitment types are unverified; do not infer types from labels, URL text, or memory. Call recruiting.onboarding.begin to start an evidence-backed classification generation when the user requested discovery."
 	}
 	_, _ = sys.Reply(msg, onboardingResponse{ContractVersion: ContractVersion, Status: status, Company: &company,
-		Mission: &mission, ValidatedURLs: urls, Sources: sources, NextAction: next, AgentDirective: directive,
+		Mission: &mission, ValidatedURLs: urls, Sources: sources, RecipeContexts: recipeContexts,
+		NextAction: next, AgentDirective: directive,
 		ClassificationComplete: classified, ClassificationPolicy: onboardingClassificationPolicy})
+}
+
+func loadRecipePreparationContexts(ctx context.Context, repository *store.Repository, missionID string,
+	sources []model.RecruitmentSource) ([]recipePreparationContext, error) {
+	snapshot, err := repository.GetDeepDiscoveryAutomationSnapshot(ctx, missionID)
+	if err != nil {
+		return nil, err
+	}
+	contexts := recipePreparationContexts(snapshot, sources)
+	for _, source := range sources {
+		recipe, recipeErr := repository.GetLatestSourceRecipe(ctx, source.SourceID, model.RecipeListing)
+		if errors.Is(recipeErr, store.ErrNotFound) {
+			continue
+		}
+		if recipeErr != nil {
+			return nil, recipeErr
+		}
+		validation, validationErr := repository.GetLatestSourceValidation(ctx, source.SourceID)
+		if validationErr != nil && !errors.Is(validationErr, store.ErrNotFound) {
+			return nil, validationErr
+		}
+		matched := false
+		for index := range contexts {
+			if contexts[index].SourceID == source.SourceID {
+				copy := recipe
+				contexts[index].Recipe = &copy
+				if validationErr == nil {
+					validationCopy := validation
+					contexts[index].SourceValidation = &validationCopy
+				}
+				matched = true
+			}
+		}
+		if !matched {
+			item := recipePreparationContext{SourceID: source.SourceID, SourceVersion: source.Version}
+			if source.CandidateEndpoint != nil {
+				item.Category, item.CandidateURL = source.CandidateEndpoint.Category, source.CandidateEndpoint.URL
+			} else if source.ActiveEndpoint != nil {
+				item.Category, item.CandidateURL = source.ActiveEndpoint.Category, source.ActiveEndpoint.URL
+			}
+			copy := recipe
+			item.Recipe = &copy
+			if validationErr == nil {
+				validationCopy := validation
+				item.SourceValidation = &validationCopy
+			}
+			contexts = append(contexts, item)
+		}
+	}
+	sort.Slice(contexts, func(i, j int) bool {
+		if contexts[i].SourceID != contexts[j].SourceID {
+			return contexts[i].SourceID < contexts[j].SourceID
+		}
+		return contexts[i].EndpointURL < contexts[j].EndpointURL
+	})
+	return contexts, nil
+}
+
+func recipePreparationContexts(snapshot store.DeepDiscoveryAutomationSnapshot,
+	sources []model.RecruitmentSource) []recipePreparationContext {
+	probes := make(map[string]model.DeepDiscoveryBrowserProbe, len(snapshot.BrowserProbes))
+	for _, fact := range snapshot.BrowserProbes {
+		probes[fact.Probe.ProbeID] = fact.Probe
+	}
+	sourceByURL := make(map[string]model.RecruitmentSource, len(sources))
+	for _, source := range sources {
+		if source.ControlStatus == model.ControlActive && source.ReadinessStatus == model.SourceCandidate &&
+			source.ListingAssignment == nil && source.CandidateEndpoint != nil {
+			sourceByURL[source.CandidateEndpoint.URL] = source
+		}
+	}
+	byIdentity := make(map[string]recipePreparationContext)
+	for _, fact := range snapshot.QueryVerifications {
+		verification := fact.Verification
+		if verification.Status != model.DeepDiscoveryPublicQueryCompleted || verification.Artifact == nil ||
+			fact.Work.Status != model.WorkCompleted || fact.Work.Resolution != model.ResolutionSucceeded {
+			continue
+		}
+		probe, found := probes[verification.ProbeID]
+		if !found {
+			continue
+		}
+		source, found := sourceByURL[probe.URL]
+		if !found {
+			continue
+		}
+		observation := recipeabi.PublicQueryObservation{EndpointURL: verification.Request.EndpointURL,
+			Method: verification.Request.Method, Headers: verification.Request.Headers,
+			JSONBody: verification.Request.JSONBody, BodyHash: verification.Request.BodyHash}
+		identity, identityErr := observation.StableIdentityKey()
+		if identityErr != nil {
+			continue
+		}
+		byIdentity[source.SourceID+"\n"+identity] = recipePreparationContext{
+			SourceID: source.SourceID, SourceVersion: source.Version, Category: source.CandidateEndpoint.Category,
+			CandidateURL: source.CandidateEndpoint.URL, ProbeID: verification.ProbeID,
+			VerificationID: verification.VerificationID, EndpointURL: verification.Request.EndpointURL,
+			BodyHash: verification.Request.BodyHash,
+		}
+	}
+	contexts := make([]recipePreparationContext, 0, len(byIdentity))
+	for _, item := range byIdentity {
+		contexts = append(contexts, item)
+	}
+	sort.Slice(contexts, func(i, j int) bool {
+		if contexts[i].SourceID != contexts[j].SourceID {
+			return contexts[i].SourceID < contexts[j].SourceID
+		}
+		return contexts[i].EndpointURL < contexts[j].EndpointURL
+	})
+	return contexts
 }
 
 func candidateSourcesHaveCategories(sources []model.RecruitmentSource) bool {

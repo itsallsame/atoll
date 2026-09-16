@@ -75,9 +75,30 @@ type recipeProposePayload struct {
 
 type recipePreparePayload struct {
 	MutationCommand
-	ProbeID  string          `json:"probe_id"`
-	BodyHash string          `json:"body_hash"`
-	Spec     json.RawMessage `json:"spec"`
+	ProbeID  string                `json:"probe_id"`
+	BodyHash string                `json:"body_hash"`
+	Mapping  *recipePrepareMapping `json:"mapping,omitempty"`
+	// Spec remains accepted for immutable callers created before the mapping
+	// contract existed. New callers should provide Mapping and let the control
+	// plane construct the security- and budget-sensitive ABI fields.
+	Spec json.RawMessage `json:"spec,omitempty"`
+}
+
+// recipePrepareMapping is the site-specific knowledge that cannot be safely
+// inferred from a JSON sample alone. Everything else in recipeabi.Spec is a
+// control-plane policy decision and must not be invented by an Agent.
+type recipePrepareMapping struct {
+	Collection           string                      `json:"collection,omitempty"`
+	CollectionRoot       bool                        `json:"collection_root,omitempty"`
+	IdentityPointer      string                      `json:"identity_pointer"`
+	DetailURLPointer     string                      `json:"detail_url_pointer"`
+	DetailURLTemplate    string                      `json:"detail_url_template,omitempty"`
+	TitlePointer         string                      `json:"title_pointer,omitempty"`
+	ActivityPointer      string                      `json:"activity_pointer,omitempty"`
+	ActivityTimeFormat   string                      `json:"activity_time_format,omitempty"`
+	ExcludePinnedPointer string                      `json:"exclude_pinned_pointer,omitempty"`
+	BoundaryMode         string                      `json:"boundary_mode,omitempty"`
+	OffsetPagination     *recipeabi.OffsetPagination `json:"offset_pagination,omitempty"`
 }
 
 type preparedRecipeResource struct {
@@ -202,9 +223,10 @@ func handleRecipePrepare(sys actorbase.Sys, repository *store.Repository, msg ac
 	}
 	commandContext, err := NewCommandContext(payload.MutationCommand, string(msg.Sender.ID))
 	payload.ProbeID, payload.BodyHash = strings.TrimSpace(payload.ProbeID), strings.TrimSpace(payload.BodyHash)
-	if err != nil || payload.Target.Type != "source" || payload.ProbeID == "" || payload.BodyHash == "" || len(payload.Spec) == 0 {
+	if err != nil || payload.Target.Type != "source" || payload.ProbeID == "" || payload.BodyHash == "" ||
+		(payload.Mapping == nil) == (len(payload.Spec) == 0) {
 		if err == nil {
-			err = fmt.Errorf("source target, probe_id, body_hash, and Recipe spec are required")
+			err = fmt.Errorf("source target, probe_id, body_hash, and exactly one of mapping or spec are required")
 		}
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
 		return
@@ -244,7 +266,7 @@ func handleRecipePrepare(sys actorbase.Sys, repository *store.Repository, msg ac
 		failStoreError(sys, msg, err)
 		return
 	}
-	prepared, err := prepareListingRecipeResource(source, mission, *result, payload.BodyHash, payload.Spec)
+	prepared, err := prepareListingRecipeResource(source, mission, *result, payload.BodyHash, payload.Mapping, payload.Spec)
 	if err != nil {
 		_, _ = sys.Fail(msg, ErrorQualityRejected, err.Error())
 		return
@@ -285,7 +307,8 @@ func handleRecipePrepare(sys actorbase.Sys, repository *store.Repository, msg ac
 }
 
 func prepareListingRecipeResource(source model.RecruitmentSource, mission model.DeepDiscoveryMission,
-	result store.DeepDiscoveryBrowserResult, bodyHash string, rawSpec json.RawMessage) (preparedRecipeResource, error) {
+	result store.DeepDiscoveryBrowserResult, bodyHash string, mapping *recipePrepareMapping,
+	rawSpec json.RawMessage) (preparedRecipeResource, error) {
 	if source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy ||
 		source.ReadinessStatus != model.SourceCandidate || source.ListingAssignment != nil || source.CandidateEndpoint == nil {
 		return preparedRecipeResource{}, fmt.Errorf("Recipe preparation requires an active healthy candidate Source without a Listing assignment")
@@ -304,7 +327,13 @@ func prepareListingRecipeResource(source model.RecruitmentSource, mission model.
 	if observation == nil {
 		return preparedRecipeResource{}, fmt.Errorf("body_hash does not identify public-query evidence from this Probe")
 	}
-	spec, err := recipeabi.DecodeSpec(rawSpec)
+	var spec recipeabi.Spec
+	var err error
+	if mapping != nil {
+		spec, err = buildListingRecipeSpec(*observation, *mapping)
+	} else {
+		spec, err = recipeabi.DecodeSpec(rawSpec)
+	}
 	if err != nil {
 		return preparedRecipeResource{}, err
 	}
@@ -321,6 +350,64 @@ func prepareListingRecipeResource(source model.RecruitmentSource, mission model.
 		prepared.NextAction = "propose_recipe"
 	}
 	return prepared, nil
+}
+
+func buildListingRecipeSpec(observation recipeabi.PublicQueryObservation,
+	mapping recipePrepareMapping) (recipeabi.Spec, error) {
+	boundaryMode := strings.TrimSpace(mapping.BoundaryMode)
+	if boundaryMode == "" {
+		boundaryMode = "frontier_keys"
+	}
+	fields := map[string]string{
+		"job_key":    strings.TrimSpace(mapping.IdentityPointer),
+		"detail_url": strings.TrimSpace(mapping.DetailURLPointer),
+	}
+	if pointer := strings.TrimSpace(mapping.TitlePointer); pointer != "" {
+		fields["title"] = pointer
+	}
+	activityField := ""
+	if pointer := strings.TrimSpace(mapping.ActivityPointer); pointer != "" {
+		activityField, fields["activity_at"] = "activity_at", pointer
+	}
+	excludePinnedField := ""
+	if pointer := strings.TrimSpace(mapping.ExcludePinnedPointer); pointer != "" {
+		excludePinnedField, fields["is_pinned"] = "is_pinned", pointer
+	}
+	templates := map[string]string(nil)
+	if template := strings.TrimSpace(mapping.DetailURLTemplate); template != "" {
+		templates = map[string]string{"detail_url": template}
+	}
+	maxItemsPerPage := 500
+	if mapping.OffsetPagination != nil && mapping.OffsetPagination.PageSize > 0 {
+		maxItemsPerPage = mapping.OffsetPagination.PageSize
+	}
+	spec := recipeabi.Spec{
+		ABIVersion:         recipeabi.Version,
+		Kind:               recipeabi.KindListing,
+		RequiredCapability: "http.fetch",
+		Transport:          recipeabi.TransportHTTPJSON,
+		Request: recipeabi.ReadRequest{
+			Method: observation.Method, Headers: observation.Headers, JSONBody: observation.JSONBody,
+			TimeoutMS: 30_000, MaxResponseBytes: 20 << 20, MaxRedirects: 0,
+			UserAgent: "Atoll-Recruiting/1",
+		},
+		Extraction: recipeabi.Extraction{
+			Collection: strings.TrimSpace(mapping.Collection), CollectionRoot: mapping.CollectionRoot,
+			Fields: fields, Templates: templates,
+		},
+		OffsetPagination: mapping.OffsetPagination,
+		Listing: &recipeabi.ListingContract{
+			IdentityField: "job_key", DetailURLField: "detail_url", ActivityField: activityField,
+			ActivityTimeFormat: strings.TrimSpace(mapping.ActivityTimeFormat), BoundaryMode: boundaryMode,
+			Ordering: "newest_activity_desc", UpdateRetop: true, OverlapPages: 2, MaxPages: 200,
+			MaxItemsPerPage: maxItemsPerPage, MaxTotalBytes: 200 << 20, FrontierWidth: 24,
+			ExcludePinnedField: excludePinnedField,
+		},
+	}
+	if err := spec.Validate(); err != nil {
+		return recipeabi.Spec{}, fmt.Errorf("build listing Recipe from mapping: %w", err)
+	}
+	return spec, nil
 }
 
 type recipeResourceAccess interface {

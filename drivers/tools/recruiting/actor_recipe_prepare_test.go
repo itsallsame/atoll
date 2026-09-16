@@ -59,7 +59,7 @@ func TestPrepareListingRecipeResourceRequiresExactProbeEvidence(t *testing.T) {
 	raw, _ := json.Marshal(spec)
 	mission := model.DeepDiscoveryMission{CompanyID: source.CompanyID}
 	result := store.DeepDiscoveryBrowserResult{PublicQueryEvidence: []recipeabi.PublicQueryObservation{observation}}
-	prepared, err := prepareListingRecipeResource(source, mission, result, observation.BodyHash, raw)
+	prepared, err := prepareListingRecipeResource(source, mission, result, observation.BodyHash, nil, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,16 +71,51 @@ func TestPrepareListingRecipeResourceRequiresExactProbeEvidence(t *testing.T) {
 	changed := spec
 	changed.Request.JSONBody = json.RawMessage(`{"keyword":"campus","limit":12,"offset":0}`)
 	changedRaw, _ := json.Marshal(changed)
-	if _, err := prepareListingRecipeResource(source, mission, result, observation.BodyHash, changedRaw); err == nil {
+	if _, err := prepareListingRecipeResource(source, mission, result, observation.BodyHash, nil, changedRaw); err == nil {
 		t.Fatal("Recipe request different from Probe evidence was accepted")
 	}
 	wrongMission := mission
 	wrongMission.CompanyID = "another-company"
-	if _, err := prepareListingRecipeResource(source, wrongMission, result, observation.BodyHash, raw); err == nil {
+	if _, err := prepareListingRecipeResource(source, wrongMission, result, observation.BodyHash, nil, raw); err == nil {
 		t.Fatal("cross-Company Probe evidence was accepted")
 	}
-	if _, err := prepareListingRecipeResource(source, mission, result, "sha256:missing", raw); err == nil {
+	if _, err := prepareListingRecipeResource(source, mission, result, "sha256:missing", nil, raw); err == nil {
 		t.Fatal("unknown Probe body hash was accepted")
+	}
+}
+
+func TestBuildListingRecipeSpecOwnsABIAndBudgetDefaults(t *testing.T) {
+	headers := map[string]string{"Accept": "application/json", "Content-Type": "application/json"}
+	body := json.RawMessage(`{"offset":0,"limit":20}`)
+	observation, err := recipeabi.NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping := recipePrepareMapping{
+		Collection: "/data/jobs", IdentityPointer: "/id", DetailURLPointer: "/id",
+		DetailURLTemplate: "https://jobs.example/job/{value}", TitlePointer: "/title",
+		OffsetPagination: &recipeabi.OffsetPagination{OffsetBodyField: "offset", LimitBodyField: "limit", PageSize: 20},
+	}
+	spec, err := buildListingRecipeSpec(observation, mapping)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Request.UserAgent != "Atoll-Recruiting/1" || spec.Request.TimeoutMS != 30_000 ||
+		spec.Listing == nil || spec.Listing.Ordering != "newest_activity_desc" || !spec.Listing.UpdateRetop ||
+		spec.Listing.BoundaryMode != "frontier_keys" || !observation.MatchesReadRequest(spec.Request) {
+		t.Fatalf("control-plane defaults were not applied: %+v", spec)
+	}
+}
+
+func TestBuildListingRecipeSpecRejectsIncompleteSemanticMapping(t *testing.T) {
+	observation, err := recipeabi.NewPublicQueryObservation("https://jobs.example/api/search", "POST",
+		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{"offset":0,"limit":20}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = buildListingRecipeSpec(observation, recipePrepareMapping{Collection: "/data/jobs"})
+	if err == nil {
+		t.Fatal("incomplete semantic mapping was accepted")
 	}
 }
 

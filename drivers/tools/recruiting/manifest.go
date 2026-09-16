@@ -82,7 +82,7 @@ func manifest() introspect.Manifest {
 			TypeSourceProfileBind:              {Description: "bind future listing or detail Browser work to a ready Profile on its authorized device"},
 			TypeSourceProfileUnbind:            {Description: "remove a versioned Source Profile binding after its Recipe no longer requires that Profile"},
 			TypeRecipeInspect:                  {Description: "inspect one immutable Recipe version, optional browser-capture provenance, and its current Source assignment count"},
-			TypeRecipePrepare:                  {Description: "compile a bounded Listing Recipe Resource from one exact Deep Discovery public-query observation; returns the next Source/Recipe actions without requiring user-visible internal IDs"},
+			TypeRecipePrepare:                  {Description: "compile a bounded Listing Recipe from exact public-query evidence and a small site-specific semantic mapping; the control plane owns the Recipe ABI, request, budgets, and incremental defaults"},
 			TypeRecipePropose:                  {Description: "strictly validate and register an immutable Recipe draft; the first Listing Recipe may bind the exact candidate endpoint without publishing the Source"},
 			TypeRecipeValidate:                 {Description: "run Listing, Detail, or Discovery Recipe candidates against frozen real evidence; first Listing/Detail validation supports cold start without premature publication"},
 			TypeRecipeApprove:                  {Description: "activate one validating Recipe only after a complete executor-succeeded real-sample validation"},
@@ -195,15 +195,21 @@ func manifest() introspect.Manifest {
 		TypeSourceGet:                   `{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string"}}}`,
 		TypeSourceList:                  `{"type":"object","additionalProperties":false,"properties":{"company_id":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":0,"maximum":500}}}`,
 		TypeSourceUpdate:                mutationSchema(`,"endpoint":{"type":"string"},"category":{"type":"string"},"transition_kind":{"type":"string","enum":["redirect","correction"]}`),
-		TypeRecipeInspect:               `{"type":"object","additionalProperties":false,"required":["recipe_id","recipe_version"],"properties":{"recipe_id":{"type":"string"},"recipe_version":{"type":"integer","minimum":1}}}`,
-		TypeRecipePrepare: mutationSchema(`,"probe_id":{"type":"string"},"body_hash":{"type":"string"},"spec":{"type":"object"}`,
-			"probe_id", "body_hash", "spec"),
+		TypeSourceValidate: mutationSchema(`,"recipe_id":{"type":"string"},"recipe_version":{"type":"integer","minimum":1},"expected_assignment_version":{"type":"integer","minimum":0},"run_id":{"type":"string"},"work_id":{"type":"string"},"profile_id":{"type":"string"},"priority":{"type":"integer","minimum":-100,"maximum":100},"deadline_at":{"type":"string"}`,
+			"recipe_id", "recipe_version", "expected_assignment_version", "run_id", "work_id"),
+		TypeSourceValidationPublish: sourceValidationPublishSchema(),
+		TypeRecipeInspect:           `{"type":"object","additionalProperties":false,"required":["recipe_id","recipe_version"],"properties":{"recipe_id":{"type":"string"},"recipe_version":{"type":"integer","minimum":1}}}`,
+		TypeRecipePrepare:           recipePrepareSchema(),
 		TypeRecipePropose: mutationSchema(`,"recipe_id":{"type":"string"},"recipe_version":{"type":"integer","minimum":1},"endpoint_revision":{"type":"integer","minimum":0},"content_ref":{"type":"string"},"expected_content_hash":{"type":"string"},"capture_ref":{"type":"string"},"expected_capture_hash":{"type":"string"}`,
 			"recipe_id", "recipe_version", "content_ref", "expected_content_hash"),
 		TypeRecipeValidate: mutationSchema(`,"recipe_version":{"type":"integer","minimum":1},"source_id":{"type":"string"},"company_id":{"type":"string"},"run_id":{"type":"string"},"work_id":{"type":"string"},"sample_job_id":{"type":"string"},"profile_id":{"type":"string"},"priority":{"type":"integer","minimum":-100,"maximum":100},"deadline_at":{"type":"string"}`,
 			"recipe_version", "run_id", "work_id"),
 		TypeRecipeApprove: mutationSchema(`,"recipe_version":{"type":"integer","minimum":1},"validation_work_id":{"type":"string"}`,
 			"recipe_version", "validation_work_id"),
+		TypeRecipeAssign: mutationSchema(`,"recipe_id":{"type":"string"},"recipe_version":{"type":"integer","minimum":1}`,
+			"recipe_id", "recipe_version"),
+		TypeBaselineStart: mutationSchema(`,"expected_company_version":{"type":"integer","minimum":1},"work_id":{"type":"string"},"baseline_generation":{"type":"integer","minimum":1},"profile_id":{"type":"string"},"priority":{"type":"integer","minimum":-100,"maximum":100},"deadline_at":{"type":"string"}`,
+			"expected_company_version", "work_id", "baseline_generation"),
 		TypeWorkGet:  `{"type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"string"}}}`,
 		TypeWorkList: `{"type":"object","additionalProperties":false,"properties":{"status":{"type":"string"},"capability":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":0,"maximum":500}}}`,
 		TypeWorkResolve: mutationSchema(`,"resolution":{"type":"string","enum":["accepted_gap","skipped","terminated"]}`,
@@ -234,6 +240,17 @@ func deepDiscoveryCheckpointSchema() string {
 	edge := `{"type":"object","additionalProperties":false,"required":["from","to","relation","basis"],"properties":{"from":{"type":"string","description":"Incoming node ref or an existing durable node ID."},"to":{"type":"string","description":"Incoming node ref or an existing durable node ID."},"relation":{"type":"string"},"basis":{"type":"string"}}}`
 	return mutationSchema(`,"stage":{"type":"string","enum":["scope_building","brand_expansion","site_enumeration","site_exploration","pool_detection","candidate_validation","coverage_review"]},"summary":{"type":"string"},"search_rounds":{"type":"integer","minimum":0},"operations":{"type":"integer","minimum":0},"coverage":`+coverage+`,"nodes":{"type":"array","maxItems":200,"items":`+node+`},"edges":{"type":"array","maxItems":400,"items":`+edge+`}`,
 		"stage", "summary", "coverage", "nodes", "edges")
+}
+
+func recipePrepareSchema() string {
+	offsetPagination := `{"type":"object","additionalProperties":false,"properties":{"offset_pointer":{"type":"string","description":"JSON pointer to the response offset for metadata pagination."},"limit_pointer":{"type":"string","description":"JSON pointer to the response page limit for metadata pagination."},"total_pointer":{"type":"string","description":"JSON pointer to the response total for metadata pagination."},"offset_query":{"type":"string","description":"Observed URL query parameter carrying the offset; do not guess."},"limit_query":{"type":"string","description":"Observed URL query parameter carrying the page size; do not guess."},"offset_body_field":{"type":"string","description":"Observed top-level request JSON field carrying the offset."},"limit_body_field":{"type":"string","description":"Observed top-level request JSON field carrying the page size."},"page_size":{"type":"integer","minimum":1,"maximum":500,"description":"Exact page size present in the observed request; required for short-page pagination."}}}`
+	mapping := `{"type":"object","additionalProperties":false,"required":["identity_pointer","detail_url_pointer"],"properties":{"collection":{"type":"string","description":"JSON pointer to the job array in the verified response preview."},"collection_root":{"type":"boolean","const":true,"description":"True only when the verified response root itself is the job array."},"identity_pointer":{"type":"string","description":"JSON pointer, relative to one job item, for its stable job ID."},"detail_url_pointer":{"type":"string","description":"JSON pointer, relative to one job item, for its absolute detail URL or the ID used by detail_url_template."},"detail_url_template":{"type":"string","description":"Optional absolute URL containing exactly one {value}; use only when detail_url_pointer yields an ID rather than a URL."},"title_pointer":{"type":"string","description":"Optional item-relative JSON pointer for job title."},"activity_pointer":{"type":"string","description":"Optional item-relative JSON pointer for published/updated activity time."},"activity_time_format":{"type":"string","enum":["rfc3339","utc_datetime"],"description":"Required only when activity_pointer has one of these verified formats."},"exclude_pinned_pointer":{"type":"string","description":"Optional item-relative JSON pointer identifying pinned jobs that must not define the incremental boundary."},"boundary_mode":{"type":"string","enum":["frontier_keys","activity_time"],"description":"Defaults to frontier_keys; activity_time requires activity_pointer."},"offset_pagination":` + offsetPagination + `},"oneOf":[{"required":["collection"],"not":{"required":["collection_root"]}},{"required":["collection_root"],"not":{"required":["collection"]}}]}`
+	return `{"type":"object","additionalProperties":false,"required":["command_id","target","expected_version","reason","probe_id","body_hash","mapping"],"properties":{"command_id":{"type":"string"},"target":{"type":"object","additionalProperties":false,"required":["target_type","target_id"],"properties":{"target_type":{"type":"string","const":"source"},"target_id":{"type":"string"}}},"expected_version":{"type":"integer","minimum":1},"reason":{"type":"string"},"probe_id":{"type":"string"},"body_hash":{"type":"string"},"mapping":` + mapping + `}}`
+}
+
+func sourceValidationPublishSchema() string {
+	return mutationSchema(`,"validation_work_id":{"type":"string","description":"Completed successful Source validation Work. The control plane derives the exact Recipe, Assignment fence, incremental policy, and evidence Artifacts from it."}`,
+		"validation_work_id")
 }
 
 func mutationSchema(extraProperties string, extraRequired ...string) string {

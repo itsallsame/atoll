@@ -20,6 +20,45 @@ type CompletedSourceValidation struct {
 	CompletedAt time.Time
 }
 
+type SourceValidationSnapshot struct {
+	Work        model.Work       `json:"work"`
+	Run         model.ListingRun `json:"run"`
+	ArtifactIDs []string         `json:"artifact_ids,omitempty"`
+}
+
+// GetLatestSourceValidation is the resumable control-plane view for a Source
+// that is between candidate and published. It avoids requiring an Agent to
+// rediscover the validation Work or its evidence from the global Work ledger.
+func (r *Repository) GetLatestSourceValidation(ctx context.Context, sourceID string) (SourceValidationSnapshot, error) {
+	var workState, runState []byte
+	err := r.db.QueryRowContext(ctx, `SELECT work.state_json,run.state_json
+FROM recruiting_works work
+JOIN recruiting_listing_runs run ON run.work_id=work.work_id
+WHERE work.target_type='source' AND work.target_id=? AND work.purpose='source_validation'
+ORDER BY work.updated_at DESC,work.work_id DESC LIMIT 1`, sourceID).Scan(&workState, &runState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SourceValidationSnapshot{}, ErrNotFound
+	}
+	if err != nil {
+		return SourceValidationSnapshot{}, fmt.Errorf("read latest Source validation: %w", err)
+	}
+	var value SourceValidationSnapshot
+	if err := json.Unmarshal(workState, &value.Work); err != nil {
+		return SourceValidationSnapshot{}, err
+	}
+	if err := json.Unmarshal(runState, &value.Run); err != nil {
+		return SourceValidationSnapshot{}, err
+	}
+	if value.Work.Status == model.WorkCompleted && value.Work.Resolution == model.ResolutionSucceeded {
+		completed, completedErr := r.GetCompletedSourceValidation(ctx, value.Work.WorkID)
+		if completedErr != nil {
+			return SourceValidationSnapshot{}, completedErr
+		}
+		value.ArtifactIDs = append([]string(nil), completed.ArtifactIDs...)
+	}
+	return value, nil
+}
+
 func (r *Repository) GetCompletedSourceValidation(ctx context.Context,
 	workID string) (CompletedSourceValidation, error) {
 	var workState, runState, resultState []byte

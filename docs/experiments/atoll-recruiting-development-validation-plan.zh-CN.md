@@ -878,3 +878,11 @@ Browser Broker 新增严格受限的 `PublicQueryStub`：请求侧必须与前�
 该实现没有新增 Actor/Worker 类型、数据库迁移或调度器，也没有修改 Atoll core。纯规划合同覆盖“候选 Endpoint 优先于公司官网”和“完成一个 Source 后选择下一个 Source”；普通测试、race、vet 与核心边界检查通过。正式节点的自然语言与真实浏览器执行结果记录于 `evidence/recruiting-source-initialization-evidence-bootstrap-20260914.json`。
 
 首次正式执行还暴露了真实 SPA 的导航计数边界：`lifeattiktok.com` 在相同输入下可能只执行一次文档导航，也可能在约 30 秒后执行第二次同源文档导航。原 Deep Discovery Plan 将上限固定为 1，导致一次“0 个跨源导航、0 次允许写、9 次 POST 均已阻断”的安全会话仍被消费侧判为 `contract_violated`。现为探索会话冻结 3 次同源文档导航预算（声明一次 Follow Link 时为 4），Broker 在请求侧阻断超过预算的文档导航；跨源文档、写请求、下载、弹窗和表单策略不变。真实 Chrome 使用生产 User-Agent、语言、滚动和共享 Attestation 校验复现并通过该页面，避免把扩大导航预算误写成放宽效果策略。
+
+## 28. 2026-09-16 通用 Recipe 语义编译与证据续跑阶段
+
+真实美团社会招聘初始化暴露了通用控制面缺陷：`recipe.prepare` 的公开 schema 只声明任意 object，却要求 Agent 猜完整严格 ABI；成功 Source 验证后的发布又要求 Agent 重述 Recipe、Checkpoint、重叠页和 Artifact ID。前者在 26 次试探后仍因遗漏 User-Agent 等字段失败，后者因文件 Resource 名称与数据库 Artifact identity 不同而连续 `not_found`。这些都不是美团站点特例，而是把控制面确定事实错误地下放给自然语言 Agent。
+
+本阶段将公开 `recipe.prepare` 收敛为“冻结 Probe/body identity + 语义映射”。Agent 只识别已验证 JSON 中的集合、稳定岗位 ID、详情 URL/模板、可选活动时间/置顶字段和已观察到的 offset 分页；Actor 复制原始 method/header/body，并统一生成 ABI、transport、User-Agent、超时、响应/总字节、页数、frontier、倒序/update-retop、默认 `frontier_keys` 和两页重叠，再走既有 ABI 校验。旧 raw Spec 仅为内部兼容保留，不再出现在公开 Manifest。Onboarding 返回按 Source 绑定且按稳定请求身份去重的 `recipe_contexts`，其中包含 Probe/Verification、最新 Recipe 和 Source validation 快照，恢复执行无需扫描全局 Work。
+
+`source.validation.publish` 同步改为公开只接收成功的 `validation_work_id`。Actor 读取完成 Work/run、冻结 Listing Recipe Resource 和权威 Artifact 表，验证 Source version、content hash、Recipe kind 后派生 Recipe/Assignment、四项 verified 结论、Checkpoint 策略、重叠页与证据 ID；原子发布事务和既有证据栅栏不变。相关招聘包、Store 与 Recipe ABI 测试通过，生产二进制已部署。随后使用远程正式 MySQL 中同一条美团成功验证 Work 真实续跑：Source 从 `validating@3` 发布为 `ready@4`，控制面自动采用 `frontier_keys`、两页重叠和登记证据，baseline generation 1 成功创建并被 `http.fetch` Executor 接受。实现中没有公司名、域名或美团字段分支，也没有修改 Atoll core、增加 Worker 类型或数据库 migration。

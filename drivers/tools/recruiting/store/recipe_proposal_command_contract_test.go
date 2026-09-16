@@ -52,12 +52,13 @@ func TestRecipeProposalAtomicallyRegistersOnlyAnImmutableDraft(t *testing.T) {
 		t.Fatalf("replay Recipe proposal=%+v err=%v", replayed, err)
 	}
 	stored, err := repository.GetRecipe(ctx, recipe.RecipeID, recipe.Version)
+	latest, latestErr := repository.GetLatestSourceRecipe(ctx, source.SourceID, model.RecipeListing)
 	afterSource, sourceErr := repository.GetSource(ctx, source.SourceID)
 	afterAssignment, assignmentErr := repository.GetAssignment(ctx, source.SourceID, model.RecipeListing)
-	if err != nil || sourceErr != nil || assignmentErr != nil || stored != recipe || !reflect.DeepEqual(afterSource, source) ||
+	if err != nil || latestErr != nil || sourceErr != nil || assignmentErr != nil || stored != recipe || latest != recipe || !reflect.DeepEqual(afterSource, source) ||
 		afterAssignment != beforeAssignment {
-		t.Fatalf("proposal changed production facts recipe=%+v source=%+v assignment=%+v errors=%v/%v/%v",
-			stored, afterSource, afterAssignment, err, sourceErr, assignmentErr)
+		t.Fatalf("proposal changed production facts recipe=%+v latest=%+v source=%+v assignment=%+v errors=%v/%v/%v/%v",
+			stored, latest, afterSource, afterAssignment, err, latestErr, sourceErr, assignmentErr)
 	}
 	conflictReceipt, _ := model.NewCommandReceipt("recipe-proposal-conflict", "recruiting.recipe.propose",
 		"sha256:recipe-proposal-conflict", json.RawMessage(`{"status":"draft"}`))

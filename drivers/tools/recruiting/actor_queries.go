@@ -260,6 +260,12 @@ func handleDeepDiscoveryPublicQueryInspectQuery(sys actorbase.Sys, repository *s
 		"content_hash":     verification.Artifact.ContentHash,
 		"response_preview": verification.ResponsePreview,
 		"truncated":        verification.ResponsePreviewTruncated,
+		"next_action":      "prepare_listing_recipe_mapping",
+		"mapping_rules": []string{
+			"Use only JSON pointers proven by response_preview; do not invent absent fields.",
+			"Pass the semantic mapping to recruiting.recipe.prepare. The control plane constructs the request, budgets, User-Agent, ordering, and incremental bounds.",
+			"Use frontier_keys unless a verified activity field and time format support activity_time.",
+		},
 	})
 }
 

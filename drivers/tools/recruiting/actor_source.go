@@ -8,7 +8,9 @@ import (
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 	"github.com/wanpengxie/atoll/lib/actorbase"
+	"github.com/wanpengxie/atoll/protocol/resource"
 )
 
 type sourceAddPayload struct {
@@ -47,6 +49,10 @@ type sourceValidatePayload struct {
 
 type sourceValidationPublishPayload struct {
 	MutationCommand
+	ValidationWorkID string `json:"validation_work_id,omitempty"`
+	// The remaining fields are accepted for compatibility with callers from
+	// before evidence-derived publication. They are intentionally absent from
+	// the public manifest: new callers submit only validation_work_id.
 	RecipeID                  string                     `json:"recipe_id"`
 	RecipeVersion             uint64                     `json:"recipe_version"`
 	ExpectedAssignmentVersion uint64                     `json:"expected_assignment_version"`
@@ -233,9 +239,12 @@ func handleSourceValidationPublish(sys actorbase.Sys, repository *store.Reposito
 		return
 	}
 	commandContext, err := NewCommandContext(payload.MutationCommand, string(msg.Sender.ID))
-	if err != nil || payload.Target.Type != "source" || strings.TrimSpace(payload.RecipeID) == "" || payload.RecipeVersion == 0 {
+	payload.ValidationWorkID = strings.TrimSpace(payload.ValidationWorkID)
+	legacyPublication := payload.ValidationWorkID == ""
+	if err != nil || payload.Target.Type != "source" ||
+		(legacyPublication && (strings.TrimSpace(payload.RecipeID) == "" || payload.RecipeVersion == 0)) {
 		if err == nil {
-			err = fmt.Errorf("source target, recipe_id, and recipe_version are required")
+			err = fmt.Errorf("source target and validation_work_id are required")
 		}
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
 		return
@@ -252,6 +261,58 @@ func handleSourceValidationPublish(sys actorbase.Sys, repository *store.Reposito
 	if err != nil {
 		failStoreError(sys, msg, err)
 		return
+	}
+	if !legacyPublication {
+		completed, completedErr := repository.GetCompletedSourceValidation(msg.Ctx(), payload.ValidationWorkID)
+		if completedErr != nil {
+			failStoreError(sys, msg, completedErr)
+			return
+		}
+		if completed.Work.TargetType != "source" || completed.Work.TargetID != current.SourceID ||
+			completed.Run.SourceID != current.SourceID || completed.Run.SourceVersion != current.Version {
+			_, _ = sys.Fail(msg, ErrorQualityRejected, "validation_work_id does not prove the current Source version")
+			return
+		}
+		outcome, readErr := sys.Resource().Read(resource.ResourceID(completed.Run.ListingExecution.Execution.ContentRef))
+		if readErr != nil || !outcome.Accepted() || !outcome.Found {
+			_, _ = sys.Fail(msg, ErrorQualityRejected, "validated Recipe Resource is not readable")
+			return
+		}
+		spec, specErr := recipeabi.DecodeSpec(outcome.Value)
+		if specErr != nil {
+			_, _ = sys.Fail(msg, ErrorQualityRejected, specErr.Error())
+			return
+		}
+		contentHash, hashErr := spec.ContentHash()
+		if hashErr != nil || contentHash != completed.Run.ListingExecution.ContentHash {
+			_, _ = sys.Fail(msg, ErrorQualityRejected, "validated Recipe Resource no longer matches its frozen execution")
+			return
+		}
+		if spec.Kind != recipeabi.KindListing || spec.Listing == nil {
+			_, _ = sys.Fail(msg, ErrorQualityRejected, "Source validation did not freeze a Listing Recipe")
+			return
+		}
+		payload.RecipeID = completed.Run.ListingExecution.RecipeID
+		payload.RecipeVersion = completed.Run.ListingExecution.RecipeVersion
+		payload.Identity = model.ContractVerified
+		payload.Pagination = model.ContractVerified
+		payload.Ordering = model.ContractVerified
+		payload.UpdateRetop = model.ContractVerified
+		payload.EvidenceArtifactIDs = append([]string(nil), completed.ArtifactIDs...)
+		payload.ExpectedAssignmentVersion = 0
+		if current.ListingAssignment != nil {
+			payload.ExpectedAssignmentVersion = current.ListingAssignment.AssignmentVersion
+		}
+		switch spec.Listing.BoundaryMode {
+		case "activity_time":
+			payload.CheckpointStrategy = model.CheckpointActivityTime
+		case "frontier_keys":
+			payload.CheckpointStrategy = model.CheckpointFrontierKeys
+		default:
+			_, _ = sys.Fail(msg, ErrorQualityRejected, "validated Recipe has no supported incremental boundary")
+			return
+		}
+		payload.OverlapPages = spec.Listing.OverlapPages
 	}
 	recipe, err := repository.GetRecipe(msg.Ctx(), strings.TrimSpace(payload.RecipeID), payload.RecipeVersion)
 	if err != nil {
