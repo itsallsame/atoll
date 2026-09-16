@@ -21,7 +21,7 @@ func TestCommonContractIsVersionedAndCursorIsOpaque(t *testing.T) {
 
 func TestOperationalStatusWordsAreExposed(t *testing.T) {
 	words := manifest().Words
-	for _, word := range []string{TypeSystemStatus, TypeScopeControlGet, TypeCapacityStatus} {
+	for _, word := range []string{TypeSystemStatus, TypeScopeControlGet, TypeCapacityStatus, TypeConsoleSnapshot} {
 		if _, found := words[word]; !found {
 			t.Fatalf("operational query %s is absent from the recruiting manifest", word)
 		}
@@ -34,7 +34,7 @@ func TestNaturalLanguageOnboardingWordsPublishInputSchemas(t *testing.T) {
 		TypeCompanyAdd, TypeCompanyGet, TypeCompanyList, TypeCompanyUpdate,
 		TypeSourceDiscover, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
 		TypeSourceGet, TypeSourceList, TypeSourceUpdate, TypeSourceValidate, TypeSourceValidationPublish,
-		TypeRecipeInspect, TypeRecipePrepare, TypeSystemStatus, TypeCapacityStatus,
+		TypeRecipeInspect, TypeRecipePrepare, TypeSystemStatus, TypeCapacityStatus, TypeConsoleSnapshot,
 		TypeRecipePropose, TypeRecipeValidate, TypeRecipeApprove, TypeRecipeAssign, TypeBaselineStart,
 		TypeWorkGet, TypeWorkList, TypeRepairGet, TypeRepairList, TypeSystemReconcile,
 		TypeWorkResolve, TypeWorkRetry, TypeRepairValidate, TypeRepairResolve, TypeRepairRecover,

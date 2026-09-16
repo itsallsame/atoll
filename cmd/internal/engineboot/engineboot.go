@@ -29,6 +29,7 @@ import (
 	"github.com/wanpengxie/atoll/protocol/channel"
 	"github.com/wanpengxie/atoll/registry"
 	"github.com/wanpengxie/atoll/web"
+	"github.com/wanpengxie/atoll/web/recruitingconsole"
 	"github.com/wanpengxie/atoll/web/societyconsole"
 )
 
@@ -221,7 +222,7 @@ func Boot(cfg Config, logger *slog.Logger) (*Engine, error) {
 	if err != nil {
 		return nil, e.fail(err)
 	}
-	p := portal.New(portal.Config{Terminals: e.terminals, Registry: e.registry, Lobby: e.acquireLobby, Sessions: e.sessions, Gateway: e.gateway, DaemonHost: e.daemonHost, DataPlane: e.dataRedeemer, Obs: observationPlane, Updater: cfg.Updater, ContractVersion: contractVersion, Boot: fmt.Sprintf("%s@%d", installed.C0Genesis.ChannelID, installed.C0Genesis.CreatedAt), Web: web.Assets(), WebMounts: map[string]fs.FS{"/society/": societyconsole.Assets()}, PublicSociety: publicSociety})
+	p := portal.New(portal.Config{Terminals: e.terminals, Registry: e.registry, Lobby: e.acquireLobby, Sessions: e.sessions, Gateway: e.gateway, DaemonHost: e.daemonHost, DataPlane: e.dataRedeemer, Obs: observationPlane, Updater: cfg.Updater, ContractVersion: contractVersion, Boot: fmt.Sprintf("%s@%d", installed.C0Genesis.ChannelID, installed.C0Genesis.CreatedAt), Web: web.Assets(), WebMounts: map[string]fs.FS{"/society/": societyconsole.Assets(), "/staircase/": recruitingconsole.Assets()}, PublicSociety: publicSociety})
 	e.handler = p
 	e.gateway.Start()
 	if err := e.host.StartConvergence(); err != nil {

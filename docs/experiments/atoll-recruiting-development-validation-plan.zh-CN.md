@@ -886,3 +886,9 @@ Browser Broker 新增严格受限的 `PublicQueryStub`：请求侧必须与前�
 本阶段将公开 `recipe.prepare` 收敛为“冻结 Probe/body identity + 语义映射”。Agent 只识别已验证 JSON 中的集合、稳定岗位 ID、详情 URL/模板、可选活动时间/置顶字段和已观察到的 offset 分页；Actor 复制原始 method/header/body，并统一生成 ABI、transport、User-Agent、超时、响应/总字节、页数、frontier、倒序/update-retop、默认 `frontier_keys` 和两页重叠，再走既有 ABI 校验。旧 raw Spec 仅为内部兼容保留，不再出现在公开 Manifest。Onboarding 返回按 Source 绑定且按稳定请求身份去重的 `recipe_contexts`，其中包含 Probe/Verification、最新 Recipe 和 Source validation 快照，恢复执行无需扫描全局 Work。
 
 `source.validation.publish` 同步改为公开只接收成功的 `validation_work_id`。Actor 读取完成 Work/run、冻结 Listing Recipe Resource 和权威 Artifact 表，验证 Source version、content hash、Recipe kind 后派生 Recipe/Assignment、四项 verified 结论、Checkpoint 策略、重叠页与证据 ID；原子发布事务和既有证据栅栏不变。相关招聘包、Store 与 Recipe ABI 测试通过，生产二进制已部署。随后使用远程正式 MySQL 中同一条美团成功验证 Work 真实续跑：Source 从 `validating@3` 发布为 `ready@4`，控制面自动采用 `frontier_keys`、两页重叠和登记证据，baseline generation 1 成功创建并被 `http.fetch` Executor 接受。实现中没有公司名、域名或美团字段分支，也没有修改 Atoll core、增加 Worker 类型或数据库 migration。
+
+## 29. 2026-09-16 Staircase 运营指挥台阶段
+
+新增 `/staircase/` 嵌入式运营界面和 Recruiting Actor 只读业务投影，没有修改 `protocol`、`runtime`、`lib`、`platform` 或 `registry`。页面覆盖总览、公司与招聘源详情、今日运行、待处理、数据成果、系统健康和自然语言协作；实际读取正式远程 MySQL 中的美团、字节跳动等现有事实。公司详情真实回读一对多 Source、业务类型、Endpoint、Recipe 绑定和健康状态；自然语言输入“美团现在在做什么？只查询状态，不执行任何操作”得到只读业务回答，并明确未执行变更。
+
+验证包括招聘扩展、Store、嵌入资源和 engine boot 测试，核心冻结边界检查，生产构建、systemd 重启、公网静态入口和同源 WebSocket 复用。设计验收使用 1440×1024 选定稿与实际浏览器截图的并排比较，修复总览信息顺序、遮挡内容的对话框、品牌侧栏色彩、移动端标题换行和读屏折叠菜单；桌面 Lighthouse 最终 Accessibility、Best Practices、SEO、Agentic Browsing 均为 100。完整证据与比较历史见 `web/recruitingconsole/design-qa.md`。

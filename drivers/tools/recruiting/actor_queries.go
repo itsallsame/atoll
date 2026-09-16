@@ -161,6 +161,10 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		handleOperationalStatusQuery(sys, cfg, repository, msg)
 		return
 	}
+	if msg.Type == TypeConsoleSnapshot {
+		handleConsoleSnapshotQuery(sys, repository, msg)
+		return
+	}
 	if msg.Type == TypeScopeControlGet {
 		handleScopeControlGetQuery(sys, repository, msg)
 		return
@@ -209,6 +213,31 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		return
 	}
 	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "entity": value})
+}
+
+func handleConsoleSnapshotQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
+	var payload operationalStatusPayload
+	if !decode(sys, msg, &payload) {
+		return
+	}
+	if payload.Limit < 0 || payload.Limit > 100 {
+		_, _ = sys.Fail(msg, ErrorPayloadInvalid, "limit must be in [0,100]")
+		return
+	}
+	if payload.Limit == 0 {
+		payload.Limit = 50
+	}
+	asOf := time.UnixMilli(msg.TS).UTC()
+	snapshot, err := repository.GetConsoleSnapshot(msg.Ctx(), asOf, payload.Limit)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	_, _ = sys.Reply(msg, map[string]any{
+		"contract_version": ContractVersion,
+		"correlation_id":   string(msg.CorrelationID),
+		"snapshot":         snapshot,
+	})
 }
 
 func handleDeepDiscoveryPublicQueryGetQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

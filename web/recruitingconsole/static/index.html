@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Staircase · 招聘数据指挥台</title>
+  <meta name="description" content="招聘数据采集业务的运行、结果与人工协作指挥台。">
+  <link rel="icon" href="/favicon.svg">
+  <link rel="stylesheet" href="./styles.css?v=1">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <a class="brand" href="./"><span>Staircase<small>招聘数据指挥台</small></span></a>
+      <nav id="primary-nav">
+        <button class="nav-item active" data-view="overview"><span>01</span>总览</button>
+        <button class="nav-item" data-view="companies"><span>02</span>公司</button>
+        <button class="nav-item" data-view="daily"><span>03</span>今日运行</button>
+        <button class="nav-item" data-view="attention"><span>04</span>待处理<b id="attention-badge" class="badge hidden">0</b></button>
+        <button class="nav-item" data-view="outcomes"><span>05</span>数据结果</button>
+        <button class="nav-item" data-view="system"><span>06</span>系统状态</button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="connection"><i id="connection-dot"></i><span id="connection-label">正在连接</span></div>
+        <a href="/">返回 Atoll 工作台</a>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <button id="menu-button" class="menu-button" aria-label="打开导航" aria-expanded="false">菜单</button>
+        <div><p id="eyebrow">业务总览</p><h1 id="page-title">早上好，招聘数据正在运行</h1></div>
+        <div class="top-actions"><span id="freshness">等待首次同步</span><button id="refresh-button" class="quiet-button">刷新</button><button id="ask-top" class="primary-button">对话处理</button></div>
+      </header>
+
+      <main id="content" tabindex="-1">
+        <section id="loading-view" class="state-panel"><div class="spinner" aria-hidden="true"></div><h2>正在读取业务现场</h2><p>从 Recruiting Actor 获取一致性快照。</p></section>
+        <section id="error-view" class="state-panel hidden"><span class="state-code">连接未就绪</span><h2 id="error-title">暂时无法读取业务状态</h2><p id="error-detail"></p><div><button id="retry-button" class="primary-button">重新连接</button><a class="button-link" href="/">登录 Atoll</a></div></section>
+        <section id="view-root" class="hidden" aria-live="polite"></section>
+      </main>
+
+      <section id="assistant-panel" class="assistant-panel" aria-label="对话处理">
+        <div class="assistant-head"><div><strong>让系统帮你处理</strong><span>直接说业务目标，不需要填写内部编号</span></div><button id="close-assistant" aria-label="关闭对话面板">关闭</button></div>
+        <div id="assistant-thread" class="assistant-thread"><p>例如：<button class="prompt-chip">美团现在在做什么？</button><button class="prompt-chip">继续处理今天失败的任务</button></p></div>
+        <form id="assistant-form"><label for="assistant-input" class="sr-only">输入业务要求</label><textarea id="assistant-input" rows="2" placeholder="问进度、增加公司，或让系统继续处理异常……"></textarea><button class="primary-button" type="submit">发送</button></form>
+      </section>
+    </div>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="./app.js?v=1"></script>
+</body>
+</html>

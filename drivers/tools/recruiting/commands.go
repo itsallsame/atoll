@@ -154,6 +154,7 @@ const (
 	TypeSystemReconcile           = "recruiting.system.reconcile"
 	TypeScopeControlGet           = "recruiting.scope_control.get"
 	TypeCapacityStatus            = "recruiting.capacity.status"
+	TypeConsoleSnapshot           = "recruiting.console.snapshot"
 )
 
 type Target struct {

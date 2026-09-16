@@ -149,6 +149,7 @@ func manifest() introspect.Manifest {
 			TypeSystemStatus:                   {Description: "inspect a coherent operational snapshot of work, attempts, daily runs, repairs, and delivery backlogs"},
 			TypeScopeControlGet:                {Description: "inspect one durable Company or Source pause/resume operation and seek-page its catch-up decisions"},
 			TypeCapacityStatus:                 {Description: "inspect runnable queue pressure, active budget usage, configured limits, and executor fleet capacity"},
+			TypeConsoleSnapshot:                {Description: "read one bounded business projection for the Staircase recruiting operations console"},
 			TypeSystemReconcile:                {Description: "deliver one bounded batch of recruiting outbox events to the Atoll ledger"},
 			TypeProbeStart:                     {Description: "create and dispatch a durable recruiting P0 probe work"},
 			TypeProbeSchedule:                  {Description: "schedule a durable recruiting P0 probe occurrence"},
@@ -225,6 +226,7 @@ func manifest() introspect.Manifest {
 		TypeSystemStatus:    `{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"integer","minimum":0}}}`,
 		TypeSystemReconcile: `{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"integer","minimum":0}}}`,
 		TypeCapacityStatus:  `{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"integer","minimum":0}}}`,
+		TypeConsoleSnapshot: `{"type":"object","additionalProperties":false,"properties":{"limit":{"type":"integer","minimum":0,"maximum":100}}}`,
 	}
 	for word, schema := range inputSchemas {
 		spec := result.Words[word]

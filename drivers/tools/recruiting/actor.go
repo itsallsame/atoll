@@ -228,7 +228,7 @@ func run(sys actorbase.Sys, cfg Config) error {
 			TypeJobGet, TypeJobList, TypeJobCorrectionGet, TypeProfileGet, TypeWorkGet, TypeWorkList,
 			TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary, TypeRepairGet, TypeRepairList, TypeRecipeInspect,
 			TypeRecipeRolloutBatchGet, TypeRecipeRolloutBatchItems,
-			TypeSystemStatus, TypeScopeControlGet, TypeCapacityStatus:
+			TypeSystemStatus, TypeScopeControlGet, TypeCapacityStatus, TypeConsoleSnapshot:
 			handleResourceQuery(sys, cfg, repository, msg)
 		case TypeSystemReconcile:
 			handleOutboxReconcile(sys, cfg, repository, msg)
