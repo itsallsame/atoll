@@ -7,7 +7,7 @@
   <title>Staircase · 招聘数据指挥台</title>
   <meta name="description" content="招聘数据采集业务的运行、结果与人工协作指挥台。">
   <link rel="icon" href="/favicon.svg">
-  <link rel="stylesheet" href="./styles.css?v=1">
+  <link rel="stylesheet" href="./styles.css?v=2">
 </head>
 <body>
   <div class="app-shell">
@@ -23,7 +23,7 @@
       </nav>
       <div class="sidebar-foot">
         <div class="connection"><i id="connection-dot"></i><span id="connection-label">正在连接</span></div>
-        <a href="/">返回 Atoll 工作台</a>
+        <div class="account"><span id="account-label">正在确认登录状态</span><button id="logout-button" class="text-button hidden" type="button">退出登录</button></div>
       </div>
     </aside>
 
@@ -36,7 +36,8 @@
 
       <main id="content" tabindex="-1">
         <section id="loading-view" class="state-panel"><div class="spinner" aria-hidden="true"></div><h2>正在读取业务现场</h2><p>从 Recruiting Actor 获取一致性快照。</p></section>
-        <section id="error-view" class="state-panel hidden"><span class="state-code">连接未就绪</span><h2 id="error-title">暂时无法读取业务状态</h2><p id="error-detail"></p><div><button id="retry-button" class="primary-button">重新连接</button><a class="button-link" href="/">登录 Atoll</a></div></section>
+        <section id="auth-view" class="state-panel hidden"><span class="state-code">Staircase</span><h2>登录招聘数据指挥台</h2><p>登录后直接进入业务现场，不需要跳转到其他工作台。</p><form id="login-form" class="login-form"><label>账号<input id="login-email" name="email" type="text" autocomplete="username" required></label><label>密码<input id="login-password" name="password" type="password" autocomplete="current-password" required></label><p id="login-error" class="form-error hidden" role="alert"></p><button id="login-button" class="primary-button" type="submit">登录并进入</button></form></section>
+        <section id="error-view" class="state-panel hidden"><span class="state-code">连接未就绪</span><h2 id="error-title">暂时无法读取业务状态</h2><p id="error-detail"></p><div><button id="retry-button" class="primary-button">重新连接</button></div></section>
         <section id="view-root" class="hidden" aria-live="polite"></section>
       </main>
 
@@ -48,6 +49,6 @@
     </div>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="./app.js?v=1"></script>
+  <script type="module" src="./app.js?v=2"></script>
 </body>
 </html>

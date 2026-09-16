@@ -1,9 +1,8 @@
 const FRAME_VERSION = 5;
-const CHANNEL_ID = 'c0';
 const $ = (id) => document.getElementById(id);
 const state = {
   view: 'overview', connected: false, wire: null, actor: '', steward: '', session: '',
-  data: null, sources: new Map(), selectedCompany: '', filter: '', refreshTimer: 0, systemLoading: false,
+  principal: '', channel: '', data: null, sources: new Map(), selectedCompany: '', filter: '', refreshTimer: 0, systemLoading: false,
 };
 
 class AtollWire {
@@ -27,7 +26,7 @@ class AtollWire {
     this.socket.addEventListener('open', () => {
       this.attached = false;
       this.attachRef = this.sendFrame('attach', {
-        since: {}, focus: CHANNEL_ID, history_protocol: FRAME_VERSION,
+        since: {}, focus: state.channel, history_protocol: FRAME_VERSION,
         generation: this.generation, label: 'Staircase 招聘数据指挥台',
       }, true);
     });
@@ -36,9 +35,21 @@ class AtollWire {
       this.attached = false;
       setConnection('error');
       rejectPending('连接已经断开');
-      this.reconnectTimer = window.setTimeout(() => this.connect(), 1800);
+      this.handleClose();
     });
     this.socket.addEventListener('error', () => setConnection('error'));
+  }
+
+  async handleClose() {
+    try {
+      if (!await loadIdentity()) {
+        showLogin();
+        return;
+      }
+      this.reconnectTimer = window.setTimeout(() => this.connect(), 1800);
+    } catch (error) {
+      showFatal('暂时无法连接 Staircase', error.message);
+    }
   }
 
   sendFrame(type, payload, beforeAttach = false) {
@@ -112,7 +123,7 @@ class AtollWire {
       let ref;
       try {
         ref = this.sendFrame('submit', {
-          channel_id: CHANNEL_ID, id, msg_type: msgType, kind: 'request', payload: body,
+          channel_id: state.channel, id, msg_type: msgType, kind: 'request', payload: body,
           audience: [audience], visibility: 'public',
         });
       } catch (error) { reject(error); return; }
@@ -394,9 +405,40 @@ function healthLabel(v){return ({healthy:'正常',degraded:'降级',unhealthy:'�
 function controlLabel(v){return ({active:'运行',paused:'暂停',archived:'归档'}[v]||v||'未知');}
 function capabilityLabel(v){return ({'http.fetch':'网页请求','browser.navigate':'浏览器访问','browser.capture':'页面采集'}[v]||v);}
 function dimensionLabel(v){return ({capability:'执行能力',origin:'网站来源',company:'公司',profile:'浏览器环境',purpose:'工作类型'}[v]||v);}
-function setConnection(kind){state.connected=kind==='connected';const box=document.querySelector('.connection');box.classList.toggle('connected',kind==='connected');box.classList.toggle('error',kind==='error');$('connection-label').textContent=kind==='connected'?'节点已连接':kind==='error'?'连接中断':'正在连接';}
-function showLoading(){$('loading-view').classList.remove('hidden');$('error-view').classList.add('hidden');$('view-root').classList.add('hidden');}
-function showFatal(title,detail){$('loading-view').classList.add('hidden');$('view-root').classList.add('hidden');$('error-view').classList.remove('hidden');$('error-title').textContent=title;$('error-detail').textContent=detail;}
+function setConnection(kind){state.connected=kind==='connected';const box=document.querySelector('.connection');box.classList.toggle('connected',kind==='connected');box.classList.toggle('error',kind==='error');$('connection-label').textContent=kind==='connected'?'节点已连接':kind==='auth'?'等待登录':kind==='error'?'连接中断':'正在连接';}
+async function loadIdentity(){
+  const response=await fetch('/api/identity/session',{credentials:'same-origin',cache:'no-store'});
+  if(response.status===401){state.principal='';state.channel='';return false;}
+  if(!response.ok)throw new Error(`登录状态检查失败（HTTP ${response.status}）`);
+  const identity=await response.json();
+  if(!identity?.id||!identity?.home_channel_id)throw new Error('当前账号还没有可用的业务空间');
+  state.principal=identity.id;state.channel=identity.home_channel_id;
+  document.body.classList.remove('auth-required');
+  $('account-label').textContent=identity.id;$('logout-button').classList.remove('hidden');
+  return true;
+}
+function showLoading(){$('auth-view').classList.add('hidden');$('loading-view').classList.remove('hidden');$('error-view').classList.add('hidden');$('view-root').classList.add('hidden');}
+function showLogin(){document.body.classList.add('auth-required');$('loading-view').classList.add('hidden');$('error-view').classList.add('hidden');$('view-root').classList.add('hidden');$('auth-view').classList.remove('hidden');$('account-label').textContent='尚未登录';$('logout-button').classList.add('hidden');setConnection('auth');window.setTimeout(()=>$('login-email').focus(),0);}
+function showFatal(title,detail){$('auth-view').classList.add('hidden');$('loading-view').classList.add('hidden');$('view-root').classList.add('hidden');$('error-view').classList.remove('hidden');$('error-title').textContent=title;$('error-detail').textContent=detail;}
+async function login(event){
+  event.preventDefault();
+  const button=$('login-button');const errorBox=$('login-error');button.disabled=true;button.textContent='正在登录…';errorBox.classList.add('hidden');
+  try{
+    const response=await fetch('/api/identity/login',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('login-email').value.trim(),password:$('login-password').value})});
+    if(!response.ok){let detail='登录失败，请检查账号和密码';try{const body=await response.json();if(body?.detail)detail=body.detail==='invalid credentials'?'账号或密码不正确':body.detail;}catch{}throw new Error(detail);}
+    if(!await loadIdentity())throw new Error('登录会话没有生效，请重试');
+    $('login-password').value='';showLoading();state.wire.connect();
+  }catch(error){errorBox.textContent=error.message;errorBox.classList.remove('hidden');}
+  finally{button.disabled=false;button.textContent='登录并进入';}
+}
+async function logout(){
+  $('logout-button').disabled=true;
+  try{await fetch('/api/identity/logout',{method:'POST',credentials:'same-origin'});}finally{location.reload();}
+}
+async function bootstrap(){
+  try{if(!await loadIdentity()){showLogin();return;}showLoading();state.wire.connect();}
+  catch(error){showFatal('暂时无法进入 Staircase',error.message);}
+}
 let toastTimer=0;function toast(message){$('toast').textContent=message;$('toast').classList.add('show');window.clearTimeout(toastTimer);toastTimer=window.setTimeout(()=>$('toast').classList.remove('show'),2600);}
 
 document.querySelectorAll('.nav-item').forEach((button)=>button.addEventListener('click',()=>changeView(button.dataset.view)));
@@ -406,5 +448,6 @@ $('menu-button').addEventListener('click',()=>{const sidebar=document.querySelec
 $('assistant-form').addEventListener('submit',(event)=>{event.preventDefault();const text=$('assistant-input').value.trim();if(text)askAgent(text);});
 $('assistant-input').addEventListener('keydown',(event)=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();$('assistant-form').requestSubmit();}});
 document.querySelectorAll('.prompt-chip').forEach((button)=>button.addEventListener('click',()=>askAgent(button.textContent)));
+$('login-form').addEventListener('submit',login);$('logout-button').addEventListener('click',logout);
 
-state.wire=new AtollWire(); state.wire.connect();
+state.wire=new AtollWire();bootstrap();
