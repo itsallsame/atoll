@@ -816,6 +816,18 @@ func validatePublicQueryReadIntent(endpoint *url.URL, body map[string]json.RawMe
 			return fmt.Errorf("public-query observation endpoint is not a read-like recruiting query")
 		}
 	}
+	for _, segment := range strings.FieldsFunc(strings.ToLower(endpoint.EscapedPath()), func(r rune) bool { return r == '/' || r == '-' || r == '_' }) {
+		switch segment {
+		case "apply", "application", "submit", "create", "update", "delete", "remove", "save", "upload":
+			return fmt.Errorf("public-query observation endpoint contains a mutation action")
+		}
+	}
+	for name := range body {
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "applicant", "candidate", "resume", "cv", "email", "phone", "cover_letter", "application":
+			return fmt.Errorf("public-query observation body contains an application field")
+		}
+	}
 	readLike := false
 	path := strings.ToLower(endpoint.EscapedPath())
 	for _, allowed := range []string{"search", "query", "job", "position", "vacanc", "opening", "config", "filter", "graphql"} {

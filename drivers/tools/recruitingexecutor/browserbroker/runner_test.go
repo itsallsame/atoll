@@ -211,10 +211,7 @@ fetch('/write',{method:'POST',headers:{'Content-Type':'application/json','websit
 	result, err := runner.Run(context.Background(), request)
 	if err != nil || result.Attestation.AllowedWriteRequests != 0 || result.Attestation.BlockedWriteRequests != 1 ||
 		!reflect.DeepEqual(result.Attestation.BlockedMethods, []string{http.MethodPost}) ||
-		!result.Attestation.PublicEndpoint || writes.Load() != 0 || len(result.PublicQueryEvidence) != 1 ||
-		result.PublicQueryEvidence[0].EndpointURL != server.URL+"/write" ||
-		result.PublicQueryEvidence[0].Headers["Website-Path"] != "en" ||
-		!strings.Contains(string(result.PublicQueryEvidence[0].JSONBody), `"offset":0`) {
+		!result.Attestation.PublicEndpoint || writes.Load() != 0 || len(result.PublicQueryEvidence) != 0 {
 		t.Fatalf("Chrome write was not blocked: err=%v attestation=%+v origin_writes=%d", err, result.Attestation, writes.Load())
 	}
 }

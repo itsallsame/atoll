@@ -273,6 +273,8 @@ func TestPublicQueryObservationIsCredentialFreeAndMatchesExactRequest(t *testing
 	}{
 		"browser telemetry": {url: "https://mon.example.com/monitor_browser/collect/batch", body: json.RawMessage(`{"list":[]}`)},
 		"generic write":     {url: "https://jobs.example.com/api/submit", body: json.RawMessage(`{"value":"x"}`)},
+		"job application":   {url: "https://jobs.example.com/api/job/apply", body: json.RawMessage(`{"job_id":"42"}`)},
+		"applicant field":   {url: "https://jobs.example.com/api/job/search", body: json.RawMessage(`{"applicant":"person"}`)},
 		"GraphQL mutation":  {url: "https://jobs.example.com/graphql", body: json.RawMessage(`{"query":"mutation Apply { apply }"}`)},
 	} {
 		t.Run(name, func(t *testing.T) {
