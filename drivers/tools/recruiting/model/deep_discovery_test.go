@@ -1,6 +1,9 @@
 package model
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDeepDiscoveryRequiresEvidenceGatedSequentialProgress(t *testing.T) {
 	company, err := NewCompany("company-1", "Example", "https://example.com")
@@ -35,10 +38,48 @@ func TestDeepDiscoveryRequiresEvidenceGatedSequentialProgress(t *testing.T) {
 	}
 }
 
+func TestDeepDiscoveryRequiresRealSearchAndCoreTypeDisposition(t *testing.T) {
+	company, _ := NewCompany("company-sop", "Example", "https://example.com")
+	mission, _ := NewDeepDiscoveryMission("mission-sop", company, 1, 5, 250)
+	coverage := DiscoveryCoverage{IdentityScoped: true}
+	mission, _ = mission.Checkpoint(mission.Version, DeepDiscoveryBrandExpansion, coverage, 0, 1, 1, 0, 0)
+	coverage.BrandsReviewed = true
+	if _, err := mission.Checkpoint(mission.Version, DeepDiscoverySiteEnumeration, coverage, 0, 1, 0, 0, 0); err == nil {
+		t.Fatal("site enumeration advanced without a real search round")
+	}
+	mission, _ = mission.Checkpoint(mission.Version, DeepDiscoverySiteEnumeration, coverage, 1, 1, 0, 0, 0)
+	coverage.SitesEnumerated, coverage.SitesExplored, coverage.PoolsDetected, coverage.CandidatesValidated = true, true, true, true
+	mission.Stage = DeepDiscoveryCandidateValidation
+	if _, err := mission.Checkpoint(mission.Version, DeepDiscoveryCoverageReview, coverage, 0, 0, 0, 0, 0); err == nil {
+		t.Fatal("coverage review advanced without social, campus, and intern dispositions")
+	}
+	coverage.SocialCoverage, coverage.CampusCoverage, coverage.InternCoverage =
+		DiscoveryTypeCovered, DiscoveryTypeNotFoundAfterSearch, DiscoveryTypeExcluded
+	if _, err := mission.Checkpoint(mission.Version, DeepDiscoveryCoverageReview, coverage, 0, 0, 0, 0, 0); err != nil {
+		t.Fatalf("explicit core type dispositions were rejected: %v", err)
+	}
+}
+
+func TestValidatedListURLRequiresObservedDetailRoute(t *testing.T) {
+	if _, err := NewDiscoveryEvidenceNodeWithType(EvidenceListURL, "https://jobs.example.com/campus/position", "campus",
+		EvidenceValidated, SensorBrowser, "https://jobs.example.com/campus/position", "artifact-list", "jobs rendered",
+		RecruitmentURLCampus, ""); err == nil {
+		t.Fatal("validated ListURL without list-to-detail proof was accepted")
+	}
+	proof := testDiscoveryListProof("artifact-list", "https://jobs.example.com/campus/position/123/detail")
+	proof.DetailURLPattern = "https://jobs.example.com/experienced/position/{value}/detail"
+	if _, err := NewDiscoveryEvidenceNodeWithTypeAndProof(EvidenceListURL, "https://jobs.example.com/campus/position", "campus",
+		EvidenceValidated, SensorBrowser, "https://jobs.example.com/campus/position", "artifact-list", "jobs rendered",
+		RecruitmentURLCampus, "", &proof); err == nil {
+		t.Fatal("fabricated DetailURL pattern that does not reproduce the sample was accepted")
+	}
+}
+
 func TestDiscoveryEvidenceSourceCategory(t *testing.T) {
-	node, err := NewDiscoveryEvidenceNodeWithType(EvidenceListURL, "https://jobs.example.test/program", "programme",
-		EvidenceValidated, SensorOfficialSite, "https://jobs.example.test", "", "official programme page",
-		RecruitmentURLSpecial, "Graduate Programme")
+	proof := testDiscoveryListProof("artifact-programme", "https://jobs.example.test/program/123/detail")
+	node, err := NewDiscoveryEvidenceNodeWithTypeAndProof(EvidenceListURL, "https://jobs.example.test/program", "programme",
+		EvidenceValidated, SensorOfficialSite, "https://jobs.example.test", "artifact-programme", "official programme page",
+		RecruitmentURLSpecial, "Graduate Programme", &proof)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +98,9 @@ func TestDeepDiscoveryCannotCompleteWithBlindspotsOrNoCandidates(t *testing.T) {
 	mission, _ := NewDeepDiscoveryMission("mission-1", company, 1, 5, 250)
 	mission.Stage = DeepDiscoveryCoverageReview
 	mission.Coverage = DiscoveryCoverage{IdentityScoped: true, BrandsReviewed: true, SitesEnumerated: true,
-		SitesExplored: true, PoolsDetected: true, CandidatesValidated: true, BlindspotsReviewed: true, CriticalGapCount: 1}
+		SitesExplored: true, PoolsDetected: true, CandidatesValidated: true, BlindspotsReviewed: true, CriticalGapCount: 1,
+		SocialCoverage: DiscoveryTypeCovered, CampusCoverage: DiscoveryTypeNotFoundAfterSearch,
+		InternCoverage: DiscoveryTypeNotFoundAfterSearch}
 	if _, err := mission.Complete(1); err == nil {
 		t.Fatal("mission completed with a critical gap")
 	}
@@ -95,8 +138,9 @@ func TestSourceInitializationEvidenceCompletesWithoutFabricatedDiscoveryGraph(t 
 }
 
 func TestDiscoveryEvidenceIsCanonicalAndStable(t *testing.T) {
-	node, err := NewDiscoveryEvidenceNodeWithType(EvidenceListURL, "HTTPS://Jobs.Example.com/openings/", "jobs", EvidenceValidated,
-		SensorBrowser, "https://example.com/careers/", "", "browser showed a populated reverse-chronological job list", RecruitmentURLSocial, "")
+	proof := testDiscoveryListProof("artifact-social", "https://jobs.example.com/openings/123/detail")
+	node, err := NewDiscoveryEvidenceNodeWithTypeAndProof(EvidenceListURL, "HTTPS://Jobs.Example.com/openings/", "jobs", EvidenceValidated,
+		SensorBrowser, "https://example.com/careers/", "artifact-social", "browser showed a populated reverse-chronological job list", RecruitmentURLSocial, "", &proof)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,8 +160,9 @@ func TestDiscoveryEvidenceIsCanonicalAndStable(t *testing.T) {
 		SensorBrowser, "https://jobs.example.com/program", "", "special hiring page", RecruitmentURLSpecial, ""); err == nil {
 		t.Fatal("special recruitment URL accepted without a programme name")
 	}
-	special, err := NewDiscoveryEvidenceNodeWithType(EvidenceListURL, "https://jobs.example.com/program", "programme", EvidenceValidated,
-		SensorBrowser, "https://jobs.example.com/program", "", "special hiring page", RecruitmentURLSpecial, "Young Talent")
+	specialProof := testDiscoveryListProof("artifact-special", "https://jobs.example.com/program/123/detail")
+	special, err := NewDiscoveryEvidenceNodeWithTypeAndProof(EvidenceListURL, "https://jobs.example.com/program", "programme", EvidenceValidated,
+		SensorBrowser, "https://jobs.example.com/program", "artifact-special", "special hiring page", RecruitmentURLSpecial, "Young Talent", &specialProof)
 	if err != nil || special.SpecialProgram != "Young Talent" {
 		t.Fatalf("special programme classification=%+v err=%v", special, err)
 	}
@@ -129,6 +174,13 @@ func TestDiscoveryEvidenceIsCanonicalAndStable(t *testing.T) {
 	if err != nil || edge.EdgeID == "" {
 		t.Fatalf("edge = %+v, %v", edge, err)
 	}
+}
+
+func testDiscoveryListProof(artifactID, detailURL string) DiscoveryListProof {
+	return DiscoveryListProof{IsCompanyPage: true, IsJobListing: true, HasActivePostings: true,
+		ListingArtifactID: artifactID, DetailArtifactID: artifactID, SampleJobKey: "123",
+		SampleDetailURL: detailURL, DetailURLPattern: strings.Replace(detailURL, "123", "{value}", 1),
+		IdentitySource: "dom_href", IdentityPath: "a[href]", NavigationPath: []string{"job list", "job detail"}}
 }
 
 func TestDeepDiscoveryWaitAndResumePreservesCheckpoint(t *testing.T) {

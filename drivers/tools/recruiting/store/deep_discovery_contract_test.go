@@ -42,7 +42,7 @@ func TestDeepDiscoveryRepositoryContract(t *testing.T) {
 	noBrandCoverage := model.DiscoveryCoverage{IdentityScoped: true}
 	noBrandMission, err = repository.CheckpointDeepDiscovery(ctx, noBrandMission.MissionID, "no-brand-scope",
 		"company identity scoped", noBrandMission.Version, model.DeepDiscoveryBrandExpansion, noBrandCoverage,
-		0, 1, []model.DiscoveryEvidenceNode{noBrandCompanyNode}, nil, now.Add(time.Second))
+		1, 1, []model.DiscoveryEvidenceNode{noBrandCompanyNode}, nil, now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,10 +129,14 @@ FROM recruiting_deep_discovery_nodes n JOIN recruiting_deep_discovery_node_claim
 WHERE n.mission_id=? AND n.node_id=? GROUP BY n.node_state`, mission.MissionID, listNode.NodeID).Scan(&projectedState, &claimCount); err != nil || projectedState != string(model.EvidenceValidated) || claimCount != 2 {
 		t.Fatalf("candidate promotion projection=%q claims=%d err=%v", projectedState, claimCount, err)
 	}
+	mission = completeListDetailEvidence(t, ctx, repository, mission, company, now.Add(5*time.Second))
 	blindspot := evidenceNode(t, model.EvidenceBlindspot, "campus recruitment", model.EvidenceExcluded, model.SensorHuman, "https://example.com/careers", "outside agreed company scope")
 	unresolved := evidenceNode(t, model.EvidenceListURL, "https://jobs.example.com/graduate", model.EvidenceCandidate, model.SensorOfficialSite, "https://jobs.example.com/careers", "official site exposed a second candidate")
 	coverage.CandidatesValidated = true
 	coverage.BlindspotsReviewed = true
+	coverage.SocialCoverage = model.DiscoveryTypeCovered
+	coverage.CampusCoverage = model.DiscoveryTypeNotFoundAfterSearch
+	coverage.InternCoverage = model.DiscoveryTypeNotFoundAfterSearch
 	mission, err = repository.CheckpointDeepDiscovery(ctx, mission.MissionID, "deep-checkpoint-6", "coverage reviewed", mission.Version, model.DeepDiscoveryCoverageReview, coverage, 0, 1, []model.DiscoveryEvidenceNode{blindspot, unresolved}, nil, now.Add(6*time.Second))
 	if err != nil {
 		t.Fatal(err)
@@ -184,6 +188,62 @@ WHERE n.mission_id=? AND n.node_id=? GROUP BY n.node_state`, mission.MissionID, 
 	if err := repository.CreateDeepDiscoveryMission(ctx, company.Version, parallel, now.Add(11*time.Second)); err != nil {
 		t.Fatalf("canceled mission did not release Company: %v", err)
 	}
+}
+
+func completeListDetailEvidence(t *testing.T, ctx context.Context, repository *Repository,
+	mission model.DeepDiscoveryMission, company model.Company, at time.Time) model.DeepDiscoveryMission {
+	t.Helper()
+	nextMission, err := mission.ConsumeOperations(mission.Version, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, _ := model.NewWork("deep-list-detail-work", "deep_discovery_probe", "deep-list-detail-probe", "deep_discovery_browser", "agent")
+	probe, err := model.NewDeepDiscoveryBrowserProbe("deep-list-detail-probe", mission.MissionID, work.WorkID,
+		"https://jobs.example.com/search?sort=updated", "", 0, "a.job[href]", nextMission.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placement := WorkPlacement{BusinessKey: "deep-list-detail-probe", CompanyID: company.CompanyID,
+		Capability: "browser.public", Origin: "https://jobs.example.com", NotBefore: at}
+	response, _ := json.Marshal(map[string]any{"probe": probe, "mission": nextMission})
+	receipt, _ := model.NewCommandReceipt("deep-list-detail-create", "recruiting.deep_discovery.browser.observe",
+		"sha256:deep-list-detail-create", response)
+	event, _ := model.NewEventIntent("event-deep-list-detail-create", "deep.discovery.browser.queued", "deep_discovery",
+		mission.MissionID, nextMission.Version, at.Format(time.RFC3339Nano), receipt.CommandID,
+		json.RawMessage(`{"probe_id":"deep-list-detail-probe"}`))
+	if _, err := repository.ApplyCreateDeepDiscoveryBrowserProbeCommand(ctx, mission, nextMission, probe, work,
+		placement, receipt, event, nil, at); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := repository.OfferExecution(ctx, ListingOfferRequest{AttemptID: "deep-list-detail-attempt",
+		ExecutorActorID: "tool:browser:list-detail", ExecutorIncarnation: "boot-1", Capability: "browser.public",
+		OfferedAt: at.Add(time.Second), BudgetPolicy: testExecutionBudgetPolicy()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AcceptListingExecution(ctx, offer.Attempt.AttemptID, "tool:browser:list-detail", "boot-1", at.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StartListingExecution(ctx, offer.Attempt.AttemptID, "tool:browser:list-detail", "boot-1", at.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	contentHash := "sha256:" + strings.Repeat("c", 64)
+	artifact, _ := model.NewArtifactMetadata("deep-list-detail-response", model.ArtifactResponse, contentHash,
+		"file://worker/recruiting/deep-list-detail-response", work.WorkID, offer.Attempt.AttemptID, "operators", "30d", false)
+	result := DeepDiscoveryBrowserResult{CommandID: "deep-list-detail-result", RequestHash: "sha256:deep-list-detail-result",
+		AttemptID: offer.Attempt.AttemptID, ExecutorActorID: "tool:browser:list-detail", ExecutorIncarnation: "boot-1",
+		Artifact: artifact, FinalURL: "https://jobs.example.com/position/123/detail", ContentHash: contentHash,
+		Links: []executioncontract.DeepDiscoveryLink{{URL: "https://jobs.example.com/position/123/detail", Text: "Engineer"}},
+		Attestation: executioncontract.DeepDiscoveryEffectAttestation{DocumentNavigations: 2, ObservedMethods: []string{"GET"},
+			PublicEndpoint: true, RobotsAllowed: true, TermsPolicyVersion: 1}, ObservedAt: at.Add(4 * time.Second)}
+	if _, err := repository.AcceptDeepDiscoveryBrowserResult(ctx, result); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repository.GetDeepDiscoveryMission(ctx, mission.MissionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stored
 }
 
 func TestDeepDiscoveryBrowserProbeRunsThroughWorkAttemptAndBudget(t *testing.T) {
@@ -401,7 +461,18 @@ func evidenceNode(t *testing.T, kind model.DiscoveryEvidenceKind, value string, 
 	if kind == model.EvidenceListURL {
 		recruitmentType = model.RecruitmentURLAll
 	}
-	node, err := model.NewDiscoveryEvidenceNodeWithType(kind, value, value, state, sensor, evidenceURL, "", basis, recruitmentType, "")
+	artifactID := ""
+	var proof *model.DiscoveryListProof
+	if kind == model.EvidenceListURL && state == model.EvidenceValidated {
+		artifactID = "deep-list-detail-response"
+		proof = &model.DiscoveryListProof{IsCompanyPage: true, IsJobListing: true, HasActivePostings: true,
+			ListingArtifactID: artifactID, DetailArtifactID: artifactID, SampleJobKey: "123",
+			SampleDetailURL:  "https://jobs.example.com/position/123/detail",
+			DetailURLPattern: "https://jobs.example.com/position/{value}/detail", IdentitySource: "dom_href",
+			IdentityPath: "a.job[href]", NavigationPath: []string{"official careers", "job list", "job detail"}}
+	}
+	node, err := model.NewDiscoveryEvidenceNodeWithTypeAndProof(kind, value, value, state, sensor, evidenceURL,
+		artifactID, basis, recruitmentType, "", proof)
 	if err != nil {
 		t.Fatal(err)
 	}

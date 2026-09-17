@@ -92,6 +92,35 @@ WHERE mission_id=? AND node_kind='list_url' AND node_state='validated' ORDER BY 
 	return result, rows.Err()
 }
 
+func (r *Repository) GetValidatedListURLProof(ctx context.Context, companyID string, generation uint64,
+	listURL string) (model.DiscoveryEvidenceNode, error) {
+	companyID, listURL = strings.TrimSpace(companyID), strings.TrimSpace(listURL)
+	if companyID == "" || generation == 0 || listURL == "" {
+		return model.DiscoveryEvidenceNode{}, fmt.Errorf("company, discovery generation, and list URL are required")
+	}
+	var raw []byte
+	err := r.db.QueryRowContext(ctx, `SELECT n.state_json
+FROM recruiting_deep_discovery_nodes n
+JOIN recruiting_deep_discovery_missions m ON m.mission_id=n.mission_id
+WHERE m.company_id=? AND m.discovery_generation=? AND m.mission_status='completed'
+  AND n.node_kind='list_url' AND n.node_state='validated' AND n.canonical_value=?
+ORDER BY m.mission_id DESC LIMIT 1`, companyID, generation, listURL).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.DiscoveryEvidenceNode{}, ErrNotFound
+	}
+	if err != nil {
+		return model.DiscoveryEvidenceNode{}, err
+	}
+	var node model.DiscoveryEvidenceNode
+	if err := json.Unmarshal(raw, &node); err != nil {
+		return model.DiscoveryEvidenceNode{}, err
+	}
+	if node.ListProof == nil || node.ListProof.Validate(node.CanonicalValue, node.EvidenceArtifactID) != nil {
+		return model.DiscoveryEvidenceNode{}, fmt.Errorf("validated list URL is missing its list-to-detail proof")
+	}
+	return node, nil
+}
+
 // ApplyCreateOnboardingCompanyMission is the atomic zero-to-one boundary for
 // a user who supplies only a company name. The Agent may explore afterwards,
 // but it can never leave an orphan Company or Mission if this transaction

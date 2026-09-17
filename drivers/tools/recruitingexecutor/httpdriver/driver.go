@@ -159,7 +159,25 @@ func (d *Driver) Fetch(ctx context.Context, spec recipeabi.Spec, input recipeabi
 	if spec.Transport != recipeabi.TransportHTTPJSON && spec.Transport != recipeabi.TransportHTTPHTML {
 		return Result{}, fmt.Errorf("HTTP driver cannot run transport %q", spec.Transport)
 	}
-	return d.fetchReadRequest(ctx, input.Endpoint.URL, spec.Request, compliance)
+	requestURL, err := recipeRequestURL(input.Endpoint.URL, spec.Request)
+	if err != nil {
+		return Result{}, err
+	}
+	return d.fetchReadRequest(ctx, requestURL, spec.Request, compliance)
+}
+
+func recipeRequestURL(sourceURL string, request recipeabi.ReadRequest) (string, error) {
+	requestURL := strings.TrimSpace(request.URL)
+	if requestURL == "" {
+		return sourceURL, nil
+	}
+	source, sourceErr := url.Parse(sourceURL)
+	transport, transportErr := url.Parse(requestURL)
+	if sourceErr != nil || transportErr != nil || normalizedOrigin(source) == "" ||
+		normalizedOrigin(source) != normalizedOrigin(transport) {
+		return "", fmt.Errorf("Recipe transport URL must share the verified Source origin")
+	}
+	return requestURL, nil
 }
 
 // FetchPublicQuery independently verifies browser-observed, credential-free

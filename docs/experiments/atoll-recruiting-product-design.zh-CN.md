@@ -143,6 +143,10 @@ scope_building
 
 每个 `ListURL` 必须把招聘受众作为证据事实保存为 `social / campus / intern / special / all` 之一；`special` 还必须保存具体计划名。`unknown` 只能用于尚未验证的候选，不能通过 Mission 完成门。分类依据来自渲染页面、导航、正文或网络响应，不能根据 URL 字符串、搜索摘要或模型记忆猜测。同一个公司可以有多个招聘列表 URL，同一个 URL 在业务受众确实不同且证据充分时也可形成不同分类的数据源。
 
+Snowland 的发现 SOP 是本阶段的业务规范，不因迁移到 Atoll 而被抽象掉。`brand_expansion` 前至少发生一次真实搜索，并对有证据的新子品牌迭代至收敛或五轮上限；每个保留站点都必须真实打开；宣传页必须继续导航到岗位列表；社招、校招、实习必须分别记录 `covered / not_found_after_search / excluded`。最关键的完成门是一个不可伪造的 `list_proof`：每个 validated `ListURL` 必须引用本 Mission 中已完成的 Browser Artifact，证明页面属于目标公司、确有活跃岗位，并从该列表真实跟随一个岗位到不同的 canonical DetailURL；同时保存 sample job key、精确 DetailURL、能复现该样本的唯一 `{value}` pattern、身份来源与字段路径、完整导航路径，以及列表/详情 Artifact ID。APIEndpoint 只能成为 Recipe transport 证据，不能替代 Source 的人类可访问 ListURL。
+
+同一 Browser Probe 可以从 ListURL 通过冻结的 `follow_link_selector` 导航到样本 DetailURL；也可以由列表 Probe 与详情 Probe 两份 Artifact 共同证明，但后一种方式要求详情 URL 确实出现在列表 Probe 的规范链接中。Actor 构造 Listing Recipe 时，任何 `detail_url_template` 都必须与已保存的 `list_proof.detail_url_pattern` 完全一致；API 只返回一个 ID 并不授权模型猜测详情路由。旧 Mission 若没有这条证据链，不能 materialize Source，也不能作为 Recipe 准备依据，必须重新发现或由人工通过同一 Artifact 门补证。
+
 Mission 默认最多 5 轮搜索、250 次外部操作；预算是创建时冻结的上限，不是必须用完的额度。每个 checkpoint 只能停留当前阶段或推进一个阶段，记录预算消耗、覆盖矩阵、节点、边和摘要。超预算、归属冲突、登录/验证码或无法判定的重要盲区进入 `waiting_human`，人工处理后从原 checkpoint 恢复，不重启探索。
 
 证据图固定表达 `Company / Brand / LegalEntity / Domain / Site / ListingPool / APIEndpoint / ListURL / Blindspot`，边表达 `owns_brand / recruits_at / hosts / contains_pool / lists_jobs_at` 等可解释关系。每个节点必须带 `web_search / official_site / sitemap / robots / browser / network / ats_fingerprint / detail_reverse / human` 中的一种来源，以及 Evidence URL 或 Artifact 引用和判断依据。Web Search 只是传感器之一；搜索结果不能直接成为已验证 Source。

@@ -346,7 +346,7 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 			directive = "Call recruiting.onboarding.advance with only company_name. It will start a bounded evidence Mission and probe each candidate Source before any Listing Recipe is proposed. Continue without asking the user for internal IDs or URLs."
 		} else {
 			next = "initialize_candidate_sources"
-			directive = "For each candidate Source, inspect its verified public-query response and call recruiting.recipe.prepare with only the evidence-backed semantic mapping; the control plane constructs the low-level Listing Recipe ABI. Otherwise generate a Resource-backed Listing Recipe from real page evidence. Internally stage an observed API with recruiting.source.update, then call recruiting.recipe.propose and recruiting.recipe.validate. Approve only successful evidence, validate and publish the Source, then start its first baseline. After the baseline exposes a pending sample Job, generate and validate the first Detail Recipe, approve and assign it. Continue without asking the user for internal IDs; report only evidence-backed blockers."
+			directive = "For each candidate Source, inspect its verified public-query response and call recruiting.recipe.prepare with only the evidence-backed semantic mapping; the control plane constructs the low-level Listing Recipe ABI. Otherwise generate a Resource-backed Listing Recipe from real page evidence. Keep the Source endpoint on its verified human-facing ListURL; the observed API stays inside the Recipe request. Call recruiting.recipe.propose and recruiting.recipe.validate against the current Source endpoint revision. Approve only successful evidence, validate and publish the Source, then start its first baseline. After the baseline exposes a pending sample Job, generate and validate the first Detail Recipe, approve and assign it. Continue without asking the user for internal IDs; report only evidence-backed blockers."
 		}
 	}
 	if mission.Status == model.DeepDiscoveryDone && !classified && !mission.IsSourceInitializationEvidence() {
@@ -523,6 +523,10 @@ func handleOnboardingMaterialize(sys actorbase.Sys, repository *store.Repository
 		_, _ = sys.Fail(msg, ErrorQualityRejected, "every validated URL must have an evidence-backed recruitment type")
 		return
 	}
+	if err := repository.ValidateDeepDiscoveryListProofs(msg.Ctx(), mission.MissionID, urls); err != nil {
+		_, _ = sys.Fail(msg, ErrorQualityRejected, err.Error())
+		return
+	}
 	nextCompany := company
 	companyChanged := false
 	if company.OnboardingStatus == model.CompanyNew || company.OnboardingStatus == model.CompanyBlockedNoSources ||
@@ -679,6 +683,6 @@ func firstOnboardingError(values ...error) error {
 	return errors.New("unknown onboarding error")
 }
 
-const onboardingAgentDirective = "Continue in this turn without asking the user for internal IDs: resolve official identity and call the stage guide. Once an official website is persisted, call recruiting.onboarding.advance with only company_name; poll onboarding.status and repeat advance while it offers a safe automatic network step. Checkpoint evidence sequentially, classify every validated list URL as social/campus/intern/special/all from page or network evidence, use special_program for named programmes, complete the Mission, then call recruiting.onboarding.materialize with company_name. Stop only at materialized or an evidence-backed waiting_human state. Never claim absolute completeness."
+const onboardingAgentDirective = "Continue in this turn without asking the user for internal IDs: resolve official identity and call the stage guide. Execute the Snowland discovery SOP in order: iterative brand search, official-site enumeration, browser navigation to every real job list, core-type coverage review, and one real list-to-detail click per validated URL. Once an official website is persisted, call recruiting.onboarding.advance with only company_name; poll onboarding.status and repeat advance while it offers a safe automatic network step. Checkpoint evidence sequentially; every validated list_url must include database-backed list_proof with listing/detail Artifact IDs, sample job key and exact detail URL, observed {value} pattern, identity source/path, and navigation path. Classify it as social/campus/intern/special/all from page or network evidence, use special_program for named programmes, and explicitly disposition social/campus/intern coverage. Complete the Mission, then call recruiting.onboarding.materialize with company_name. Stop only at materialized or an evidence-backed waiting_human state. Never claim absolute completeness or substitute an API endpoint for a ListURL."
 
 const onboardingClassificationPolicy = "A URL type is a persisted evidence fact: social, campus, intern, special, or all. Unknown or missing means unverified. Never infer it from URL spelling, labels, or model memory; special requires the programme name."

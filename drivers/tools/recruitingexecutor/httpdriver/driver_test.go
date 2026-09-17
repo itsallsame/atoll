@@ -68,6 +68,18 @@ func TestFetchIsReadOnlyBoundedAndCarriesEvidence(t *testing.T) {
 	}
 }
 
+func TestRecipeTransportURLIsSeparateFromBusinessListURLButSameOrigin(t *testing.T) {
+	request := recipeabi.ReadRequest{URL: "https://jobs.example.com/api/public/jobs"}
+	got, err := recipeRequestURL("https://jobs.example.com/campus/position", request)
+	if err != nil || got != request.URL {
+		t.Fatalf("same-origin Recipe transport URL=%q err=%v", got, err)
+	}
+	request.URL = "https://api.attacker.example/jobs"
+	if _, err := recipeRequestURL("https://jobs.example.com/campus/position", request); err == nil {
+		t.Fatal("cross-origin Recipe transport URL was accepted")
+	}
+}
+
 func TestFetchPublicQueryUsesExactEvidenceWithoutRecipeExtraction(t *testing.T) {
 	var writes atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

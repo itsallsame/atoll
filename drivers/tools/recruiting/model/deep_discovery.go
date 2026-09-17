@@ -99,15 +99,24 @@ type DeepDiscoveryBudget struct {
 }
 
 type DiscoveryCoverage struct {
-	IdentityScoped      bool `json:"identity_scoped"`
-	BrandsReviewed      bool `json:"brands_reviewed"`
-	SitesEnumerated     bool `json:"sites_enumerated"`
-	SitesExplored       bool `json:"sites_explored"`
-	PoolsDetected       bool `json:"pools_detected"`
-	CandidatesValidated bool `json:"candidates_validated"`
-	BlindspotsReviewed  bool `json:"blindspots_reviewed"`
-	CriticalGapCount    int  `json:"critical_gap_count"`
+	IdentityScoped      bool   `json:"identity_scoped"`
+	BrandsReviewed      bool   `json:"brands_reviewed"`
+	SitesEnumerated     bool   `json:"sites_enumerated"`
+	SitesExplored       bool   `json:"sites_explored"`
+	PoolsDetected       bool   `json:"pools_detected"`
+	CandidatesValidated bool   `json:"candidates_validated"`
+	BlindspotsReviewed  bool   `json:"blindspots_reviewed"`
+	CriticalGapCount    int    `json:"critical_gap_count"`
+	SocialCoverage      string `json:"social_coverage,omitempty"`
+	CampusCoverage      string `json:"campus_coverage,omitempty"`
+	InternCoverage      string `json:"intern_coverage,omitempty"`
 }
+
+const (
+	DiscoveryTypeCovered             = "covered"
+	DiscoveryTypeNotFoundAfterSearch = "not_found_after_search"
+	DiscoveryTypeExcluded            = "excluded"
+)
 
 type DeepDiscoveryMission struct {
 	MissionID       string               `json:"mission_id"`
@@ -141,6 +150,65 @@ type DiscoveryEvidenceNode struct {
 	Basis              string                 `json:"basis"`
 	RecruitmentType    RecruitmentURLType     `json:"recruitment_type,omitempty"`
 	SpecialProgram     string                 `json:"special_program,omitempty"`
+	ListProof          *DiscoveryListProof    `json:"list_proof,omitempty"`
+}
+
+// DiscoveryListProof is the durable business proof that a URL is a job list,
+// rather than a careers landing page or an API endpoint.  It deliberately
+// mirrors Snowland's strongest discovery invariant: a list is not validated
+// until a real job was followed to a real detail page and the identity-to-URL
+// construction was observed.  Artifact ownership is verified by the store.
+type DiscoveryListProof struct {
+	IsCompanyPage     bool     `json:"is_company_page"`
+	IsJobListing      bool     `json:"is_job_listing"`
+	HasActivePostings bool     `json:"has_active_postings"`
+	ListingArtifactID string   `json:"listing_artifact_id"`
+	DetailArtifactID  string   `json:"detail_artifact_id"`
+	SampleJobKey      string   `json:"sample_job_key"`
+	SampleDetailURL   string   `json:"sample_detail_url"`
+	DetailURLPattern  string   `json:"detail_url_pattern"`
+	IdentitySource    string   `json:"identity_source"`
+	IdentityPath      string   `json:"identity_path"`
+	NavigationPath    []string `json:"navigation_path"`
+}
+
+func (p DiscoveryListProof) Validate(listURL, evidenceArtifactID string) error {
+	listURL, evidenceArtifactID = strings.TrimSpace(listURL), strings.TrimSpace(evidenceArtifactID)
+	p.ListingArtifactID, p.DetailArtifactID = strings.TrimSpace(p.ListingArtifactID), strings.TrimSpace(p.DetailArtifactID)
+	p.SampleJobKey, p.SampleDetailURL = strings.TrimSpace(p.SampleJobKey), strings.TrimSpace(p.SampleDetailURL)
+	p.DetailURLPattern, p.IdentitySource, p.IdentityPath = strings.TrimSpace(p.DetailURLPattern), strings.TrimSpace(p.IdentitySource), strings.TrimSpace(p.IdentityPath)
+	if !p.IsCompanyPage || !p.IsJobListing || !p.HasActivePostings || p.ListingArtifactID == "" ||
+		p.DetailArtifactID == "" || p.ListingArtifactID != evidenceArtifactID || p.SampleJobKey == "" ||
+		p.SampleDetailURL == "" || p.DetailURLPattern == "" || p.IdentityPath == "" ||
+		len(p.SampleJobKey) > 512 || len(p.IdentityPath) > 512 || len(p.NavigationPath) < 2 || len(p.NavigationPath) > 20 {
+		return fmt.Errorf("validated list URL requires bounded list-to-detail browser proof")
+	}
+	switch p.IdentitySource {
+	case "dom_href", "dom_attribute", "api_field":
+	default:
+		return fmt.Errorf("validated list URL has an invalid detail identity source")
+	}
+	canonicalList, err := CanonicalHTTPURL(listURL)
+	if err != nil || canonicalList != listURL {
+		return fmt.Errorf("validated list URL proof requires a canonical list URL")
+	}
+	canonicalDetail, err := CanonicalHTTPURL(p.SampleDetailURL)
+	if err != nil || canonicalDetail != p.SampleDetailURL || canonicalDetail == canonicalList {
+		return fmt.Errorf("validated list URL proof requires a distinct canonical sample detail URL")
+	}
+	if strings.Count(p.DetailURLPattern, "{value}") != 1 {
+		return fmt.Errorf("detail URL pattern must contain exactly one {value}")
+	}
+	rendered, err := CanonicalHTTPURL(strings.Replace(p.DetailURLPattern, "{value}", p.SampleJobKey, 1))
+	if err != nil || rendered != canonicalDetail {
+		return fmt.Errorf("detail URL pattern does not reproduce the verified sample detail URL")
+	}
+	for _, step := range p.NavigationPath {
+		if strings.TrimSpace(step) == "" || len(step) > 512 {
+			return fmt.Errorf("validated list URL proof contains an invalid navigation step")
+		}
+	}
+	return nil
 }
 
 type DiscoveryEvidenceEdge struct {
@@ -212,6 +280,13 @@ func NewDiscoveryEvidenceNode(kind DiscoveryEvidenceKind, value, label string, s
 func NewDiscoveryEvidenceNodeWithType(kind DiscoveryEvidenceKind, value, label string, state DiscoveryEvidenceState,
 	sensor DiscoverySensor, evidenceURL, artifactID, basis string, recruitmentType RecruitmentURLType,
 	specialProgram string) (DiscoveryEvidenceNode, error) {
+	return NewDiscoveryEvidenceNodeWithTypeAndProof(kind, value, label, state, sensor, evidenceURL, artifactID, basis,
+		recruitmentType, specialProgram, nil)
+}
+
+func NewDiscoveryEvidenceNodeWithTypeAndProof(kind DiscoveryEvidenceKind, value, label string, state DiscoveryEvidenceState,
+	sensor DiscoverySensor, evidenceURL, artifactID, basis string, recruitmentType RecruitmentURLType,
+	specialProgram string, listProof *DiscoveryListProof) (DiscoveryEvidenceNode, error) {
 	value, label, evidenceURL, artifactID, basis = strings.TrimSpace(value), strings.TrimSpace(label),
 		strings.TrimSpace(evidenceURL), strings.TrimSpace(artifactID), strings.TrimSpace(basis)
 	specialProgram = strings.TrimSpace(specialProgram)
@@ -234,7 +309,7 @@ func NewDiscoveryEvidenceNodeWithType(kind DiscoveryEvidenceKind, value, label s
 		value = canonical
 	}
 	if kind != EvidenceListURL {
-		if recruitmentType != "" || specialProgram != "" {
+		if recruitmentType != "" || specialProgram != "" || listProof != nil {
 			return DiscoveryEvidenceNode{}, fmt.Errorf("recruitment type only applies to list URL evidence")
 		}
 	} else {
@@ -254,11 +329,22 @@ func NewDiscoveryEvidenceNodeWithType(kind DiscoveryEvidenceKind, value, label s
 		if state == EvidenceValidated && recruitmentType == RecruitmentURLUnknown {
 			return DiscoveryEvidenceNode{}, fmt.Errorf("validated list URL requires an evidence-backed recruitment type")
 		}
+		if state == EvidenceValidated {
+			if listProof == nil {
+				return DiscoveryEvidenceNode{}, fmt.Errorf("validated list URL requires real list-to-detail proof")
+			}
+			if err := listProof.Validate(value, artifactID); err != nil {
+				return DiscoveryEvidenceNode{}, err
+			}
+		} else if listProof != nil {
+			return DiscoveryEvidenceNode{}, fmt.Errorf("list-to-detail proof only applies to a validated list URL")
+		}
 	}
 	sum := sha256.Sum256([]byte("recruiting.deep-discovery.node.v1\n" + string(kind) + "\n" + strings.ToLower(value)))
 	return DiscoveryEvidenceNode{NodeID: "discovery-node-" + hex.EncodeToString(sum[:16]), Kind: kind,
 		CanonicalValue: value, Label: label, State: state, Sensor: sensor, EvidenceURL: evidenceURL,
-		EvidenceArtifactID: artifactID, Basis: basis, RecruitmentType: recruitmentType, SpecialProgram: specialProgram}, nil
+		EvidenceArtifactID: artifactID, Basis: basis, RecruitmentType: recruitmentType, SpecialProgram: specialProgram,
+		ListProof: listProof}, nil
 }
 
 func validRecruitmentURLType(value RecruitmentURLType) bool {
@@ -314,6 +400,10 @@ func (m DeepDiscoveryMission) Checkpoint(expected uint64, nextStage DeepDiscover
 	}
 	if err := coverageAllowsStage(nextStage, coverage); err != nil {
 		return DeepDiscoveryMission{}, err
+	}
+	if stageOrdinal(nextStage) >= stageOrdinal(DeepDiscoverySiteEnumeration) &&
+		m.Budget.SearchRoundsUsed+searchRounds < 1 {
+		return DeepDiscoveryMission{}, fmt.Errorf("deep discovery must perform at least one real search round before site enumeration")
 	}
 	m.Stage, m.Coverage = nextStage, coverage
 	m.Budget.SearchRoundsUsed += searchRounds
@@ -385,11 +475,22 @@ func (m DeepDiscoveryMission) Complete(expected uint64) (DeepDiscoveryMission, e
 	}
 	if m.Status != DeepDiscoveryActive || m.Stage != DeepDiscoveryCoverageReview || m.CandidateCount < 1 || m.Coverage.CriticalGapCount != 0 ||
 		!m.Coverage.IdentityScoped || !m.Coverage.BrandsReviewed || !m.Coverage.SitesEnumerated || !m.Coverage.SitesExplored ||
-		!m.Coverage.PoolsDetected || !m.Coverage.CandidatesValidated || !m.Coverage.BlindspotsReviewed {
+		!m.Coverage.PoolsDetected || !m.Coverage.CandidatesValidated || !m.Coverage.BlindspotsReviewed ||
+		!validDiscoveryTypeDisposition(m.Coverage.SocialCoverage) || !validDiscoveryTypeDisposition(m.Coverage.CampusCoverage) ||
+		!validDiscoveryTypeDisposition(m.Coverage.InternCoverage) {
 		return DeepDiscoveryMission{}, fmt.Errorf("deep discovery completion requires reviewed coverage, no critical gaps, and a validated candidate")
 	}
 	m.Stage, m.Status, m.WaitingReason, m.Version = DeepDiscoveryCompleted, DeepDiscoveryDone, "", m.Version+1
 	return m, nil
+}
+
+func validDiscoveryTypeDisposition(value string) bool {
+	switch value {
+	case DiscoveryTypeCovered, DiscoveryTypeNotFoundAfterSearch, DiscoveryTypeExcluded:
+		return true
+	default:
+		return false
+	}
 }
 
 func stageOrdinal(stage DeepDiscoveryStage) int {
@@ -425,6 +526,10 @@ func coverageAllowsStage(stage DeepDiscoveryStage, c DiscoveryCoverage) error {
 	}
 	if c.CriticalGapCount < 0 {
 		return fmt.Errorf("critical gap count cannot be negative")
+	}
+	if stage == DeepDiscoveryCoverageReview && (!validDiscoveryTypeDisposition(c.SocialCoverage) ||
+		!validDiscoveryTypeDisposition(c.CampusCoverage) || !validDiscoveryTypeDisposition(c.InternCoverage)) {
+		return fmt.Errorf("coverage review requires an explicit social, campus, and intern disposition")
 	}
 	return nil
 }

@@ -92,7 +92,11 @@ func (d *Driver) runListing(ctx context.Context, spec recipeabi.Spec, input reci
 	if err != nil {
 		return ListingRunResult{}, err
 	}
-	initialURL, _ := url.Parse(input.Endpoint.URL)
+	initialRequestURL, err := recipeRequestURL(input.Endpoint.URL, spec.Request)
+	if err != nil {
+		return ListingRunResult{}, err
+	}
+	initialURL, _ := url.Parse(initialRequestURL)
 	currentURL := initialURL
 	currentBody := append(json.RawMessage(nil), spec.Request.JSONBody...)
 	var artifacts []recipeabi.ArtifactRef
@@ -100,8 +104,8 @@ func (d *Driver) runListing(ctx context.Context, spec recipeabi.Spec, input reci
 	var totalBytes int64
 	for pageSequence := 1; !scan.Complete(); pageSequence++ {
 		pageInput := input
-		pageInput.Endpoint.URL = currentURL.String()
 		pageSpec := spec
+		pageSpec.Request.URL = currentURL.String()
 		pageSpec.Request.JSONBody = currentBody
 		fetched, fetchErr := d.Fetch(ctx, pageSpec, pageInput, compliance)
 		totalBytes += int64(len(fetched.Body))

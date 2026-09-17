@@ -284,6 +284,7 @@ func (p BrowserPlan) ContentHash() (string, error) {
 }
 
 type ReadRequest struct {
+	URL              string            `json:"url,omitempty"`
 	Method           string            `json:"method"`
 	Headers          map[string]string `json:"headers,omitempty"`
 	JSONBody         json.RawMessage   `json:"json_body,omitempty"`
@@ -486,7 +487,8 @@ func (o PublicQueryObservation) MatchesReadRequest(request ReadRequest) bool {
 		return false
 	}
 	canonical, err := o.Canonicalized()
-	if err != nil || strings.ToUpper(strings.TrimSpace(request.Method)) != canonical.Method {
+	if err != nil || strings.ToUpper(strings.TrimSpace(request.Method)) != canonical.Method ||
+		(strings.TrimSpace(request.URL) != "" && strings.TrimSpace(request.URL) != canonical.EndpointURL) {
 		return false
 	}
 	requestBody, err := canonicalJSONObject(request.JSONBody)
@@ -553,6 +555,12 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("unsupported recipe transport %q", s.Transport)
 	}
 	method := strings.ToUpper(strings.TrimSpace(s.Request.Method))
+	if requestURL := strings.TrimSpace(s.Request.URL); requestURL != "" {
+		canonical, err := stablePublicQueryEndpoint(requestURL)
+		if err != nil || canonical != requestURL || s.Kind != KindListing || s.Transport == TransportBrowser {
+			return fmt.Errorf("fixed request URL is only valid for a canonical HTTP Listing transport")
+		}
+	}
 	if method != "GET" && method != "POST" {
 		return fmt.Errorf("recipe request must be GET or a constrained public-query POST")
 	}
@@ -1087,6 +1095,7 @@ func (s Spec) ContractHash() (string, error) {
 		Kind      Kind      `json:"kind"`
 		Transport Transport `json:"transport"`
 		Request   struct {
+			URL      string            `json:"url,omitempty"`
 			Method   string            `json:"method"`
 			Headers  map[string]string `json:"headers,omitempty"`
 			JSONBody json.RawMessage   `json:"json_body,omitempty"`
@@ -1098,10 +1107,11 @@ func (s Spec) ContractHash() (string, error) {
 	}{
 		Kind: s.Kind, Transport: s.Transport,
 		Request: struct {
+			URL      string            `json:"url,omitempty"`
 			Method   string            `json:"method"`
 			Headers  map[string]string `json:"headers,omitempty"`
 			JSONBody json.RawMessage   `json:"json_body,omitempty"`
-		}{Method: strings.ToUpper(strings.TrimSpace(s.Request.Method)), Headers: s.Request.Headers, JSONBody: s.Request.JSONBody},
+		}{URL: strings.TrimSpace(s.Request.URL), Method: strings.ToUpper(strings.TrimSpace(s.Request.Method)), Headers: s.Request.Headers, JSONBody: s.Request.JSONBody},
 		Extraction: s.Extraction, OffsetPagination: s.OffsetPagination, Listing: s.Listing, BrowserPlan: s.BrowserPlan,
 	}
 	raw, err := json.Marshal(contract)

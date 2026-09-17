@@ -44,6 +44,7 @@ type deepDiscoveryNodeInput struct {
 	Basis              string                       `json:"basis"`
 	RecruitmentType    model.RecruitmentURLType     `json:"recruitment_type,omitempty"`
 	SpecialProgram     string                       `json:"special_program,omitempty"`
+	ListProof          *model.DiscoveryListProof    `json:"list_proof,omitempty"`
 }
 
 type deepDiscoveryEdgeInput struct {
@@ -460,7 +461,9 @@ func normalizeDeepDiscoveryGraph(inputs []deepDiscoveryNodeInput, edgeInputs []d
 		if _, duplicate := refs[ref]; duplicate {
 			return nil, nil, fmt.Errorf("duplicate discovery node ref %q", ref)
 		}
-		node, err := model.NewDiscoveryEvidenceNodeWithType(input.Kind, input.CanonicalValue, input.Label, input.State, input.Sensor, input.EvidenceURL, input.EvidenceArtifactID, input.Basis, input.RecruitmentType, input.SpecialProgram)
+		node, err := model.NewDiscoveryEvidenceNodeWithTypeAndProof(input.Kind, input.CanonicalValue, input.Label,
+			input.State, input.Sensor, input.EvidenceURL, input.EvidenceArtifactID, input.Basis,
+			input.RecruitmentType, input.SpecialProgram, input.ListProof)
 		if err != nil {
 			return nil, nil, err
 		}

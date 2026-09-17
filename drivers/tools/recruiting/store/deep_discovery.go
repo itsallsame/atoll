@@ -257,7 +257,8 @@ func (r *Repository) checkpointDeepDiscovery(ctx context.Context, missionID, com
 	}
 	nodeIDs := make(map[string]struct{}, len(nodes))
 	for _, node := range nodes {
-		validated, err := model.NewDiscoveryEvidenceNodeWithType(node.Kind, node.CanonicalValue, node.Label, node.State, node.Sensor, node.EvidenceURL, node.EvidenceArtifactID, node.Basis, node.RecruitmentType, node.SpecialProgram)
+		validated, err := model.NewDiscoveryEvidenceNodeWithTypeAndProof(node.Kind, node.CanonicalValue, node.Label, node.State,
+			node.Sensor, node.EvidenceURL, node.EvidenceArtifactID, node.Basis, node.RecruitmentType, node.SpecialProgram, node.ListProof)
 		if err != nil || validated != node {
 			return model.DeepDiscoveryMission{}, CommandResult{}, fmt.Errorf("deep discovery node is not canonical")
 		}
@@ -414,6 +415,11 @@ mission_id,edge_id,edge_ordinal,from_node_id,to_node_id,relation_kind,state_json
 
 func validateDeepDiscoveryStageEvidence(ctx context.Context, tx *sql.Tx, missionID string, stage model.DeepDiscoveryStage,
 	incoming []model.DiscoveryEvidenceNode) error {
+	if stage == model.DeepDiscoveryCoverageReview {
+		if err := validateDeepDiscoveryListProofs(ctx, tx, missionID, incoming); err != nil {
+			return err
+		}
+	}
 	requiredKinds := []model.DiscoveryEvidenceKind{}
 	switch stage {
 	case model.DeepDiscoveryBrandExpansion:
@@ -477,6 +483,125 @@ func validateDeepDiscoveryStageEvidence(ctx context.Context, tx *sql.Tx, mission
 	}
 	if !supported {
 		return fmt.Errorf("deep discovery stage %s is not supported by its evidence graph", stage)
+	}
+	return nil
+}
+
+type completedDiscoveryProbeEvidence struct {
+	Probe  model.DeepDiscoveryBrowserProbe
+	Result DeepDiscoveryBrowserResult
+}
+
+func (r *Repository) ValidateDeepDiscoveryListProofs(ctx context.Context, missionID string,
+	nodes []model.DiscoveryEvidenceNode) error {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	return validateDeepDiscoveryListProofs(ctx, tx, strings.TrimSpace(missionID), nodes)
+}
+
+// validateDeepDiscoveryListProofs turns Snowland's list -> click one job ->
+// verify detail-page SOP into a database-backed transition guard.  Textual
+// claims, search results, an API ID, or a syntactically valid URL are not
+// sufficient: the referenced immutable browser Artifacts must belong to this
+// Mission and prove the observed navigation.
+func validateDeepDiscoveryListProofs(ctx context.Context, tx *sql.Tx, missionID string,
+	incoming []model.DiscoveryEvidenceNode) error {
+	byID := make(map[string]model.DiscoveryEvidenceNode)
+	rows, err := tx.QueryContext(ctx, `SELECT node_id,state_json FROM recruiting_deep_discovery_nodes WHERE mission_id=? AND node_kind='list_url'`, missionID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id string
+		var raw []byte
+		if err := rows.Scan(&id, &raw); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		var node model.DiscoveryEvidenceNode
+		if err := json.Unmarshal(raw, &node); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		byID[id] = node
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, node := range incoming {
+		if node.Kind == model.EvidenceListURL {
+			byID[node.NodeID] = node
+		}
+	}
+
+	probes := make(map[string]completedDiscoveryProbeEvidence)
+	probeRows, err := tx.QueryContext(ctx, `SELECT state_json,result_json FROM recruiting_deep_discovery_browser_probes WHERE mission_id=? AND probe_status='completed'`, missionID)
+	if err != nil {
+		return err
+	}
+	for probeRows.Next() {
+		var probeRaw, resultRaw []byte
+		if err := probeRows.Scan(&probeRaw, &resultRaw); err != nil {
+			_ = probeRows.Close()
+			return err
+		}
+		var probe model.DeepDiscoveryBrowserProbe
+		var result DeepDiscoveryBrowserResult
+		if err := json.Unmarshal(probeRaw, &probe); err != nil {
+			_ = probeRows.Close()
+			return err
+		}
+		if len(resultRaw) == 0 || json.Unmarshal(resultRaw, &result) != nil {
+			continue
+		}
+		probes[probe.ArtifactID] = completedDiscoveryProbeEvidence{Probe: probe, Result: result}
+	}
+	if err := probeRows.Close(); err != nil {
+		return err
+	}
+
+	validated := 0
+	for _, node := range byID {
+		if node.State != model.EvidenceValidated {
+			continue
+		}
+		validated++
+		if node.ListProof == nil {
+			return fmt.Errorf("validated list URL %s lacks real list-to-detail proof", node.CanonicalValue)
+		}
+		if err := node.ListProof.Validate(node.CanonicalValue, node.EvidenceArtifactID); err != nil {
+			return err
+		}
+		listing, ok := probes[node.ListProof.ListingArtifactID]
+		if !ok || listing.Probe.URL != node.CanonicalValue {
+			return fmt.Errorf("validated list URL %s is not backed by its Mission browser Artifact", node.CanonicalValue)
+		}
+		detail, ok := probes[node.ListProof.DetailArtifactID]
+		if !ok {
+			return fmt.Errorf("sample detail URL %s is not backed by its Mission browser Artifact", node.ListProof.SampleDetailURL)
+		}
+		if node.ListProof.ListingArtifactID == node.ListProof.DetailArtifactID {
+			if listing.Probe.FollowLinkSelector == "" || listing.Probe.FinalURL != node.ListProof.SampleDetailURL {
+				return fmt.Errorf("list browser Artifact did not follow a real job to %s", node.ListProof.SampleDetailURL)
+			}
+			continue
+		}
+		linked := false
+		for _, link := range listing.Result.Links {
+			if link.URL == node.ListProof.SampleDetailURL {
+				linked = true
+				break
+			}
+		}
+		if !linked || (detail.Probe.URL != node.ListProof.SampleDetailURL && detail.Probe.FinalURL != node.ListProof.SampleDetailURL) {
+			return fmt.Errorf("browser Artifacts do not prove list URL %s links to detail URL %s", node.CanonicalValue, node.ListProof.SampleDetailURL)
+		}
+	}
+	if validated == 0 {
+		return fmt.Errorf("coverage review requires at least one validated list URL with real detail proof")
 	}
 	return nil
 }
@@ -618,8 +743,9 @@ WHERE mission_id=? AND node_kind='list_url' FOR SHARE`, missionID)
 		case model.EvidenceCandidate:
 			unresolvedCount++
 		case model.EvidenceValidated:
-			validated, validationErr := model.NewDiscoveryEvidenceNodeWithType(node.Kind, node.CanonicalValue, node.Label,
-				node.State, node.Sensor, node.EvidenceURL, node.EvidenceArtifactID, node.Basis, node.RecruitmentType, node.SpecialProgram)
+			validated, validationErr := model.NewDiscoveryEvidenceNodeWithTypeAndProof(node.Kind, node.CanonicalValue, node.Label,
+				node.State, node.Sensor, node.EvidenceURL, node.EvidenceArtifactID, node.Basis, node.RecruitmentType,
+				node.SpecialProgram, node.ListProof)
 			if validationErr != nil || validated != node {
 				return fmt.Errorf("validated list URL %s lacks an evidence-backed recruitment type", node.CanonicalValue)
 			}

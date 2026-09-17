@@ -266,7 +266,14 @@ func handleRecipePrepare(sys actorbase.Sys, repository *store.Repository, msg ac
 		failStoreError(sys, msg, err)
 		return
 	}
-	prepared, err := prepareListingRecipeResource(source, mission, *result, payload.BodyHash, payload.Mapping, payload.Spec)
+	listEvidence, err := repository.GetValidatedListURLProof(msg.Ctx(), source.CompanyID, source.DiscoveryGeneration,
+		source.CandidateEndpoint.URL)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
+	prepared, err := prepareListingRecipeResource(source, mission, *result, payload.BodyHash, payload.Mapping, payload.Spec,
+		listEvidence.ListProof.DetailURLPattern)
 	if err != nil {
 		_, _ = sys.Fail(msg, ErrorQualityRejected, err.Error())
 		return
@@ -281,7 +288,7 @@ func handleRecipePrepare(sys actorbase.Sys, repository *store.Repository, msg ac
 		"probe_id": probe.ProbeID, "observed_endpoint": prepared.Observation.EndpointURL, "body_hash": prepared.Observation.BodyHash,
 		"recipe_id": prepared.RecipeID, "recipe_version": 1, "content_ref": prepared.ContentRef, "content_hash": prepared.ContentHash,
 		"next_action":     prepared.NextAction,
-		"agent_directive": "If next_action is stage_source_endpoint, call recruiting.source.update with the observed_endpoint and exact Source version. Then call recruiting.recipe.propose with the returned Source version/endpoint revision and this Recipe identity/resource; continue through recipe.validate without asking the user for internal IDs.",
+		"agent_directive": "Keep the Source endpoint on the verified human-facing ListURL. The observed API endpoint is frozen inside the Recipe request only. Call recruiting.recipe.propose with the current Source version/endpoint revision and this Recipe identity/resource; continue through recipe.validate without asking the user for internal IDs.",
 	}
 	responseBytes, _ := json.Marshal(response)
 	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, requestHash, responseBytes)
@@ -308,7 +315,7 @@ func handleRecipePrepare(sys actorbase.Sys, repository *store.Repository, msg ac
 
 func prepareListingRecipeResource(source model.RecruitmentSource, mission model.DeepDiscoveryMission,
 	result store.DeepDiscoveryBrowserResult, bodyHash string, mapping *recipePrepareMapping,
-	rawSpec json.RawMessage) (preparedRecipeResource, error) {
+	rawSpec json.RawMessage, verifiedDetailURLPattern string) (preparedRecipeResource, error) {
 	if source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy ||
 		source.ReadinessStatus != model.SourceCandidate || source.ListingAssignment != nil || source.CandidateEndpoint == nil {
 		return preparedRecipeResource{}, fmt.Errorf("Recipe preparation requires an active healthy candidate Source without a Listing assignment")
@@ -338,17 +345,19 @@ func prepareListingRecipeResource(source model.RecruitmentSource, mission model.
 		return preparedRecipeResource{}, err
 	}
 	if spec.Kind != recipeabi.KindListing || spec.Transport != recipeabi.TransportHTTPJSON ||
-		spec.RequiredCapability != "http.fetch" || !observation.MatchesReadRequest(spec.Request) {
+		spec.RequiredCapability != "http.fetch" || spec.Request.URL != observation.EndpointURL ||
+		!observation.MatchesReadRequest(spec.Request) {
 		return preparedRecipeResource{}, fmt.Errorf("prepared Recipe must be an HTTP Listing whose request exactly matches the selected public-query evidence")
+	}
+	if template := strings.TrimSpace(spec.Extraction.Templates["detail_url"]); template != "" &&
+		template != strings.TrimSpace(verifiedDetailURLPattern) {
+		return preparedRecipeResource{}, fmt.Errorf("Listing Recipe detail URL template does not match the browser-verified list-to-detail route")
 	}
 	canonicalSpec, _ := json.Marshal(spec)
 	contentHash, _ := spec.ContentHash()
 	prepared := preparedRecipeResource{Observation: *observation, CanonicalSpec: canonicalSpec, ContentHash: contentHash,
 		ContentRef: "recipe://recruiting-prepared/" + strings.TrimPrefix(contentHash, "sha256:"),
-		RecipeID:   "listing-bootstrap-" + stableDigest(source.SourceID+"|"+contentHash), NextAction: "stage_source_endpoint"}
-	if source.CandidateEndpoint.URL == observation.EndpointURL {
-		prepared.NextAction = "propose_recipe"
-	}
+		RecipeID:   "listing-bootstrap-" + stableDigest(source.SourceID+"|"+contentHash), NextAction: "propose_recipe"}
 	return prepared, nil
 }
 
@@ -387,7 +396,7 @@ func buildListingRecipeSpec(observation recipeabi.PublicQueryObservation,
 		RequiredCapability: "http.fetch",
 		Transport:          recipeabi.TransportHTTPJSON,
 		Request: recipeabi.ReadRequest{
-			Method: observation.Method, Headers: observation.Headers, JSONBody: observation.JSONBody,
+			URL: observation.EndpointURL, Method: observation.Method, Headers: observation.Headers, JSONBody: observation.JSONBody,
 			TimeoutMS: 30_000, MaxResponseBytes: 20 << 20, MaxRedirects: 0,
 			UserAgent: "Atoll-Recruiting/1",
 		},

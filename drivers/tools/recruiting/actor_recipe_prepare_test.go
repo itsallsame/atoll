@@ -47,7 +47,7 @@ func TestPrepareListingRecipeResourceRequiresExactProbeEvidence(t *testing.T) {
 	}
 	spec := recipeabi.Spec{ABIVersion: recipeabi.Version, Kind: recipeabi.KindListing,
 		RequiredCapability: "http.fetch", Transport: recipeabi.TransportHTTPJSON,
-		Request: recipeabi.ReadRequest{Method: "POST", Headers: headers, JSONBody: body, TimeoutMS: 5_000,
+		Request: recipeabi.ReadRequest{URL: observation.EndpointURL, Method: "POST", Headers: headers, JSONBody: body, TimeoutMS: 5_000,
 			MaxResponseBytes: 2 << 20, MaxRedirects: 0, UserAgent: "Atoll-Recruiting/1"},
 		Extraction: recipeabi.Extraction{Collection: "/data/jobs", Fields: map[string]string{
 			"job_key": "/id", "detail_url": "/id", "title": "/title",
@@ -59,27 +59,31 @@ func TestPrepareListingRecipeResourceRequiresExactProbeEvidence(t *testing.T) {
 	raw, _ := json.Marshal(spec)
 	mission := model.DeepDiscoveryMission{CompanyID: source.CompanyID}
 	result := store.DeepDiscoveryBrowserResult{PublicQueryEvidence: []recipeabi.PublicQueryObservation{observation}}
-	prepared, err := prepareListingRecipeResource(source, mission, result, observation.BodyHash, nil, raw)
+	prepared, err := prepareListingRecipeResource(source, mission, result, observation.BodyHash, nil, raw, "https://join.example/search/{value}")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.Observation.EndpointURL != observation.EndpointURL || prepared.NextAction != "stage_source_endpoint" ||
+	if prepared.Observation.EndpointURL != observation.EndpointURL || prepared.NextAction != "propose_recipe" ||
 		prepared.ContentRef == "" || prepared.ContentHash == "" || prepared.RecipeID == "" || len(prepared.CanonicalSpec) == 0 {
 		t.Fatalf("incomplete prepared Recipe: %+v", prepared)
+	}
+	if _, err := prepareListingRecipeResource(source, mission, result, observation.BodyHash, nil, raw,
+		"https://join.example/position/{value}/detail"); err == nil {
+		t.Fatal("Recipe detail template different from browser-verified route was accepted")
 	}
 
 	changed := spec
 	changed.Request.JSONBody = json.RawMessage(`{"keyword":"campus","limit":12,"offset":0}`)
 	changedRaw, _ := json.Marshal(changed)
-	if _, err := prepareListingRecipeResource(source, mission, result, observation.BodyHash, nil, changedRaw); err == nil {
+	if _, err := prepareListingRecipeResource(source, mission, result, observation.BodyHash, nil, changedRaw, "https://join.example/search/{value}"); err == nil {
 		t.Fatal("Recipe request different from Probe evidence was accepted")
 	}
 	wrongMission := mission
 	wrongMission.CompanyID = "another-company"
-	if _, err := prepareListingRecipeResource(source, wrongMission, result, observation.BodyHash, nil, raw); err == nil {
+	if _, err := prepareListingRecipeResource(source, wrongMission, result, observation.BodyHash, nil, raw, "https://join.example/search/{value}"); err == nil {
 		t.Fatal("cross-Company Probe evidence was accepted")
 	}
-	if _, err := prepareListingRecipeResource(source, mission, result, "sha256:missing", nil, raw); err == nil {
+	if _, err := prepareListingRecipeResource(source, mission, result, "sha256:missing", nil, raw, "https://join.example/search/{value}"); err == nil {
 		t.Fatal("unknown Probe body hash was accepted")
 	}
 }
@@ -100,7 +104,7 @@ func TestBuildListingRecipeSpecOwnsABIAndBudgetDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Request.UserAgent != "Atoll-Recruiting/1" || spec.Request.TimeoutMS != 30_000 ||
+	if spec.Request.URL != observation.EndpointURL || spec.Request.UserAgent != "Atoll-Recruiting/1" || spec.Request.TimeoutMS != 30_000 ||
 		spec.Listing == nil || spec.Listing.Ordering != "newest_activity_desc" || !spec.Listing.UpdateRetop ||
 		spec.Listing.BoundaryMode != "frontier_keys" || !observation.MatchesReadRequest(spec.Request) {
 		t.Fatalf("control-plane defaults were not applied: %+v", spec)
