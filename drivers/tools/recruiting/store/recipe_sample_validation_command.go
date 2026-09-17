@@ -142,7 +142,8 @@ WHERE s.source_id = ?`
 	standard := value.Company.OnboardingStatus == model.CompanyReady && value.Source.DetailAssignment != nil && len(assignmentState) != 0 &&
 		reflect.DeepEqual(*value.Source.DetailAssignment, value.CurrentAssignment)
 	bootstrapOnboarding := value.Company.OnboardingStatus == model.CompanyInitializing ||
-		value.Company.OnboardingStatus == model.CompanyDiscoveringSources
+		value.Company.OnboardingStatus == model.CompanyDiscoveringSources ||
+		value.Company.OnboardingStatus == model.CompanyReady
 	bootstrap := bootstrapOnboarding && bootstrapSample && value.Source.DetailAssignment == nil && len(assignmentState) == 0 &&
 		value.Job.Status == model.JobDetailPending && value.Source.ActiveEndpoint != nil &&
 		proposalSourceVersion.Valid && proposalSourceVersion.Int64 > 0 && uint64(proposalSourceVersion.Int64) == value.Source.Version &&

@@ -89,7 +89,7 @@ func NewBootstrapDetailRecipeSampleValidation(id, workID string, company Company
 	candidate Recipe, job SourceJob, expectedFieldCount int, effectiveAt string) (RecipeSampleValidation, error) {
 	id, workID = strings.TrimSpace(id), strings.TrimSpace(workID)
 	bootstrapOnboarding := company.OnboardingStatus == CompanyDiscoveringSources ||
-		company.OnboardingStatus == CompanyInitializing
+		company.OnboardingStatus == CompanyInitializing || company.OnboardingStatus == CompanyReady
 	if id == "" || workID == "" || company.CompanyID != source.CompanyID || company.Version == 0 || source.Version == 0 ||
 		!bootstrapOnboarding || company.ControlStatus != ControlActive ||
 		source.ReadinessStatus != SourceReady || source.ControlStatus != ControlActive || source.HealthStatus != HealthHealthy ||

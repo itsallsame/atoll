@@ -55,6 +55,12 @@ func TestFirstDetailRecipeValidationUsesPendingBaselineJob(t *testing.T) {
 	if err != nil || run.ProposedAssignment.AssignmentVersion != 1 || run.SampleJobID != job.JobID {
 		t.Fatalf("bootstrap Detail validation=%+v err=%v", run, err)
 	}
+	company.OnboardingStatus = CompanyReady
+	readyRun, err := NewBootstrapDetailRecipeSampleValidation("ready-bootstrap-detail-validation",
+		"ready-bootstrap-detail-work", company, source, candidate, job, 4, "2026-09-10T01:00:00Z")
+	if err != nil || readyRun.ProposedAssignment.AssignmentVersion != 1 || readyRun.SampleJobID != job.JobID {
+		t.Fatalf("ready-company bootstrap Detail validation=%+v err=%v", readyRun, err)
+	}
 	source.DetailAssignment = &run.ProposedAssignment
 	if _, err := NewBootstrapDetailRecipeSampleValidation("invalid", "invalid-work", company, source,
 		candidate, job, 4, "2026-09-10T01:00:00Z"); err == nil {
