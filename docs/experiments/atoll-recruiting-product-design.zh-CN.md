@@ -51,6 +51,10 @@ Snowland 和 Staircase 证明或提示：
 - Web IM 和飞书可以作为指令、通知与仲裁入口；
 - 新公司通常只需一至两次全量，稳定后每天检查全部入口并增量更新。
 
+Snowland 对列表推进提供了进一步的直接证据：它先在 URL 发现结果中保存 `pagination / scroll / load_more` 类型及候选 selector，再由站点专用 CrawlPlan 实现 `handle_next_page(page)`；通用 CrawlerEngine 反复调用该函数，以 `page.on('response')` 读取页面自然产生的 API response，并用按钮不存在/禁用、页码或列表不变、没有目标 response、连续无进展和连续已存在岗位作为停止信号。它证明“站点专用推进策略 + 通用执行循环”可行，也证明不存在一次打开页面即可获得全部岗位的通用假设。
+
+目标产品保留这一业务结论，但不直接继承 Snowland 的任意 Python、固定 sleep、单个布尔返回或进程内统计：推进策略必须成为版本化 Recipe 契约；每一批 response、推进动作和停止结论必须进入 Artifact/Attempt 证据链；是否推进 Checkpoint 仍由 Recruiting 状态机裁决。
+
 这些是需求和测试输入，不自动成为目标领域模型。历史项目中的 Worker 分类、任务表、状态枚举、队列、租约和服务拆分均不直接继承。
 
 ### 3.2 裁决顺序
@@ -155,11 +159,68 @@ Mission 默认最多 5 轮搜索、250 次外部操作；预算是创建时冻�
 
 - `recruiting.deep_discovery.start/get/checkpoint/graph`；
 - `recruiting.deep_discovery.wait/resume/complete/cancel`；同一公司同一时刻只允许一个未完成 Mission，取消保留证据并释放下一代探索；
-- `recruiting.deep_discovery.browser.observe` 是 Recruiting Actor 的公开异步命令：它先对 Mission 做版本校验并原子消耗一次冻结预算，创建 `deep_discovery_browser` Work、不可变 Probe、审计事件和定向 dispatch；现有 `browser.public` Executor 只能经统一 offer/accept/start/result 协议领取，不能由 Agent 直接调用。浏览器只允许 GET/HEAD/OPTIONS 和有界等待、滚动、同源跟链，阻断表单、写请求、下载、弹窗及跨源文档导航；DOM 和 effect trace 写入 Artifact Resource，`recruiting.deep_discovery.browser.get` 同时返回 Probe、权威 Work 状态、规范 URL、有限链接、Artifact 元数据与安全 attestation。成功后由 Agent 将判断写入 checkpoint；终态失败或人工结案后必须创建新的预算化 Probe，不能把通用 Work retry 变成脱离原 Probe 的旁路执行；
+- `recruiting.deep_discovery.browser.observe` 是 Recruiting Actor 的公开异步命令：它先对 Mission 做版本校验并原子消耗一次冻结预算，创建 `deep_discovery_browser` Work、不可变 Probe、审计事件和定向 dispatch；现有 `browser.public` Executor 只能经统一 offer/accept/start/result 协议领取，不能由 Agent 直接调用。浏览器允许 GET/HEAD/OPTIONS，以及通过严格只读招聘查询校验的同源 XHR/fetch POST 和不沉淀业务数据的同源 session bootstrap；只执行 Recipe 声明的有界等待、点击、滚动和同源跟链，阻断表单、写语义请求、下载、弹窗及跨源文档导航。DOM、目标 JSON response 和 effect trace 写入 Artifact Resource，`recruiting.deep_discovery.browser.get` 同时返回 Probe、权威 Work 状态、规范 URL、有限链接、Artifact 元数据与安全 attestation。成功后由 Agent 将判断写入 checkpoint；终态失败或人工结案后必须创建新的预算化 Probe，不能把通用 Work retry 变成脱离原 Probe 的旁路执行；
 - Browser Broker 对同源 XHR/fetch POST 采用“先判定只读招聘查询、再由原浏览器会话执行”的策略：页面生成的 `_signature`、CSRF 和 Cookie 只留在 Chrome 会话中，不复制到独立 HTTP 客户端；Broker 通过 CDP Network 生命周期读取真实 2xx JSON response，逐项做类型、大小、总量和 SHA-256 校验后保存为 response Artifact。Authorization 请求、跨源请求、非查询写语义、敏感 JSON、重复 key/header、超量或非 JSON 响应仍失败关闭；同源 CSRF token 获取只作为会话前置步骤放行，响应不会成为业务证据。已物化候选 Source 可由 Agent 调用 `recruiting.recipe.prepare`，只提交集合、岗位身份、详情地址/模板、活动时间和置顶字段等语义映射；Actor 从已捕获响应构造 `browser_json` Listing Recipe，冻结页面 ListURL、查询 method/path、Browser Plan、安全预算、倒序/更新置顶契约、增量边界和重叠窗口，但不冻结或重放临时签名、Cookie、CSRF。公开契约不允许 Agent 拼完整 Recipe Spec。Recipe/Source 验证成功后，发布命令只接收 `validation_work_id`，由控制面从冻结执行和权威 Artifact 表派生 Recipe、Assignment fence、Checkpoint 策略与证据集；
 - 面向用户的自然入口是 `recruiting.onboarding.begin/status/advance/materialize`：用户只提供公司名；系统解析 Company、启动或恢复 Mission。`advance` 每次只根据已提交事实推进一个安全步骤：没有 Probe 时从已确认官网或候选 Source 创建 Browser Work，运行中的 Work 只等待，成功后直接使用同一次 Browser Probe 的 DOM、链接和 JSON response Artifact 复核发现覆盖并准备 Recipe。旧的独立 Public Query Verification Work、HTTP 重发、Stub 本地 fulfill、第二次回放 Probe 及其用户命令均已删除。Mission 完成后，`materialize` 才将全部“已验证且已分类”的 ListURL 幂等、原子地登记为候选 Source。证据任务仍停在 Recipe 推导/审批门前，不能因为 URL 已知就猜测 Extraction、分页或详情路由。底层 `recruiting.source.add` 与逐对象 Deep Discovery 命令仍保留给明确的结构化运维场景；自然语言主流程不依赖它们拼装结果。
 
 `DiscoveryMission` 保存公司级一次探索；`Discovery Playbook` 保存可复用的探索策略；`Listing Recipe` 和 `Detail Recipe` 保存确认后的确定性生产代码。通用链接选择器只能作为低成本启发式证据，不能作为已批准 Discovery Recipe，也不能绕过覆盖审计。
+
+#### 5.2.2 列表推进方式的发现、验证与固化
+
+岗位列表的采集单位是“一个已验证的数据批次”，不是网页意义上的“第几页”。首次打开 ListURL 只能产生首批数据；后续批次可能由下一页文字按钮、左右方向箭头、页码、加载更多按钮、滚动页面或滚动某个容器触发。产品不提供一个猜测所有网站的万能分页器，也不允许把固定滚动十次当作完成证明。
+
+Deep Discovery 对每个候选 ListURL 必须额外完成一次**列表推进探索**：
+
+1. 打开真实 ListURL，保存首批 DOM、目标 JSON response、岗位身份样本和网络时序；
+2. 从真实 DOM/a11y tree 中寻找候选推进控件，或验证页面/容器滚动是否会触发新批次；不能根据按钮文案、CSS 类名或模型记忆直接猜 selector；
+3. 在同一个隔离 Browser Probe 中执行至少一次候选动作；点击类动作覆盖下一页、方向箭头、页码和加载更多，它们在执行层都是带精确 selector 的 `click`；滚动类动作必须明确是 page 还是某个 container；
+4. 动作后等待目标 response，而不是固定 sleep 后直接宣称成功；response 必须发生在动作之后，并匹配已发现的 method + endpoint path；
+5. 至少证明一种进展：出现新的 response/cursor、出现新的岗位身份、列表项集合变化、页码/URL 变化或容器高度增长。只有高度变化但没有岗位或目标 response，不足以证明业务进展；
+6. 再执行一次以排除一次性动画、首屏延迟或重复 response；若候选动作没有进展，继续尝试其他候选，不能把失败动作写入 Recipe；
+7. 记录可观测的结束语义：控件消失或 disabled、API `has_more=false`、next cursor 为空、出现明确结束标记，或经验证的滚动稳定条件。没有可解释结束语义时可以保存候选证据，但 Source 不能通过首次全量验收；
+8. 找不到可靠推进方式、需要登录/验证码、selector 不稳定或响应无法与动作关联时进入 `waiting_human`，由用户或浏览器插件在同一证据门内补充，不由 Agent 伪造结论。
+
+探索结果形成不可变的 `ListingAdvancementProof`，至少包含：
+
+- ListURL、Probe/Attempt/Artifact 身份和观测时间；
+- `advance_kind = click | scroll_page | scroll_container | none`；
+- 点击 selector 或滚动容器 selector，以及定位该元素的 DOM/a11y 摘要；
+- 目标 response 的 method + endpoint path；临时 query、Cookie、CSRF 和签名不进入契约；
+- 动作前后批次 hash、岗位身份样本、cursor/页码/URL/列表数量等进展证据；
+- 结束判定类型和证据来源；
+- 单次等待、最大推进次数、最大 response/总字节、总 Session 时长和连续无进展上限；
+- 已排除的候选动作及原因，便于改版修复时避免重复尝试。
+
+`ListingAdvancementProof` 只证明候选策略在样本上有效，不直接获得生产执行权。Actor 从它构造 Listing Recipe 的 `ListingAdvanceContract`，经过 Recipe validation 和审批后才发布。生产 Recipe 保存的是确定性动作和证明规则，不是 Snowland 风格的无限制站点 Python；确实无法用受限动作表达的网站，才使用受权限约束、内容寻址且单独审批的代码 Recipe。
+
+Browser Listing 的执行状态机固定为：
+
+```text
+opening
+  → waiting_initial_batch
+  → evaluating_batch
+      ├─ 已满足增量安全边界 → completing
+      ├─ 已证明列表结束     → completing
+      └─ 仍需数据           → advancing
+  → advancing(click / scroll)
+  → waiting_progress
+      ├─ 收到动作后产生的新目标批次 → persisting_batch → evaluating_batch
+      ├─ 得到已验证结束信号         → completing
+      └─ 超时、重复批次或证据矛盾   → needs_repair
+```
+
+每轮必须先把 response Artifact 持久化，再按序交给既有 ListingScan；动作序号、response 序号、触发 selector、请求稳定身份、批次 hash、岗位数、去重数和进展结论进入 trace。一个动作可能触发多个目标 response，一个 response 也可能是重试或重复；执行器按稳定岗位身份去重，但保留全部有界原始证据。只有发生在本轮动作之后、通过 matcher 且解析成功的 response 才能证明本轮进展。
+
+首次全量和每日增量复用同一状态机，但停止契约不同：
+
+- **首次全量**：必须推进到经过验证的 `end_of_input`；达到次数、时间或字节预算只是 `bounded_incomplete`，不能把 Source 基线标为完成；
+- **每日增量**：每批进入现有 frontier/活动时间扫描；发现旧 frontier 后仍完成 Recipe 声明的重叠批次数，再停止，不需要访问公司全部历史岗位；
+- **第二次校准**：再次验证动作能持续产生新批次、稳定身份不漂移、倒序和边界成立，并确认更新后重新置顶；
+- **诊断/修复**：可以限定一至两次推进以验证新 selector，但不能推进生产 Checkpoint。
+
+执行器崩溃时，旧 Attempt 已保存的批次 Artifact 保留为诊断证据，但新 Attempt 从 ListURL 首批重新执行；控制面不能把不同浏览器会话的批次拼成同一列表快照。最终 Checkpoint 只在单个成功 Attempt 已证明安全边界或完整结束后原子提交。
+
+截至 2026-09-17，代码已经完成原浏览器会话内目标 JSON response 的安全捕获，但尚未实现本节的 `ListingAdvanceContract`、动作后逐批回调和 Browser Listing 推进状态机；现有固定滚动与“选择第一条匹配 response”只能作为首批发现能力，不能通过完整基线或每日增量验收。本节是后续实现的强制产品契约，不是对当前完成度的声明。
 
 ### 5.3 每日增量
 
@@ -169,7 +230,9 @@ Atoll durable timer 产生到期信号
   → 幂等创建 incremental Work
   → 从 Resource 读取该 Source 上次成功的 Incremental Checkpoint
   → Executor 从列表第一页开始执行 Listing Recipe
-  → 按最新活动时间倒序处理到旧边界并完成重叠窗口
+  → 捕获首批数据；未到边界时按 Recipe 执行一次 click/scroll 推进
+  → 每次等待并持久化动作后产生的新批次，逐批送入 ListingScan
+  → 按最新活动时间倒序处理到旧边界并完成重叠批次
   → 原子保存新增/更新观测、创建 Detail Work 并提交新 Checkpoint
   → Executor 对派生的 Detail Work 执行 Detail Recipe
   → Channel 收到聚合摘要
@@ -239,6 +302,7 @@ Target 是“可调度对象”的统一称呼，不替代这些业务实体。C
 | 单个新增公司 | manual/event | 公司名称、官网等 | company/source discovery | 公司和候选 Source |
 | 批量导入公司 | manual/event | 文件或 Resource | 多个 company discovery | 逐公司成功/失败报告 |
 | 发现岗位列表来源 | 新增公司、URL 失效或人工复核 | Company、官网、历史证据 | source discovery | 新增、确认或拒绝 Source |
+| 发现并验证列表推进方式 | 候选 ListURL 已确认、Recipe 修复 | ListURL、DOM/a11y、网络响应 | bounded browser probe | `ListingAdvancementProof`：点击/滚动动作、响应关联、进展与结束证据 |
 | 校验岗位列表来源 | 候选 Source 被接受或修复后复核 | Candidate Endpoint、active Listing Recipe | source validation | 仅保存页面与 trace 证据，等待发布判断 |
 | 人工维护 Source | manual | 列表 URL、类别、参数 | data maintenance/validation | 新版本 Source |
 | 首次全量初始化 | Source 首次可用 | Source、列表/详情 Recipe | baseline → listing/detail | 当前全部岗位基线和首个 Checkpoint |
@@ -283,10 +347,12 @@ Daily Run 截点事务
   → 按窗口持续创建/激活 listing_sync Work
   → 读取每个 Source 上次成功的 Incremental Checkpoint
   → 从列表顶部按 activity_at 倒序扫描
-       ├─ 边界前的新岗位   → detail_sync
-       ├─ 边界前的已知岗位 → 视为更新并 detail_sync
-       ├─ 到达旧边界       → 完成安全重叠窗口后停止
-       └─ 顺序/边界异常     → 不推进 Checkpoint，进入 retry / repair / waiting_human
+       ├─ 边界前的新岗位    → detail_sync
+       ├─ 边界前的已知岗位  → 视为更新并 detail_sync
+       ├─ 尚未到达旧边界    → 按 Recipe 点击/滚动一次并等待下一批 response
+       ├─ 到达旧边界        → 完成安全重叠批次后停止
+       ├─ 基线发现结束信号  → 以 end_of_input 完成
+       └─ 无进展/顺序/边界异常 → 不推进 Checkpoint，进入 retry / repair / waiting_human
   → 原子保存观测、派生 detail_sync Work 并提交新 Incremental Checkpoint
   → 异步执行 Detail Recipe，幂等写入岗位新版本
   → 汇总 Company 健康状态
@@ -377,7 +443,8 @@ Recipe 是已经确认的核心产品资产，不只是待选技术。其价值�
 ```text
 没有可用 Recipe
   → 浏览器插件/Agent/用户在真实网站发现流程
-  → 捕获 DOM、网络请求、分页、字段映射和必要交互
+  → 捕获 DOM、网络请求、列表推进动作、字段映射和必要交互
+  → 以动作前后 response/岗位变化验证 click/scroll，形成 ListingAdvancementProof
   → 生成版本化 Recipe 代码
   → 用真实样本执行和质量验证
   → 发布 active Recipe
@@ -539,7 +606,7 @@ Channel 不作为数据库分片或队列分区。第一版默认一个招聘业
 
 Work 是用户能理解和运维的业务工作；Attempt 是对 Work 的一次机器执行。执行可能重复，业务结果幂等生效。旧 Attempt 的延迟结果不能覆盖后来已经接受的结果。
 
-分页执行状态也属于 Attempt，而不是 Work：每个 Attempt 的页码从 1 开始，页面 Artifact 和已接受 Observation 作为历史证据保留；新 Attempt 不续用旧 Attempt 的进程内游标或页码，最终质量证明只汇总本 Attempt 的页面。Work 负责把这些执行历史聚合为同一个可运维业务工作。
+列表推进状态也属于 Attempt，而不是 Work：每个 Attempt 的批次序号和动作序号从 1 开始，response Artifact、动作 trace 和已接受 Observation 作为历史证据保留；新 Attempt 不续用旧 Attempt 的进程内 cursor、页码或 DOM 状态，最终质量证明只汇总本 Attempt 的批次。Work 负责把这些执行历史聚合为同一个可运维业务工作。
 
 ### 6.6 先定义不变量，再选分发协议
 
@@ -704,6 +771,21 @@ Recipe 的生产入口是“按 scope 查找 active 版本并执行”，不是�
 
 公开招聘站点若能用无会话、无临时签名的稳定 HTTP GET/POST 协议，仍优先生成低成本 `http_json` Recipe。若岗位查询依赖页面运行时 `_signature`、CSRF、Cookie 或前置脚本，则必须生成 `browser_json` Recipe：每天打开已验证的人类可访问 ListURL，让官网代码在原会话中生成请求，再捕获匹配 method + endpoint path 的 JSON response。Recipe 不保存临时 query、Cookie、CSRF 或响应正文；重复 JSON key、Authorization、跨源查询、任意表单或写语义 POST 均失败关闭。Browser 是该 Source 的确定性执行 transport，不是每天重新发现流程。
 
+Listing Recipe 必须把“如何解析一个批次”和“如何请求下一批”分开表达。前者由 Extraction、稳定岗位身份和目标 response matcher 描述；后者由 `ListingAdvanceContract` 描述：
+
+| 字段 | 语义 |
+|---|---|
+| `kind` | `none / click / scroll_page / scroll_container`；下一页、箭头、页码和加载更多统一为 `click` |
+| `selector` | click 控件或滚动容器的已验证 selector；`scroll_page` 不需要 selector |
+| `response_matcher` | 目标 method + endpoint path；临时 query/signature 不属于 identity |
+| `progress_proof` | 新 response/cursor、岗位身份变化、页码/URL/列表数量变化等允许的进展信号组合 |
+| `end_proof` | absent/disabled 控件、`has_more=false`、空 next cursor、结束标记或经验证的滚动稳定条件 |
+| `wait_timeout_ms` | 每轮等待动作后进展的上限 |
+| `max_advances` | 单 Attempt 推进次数硬上限；触顶表示不完整，不表示列表结束 |
+| `max_no_progress` | 连续无进展容忍；到达后进入结构修复，不推进 Checkpoint |
+
+该契约、Browser Plan、response matcher、Extraction、Listing boundary 和安全预算共同进入 Recipe content/contract hash。selector、动作类型、结束语义或 matcher 变化必须创建新 Recipe version 并重新验证，不能由 Executor 临时猜测或热补。HTTP offset/next-URL pagination 继续使用其现有声明式合同，不经过 UI 推进；同一 Recipe 不同时运行两套竞争的推进协议。
+
 列表 API 只返回岗位 ID 而不返回详情链接时，JSON Extraction 可对 Listing 的 `detail_url_field` 使用一个绝对 HTTP(S) 模板，并只把 URL-path escaped 的单个标量替换进 `{value}`。模板、字段映射和分页均进入 Recipe content/contract hash。API Endpoint 仍必须作为 Source 的候选 Endpoint 经网络证据、Recipe validation 和 Source publication 独立验证；页面入口只保留为发现证据，不能让 Recipe 在运行时暗中把 Source 改到另一个 API。
 
 网络发现不能假装一次浏览必然看见全部 API。Broker 只允许同源 XHR/fetch 中可证明为只读招聘查询的 POST，以及不沉淀业务证据的 CSRF session bootstrap；其余 POST 在 origin 前阻断。允许请求必须由官网页面原样发出，Atoll 不修改 method、body、header、Cookie 或签名。CDP Network 在 response 完成后读取 body，只有成功 JSON 才成为有界 Artifact；第一次因尚未取得 CSRF 而返回 405 的请求不会成为结果，页面取得 token 后自动重试的 200 response 可以被捕获。重复请求按稳定查询身份去重，但每个真实 Network request 都可成为成功响应候选，避免第一次失败遮蔽后续成功。
@@ -717,7 +799,7 @@ draft → validating → active → superseded
        validation_failed
 ```
 
-Recipe 至少保存 `recipe_id`、`kind=list|detail|discovery`、适用 scope、ABI 版本、不可解析的代码/Resource 引用、transport、所需 capability、输入输出契约、版本、内容哈希、验证证据和状态。上述执行契约属于 Recipe version 的不可变内容，不能在原版本上把 HTTP 静默换成 Browser 或改变 capability；变化必须创建新版本并重新验证。Listing Recipe 还必须保存活动倒序、稳定身份、边界、重叠窗口和异常终止契约。同一 scope/kind 可以有一个默认 active 版本，但生产执行由版本化 `SourceRecipeAssignment` 决定，从而支持逐 Source 灰度和回滚。
+Recipe 至少保存 `recipe_id`、`kind=list|detail|discovery`、适用 scope、ABI 版本、不可解析的代码/Resource 引用、transport、所需 capability、输入输出契约、版本、内容哈希、验证证据和状态。上述执行契约属于 Recipe version 的不可变内容，不能在原版本上把 HTTP 静默换成 Browser 或改变 capability；变化必须创建新版本并重新验证。Listing Recipe 还必须保存活动倒序、稳定身份、边界、重叠窗口、`ListingAdvanceContract` 和异常终止契约。同一 scope/kind 可以有一个默认 active 版本，但生产执行由版本化 `SourceRecipeAssignment` 决定，从而支持逐 Source 灰度和回滚。
 
 Assignment 固定 `source_id + kind + recipe_version + contract_hash + effective_at/version`。`contract_hash` 覆盖岗位身份、排序、分页和边界语义；变化时必须证明 Checkpoint 兼容，或者重新校准。每次发布、灰度或回滚都追加不可变 Assignment 历史；回滚引用一个确实存在的历史版本，但产生的新 Assignment version 必须继续单调递增，不能把当前版本号倒退，也不能从事件日志猜测已经丢失的旧配置。
 
@@ -854,6 +936,8 @@ Daily Run:
 planned → running → completed / completed_with_exceptions
 ```
 
+Browser Listing Attempt 还具有可审计的内部推进阶段 `opening → waiting_initial_batch → evaluating_batch → advancing → waiting_progress → persisting_batch → evaluating_batch → completing`；任一轮发生 selector 缺失、控件不可操作、目标 response 超时、重复批次超过上限或结束证据矛盾时进入 `needs_repair`。这些阶段写入 trace/进度投影，不新增 Worker 类型，也不让 Executor取得领域状态转换权；Attempt 最终仍只提交 succeeded/failed 结果，由 Recruiting Actor 决定 Work、Source 和 Checkpoint。
+
 Company 只有 `onboarding_status=ready` 且 `control_status=active` 才进入正常运行；Source 只有 `readiness_status=ready` 且 `control_status=active` 才属于每日应运行集合。正交状态避免把“用户暂停”和“页面坏了”混成同一个枚举。
 
 Source Discovery 可产生 0、1 或多个候选，候选逐项验证和拒绝，不做整体事务。其幂等代际为 `company_id + discovery_generation`；强制重新发现显式递增 generation。Source `ready` 至少要求归属已确认、生产 Endpoint 已发布、Listing Recipe Assignment 有效，并以真实样本验证分页、稳定岗位键、活动倒序、边界和异常停止。
@@ -862,7 +946,7 @@ Source Discovery 可产生 0、1 或多个候选，候选逐项验证和拒绝�
 
 Company 有至少一个 active/ready Source，且每个准备投产的 Source 已完成 listing baseline、详情均成功或有用户明确接受的缺口时，才进入 onboarding `ready`。零候选进入 `blocked_no_sources`；部分 Source 成功不阻止其余候选独立失败或等待人工，但用户必须看见未投产项。
 
-首次 baseline 的分页进度与 staging 都必须绑定 Attempt。Baseline 每页响应必须先保存 Artifact、完成确定性解析并把该页结果提交控制面隔离 staging，确认后才允许请求下一页；不能在 Executor 内攒完整列表后一次提交。页面确认后立即释放完整岗位字段，只保留跨页去重所需的来源身份+内容哈希、Checkpoint 前沿、质量计数和轻量 Artifact/页元数据，因此内存不随岗位正文总量线性复制。日常增量在尚无通用 Attempt staging 时，必须先完成整次质量证明再发布页面，不能为了流式而提前写 Job；后续若解除内存上限，必须先补通用 staging/finalize，而不是牺牲质量失败的零业务副作用。Recipe 可以使用响应中的同源 next URL，也可以声明同源 offset pagination：有 total/limit/offset 元数据时逐项校验响应，只有短页终止语义时必须把 offset/limit query 名和 page size 固定进 Recipe hash。JSON 根数组必须显式声明，不能把“未配置 collection”误当成根集合。Executor 在页间退出后，新 Attempt 从第 1 页重扫；旧 Attempt 的 Artifact/页/staging 仍是诊断证据，但 finalize 只冻结成功 Attempt 的 `listing_attempt_id`，只按该 Attempt 核对条目数并建立 Checkpoint，后续 Job/Detail Work 物化也只读取该 Attempt 的行。禁止仅按 generation 汇总多个 Attempt 的 staging，因为这会把不同时间的列表快照拼成一个伪基线。
+首次 baseline 的批次推进与 staging 都必须绑定 Attempt。每批 response 必须先保存 Artifact、完成确定性解析并把该批结果提交控制面隔离 staging，确认后才允许执行下一次 click/scroll 或 HTTP pagination；不能在 Executor 内攒完整列表后一次提交。批次确认后立即释放完整岗位字段，只保留跨批去重所需的来源身份+内容哈希、Checkpoint 前沿、质量计数和轻量 Artifact/动作元数据，因此内存不随岗位正文总量线性复制。日常增量在尚无通用 Attempt staging 时，必须先完成整次质量证明再发布批次，不能为了流式而提前写 Job；后续若解除内存上限，必须先补通用 staging/finalize，而不是牺牲质量失败的零业务副作用。Recipe 可以使用响应中的同源 next URL、声明同源 offset pagination，或使用已验证的 Browser ListingAdvanceContract，但同一执行只能有一个权威推进协议。有 total/limit/offset 元数据时逐项校验响应，只有短批终止语义时必须把 offset/limit query 名和 page size 固定进 Recipe hash。JSON 根数组必须显式声明，不能把“未配置 collection”误当成根集合。Executor 在批次间退出后，新 Attempt 从 ListURL 首批重扫；旧 Attempt 的 Artifact/批次/staging 仍是诊断证据，但 finalize 只冻结成功 Attempt 的 `listing_attempt_id`，只按该 Attempt 核对条目数并建立 Checkpoint，后续 Job/Detail Work 物化也只读取该 Attempt 的行。禁止仅按 generation 汇总多个 Attempt 的 staging，因为这会把不同时间的列表快照拼成一个伪基线。
 
 状态转换规则写在纯 Recruiting domain model 中，输入为当前状态和领域命令，输出为新状态及领域事件。Recruiting Actor 是唯一有权接受转换结果的行为边界：
 
@@ -1098,13 +1182,13 @@ Authenticated canary 不是“同域页面能打开”、Cookie 数量、DOM 中
 
 `recruiting.work.list` 明确区分两个用途：默认或 `view=operational` 是面向人的 Work Center，按 `updated_at, work_id` 倒序 seek 分页，支持 `status`、`purpose`、`trigger`、`waiting_reason`、完整 Target、`initiator_actor_id` 和更新时间半开区间；`waiting_reason` 必须与 `status=waiting_human` 同时使用。响应返回 Work、以 `work_id` 为键的 placement 以及 opaque page cursor，cursor 与全部筛选条件绑定，改变条件后不得复用。`view=runnable` 是 Executor/诊断使用的有界候选查询，要求 `due_at` 和 capability，可选 origin/Profile；历史调用只要携带 `due_at` 仍按 runnable 语义执行。两种视图不得混合字段，Work Center 查询不领取、不修改 Work。
 
-批量导入、基线、纠正和发布还显示总数、成功、失败、跳过、等待人工、取消及可重试项；手工运行显示 `run_mode`、关联 SourceOccurrence、读写前后 Checkpoint、边界证明、数据变化、派生详情和预算消耗；人工结案显示 resolution、决定人、理由和证据。
+批量导入、基线、纠正和发布还显示总数、成功、失败、跳过、等待人工、取消及可重试项；手工运行显示 `run_mode`、关联 SourceOccurrence、读写前后 Checkpoint、边界证明、数据变化、派生详情和预算消耗；人工结案显示 resolution、决定人、理由和证据。Browser Listing 还必须显示当前推进阶段、推进方式、动作序号、已接收批次数、累计/新增/重复岗位数、最后目标 response、frontier 命中与重叠进度、结束证据和无进展原因；“达到动作/时间上限”必须显示为不完整，不能伪装成“没有更多数据”。
 
 Review Queue 是 `status=waiting_human` 的 Work Center 视图，可再按结构化等待原因收窄；Capacity 是 Executor 和预算的投影，不要求独立 Actor。
 
 ## 13. 可观测性
 
-业务指标包括 Target 健康、职位变化、Recipe 覆盖与修复率；调度指标包括可运行量、等待原因、最老年龄、deadline、Attempt 结果、站点预算和能力利用率；可靠性指标包括跨 ledger/Resource 未完成意图、状态差异、陈旧结果拒绝和恢复时间。
+业务指标包括 Target 健康、职位变化、Recipe 覆盖与修复率，以及列表推进成功率、每 Source 批次数、每动作新岗位数、frontier 到达率和 end-of-input 证明率；调度指标包括可运行量、等待原因、最老年龄、deadline、Attempt 结果、站点预算和能力利用率；可靠性指标包括跨 ledger/Resource 未完成意图、状态差异、陈旧结果拒绝、推进后无响应/无新身份/selector 漂移和恢复时间。
 
 `recruiting.system.status` 从一个只读一致性快照返回 Work/Attempt/DailyRun/Repair 状态计数、Repair 自动恢复队列长度、当前 runnable 与最老等待、deadline miss、领域事件和 execution dispatch 的 pending/due/exhausted；同一快照还从最近一小时按索引最多读取 1,000 个 Attempt 和 1,000 个 rejected Artifact，返回 Attempt 结果、端到端 P50/P95/P99、过期后同 Work 成功恢复数与恢复时延。每类样本分别返回 scan limit 和 truncated，截断值只能解释为近期样本下界，不能冒充全量计数或 SLO。`recruiting.capacity.status` 返回全局、capability、origin、company、Profile 的活动 BudgetPermit 用量，以及按 capability/origin/Profile 有界聚合的 runnable 数和最老等待，同时展示配置的预算上限与 Executor fleet 数。容量分组不能用“限制返回行数”的无界 `GROUP BY` 扫描全部积压；首版分别从 `open`/`waiting_retry` 的 runnable 索引最老端最多读取 5,000 条，并显式返回 scan limit、实际扫描数和 `runnable_counts_exact`，截断结果只是容量压力下界。二者是现有事实的投影，不领取 Work、不创建容量 Actor，也不能把配置实例数冒充在线心跳。长期时序、Executor 利用率和外部依赖指标仍应进入独立 metrics Resource/监控系统，不能反向把高频样本写入 Channel。
 
@@ -1173,6 +1257,9 @@ Review Queue 是 `status=waiting_human` 的 Work Center 视图，可再按结构
 - 用户可管理 Work，并分别追踪列表同步、详情同步和修复；
 - manual、timer、event 使用同一状态和审计路径；
 - 全量初始化完整遍历当时所有有效列表页，并获取所有可访问岗位详情，产生可对账的基线；
+- 对下一页按钮、方向箭头、页码、加载更多和无限滚动至少各有受控样本；发现阶段必须以真实动作后的 response/岗位变化生成 `ListingAdvancementProof`，不能只保存猜测 selector；
+- Browser Listing 每次 click/scroll 后只接受动作之后产生的目标批次；重复、迟到和无关 response 不得冒充进展；
+- 首次全量只有得到已验证 `end_of_input` 才完成；达到动作、时间或字节上限必须保留为不完整并进入修复/人工边界；
 - 一至两次全量后，每个日运行窗口内为截点时所有 active Source 产生唯一 occurrence，并成功到达旧活动边界或记录明确等待/失败原因；
 - 基线可以在大分页中断后从持久 generation 恢复，列表完成、详情待处理和最终完成分别可见；
 - 第二次校准不会在缺少真实更新样本时把“更新后重新置顶”错误标成已验证；
@@ -1313,6 +1400,8 @@ BF6 验证本地控制面两个依赖同时消失，而不是把 BF2 与 BF5 的
 27. 共享 origin、Recipe 或 Profile 故障采用单飞修复和有界恢复，不为每个受影响岗位创建独立修复流程。
 28. 公司合并第一版采用可逆逻辑映射；完整拆分、历史物理迁移和合规硬删除不属于普通首版操作。
 29. 招聘入口发现采用公司级、非日常的 `DeepDiscoveryMission`；Agent 负责开放探索，Search/HTTP/Browser/Extension 是可组合传感器，Recruiting Actor 以顺序状态机、冻结预算、证据图、checkpoint、覆盖审计和人工接管约束其结论。通用 CSS 链接扫描不得直接生成获批 Source 或 Recipe。
+30. 列表采集以动作后产生的“数据批次”为单位，不假设首次页面包含全量，也不把固定滚动次数当作完成；站点专用 `ListingAdvanceContract` 与通用 Browser Listing 状态机组合执行。
+31. Snowland 的 `handle_next_page()` 业务思想被保留为版本化 Recipe；任意 Python、固定 sleep、布尔成功和进程内早停统计不成为 Atoll 的生产权威。
 
 ## 17. 待实验后决策
 
