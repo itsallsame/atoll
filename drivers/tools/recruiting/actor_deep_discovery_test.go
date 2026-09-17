@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
 
 func TestDeepDiscoveryBrowserProbePlanIsValidatedBeforeWorkCreation(t *testing.T) {
@@ -20,6 +21,29 @@ func TestDeepDiscoveryBrowserProbePlanIsValidatedBeforeWorkCreation(t *testing.T
 	probe.FollowLinkSelector = `a[href*="job"]`
 	if err := validateDeepDiscoveryBrowserProbePlan(probe); err != nil {
 		t.Fatalf("valid single selector rejected: %v", err)
+	}
+}
+
+func TestDeepDiscoveryListingAdvanceProbeUsesRecipeContractValidation(t *testing.T) {
+	probe, err := model.NewDeepDiscoveryBrowserProbe("probe-advance", "mission-1", "work-1",
+		"https://jobs.example.test/openings", ".jobs", 0, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := recipeabi.ListingAdvanceContract{Kind: recipeabi.ListingAdvanceClick, Selector: "button.next",
+		ProgressProof: []string{"response", "job_identity"},
+		EndProof:      recipeabi.ListingEndProof{Kind: "response_false", Pointer: "/has_more"},
+		WaitTimeoutMS: 2_000, MaxAdvances: 2, MaxNoProgress: 1}
+	probe, err = probe.WithListingAdvance("POST", "/api/jobs", model.DeepDiscoveryListingAdvance{
+		Kind: string(contract.Kind), Selector: contract.Selector, ProgressProof: contract.ProgressProof,
+		EndProof:      model.DeepDiscoveryListingEndProof{Kind: contract.EndProof.Kind, Pointer: contract.EndProof.Pointer},
+		WaitTimeoutMS: contract.WaitTimeoutMS, MaxAdvances: contract.MaxAdvances, MaxNoProgress: contract.MaxNoProgress})
+	if err != nil || validateDeepDiscoveryBrowserProbePlan(probe) != nil {
+		t.Fatalf("valid advancement Probe rejected: probe=%+v err=%v", probe, err)
+	}
+	probe.ListingAdvance.EndProof.Pointer = "not-a-pointer"
+	if err := validateDeepDiscoveryBrowserProbePlan(probe); err == nil {
+		t.Fatal("invalid advancement end proof was accepted")
 	}
 }
 

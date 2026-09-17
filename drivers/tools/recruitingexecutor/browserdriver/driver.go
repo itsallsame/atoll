@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"mime"
@@ -33,21 +34,28 @@ const (
 )
 
 type SessionRequest struct {
-	EndpointURL    string         `json:"endpoint_url"`
-	UserAgent      string         `json:"user_agent"`
-	AcceptLanguage string         `json:"accept_language,omitempty"`
-	ProfileRef     string         `json:"profile_ref,omitempty"`
-	ProfileVersion uint64         `json:"profile_version,omitempty"`
-	Plan           Plan           `json:"plan"`
-	PlanHash       string         `json:"plan_hash"`
-	AttemptID      string         `json:"attempt_id"`
-	TimeoutMS      int            `json:"timeout_ms"`
-	Policy         PolicyEvidence `json:"policy"`
-	AllowedMethods []string       `json:"allowed_methods"`
-	SameOriginDocs bool           `json:"same_origin_documents"`
-	BlockDownloads bool           `json:"block_downloads"`
-	BlockPopups    bool           `json:"block_popups"`
+	EndpointURL    string                            `json:"endpoint_url"`
+	UserAgent      string                            `json:"user_agent"`
+	AcceptLanguage string                            `json:"accept_language,omitempty"`
+	ProfileRef     string                            `json:"profile_ref,omitempty"`
+	ProfileVersion uint64                            `json:"profile_version,omitempty"`
+	Plan           Plan                              `json:"plan"`
+	PlanHash       string                            `json:"plan_hash"`
+	AttemptID      string                            `json:"attempt_id"`
+	TimeoutMS      int                               `json:"timeout_ms"`
+	Policy         PolicyEvidence                    `json:"policy"`
+	AllowedMethods []string                          `json:"allowed_methods"`
+	SameOriginDocs bool                              `json:"same_origin_documents"`
+	BlockDownloads bool                              `json:"block_downloads"`
+	BlockPopups    bool                              `json:"block_popups"`
+	BrowserQuery   *recipeabi.BrowserQuery           `json:"browser_query,omitempty"`
+	ListingAdvance *recipeabi.ListingAdvanceContract `json:"listing_advance,omitempty"`
+	OnListingBatch ListingBatchConsumer              `json:"-"`
 }
+
+type ListingBatchConsumer func(PublicQueryResponse) (stop bool, err error)
+
+var ErrListingNoProgress = errors.New("listing batch contained no new stable job identity")
 
 const (
 	MaxPublicQueryResponseBytes      = 20 << 20
@@ -59,18 +67,19 @@ const (
 // session that created the request. Runtime signatures, cookies, Origin and
 // Referer therefore remain browser-owned and are never replayed by Atoll.
 type PublicQueryResponse struct {
-	Request     recipeabi.PublicQueryObservation `json:"request"`
-	StatusCode  int                              `json:"status_code"`
-	ContentType string                           `json:"content_type"`
-	Body        []byte                           `json:"-"`
-	ContentHash string                           `json:"content_hash"`
+	Request        recipeabi.PublicQueryObservation `json:"request"`
+	StatusCode     int                              `json:"status_code"`
+	ContentType    string                           `json:"content_type"`
+	Body           []byte                           `json:"-"`
+	ContentHash    string                           `json:"content_hash"`
+	ActionSequence int                              `json:"action_sequence"`
 }
 
 func (s PublicQueryResponse) Validate() error {
 	if err := s.Request.Validate(); err != nil {
 		return fmt.Errorf("validate browser public query request: %w", err)
 	}
-	if s.StatusCode < 200 || s.StatusCode > 299 || len(s.Body) == 0 || len(s.Body) > MaxPublicQueryResponseBytes {
+	if s.StatusCode < 200 || s.StatusCode > 299 || len(s.Body) == 0 || len(s.Body) > MaxPublicQueryResponseBytes || s.ActionSequence < 0 {
 		return fmt.Errorf("browser public query requires one bounded successful response")
 	}
 	contentType, _, err := mime.ParseMediaType(strings.TrimSpace(s.ContentType))
@@ -140,6 +149,9 @@ type SessionResult struct {
 	DOM                  []byte                `json:"-"`
 	Attestation          Attestation           `json:"attestation"`
 	PublicQueryResponses []PublicQueryResponse `json:"public_query_responses,omitempty"`
+	EndOfInput           bool                  `json:"end_of_input,omitempty"`
+	StopReason           string                `json:"stop_reason,omitempty"`
+	AdvanceCount         int                   `json:"advance_count,omitempty"`
 }
 
 type Broker interface {
@@ -162,13 +174,14 @@ func (e PolicyEvidence) Validate() error {
 }
 
 type ArtifactWrite struct {
-	Kind        string      `json:"kind"`
-	AttemptID   string      `json:"attempt_id"`
-	URL         string      `json:"url"`
-	ContentType string      `json:"content_type,omitempty"`
-	ContentHash string      `json:"content_hash"`
-	Attestation Attestation `json:"attestation"`
-	Body        []byte      `json:"-"`
+	Kind         string      `json:"kind"`
+	AttemptID    string      `json:"attempt_id"`
+	URL          string      `json:"url"`
+	ContentType  string      `json:"content_type,omitempty"`
+	ContentHash  string      `json:"content_hash"`
+	Attestation  Attestation `json:"attestation"`
+	Body         []byte      `json:"-"`
+	PageSequence int         `json:"page_sequence,omitempty"`
 }
 
 type ArtifactSink interface {
@@ -185,10 +198,11 @@ func New(broker Broker) (*Driver, error) {
 }
 
 type PageResult struct {
-	Document    recipeexec.DocumentResult
-	Artifact    recipeabi.ArtifactRef
-	FinalURL    string
-	Attestation Attestation
+	Document       recipeexec.DocumentResult
+	Artifact       recipeabi.ArtifactRef
+	FinalURL       string
+	Attestation    Attestation
+	ActionSequence int
 }
 
 type RunError struct {
@@ -224,6 +238,7 @@ func (d *Driver) ExecutePage(ctx context.Context, spec recipeabi.Spec, input rec
 	}
 	offlineSpec := spec
 	offlineSpec.BrowserQuery = nil
+	offlineSpec.ListingAdvance = nil
 	if spec.Transport == recipeabi.TransportBrowserJSON {
 		offlineSpec.Transport = recipeabi.TransportHTTPJSON
 	} else {
@@ -330,6 +345,129 @@ func (d *Driver) ExecutePage(ctx context.Context, spec recipeabi.Spec, input rec
 	}
 	result.Document = document
 	return result, nil
+}
+
+// ExecuteListing keeps one browser session alive while the immutable
+// ListingAdvanceContract emits batches. Every matching response is persisted
+// before it is parsed and delivered to the caller.
+func (d *Driver) ExecuteListing(ctx context.Context, spec recipeabi.Spec, input recipeabi.RunInput, plan Plan,
+	policy PolicyEvidence, sink ArtifactSink, consume func(PageResult) (bool, error)) (SessionResult, []PageResult, error) {
+	if sink == nil || consume == nil {
+		return SessionResult{}, nil, fmt.Errorf("browser listing requires artifact sink and batch consumer")
+	}
+	if err := spec.Validate(); err != nil {
+		return SessionResult{}, nil, err
+	}
+	if spec.Kind != recipeabi.KindListing || spec.Transport != recipeabi.TransportBrowserJSON ||
+		spec.BrowserPlan == nil || spec.BrowserQuery == nil || spec.ListingAdvance == nil {
+		return SessionResult{}, nil, fmt.Errorf("multi-batch browser execution requires a browser JSON Listing Recipe")
+	}
+	canonicalPlanHash, _ := spec.BrowserPlan.ContentHash()
+	requestedPlanHash, _ := plan.ContentHash()
+	if canonicalPlanHash == "" || canonicalPlanHash != requestedPlanHash {
+		return SessionResult{}, nil, fmt.Errorf("browser execution plan must match the immutable Recipe")
+	}
+	if err := input.Validate(); err != nil {
+		return SessionResult{}, nil, err
+	}
+	if err := policy.Validate(); err != nil {
+		return SessionResult{}, nil, err
+	}
+	offlineSpec := spec
+	offlineSpec.Transport = recipeabi.TransportHTTPJSON
+	offlineSpec.BrowserPlan, offlineSpec.BrowserQuery, offlineSpec.ListingAdvance = nil, nil, nil
+	if err := offlineSpec.Validate(); err != nil {
+		return SessionResult{}, nil, err
+	}
+	planHash, err := plan.ContentHash()
+	if err != nil {
+		return SessionResult{}, nil, err
+	}
+	request := SessionRequest{EndpointURL: input.Endpoint.URL, UserAgent: spec.Request.UserAgent,
+		AcceptLanguage: spec.Request.Headers["Accept-Language"], ProfileRef: input.ProfileRef,
+		ProfileVersion: input.Attempt.ProfileVersion, Plan: plan, PlanHash: planHash,
+		AttemptID: input.Attempt.AttemptID, TimeoutMS: spec.Request.TimeoutMS, Policy: policy,
+		AllowedMethods: []string{http.MethodGet, http.MethodHead, http.MethodOptions}, SameOriginDocs: true,
+		BlockDownloads: true, BlockPopups: true, BrowserQuery: spec.BrowserQuery, ListingAdvance: spec.ListingAdvance}
+	pages := make([]PageResult, 0, spec.Listing.MaxPages)
+	processed := map[string]struct{}{}
+	var totalBytes int64
+	process := func(captured PublicQueryResponse) (bool, error) {
+		endpoint, parseErr := url.Parse(captured.Request.EndpointURL)
+		if parseErr != nil || captured.Request.Method != spec.BrowserQuery.Method || endpoint.Path != spec.BrowserQuery.EndpointPath {
+			return false, nil
+		}
+		if err := captured.Validate(); err != nil {
+			return false, err
+		}
+		key := fmt.Sprintf("%d:%s", captured.ActionSequence, captured.ContentHash)
+		if _, duplicate := processed[key]; duplicate {
+			return false, nil
+		}
+		processed[key] = struct{}{}
+		if len(pages) >= spec.Listing.MaxPages {
+			return true, nil
+		}
+		body := captured.Body
+		totalBytes += int64(len(body))
+		if totalBytes > spec.Listing.MaxTotalBytes {
+			return false, &RunError{Class: "response_too_large", Cause: fmt.Errorf("browser listing exceeded total byte budget")}
+		}
+		if int64(len(body)) > spec.Request.MaxResponseBytes {
+			return false, &RunError{Class: "response_too_large", Cause: fmt.Errorf("browser response exceeded byte budget")}
+		}
+		artifact, putErr := sink.Put(ctx, ArtifactWrite{Kind: "browser_json", AttemptID: input.Attempt.AttemptID,
+			URL: captured.Request.EndpointURL, ContentType: captured.ContentType, ContentHash: captured.ContentHash,
+			Attestation: Attestation{}, Body: body, PageSequence: len(pages) + 1})
+		if putErr != nil {
+			return false, fmt.Errorf("save browser batch before parsing: %w", putErr)
+		}
+		document, parseErr := recipeexec.ExecuteJSON(offlineSpec, body)
+		if parseErr != nil {
+			return false, &RunError{Class: "parse_error", Cause: parseErr}
+		}
+		// Browser advancement owns termination; an absent JSON `next` field is
+		// not evidence that this UI-backed listing ended.
+		document.Next = json.RawMessage(`"browser_advance"`)
+		page := PageResult{Document: document, Artifact: artifact, FinalURL: captured.Request.EndpointURL,
+			ActionSequence: captured.ActionSequence}
+		pages = append(pages, page)
+		return consume(page)
+	}
+	request.OnListingBatch = process
+	runContext, cancel := context.WithTimeout(ctx, time.Duration(spec.Request.TimeoutMS)*time.Millisecond)
+	defer cancel()
+	session, brokerErr := d.broker.Run(runContext, request)
+	if brokerErr == nil && len(pages) == 0 {
+		for _, captured := range session.PublicQueryResponses {
+			stop, consumeErr := process(captured)
+			if consumeErr != nil {
+				brokerErr = consumeErr
+				break
+			}
+			if stop {
+				break
+			}
+		}
+	}
+	if brokerErr != nil {
+		var runErr *RunError
+		if errors.As(brokerErr, &runErr) {
+			return session, pages, runErr
+		}
+		var classified ClassifiedBrokerError
+		if errors.As(brokerErr, &classified) {
+			return session, pages, &RunError{Class: classified.BrowserFailureClass(), Cause: brokerErr}
+		}
+		return session, pages, &RunError{Class: "browser_transport", Cause: brokerErr}
+	}
+	if len(pages) == 0 {
+		return session, nil, &RunError{Class: "parse_error", Cause: fmt.Errorf("browser did not emit the declared public query response")}
+	}
+	if err := session.Attestation.Validate(request); err != nil {
+		return session, pages, &RunError{Class: "effect_policy_violated", Cause: err}
+	}
+	return session, pages, nil
 }
 
 type brokerFailureAdapter struct {

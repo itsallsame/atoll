@@ -61,14 +61,16 @@ type deepDiscoveryStatusPayload struct {
 
 type deepDiscoveryBrowserObservePayload struct {
 	MutationCommand
-	ProbeID            string `json:"probe_id"`
-	WorkID             string `json:"work_id"`
-	URL                string `json:"url"`
-	WaitSelector       string `json:"wait_selector,omitempty"`
-	ScrollRepeats      int    `json:"scroll_repeats,omitempty"`
-	FollowLinkSelector string `json:"follow_link_selector,omitempty"`
-	Priority           int    `json:"priority,omitempty"`
-	DeadlineAt         string `json:"deadline_at,omitempty"`
+	ProbeID            string                            `json:"probe_id"`
+	WorkID             string                            `json:"work_id"`
+	URL                string                            `json:"url"`
+	WaitSelector       string                            `json:"wait_selector,omitempty"`
+	ScrollRepeats      int                               `json:"scroll_repeats,omitempty"`
+	FollowLinkSelector string                            `json:"follow_link_selector,omitempty"`
+	BrowserQuery       *recipeabi.BrowserQuery           `json:"browser_query,omitempty"`
+	ListingAdvance     *recipeabi.ListingAdvanceContract `json:"listing_advance,omitempty"`
+	Priority           int                               `json:"priority,omitempty"`
+	DeadlineAt         string                            `json:"deadline_at,omitempty"`
 }
 
 func handleDeepDiscoveryMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -127,6 +129,22 @@ func handleDeepDiscoveryBrowserObserve(sys actorbase.Sys, cfg Config, repository
 	if err == nil {
 		probe, err = model.NewDeepDiscoveryBrowserProbe(strings.TrimSpace(payload.ProbeID), current.MissionID, work.WorkID,
 			payload.URL, payload.WaitSelector, payload.ScrollRepeats, payload.FollowLinkSelector, next.Version)
+	}
+	if err == nil && (payload.BrowserQuery != nil || payload.ListingAdvance != nil) {
+		if payload.BrowserQuery == nil || payload.ListingAdvance == nil {
+			err = fmt.Errorf("browser_query and listing_advance must be supplied together")
+		} else if err = payload.BrowserQuery.Validate(); err == nil {
+			err = payload.ListingAdvance.Validate()
+		}
+		if err == nil {
+			probe, err = probe.WithListingAdvance(payload.BrowserQuery.Method, payload.BrowserQuery.EndpointPath,
+				model.DeepDiscoveryListingAdvance{Kind: string(payload.ListingAdvance.Kind), Selector: payload.ListingAdvance.Selector,
+					ProgressProof: append([]string(nil), payload.ListingAdvance.ProgressProof...),
+					EndProof: model.DeepDiscoveryListingEndProof{Kind: payload.ListingAdvance.EndProof.Kind,
+						Pointer: payload.ListingAdvance.EndProof.Pointer, Selector: payload.ListingAdvance.EndProof.Selector},
+					WaitTimeoutMS: payload.ListingAdvance.WaitTimeoutMS, MaxAdvances: payload.ListingAdvance.MaxAdvances,
+					MaxNoProgress: payload.ListingAdvance.MaxNoProgress})
+		}
 	}
 	if err == nil {
 		err = validateDeepDiscoveryBrowserProbePlan(probe)
@@ -200,7 +218,31 @@ func validateDeepDiscoveryBrowserProbePlan(probe model.DeepDiscoveryBrowserProbe
 	if err := plan.Validate(); err != nil {
 		return fmt.Errorf("invalid Deep Discovery browser actions: %w", err)
 	}
+	if probe.ListingAdvance != nil {
+		query := recipeabi.BrowserQuery{Method: probe.BrowserQueryMethod, EndpointPath: probe.BrowserQueryPath}
+		advance := listingAdvanceContractFromProbe(probe)
+		if err := query.Validate(); err != nil {
+			return err
+		}
+		if err := advance.Validate(); err != nil {
+			return err
+		}
+	} else if probe.BrowserQueryMethod != "" || probe.BrowserQueryPath != "" {
+		return fmt.Errorf("Deep Discovery browser query requires listing advancement")
+	}
 	return nil
+}
+
+func listingAdvanceContractFromProbe(probe model.DeepDiscoveryBrowserProbe) recipeabi.ListingAdvanceContract {
+	if probe.ListingAdvance == nil {
+		return recipeabi.ListingAdvanceContract{}
+	}
+	advance := probe.ListingAdvance
+	return recipeabi.ListingAdvanceContract{Kind: recipeabi.ListingAdvanceKind(advance.Kind), Selector: advance.Selector,
+		ProgressProof: append([]string(nil), advance.ProgressProof...),
+		EndProof: recipeabi.ListingEndProof{Kind: advance.EndProof.Kind, Pointer: advance.EndProof.Pointer,
+			Selector: advance.EndProof.Selector}, WaitTimeoutMS: advance.WaitTimeoutMS,
+		MaxAdvances: advance.MaxAdvances, MaxNoProgress: advance.MaxNoProgress}
 }
 
 func handleDeepDiscoveryStart(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {

@@ -220,7 +220,7 @@ opening
 
 执行器崩溃时，旧 Attempt 已保存的批次 Artifact 保留为诊断证据，但新 Attempt 从 ListURL 首批重新执行；控制面不能把不同浏览器会话的批次拼成同一列表快照。最终 Checkpoint 只在单个成功 Attempt 已证明安全边界或完整结束后原子提交。
 
-截至 2026-09-17，代码已经完成原浏览器会话内目标 JSON response 的安全捕获，但尚未实现本节的 `ListingAdvanceContract`、动作后逐批回调和 Browser Listing 推进状态机；现有固定滚动与“选择第一条匹配 response”只能作为首批发现能力，不能通过完整基线或每日增量验收。本节是后续实现的强制产品契约，不是对当前完成度的声明。
+截至 2026-09-17，本节的第一版纵向切片已经实现：Recipe ABI 保存并哈希 `ListingAdvanceContract`；Deep Discovery 可在同一 Browser Probe 中验证 query matcher 与候选推进动作；Broker 在原会话内按动作序号捕获响应；Executor 逐批先保存 Artifact、再解析并送入 ListingScan；`end_of_input`、`safe_boundary`、`bounded_incomplete` 和无进展进入不同结果路径。旧的固定滚动和“选择第一条匹配 response”已退出 Browser JSON Listing 生产路径。当前受限动作覆盖 click、page scroll 和 container scroll；无法由这些动作表达的网站仍进入受权限约束的代码 Recipe/人工边界，而不是在 Executor 中加入站点特例。
 
 ### 5.3 每日增量
 

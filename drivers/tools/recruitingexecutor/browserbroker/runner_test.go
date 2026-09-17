@@ -2,7 +2,9 @@ package browserbroker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -17,6 +19,7 @@ import (
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/browserdriver"
+	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
 
 func TestRequestTrackerCloseHasBoundedWait(t *testing.T) {
@@ -31,6 +34,28 @@ func TestRequestTrackerCloseHasBoundedWait(t *testing.T) {
 		t.Fatalf("request handler drain ignored its bound: %s", elapsed)
 	}
 	close(release)
+}
+
+func TestMatchingResponsesCollapsesSameQueryRetryWithinOneAction(t *testing.T) {
+	observation, err := recipeabi.NewPublicQueryObservation("https://jobs.example.test/api/jobs?_signature=one", "POST",
+		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{"offset":0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry := observation
+	retry.EndpointURL = "https://jobs.example.test/api/jobs?_signature=two"
+	state := &policyState{publicQueryResponses: []browserdriver.PublicQueryResponse{
+		{Request: observation, ContentHash: "sha256:first", ActionSequence: 0},
+		{Request: retry, ContentHash: "sha256:second", ActionSequence: 0},
+		{Request: retry, ContentHash: "sha256:third", ActionSequence: 1},
+	}}
+	query := recipeabi.BrowserQuery{Method: "POST", EndpointPath: "/api/jobs"}
+	responses, next := state.matchingResponses(0, query, 0)
+	actionResponses, _ := state.matchingResponses(0, query, 1)
+	if next != 3 || len(responses) != 1 || responses[0].ContentHash != "sha256:second" ||
+		len(actionResponses) != 1 || actionResponses[0].ContentHash != "sha256:third" {
+		t.Fatalf("same-action retry was not collapsed: next=%d responses=%+v", next, responses)
+	}
 }
 
 func TestRunnerExecutesImmutablePlanInRealChrome(t *testing.T) {
@@ -255,6 +280,84 @@ fetch('/config',{method:'POST',headers:{'Content-Type':'application/json','websi
 	}
 }
 
+func TestRunnerAdvancesClickListingUntilResponseEndProof(t *testing.T) {
+	chrome := chromeForTest(t)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodPost && request.URL.Path == "/jobs" {
+			var body struct {
+				Page int `json:"page"`
+			}
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			response.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(response, `{"jobs":[{"id":"%d"}],"has_more":%t}`, body.Page+1, body.Page == 0)
+			return
+		}
+		response.Header().Set("Content-Type", "text/html")
+		_, _ = response.Write([]byte(`<!doctype html><html><body><button id="next">next</button><script>
+let page=0; const load=()=>fetch('/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({page})});
+document.querySelector('#next').addEventListener('click',()=>{page++;load()});load();
+</script></body></html>`))
+	}))
+	defer server.Close()
+	runner := &Runner{chromePath: chrome, allowPrivate: true}
+	request := browserRequest(server.URL)
+	request.Plan.Actions = []browserdriver.Action{{Kind: browserdriver.ActionWaitSelector, Selector: "#next", TimeoutMS: 5_000}}
+	request.PlanHash, _ = request.Plan.ContentHash()
+	request.BrowserQuery = &recipeabi.BrowserQuery{Method: "POST", EndpointPath: "/jobs"}
+	request.ListingAdvance = &recipeabi.ListingAdvanceContract{Kind: recipeabi.ListingAdvanceClick, Selector: "#next",
+		ProgressProof: []string{"response", "job_identity"}, EndProof: recipeabi.ListingEndProof{Kind: "response_false", Pointer: "/has_more"},
+		WaitTimeoutMS: 3_000, MaxAdvances: 3, MaxNoProgress: 1}
+	sequences := []int{}
+	request.OnListingBatch = func(response browserdriver.PublicQueryResponse) (bool, error) {
+		sequences = append(sequences, response.ActionSequence)
+		return false, nil
+	}
+	result, err := runner.Run(context.Background(), request)
+	if err != nil || !result.EndOfInput || result.StopReason != "end_of_input" || result.AdvanceCount != 1 ||
+		!reflect.DeepEqual(sequences, []int{0, 1}) {
+		t.Fatalf("click listing did not advance with response proof: result=%+v sequences=%v err=%v", result, sequences, err)
+	}
+}
+
+func TestRunnerAdvancesScrollableContainerUntilStableNoProgress(t *testing.T) {
+	chrome := chromeForTest(t)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodPost && request.URL.Path == "/jobs" {
+			var body struct {
+				Page int `json:"page"`
+			}
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			response.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(response, `{"jobs":[{"id":"%d"}]}`, body.Page+1)
+			return
+		}
+		response.Header().Set("Content-Type", "text/html")
+		_, _ = response.Write([]byte(`<!doctype html><html><body>
+<div id="scroll" style="height:40px;overflow:auto"><div style="height:400px">jobs</div></div><script>
+let sent=false; const load=page=>fetch('/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({page})});
+document.querySelector('#scroll').addEventListener('scroll',()=>{if(!sent){sent=true;load(1)}});load(0);
+</script></body></html>`))
+	}))
+	defer server.Close()
+	runner := &Runner{chromePath: chrome, allowPrivate: true}
+	request := browserRequest(server.URL)
+	request.Plan.Actions = []browserdriver.Action{{Kind: browserdriver.ActionWaitSelector, Selector: "#scroll", TimeoutMS: 5_000}}
+	request.PlanHash, _ = request.Plan.ContentHash()
+	request.BrowserQuery = &recipeabi.BrowserQuery{Method: "POST", EndpointPath: "/jobs"}
+	request.ListingAdvance = &recipeabi.ListingAdvanceContract{Kind: recipeabi.ListingAdvanceScrollContainer, Selector: "#scroll",
+		ProgressProof: []string{"response", "job_identity"}, EndProof: recipeabi.ListingEndProof{Kind: "stable_no_progress"},
+		WaitTimeoutMS: 500, MaxAdvances: 3, MaxNoProgress: 1}
+	sequences := []int{}
+	request.OnListingBatch = func(response browserdriver.PublicQueryResponse) (bool, error) {
+		sequences = append(sequences, response.ActionSequence)
+		return false, nil
+	}
+	result, err := runner.Run(context.Background(), request)
+	if err != nil || !result.EndOfInput || result.AdvanceCount != 2 || !reflect.DeepEqual(sequences, []int{0, 1}) {
+		t.Fatalf("container scroll did not prove stable end: result=%+v sequences=%v err=%v", result, sequences, err)
+	}
+}
+
 func TestRunnerBlocksCrossOriginDocumentBeforeItReachesOrigin(t *testing.T) {
 	chrome := chromeForTest(t)
 	var crossOriginReads atomic.Int64
@@ -458,22 +561,43 @@ func TestRunnerCapturesByteDancePublicQueryResponsesInBrowser(t *testing.T) {
 	if os.Getenv("RECRUITING_LIVE_BYTEDANCE_PROBE") != "1" {
 		t.Skip("set RECRUITING_LIVE_BYTEDANCE_PROBE=1 for the real public site")
 	}
-	plan := browserdriver.Plan{Version: browserdriver.PlanVersion, MaxNavigations: 1, MaxDOMBytes: 2 << 20,
-		Actions: []browserdriver.Action{{Kind: browserdriver.ActionScrollPage, MaxRepeats: 30}}}
+	plan := browserdriver.Plan{Version: browserdriver.PlanVersion, MaxNavigations: 1, MaxDOMBytes: 20 << 20,
+		Actions: []browserdriver.Action{{Kind: browserdriver.ActionWaitSelector, Selector: `.atsx-pagination-next`, TimeoutMS: 30_000}}}
 	planHash, _ := plan.ContentHash()
 	request := browserdriver.SessionRequest{EndpointURL: "https://jobs.bytedance.com/campus/position",
 		UserAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/144.0.0.0 Safari/537.36", AcceptLanguage: "en-US,en;q=0.9",
-		Plan: plan, PlanHash: planHash, AttemptID: "attempt-bytedance-public-query-live", TimeoutMS: 30_000,
+		Plan: plan, PlanHash: planHash, AttemptID: "attempt-bytedance-public-query-live", TimeoutMS: 60_000,
 		Policy:         browserdriver.PolicyEvidence{TermsPolicyVersion: 1, TermsReviewedAt: "2026-09-13T00:00:00Z"},
 		AllowedMethods: []string{http.MethodGet, http.MethodHead, http.MethodOptions}, SameOriginDocs: true,
 		BlockDownloads: true, BlockPopups: true}
+	request.BrowserQuery = &recipeabi.BrowserQuery{Method: "POST", EndpointPath: "/api/v1/search/job/posts"}
+	request.ListingAdvance = &recipeabi.ListingAdvanceContract{Kind: recipeabi.ListingAdvanceClick, Selector: `.atsx-pagination-next a`,
+		ProgressProof: []string{"response", "job_identity"},
+		EndProof:      recipeabi.ListingEndProof{Kind: "selector_absent_or_disabled", Selector: `.atsx-pagination-next`},
+		WaitTimeoutMS: 15_000, MaxAdvances: 1, MaxNoProgress: 1}
+	sequences := []int{}
+	request.OnListingBatch = func(response browserdriver.PublicQueryResponse) (bool, error) {
+		sequences = append(sequences, response.ActionSequence)
+		return false, nil
+	}
 	runner, err := New(chromeForTest(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	result, err := runner.Run(context.Background(), request)
 	if err != nil {
-		t.Fatal(err)
+		dom := string(result.DOM)
+		if index := strings.LastIndex(dom, "atsx-pagination-next"); index >= 0 {
+			start, end := index-200, index+800
+			if start < 0 {
+				start = 0
+			}
+			if end > len(dom) {
+				end = len(dom)
+			}
+			t.Logf("pagination DOM: %s", dom[start:end])
+		}
+		t.Fatalf("live advancement failed: %v responses=%d sequences=%v", err, len(result.PublicQueryResponses), sequences)
 	}
 	foundListing := false
 	for _, captured := range result.PublicQueryResponses {
@@ -481,8 +605,10 @@ func TestRunnerCapturesByteDancePublicQueryResponsesInBrowser(t *testing.T) {
 			foundListing = true
 		}
 	}
-	if !foundListing || result.Attestation.AllowedPublicQueryRequests < 1 || result.Attestation.CapturedPublicQueryResponses < 1 {
-		t.Fatalf("ByteDance listing response was not captured in the browser session: responses=%+v attestation=%+v",
-			result.PublicQueryResponses, result.Attestation)
+	if !foundListing || result.Attestation.AllowedPublicQueryRequests < 2 || result.Attestation.CapturedPublicQueryResponses < 2 ||
+		result.StopReason != "bounded_incomplete" || !reflect.DeepEqual(sequences, []int{0, 1}) {
+		t.Fatalf("ByteDance listing advancement mismatch: found=%t stop=%s end=%t advances=%d sequences=%v captured=%d allowed=%d",
+			foundListing, result.StopReason, result.EndOfInput, result.AdvanceCount, sequences,
+			result.Attestation.CapturedPublicQueryResponses, result.Attestation.AllowedPublicQueryRequests)
 	}
 }

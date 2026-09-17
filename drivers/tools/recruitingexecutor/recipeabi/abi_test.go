@@ -132,6 +132,38 @@ func TestBrowserPlanIsRequiredAndCompatibilityHashBound(t *testing.T) {
 	}
 }
 
+func TestListingAdvanceContractIsValidatedAndHashBound(t *testing.T) {
+	spec := validListingSpec()
+	spec.Extraction.Next = ""
+	spec.Transport = TransportBrowserJSON
+	spec.RequiredCapability = "browser.public"
+	plan := BrowserPlan{Version: BrowserPlanVersion, MaxNavigations: 1, MaxDOMBytes: 1 << 20}
+	spec.BrowserPlan = &plan
+	spec.BrowserQuery = &BrowserQuery{Method: "POST", EndpointPath: "/jobs"}
+	spec.ListingAdvance = &ListingAdvanceContract{Kind: ListingAdvanceClick, Selector: "button.next",
+		ProgressProof: []string{"response", "job_identity"}, EndProof: ListingEndProof{Kind: "response_false", Pointer: "/has_more"},
+		WaitTimeoutMS: 2_000, MaxAdvances: 20, MaxNoProgress: 2}
+	if err := spec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := spec.ContractHash()
+	changed := spec
+	advance := *spec.ListingAdvance
+	advance.Selector = "button.load-more"
+	changed.ListingAdvance = &advance
+	second, err := changed.ContractHash()
+	if err != nil || first == second {
+		t.Fatalf("listing advancement was not compatibility hash-bound: first=%s second=%s err=%v", first, second, err)
+	}
+	invalid := spec
+	bad := *spec.ListingAdvance
+	bad.MaxAdvances = 0
+	invalid.ListingAdvance = &bad
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("unbounded/incomplete listing advance contract was accepted")
+	}
+}
+
 func TestDecodeSpecIsStrictBoundedAndShared(t *testing.T) {
 	raw, _ := json.Marshal(validListingSpec())
 	decoded, err := DecodeSpec(raw)

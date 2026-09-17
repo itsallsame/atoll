@@ -328,6 +328,7 @@ type DeepDiscoveryPublicQueryResponse struct {
 	Artifact                 model.ArtifactMetadata           `json:"artifact"`
 	StatusCode               int                              `json:"status_code"`
 	ContentType              string                           `json:"content_type"`
+	ActionSequence           int                              `json:"action_sequence,omitempty"`
 	ContentHash              string                           `json:"content_hash"`
 	ResponsePreview          json.RawMessage                  `json:"response_preview"`
 	ResponsePreviewTruncated bool                             `json:"response_preview_truncated,omitempty"`
@@ -346,6 +347,9 @@ type DeepDiscoveryBrowserResult struct {
 	DOMPreview           []DeepDiscoveryDOMElement          `json:"dom_preview,omitempty"`
 	PublicQueryResponses []DeepDiscoveryPublicQueryResponse `json:"public_query_responses,omitempty"`
 	Attestation          DeepDiscoveryEffectAttestation     `json:"attestation"`
+	EndOfInput           bool                               `json:"end_of_input,omitempty"`
+	AdvanceStopReason    string                             `json:"advance_stop_reason,omitempty"`
+	AdvanceCount         int                                `json:"advance_count,omitempty"`
 }
 
 // CompanyImportApplyItem is a bounded, immutable slice of the confirmed

@@ -123,6 +123,9 @@ func handleDeepDiscoveryBrowserResult(sys actorbase.Sys, repository *store.Repos
 		ContentHash: payload.ContentHash, Links: payload.Links, DOMPreview: payload.DOMPreview,
 		PublicQueryResponses: payload.PublicQueryResponses,
 		Attestation:          payload.Attestation,
+		EndOfInput:           payload.EndOfInput,
+		AdvanceStopReason:    payload.AdvanceStopReason,
+		AdvanceCount:         payload.AdvanceCount,
 		ObservedAt:           time.UnixMilli(msg.TS).UTC(),
 	})
 	if err != nil {

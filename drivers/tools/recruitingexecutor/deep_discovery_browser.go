@@ -73,6 +73,17 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 		Policy:         browserdriver.PolicyEvidence{TermsPolicyVersion: options.Compliance.TermsPolicyVersion, TermsReviewedAt: options.Compliance.TermsReviewedAt},
 		AllowedMethods: []string{http.MethodGet, http.MethodHead, http.MethodOptions}, SameOriginDocs: true, BlockDownloads: true,
 		BlockPopups: true}
+	if probe.ListingAdvance != nil {
+		advance := recipeabi.ListingAdvanceContract{Kind: recipeabi.ListingAdvanceKind(probe.ListingAdvance.Kind),
+			Selector: probe.ListingAdvance.Selector, ProgressProof: append([]string(nil), probe.ListingAdvance.ProgressProof...),
+			EndProof: recipeabi.ListingEndProof{Kind: probe.ListingAdvance.EndProof.Kind,
+				Pointer: probe.ListingAdvance.EndProof.Pointer, Selector: probe.ListingAdvance.EndProof.Selector},
+			WaitTimeoutMS: probe.ListingAdvance.WaitTimeoutMS, MaxAdvances: probe.ListingAdvance.MaxAdvances,
+			MaxNoProgress: probe.ListingAdvance.MaxNoProgress}
+		request.BrowserQuery = &recipeabi.BrowserQuery{Method: probe.BrowserQueryMethod, EndpointPath: probe.BrowserQueryPath}
+		request.ListingAdvance = &advance
+		request.OnListingBatch = func(browserdriver.PublicQueryResponse) (bool, error) { return false, nil }
+	}
 	result, err := explorer.Run(ctx, request)
 	if err != nil {
 		if len(result.PublicQueryResponses) == 0 || len(result.DOM) == 0 || strings.TrimSpace(result.FinalURL) == "" ||
@@ -116,11 +127,13 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 		}
 		queryResponses = append(queryResponses, executioncontract.DeepDiscoveryPublicQueryResponse{Request: captured.Request,
 			Artifact: metadata, StatusCode: captured.StatusCode, ContentType: captured.ContentType,
-			ContentHash: captured.ContentHash, ResponsePreview: preview, ResponsePreviewTruncated: truncated})
+			ContentHash: captured.ContentHash, ActionSequence: captured.ActionSequence,
+			ResponsePreview: preview, ResponsePreviewTruncated: truncated})
 		supportingArtifacts = append(supportingArtifacts, ref)
 	}
 	traceJSON, _ := json.Marshal(map[string]any{"attestation": result.Attestation,
-		"public_query_response_count": len(queryResponses)})
+		"public_query_response_count": len(queryResponses), "advance_count": result.AdvanceCount,
+		"advance_stop_reason": result.StopReason, "end_of_input": result.EndOfInput})
 	traceRef, err := sink.Put(ctx, httpdriver.ArtifactWrite{Kind: "trace", AttemptID: offer.Attempt.AttemptID,
 		PageSequence: len(result.PublicQueryResponses) + 2, URL: finalURL, ContentType: "application/json", Body: traceJSON})
 	if err != nil {
@@ -144,6 +157,7 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Artifact: primary, SupportingArtifacts: supporting,
 		FinalURL: finalURL, ContentHash: "sha256:" + hex.EncodeToString(bodySum[:]), Links: wireLinks, DOMPreview: domPreview,
 		PublicQueryResponses: queryResponses,
+		EndOfInput:           result.EndOfInput, AdvanceStopReason: result.StopReason, AdvanceCount: result.AdvanceCount,
 		Attestation: executioncontract.DeepDiscoveryEffectAttestation{DocumentNavigations: result.Attestation.DocumentNavigations,
 			ObservedMethods: result.Attestation.ObservedMethods, BlockedMethods: result.Attestation.BlockedMethods,
 			AllowedWriteRequests: result.Attestation.AllowedWriteRequests, BlockedWriteRequests: result.Attestation.BlockedWriteRequests,

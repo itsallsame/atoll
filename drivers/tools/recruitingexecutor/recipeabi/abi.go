@@ -176,16 +176,113 @@ func (in RunInput) Validate() error {
 }
 
 type Spec struct {
-	ABIVersion         string            `json:"abi_version"`
-	Kind               Kind              `json:"kind"`
-	RequiredCapability string            `json:"required_capability"`
-	Transport          Transport         `json:"transport"`
-	Request            ReadRequest       `json:"request"`
-	Extraction         Extraction        `json:"extraction"`
-	OffsetPagination   *OffsetPagination `json:"offset_pagination,omitempty"`
-	Listing            *ListingContract  `json:"listing,omitempty"`
-	BrowserPlan        *BrowserPlan      `json:"browser_plan,omitempty"`
-	BrowserQuery       *BrowserQuery     `json:"browser_query,omitempty"`
+	ABIVersion         string                  `json:"abi_version"`
+	Kind               Kind                    `json:"kind"`
+	RequiredCapability string                  `json:"required_capability"`
+	Transport          Transport               `json:"transport"`
+	Request            ReadRequest             `json:"request"`
+	Extraction         Extraction              `json:"extraction"`
+	OffsetPagination   *OffsetPagination       `json:"offset_pagination,omitempty"`
+	Listing            *ListingContract        `json:"listing,omitempty"`
+	BrowserPlan        *BrowserPlan            `json:"browser_plan,omitempty"`
+	BrowserQuery       *BrowserQuery           `json:"browser_query,omitempty"`
+	ListingAdvance     *ListingAdvanceContract `json:"listing_advance,omitempty"`
+}
+
+type ListingAdvanceKind string
+
+const (
+	ListingAdvanceNone            ListingAdvanceKind = "none"
+	ListingAdvanceClick           ListingAdvanceKind = "click"
+	ListingAdvanceScrollPage      ListingAdvanceKind = "scroll_page"
+	ListingAdvanceScrollContainer ListingAdvanceKind = "scroll_container"
+)
+
+type ListingEndProof struct {
+	Kind     string `json:"kind"`
+	Pointer  string `json:"pointer,omitempty"`
+	Selector string `json:"selector,omitempty"`
+}
+
+// ListingAdvanceContract is the immutable, site-specific half of browser
+// listing enumeration. BrowserPlan prepares the first batch; this contract
+// describes exactly one repeatable action and the evidence that ends input.
+type ListingAdvanceContract struct {
+	Kind          ListingAdvanceKind `json:"kind"`
+	Selector      string             `json:"selector,omitempty"`
+	ProgressProof []string           `json:"progress_proof"`
+	EndProof      ListingEndProof    `json:"end_proof"`
+	WaitTimeoutMS int                `json:"wait_timeout_ms"`
+	MaxAdvances   int                `json:"max_advances"`
+	MaxNoProgress int                `json:"max_no_progress"`
+}
+
+func (c ListingAdvanceContract) Validate() error {
+	if c.WaitTimeoutMS < 100 || c.WaitTimeoutMS > 30_000 || c.MaxAdvances < 0 || c.MaxAdvances > 1000 ||
+		c.MaxNoProgress < 0 || c.MaxNoProgress > 10 || len(c.ProgressProof) == 0 || len(c.ProgressProof) > 8 {
+		return fmt.Errorf("listing advance requires bounded wait, advances, no-progress, and progress proof")
+	}
+	seen := map[string]struct{}{}
+	for _, proof := range c.ProgressProof {
+		switch proof {
+		case "response", "cursor", "job_identity", "url", "list_count":
+		default:
+			return fmt.Errorf("unsupported listing progress proof %q", proof)
+		}
+		if _, duplicate := seen[proof]; duplicate {
+			return fmt.Errorf("listing progress proof %q is duplicated", proof)
+		}
+		seen[proof] = struct{}{}
+	}
+	if _, ok := seen["job_identity"]; !ok {
+		return fmt.Errorf("listing progress proof requires stable job_identity")
+	}
+	switch c.Kind {
+	case ListingAdvanceNone:
+		if c.Selector != "" || c.MaxAdvances != 0 || c.MaxNoProgress != 0 || c.EndProof.Kind != "single_batch" {
+			return fmt.Errorf("none listing advance requires a single_batch end proof and no action budgets")
+		}
+	case ListingAdvanceClick, ListingAdvanceScrollContainer:
+		if strings.TrimSpace(c.Selector) == "" || c.MaxAdvances < 1 || c.MaxNoProgress < 1 {
+			return fmt.Errorf("listing advance %q requires selector and positive action budgets", c.Kind)
+		}
+		if _, err := cascadia.Parse(c.Selector); err != nil {
+			return fmt.Errorf("listing advance selector: %w", err)
+		}
+	case ListingAdvanceScrollPage:
+		if c.Selector != "" || c.MaxAdvances < 1 || c.MaxNoProgress < 1 {
+			return fmt.Errorf("scroll_page listing advance requires positive action budgets without selector")
+		}
+	default:
+		return fmt.Errorf("unsupported listing advance kind %q", c.Kind)
+	}
+	switch c.EndProof.Kind {
+	case "single_batch":
+		if c.Kind != ListingAdvanceNone || c.EndProof.Pointer != "" || c.EndProof.Selector != "" {
+			return fmt.Errorf("single_batch end proof is only valid for no advancement")
+		}
+	case "response_false", "response_empty":
+		if !jsonPointer(c.EndProof.Pointer) || c.EndProof.Selector != "" {
+			return fmt.Errorf("response end proof requires one JSON pointer")
+		}
+	case "selector_absent_or_disabled":
+		if c.Kind != ListingAdvanceClick || c.EndProof.Pointer != "" || strings.TrimSpace(c.EndProof.Selector) == "" {
+			return fmt.Errorf("selector end proof requires a click contract and selector")
+		}
+		if _, err := cascadia.Parse(c.EndProof.Selector); err != nil {
+			return fmt.Errorf("listing end selector: %w", err)
+		}
+	case "stable_no_progress":
+		if c.Kind != ListingAdvanceScrollPage && c.Kind != ListingAdvanceScrollContainer {
+			return fmt.Errorf("stable_no_progress is only valid for scrolling")
+		}
+		if c.EndProof.Pointer != "" || c.EndProof.Selector != "" {
+			return fmt.Errorf("stable_no_progress cannot declare pointer or selector")
+		}
+	default:
+		return fmt.Errorf("unsupported listing end proof %q", c.EndProof.Kind)
+	}
+	return nil
 }
 
 // BrowserQuery selects a JSON listing response naturally emitted by the
@@ -708,14 +805,22 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("non-browser recipe cannot carry a browser plan")
 	}
 	if s.Transport == TransportBrowserJSON {
-		if s.Kind != KindListing || s.RequiredCapability != "browser.public" || s.BrowserQuery == nil {
+		if s.Kind != KindListing || s.RequiredCapability != "browser.public" || s.BrowserQuery == nil || s.ListingAdvance == nil {
 			return fmt.Errorf("browser JSON transport requires a public-browser Listing and query selector")
 		}
 		if err := s.BrowserQuery.Validate(); err != nil {
 			return err
 		}
-	} else if s.BrowserQuery != nil {
-		return fmt.Errorf("browser_query is only valid for browser JSON transport")
+		if err := s.ListingAdvance.Validate(); err != nil {
+			return err
+		}
+		for index, action := range s.BrowserPlan.Actions {
+			if action.Kind != BrowserActionWaitSelector {
+				return fmt.Errorf("browser JSON initial action %d must only wait; listing advancement belongs to listing_advance", index)
+			}
+		}
+	} else if s.BrowserQuery != nil || s.ListingAdvance != nil {
+		return fmt.Errorf("browser_query and listing_advance are only valid for browser JSON transport")
 	}
 	if s.Kind == KindListing {
 		if err := s.Listing.Validate(); err != nil {
@@ -1144,10 +1249,12 @@ func (s Spec) ContractHash() (string, error) {
 			Headers  map[string]string `json:"headers,omitempty"`
 			JSONBody json.RawMessage   `json:"json_body,omitempty"`
 		} `json:"request"`
-		Extraction       Extraction        `json:"extraction"`
-		OffsetPagination *OffsetPagination `json:"offset_pagination,omitempty"`
-		Listing          *ListingContract  `json:"listing,omitempty"`
-		BrowserPlan      *BrowserPlan      `json:"browser_plan,omitempty"`
+		Extraction       Extraction              `json:"extraction"`
+		OffsetPagination *OffsetPagination       `json:"offset_pagination,omitempty"`
+		Listing          *ListingContract        `json:"listing,omitempty"`
+		BrowserPlan      *BrowserPlan            `json:"browser_plan,omitempty"`
+		BrowserQuery     *BrowserQuery           `json:"browser_query,omitempty"`
+		ListingAdvance   *ListingAdvanceContract `json:"listing_advance,omitempty"`
 	}{
 		Kind: s.Kind, Transport: s.Transport,
 		Request: struct {
@@ -1157,6 +1264,7 @@ func (s Spec) ContractHash() (string, error) {
 			JSONBody json.RawMessage   `json:"json_body,omitempty"`
 		}{URL: strings.TrimSpace(s.Request.URL), Method: strings.ToUpper(strings.TrimSpace(s.Request.Method)), Headers: s.Request.Headers, JSONBody: s.Request.JSONBody},
 		Extraction: s.Extraction, OffsetPagination: s.OffsetPagination, Listing: s.Listing, BrowserPlan: s.BrowserPlan,
+		BrowserQuery: s.BrowserQuery, ListingAdvance: s.ListingAdvance,
 	}
 	raw, err := json.Marshal(contract)
 	if err != nil {

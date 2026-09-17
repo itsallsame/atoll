@@ -904,3 +904,13 @@ Browser Broker 新增严格受限的 `PublicQueryStub`：请求侧必须与前�
 Listing Recipe 新增 `browser_json` transport：Source 继续保存真实 ListURL；Recipe 只冻结浏览器 GET 导航 Plan，以及目标查询的 method + endpoint path。运行时 query signature、Cookie、CSRF 不进入 Recipe，不由 Atoll 重放；页面每次自然生成它们。Recipe preparation 从同一成功 Probe 的 response Artifact 读取 JSON preview 和语义映射，不再依赖 Verification/Stub ID。Onboarding 自动推进只剩创建/等待 Browser Probe、证据复核和人工修复边界。
 
 验证包括：受控真实 Chrome 页面连续执行两个同源 JSON POST，Broker 在同一会话捕获两个 response，禁止写语义 POST 仍未到达 origin；Recruiting Executor、Actor、Store、Recipe ABI/exec 全部包测试通过。公网 Live Smoke 使用用户确认的 `https://jobs.bytedance.com/campus/position`，页面先访问 `/api/v1/csrf/token`，随后真实请求 `/api/v1/search/job/posts?...&_signature=...`；早期 405 不被接收，CSRF 完成后的 200 `application/json` response 被捕获，证明临时签名和会话前置条件无需独立模拟。该结果关闭“发现阶段获得字节岗位列表 JSON”的数据面缺口；完整 Source 发布、Listing 多响应分页、首次 baseline 和每日增量仍必须继续经过各自产品状态机，不能由这项 Live Smoke 代替。
+
+## 31. 2026-09-17 Browser Listing 逐批推进阶段
+
+本阶段删除 Browser JSON Listing 的“固定滚动若干次后选择第一条 response”生产逻辑，增加内容寻址并参与 Recipe contract hash 的 `ListingAdvanceContract`。契约只允许 `none / click / scroll_page / scroll_container`，冻结真实 selector、动作后等待上限、最大推进次数、连续无进展上限，以及 `single_batch / response_false / response_empty / selector_absent_or_disabled / stable_no_progress` 结束证明；稳定岗位身份是强制进展证据。Browser Plan 只允许完成首批数据前的等待动作，不能再夹带静态滚动形成第二套推进协议。
+
+Deep Discovery Browser Probe 可选冻结已观察到的 POST endpoint path 与候选推进契约。Runner 给每条目标响应记录动作序号；每轮只消费当前动作序号下目标 endpoint path 的最新 response，迟到的旧动作响应不会进入新批次，全部原始响应仍作为有界证据保留。`recipe.prepare` 仅接收字段语义映射；推进契约必须从同 Mission 已完成 Probe 派生，且至少存在动作后的目标 response（`none` 除外），旧的公开 offset 映射字段已删除。raw Spec 兼容入口也必须与 Probe 推进证据逐字节一致，不能旁路注入。
+
+生产执行在单个 Chrome Session 中逐批运行：每个 response 先写 Artifact，再解析并送入 ListingScan；ListingScan 达到 frontier+重叠时回调停止为 `safe_boundary`，经 Recipe 证明列表结束时标为 `end_of_input`。达到动作或字节上限仍是 `bounded_incomplete`，不能推进 Checkpoint；重复响应、无新增稳定岗位身份、selector 漂移、错误类型的结束字段和响应超时均进入质量失败/修复。新 Attempt 仍从 ListURL 首批开始，不拼接不同会话。
+
+验证覆盖 ABI 负向校验与 contract hash、相同动作请求重试折叠、真实 Chrome 点击分页、两批 Artifact/ListingScan/Checkpoint、推进 Probe 与公开 schema，以及招聘扩展全部包。受控页面验证“首批 POST → 点击下一页 → 第二批 POST → `has_more=false`”；真实字节校招页面验证当前 `.atsx-pagination-next a` 动作产生 offset 下一批，回调动作序列为 `[0,1]`，一次推进按设计结束为 `bounded_incomplete`。实现未修改 Atoll core、未新增 Worker/Actor 类型或数据库 migration。

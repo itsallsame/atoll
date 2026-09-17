@@ -16,20 +16,39 @@ const (
 // terminal evidence. Work/Attempt owns scheduling and execution lifecycle;
 // the Mission owns research stage and budget.
 type DeepDiscoveryBrowserProbe struct {
-	ProbeID            string                   `json:"probe_id"`
-	MissionID          string                   `json:"mission_id"`
-	MissionVersion     uint64                   `json:"mission_version"`
-	WorkID             string                   `json:"work_id"`
-	URL                string                   `json:"url"`
-	WaitSelector       string                   `json:"wait_selector,omitempty"`
-	ScrollRepeats      int                      `json:"scroll_repeats,omitempty"`
-	FollowLinkSelector string                   `json:"follow_link_selector,omitempty"`
-	Status             DeepDiscoveryProbeStatus `json:"status"`
-	ArtifactID         string                   `json:"artifact_id,omitempty"`
-	FinalURL           string                   `json:"final_url,omitempty"`
-	ContentHash        string                   `json:"content_hash,omitempty"`
-	LinkCount          int                      `json:"link_count,omitempty"`
-	Version            uint64                   `json:"version"`
+	ProbeID            string                       `json:"probe_id"`
+	MissionID          string                       `json:"mission_id"`
+	MissionVersion     uint64                       `json:"mission_version"`
+	WorkID             string                       `json:"work_id"`
+	URL                string                       `json:"url"`
+	WaitSelector       string                       `json:"wait_selector,omitempty"`
+	ScrollRepeats      int                          `json:"scroll_repeats,omitempty"`
+	FollowLinkSelector string                       `json:"follow_link_selector,omitempty"`
+	BrowserQueryMethod string                       `json:"browser_query_method,omitempty"`
+	BrowserQueryPath   string                       `json:"browser_query_path,omitempty"`
+	ListingAdvance     *DeepDiscoveryListingAdvance `json:"listing_advance,omitempty"`
+	Status             DeepDiscoveryProbeStatus     `json:"status"`
+	ArtifactID         string                       `json:"artifact_id,omitempty"`
+	FinalURL           string                       `json:"final_url,omitempty"`
+	ContentHash        string                       `json:"content_hash,omitempty"`
+	LinkCount          int                          `json:"link_count,omitempty"`
+	Version            uint64                       `json:"version"`
+}
+
+type DeepDiscoveryListingEndProof struct {
+	Kind     string `json:"kind"`
+	Pointer  string `json:"pointer,omitempty"`
+	Selector string `json:"selector,omitempty"`
+}
+
+type DeepDiscoveryListingAdvance struct {
+	Kind          string                       `json:"kind"`
+	Selector      string                       `json:"selector,omitempty"`
+	ProgressProof []string                     `json:"progress_proof"`
+	EndProof      DeepDiscoveryListingEndProof `json:"end_proof"`
+	WaitTimeoutMS int                          `json:"wait_timeout_ms"`
+	MaxAdvances   int                          `json:"max_advances"`
+	MaxNoProgress int                          `json:"max_no_progress"`
 }
 
 func NewDeepDiscoveryBrowserProbe(id, missionID, workID, rawURL, waitSelector string, scrollRepeats int,
@@ -45,6 +64,17 @@ func NewDeepDiscoveryBrowserProbe(id, missionID, workID, rawURL, waitSelector st
 		WorkID: workID, URL: canonical, WaitSelector: waitSelector, ScrollRepeats: scrollRepeats,
 		FollowLinkSelector: followLinkSelector,
 		Status:             DeepDiscoveryProbeQueued, Version: 1}, nil
+}
+
+func (p DeepDiscoveryBrowserProbe) WithListingAdvance(method, path string,
+	advance DeepDiscoveryListingAdvance) (DeepDiscoveryBrowserProbe, error) {
+	method, path = strings.ToUpper(strings.TrimSpace(method)), strings.TrimSpace(path)
+	if p.Status != DeepDiscoveryProbeQueued || method != "POST" || !strings.HasPrefix(path, "/") ||
+		strings.ContainsAny(path, "?#") || len(path) > 2048 {
+		return DeepDiscoveryBrowserProbe{}, fmt.Errorf("listing advancement probe requires one bounded POST endpoint path")
+	}
+	p.BrowserQueryMethod, p.BrowserQueryPath, p.ListingAdvance = method, path, &advance
+	return p, nil
 }
 
 func (p DeepDiscoveryBrowserProbe) Complete(expected uint64, artifactID, finalURL, contentHash string, linkCount int) (DeepDiscoveryBrowserProbe, error) {

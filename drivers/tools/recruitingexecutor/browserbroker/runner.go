@@ -76,12 +76,16 @@ type policyState struct {
 	publicQueryResponses  []browserdriver.PublicQueryResponse
 	publicResponseBytes   int
 	allowedPublicQueries  int
+	currentActionSequence int
+	pendingQueryActions   map[string]int
+	responseSignal        chan struct{}
 }
 
 type publicQueryResponseMetadata struct {
-	observation recipeabi.PublicQueryObservation
-	statusCode  int
-	contentType string
+	observation    recipeabi.PublicQueryObservation
+	statusCode     int
+	contentType    string
+	actionSequence int
 }
 
 type requestDecision struct {
@@ -172,6 +176,10 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 		request.AllowedMethods[2] != http.MethodOptions {
 		return browserdriver.SessionResult{}, policyFailure(errors.New("browser session request is incomplete or unsafe"))
 	}
+	if (request.BrowserQuery == nil) != (request.ListingAdvance == nil) ||
+		(request.BrowserQuery != nil && (request.BrowserQuery.Validate() != nil || request.ListingAdvance.Validate() != nil || request.OnListingBatch == nil)) {
+		return browserdriver.SessionResult{}, policyFailure(errors.New("browser listing advancement contract is incomplete"))
+	}
 	if err := request.Policy.Validate(); err != nil {
 		return browserdriver.SessionResult{}, policyFailure(err)
 	}
@@ -223,7 +231,8 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 		methods: map[string]struct{}{}, blockedMethods: map[string]struct{}{},
 		publicQueries:         map[string]recipeabi.PublicQueryObservation{},
 		pendingPublicQueries:  map[string]recipeabi.PublicQueryObservation{},
-		pendingQueryResponses: map[string]publicQueryResponseMetadata{}}
+		pendingQueryResponses: map[string]publicQueryResponseMetadata{}, pendingQueryActions: map[string]int{},
+		responseSignal: make(chan struct{}, 1)}
 	requestTasks := newRequestTracker()
 	chromedp.ListenTarget(tabCtx, func(event any) {
 		switch value := event.(type) {
@@ -292,6 +301,10 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 			}
 		}
 	}
+	listingEnd, listingStop, advanceCount := false, "", 0
+	if navigationErr == nil && request.ListingAdvance != nil {
+		listingEnd, listingStop, advanceCount, navigationErr = runListingAdvancement(tabCtx, state, request)
+	}
 
 	var finalURL, contentType, dom string
 	var blockedDownloads, blockedPopups int
@@ -317,7 +330,8 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 		dom = dom[:request.Plan.MaxDOMBytes+1]
 	}
 	result := browserdriver.SessionResult{FinalURL: finalURL, ContentType: contentType, DOM: []byte(dom), Attestation: attestation,
-		PublicQueryResponses: state.publicQueryResponseEvidence()}
+		PublicQueryResponses: state.publicQueryResponseEvidence(), EndOfInput: listingEnd, StopReason: listingStop,
+		AdvanceCount: advanceCount}
 	if violation != nil {
 		return result, policyFailure(violation)
 	}
@@ -355,6 +369,252 @@ func detectFailureSignal(ctx context.Context, plan browserdriver.Plan) error {
 		}
 	}
 	return nil
+}
+
+func runListingAdvancement(ctx context.Context, state *policyState,
+	request browserdriver.SessionRequest) (bool, string, int, error) {
+	contract, query := *request.ListingAdvance, *request.BrowserQuery
+	rawIndex, delivered, lastHash := 0, 0, ""
+	deliver := func(actionSequence int, timeout time.Duration) (bool, bool, error) {
+		deadline := time.NewTimer(timeout)
+		defer deadline.Stop()
+		madeProgress := false
+		for {
+			responses, next := state.matchingResponses(rawIndex, query, actionSequence)
+			rawIndex = next
+			for _, response := range responses {
+				if response.ContentHash == lastHash {
+					continue
+				}
+				lastHash = response.ContentHash
+				delivered++
+				stop, err := request.OnListingBatch(response)
+				if errors.Is(err, browserdriver.ErrListingNoProgress) {
+					continue
+				}
+				if err != nil || stop {
+					return true, stop, err
+				}
+				madeProgress = true
+			}
+			if len(responses) > 0 {
+				return madeProgress, false, nil
+			}
+			select {
+			case <-ctx.Done():
+				return false, false, ctx.Err()
+			case <-deadline.C:
+				return false, false, nil
+			case <-state.responseSignal:
+			}
+		}
+	}
+
+	got, stop, err := deliver(0, time.Duration(contract.WaitTimeoutMS)*time.Millisecond)
+	if err != nil {
+		return false, "initial_batch_failed", 0, err
+	}
+	if stop {
+		return false, "safe_boundary", 0, nil
+	}
+	if !got || delivered == 0 {
+		return false, "initial_batch_timeout", 0, &brokerFailure{class: "parse_error", cause: errors.New("declared listing response did not arrive")}
+	}
+	if contract.Kind == recipeabi.ListingAdvanceNone {
+		return true, "end_of_input", 0, nil
+	}
+	if ended, proofErr := listingResponseEnded(state.lastMatchingResponse(query, 0), contract.EndProof); proofErr != nil {
+		return false, "end_proof_invalid", 0, proofErr
+	} else if ended {
+		return true, "end_of_input", 0, nil
+	}
+
+	noProgress := 0
+	for sequence := 1; sequence <= contract.MaxAdvances; sequence++ {
+		if contract.EndProof.Kind == "selector_absent_or_disabled" {
+			ended, inspectErr := selectorAbsentOrDisabled(ctx, contract.EndProof.Selector)
+			if inspectErr != nil {
+				return false, "end_proof_invalid", sequence - 1, inspectErr
+			}
+			if ended {
+				return true, "end_of_input", sequence - 1, nil
+			}
+		}
+		state.setActionSequence(sequence)
+		if actionErr := runListingAdvanceAction(ctx, contract); actionErr != nil {
+			return false, "advance_action_failed", sequence - 1, &brokerFailure{class: "parse_error", cause: actionErr}
+		}
+		got, stop, err = deliver(sequence, time.Duration(contract.WaitTimeoutMS)*time.Millisecond)
+		if err != nil {
+			return false, "batch_consumer_failed", sequence, err
+		}
+		if stop {
+			return false, "safe_boundary", sequence, nil
+		}
+		if !got {
+			noProgress++
+			if contract.EndProof.Kind == "selector_absent_or_disabled" {
+				ended, inspectErr := selectorAbsentOrDisabled(ctx, contract.EndProof.Selector)
+				if inspectErr != nil {
+					return false, "end_proof_invalid", sequence, inspectErr
+				}
+				if ended {
+					return true, "end_of_input", sequence, nil
+				}
+			}
+			if contract.EndProof.Kind == "stable_no_progress" && noProgress >= contract.MaxNoProgress {
+				return true, "end_of_input", sequence, nil
+			}
+			if noProgress >= contract.MaxNoProgress {
+				return false, "no_progress", sequence, &brokerFailure{class: "parse_error", cause: errors.New("listing advance produced no matching response")}
+			}
+			continue
+		}
+		noProgress = 0
+		if ended, proofErr := listingResponseEnded(state.lastMatchingResponse(query, sequence), contract.EndProof); proofErr != nil {
+			return false, "end_proof_invalid", sequence, proofErr
+		} else if ended {
+			return true, "end_of_input", sequence, nil
+		}
+	}
+	return false, "bounded_incomplete", contract.MaxAdvances, nil
+}
+
+func (s *policyState) setActionSequence(sequence int) {
+	s.mu.Lock()
+	s.currentActionSequence = sequence
+	s.mu.Unlock()
+}
+
+func (s *policyState) matchingResponses(index int, query recipeabi.BrowserQuery,
+	actionSequence int) ([]browserdriver.PublicQueryResponse, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if index < 0 || index > len(s.publicQueryResponses) {
+		index = len(s.publicQueryResponses)
+	}
+	var latest *browserdriver.PublicQueryResponse
+	for _, response := range s.publicQueryResponses[index:] {
+		endpoint, err := url.Parse(response.Request.EndpointURL)
+		if err == nil && response.ActionSequence == actionSequence && response.Request.Method == query.Method && endpoint.Path == query.EndpointPath {
+			copy := response
+			latest = &copy
+		}
+	}
+	if latest == nil {
+		return nil, len(s.publicQueryResponses)
+	}
+	return []browserdriver.PublicQueryResponse{*latest}, len(s.publicQueryResponses)
+}
+
+func (s *policyState) lastMatchingResponse(query recipeabi.BrowserQuery,
+	actionSequence int) browserdriver.PublicQueryResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := len(s.publicQueryResponses) - 1; index >= 0; index-- {
+		response := s.publicQueryResponses[index]
+		endpoint, err := url.Parse(response.Request.EndpointURL)
+		if err == nil && response.ActionSequence == actionSequence && response.Request.Method == query.Method && endpoint.Path == query.EndpointPath {
+			return response
+		}
+	}
+	return browserdriver.PublicQueryResponse{}
+}
+
+func runListingAdvanceAction(ctx context.Context, contract recipeabi.ListingAdvanceContract) error {
+	switch contract.Kind {
+	case recipeabi.ListingAdvanceClick:
+		expression := `(()=>{const n=document.querySelector(` + strconv.Quote(contract.Selector) + `);if(!n)return false;n.click();return true})()`
+		var found bool
+		if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &found)); err != nil {
+			return err
+		}
+		if !found {
+			return errors.New("listing click target is missing")
+		}
+		return nil
+	case recipeabi.ListingAdvanceScrollPage:
+		return chromedp.Run(ctx, chromedp.Evaluate(`window.scrollTo(0,document.documentElement.scrollHeight)`, nil))
+	case recipeabi.ListingAdvanceScrollContainer:
+		expression := `(()=>{const n=document.querySelector(` + strconv.Quote(contract.Selector) + `);if(!n)return false;n.scrollTop=n.scrollHeight;return true})()`
+		var found bool
+		if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &found)); err != nil {
+			return err
+		}
+		if !found {
+			return errors.New("listing scroll container is missing")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported listing advance action %q", contract.Kind)
+	}
+}
+
+func selectorAbsentOrDisabled(ctx context.Context, selector string) (bool, error) {
+	expression := `(()=>{const n=document.querySelector(` + strconv.Quote(selector) + `);return !n||n.disabled===true||n.getAttribute('aria-disabled')==='true'||[...n.classList].some(c=>c==='disabled'||c.endsWith('-disabled'))})()`
+	var ended bool
+	if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &ended)); err != nil {
+		return false, err
+	}
+	return ended, nil
+}
+
+func listingResponseEnded(response browserdriver.PublicQueryResponse, proof recipeabi.ListingEndProof) (bool, error) {
+	if proof.Kind != "response_false" && proof.Kind != "response_empty" {
+		return false, nil
+	}
+	var document any
+	if err := json.Unmarshal(response.Body, &document); err != nil {
+		return false, fmt.Errorf("decode listing end proof: %w", err)
+	}
+	value, found := jsonPointerValue(document, proof.Pointer)
+	if !found {
+		return false, fmt.Errorf("listing end pointer %q is missing", proof.Pointer)
+	}
+	if proof.Kind == "response_false" {
+		flag, ok := value.(bool)
+		if !ok {
+			return false, fmt.Errorf("listing end pointer %q is not boolean", proof.Pointer)
+		}
+		return !flag, nil
+	}
+	switch candidate := value.(type) {
+	case nil:
+		return true, nil
+	case string:
+		return strings.TrimSpace(candidate) == "", nil
+	case []any:
+		return len(candidate) == 0, nil
+	default:
+		return false, fmt.Errorf("listing end pointer %q is not empty-checkable", proof.Pointer)
+	}
+}
+
+func jsonPointerValue(document any, pointer string) (any, bool) {
+	if pointer == "" {
+		return document, true
+	}
+	current := document
+	for _, raw := range strings.Split(strings.TrimPrefix(pointer, "/"), "/") {
+		key := strings.ReplaceAll(strings.ReplaceAll(raw, "~1", "/"), "~0", "~")
+		switch node := current.(type) {
+		case map[string]any:
+			var found bool
+			current, found = node[key]
+			if !found {
+				return nil, false
+			}
+		case []any:
+			index, err := strconv.Atoi(key)
+			if err != nil || index < 0 || index >= len(node) {
+				return nil, false
+			}
+			current = node[index]
+		default:
+			return nil, false
+		}
+	}
+	return current, true
 }
 
 const profileSanitizedDOM = `(()=>{
@@ -612,11 +872,13 @@ func (s *policyState) addPublicQuery(requestID string, observation recipeabi.Pub
 	}
 	if _, duplicate := s.publicQueries[key]; duplicate {
 		s.pendingPublicQueries[requestID] = observation
+		s.pendingQueryActions[requestID] = s.currentActionSequence
 		return
 	}
 	s.publicQueries[key] = observation
 	s.publicQueryBytes += observation.EncodedSize()
 	s.pendingPublicQueries[requestID] = observation
+	s.pendingQueryActions[requestID] = s.currentActionSequence
 }
 
 func (s *policyState) observePublicQueryResponse(requestID string, statusCode int, contentType string) {
@@ -628,6 +890,7 @@ func (s *policyState) observePublicQueryResponse(requestID string, statusCode in
 	}
 	s.pendingQueryResponses[requestID] = publicQueryResponseMetadata{
 		observation: observation, statusCode: statusCode, contentType: contentType,
+		actionSequence: s.pendingQueryActions[requestID],
 	}
 }
 
@@ -636,6 +899,7 @@ func (s *policyState) capturePublicQueryResponse(ctx context.Context, requestID 
 	metadata, found := s.pendingQueryResponses[string(requestID)]
 	delete(s.pendingQueryResponses, string(requestID))
 	delete(s.pendingPublicQueries, string(requestID))
+	delete(s.pendingQueryActions, string(requestID))
 	s.mu.Unlock()
 	if !found || metadata.statusCode < 200 || metadata.statusCode > 299 {
 		return
@@ -654,7 +918,8 @@ func (s *policyState) capturePublicQueryResponse(ctx context.Context, requestID 
 	}
 	sum := sha256.Sum256(body)
 	response := browserdriver.PublicQueryResponse{Request: metadata.observation, StatusCode: metadata.statusCode,
-		ContentType: metadata.contentType, Body: append([]byte(nil), body...), ContentHash: "sha256:" + hex.EncodeToString(sum[:])}
+		ContentType: metadata.contentType, Body: append([]byte(nil), body...), ContentHash: "sha256:" + hex.EncodeToString(sum[:]),
+		ActionSequence: metadata.actionSequence}
 	if response.Validate() != nil {
 		return
 	}
@@ -666,6 +931,10 @@ func (s *policyState) capturePublicQueryResponse(ctx context.Context, requestID 
 	}
 	s.publicQueryResponses = append(s.publicQueryResponses, response)
 	s.publicResponseBytes += len(body)
+	select {
+	case s.responseSignal <- struct{}{}:
+	default:
+	}
 }
 
 func (s *policyState) publicQueryResponseEvidence() []browserdriver.PublicQueryResponse {

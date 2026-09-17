@@ -46,18 +46,24 @@ func TestPrepareListingRecipeResourceRequiresExactProbeEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	advance := singleBatchAdvanceForTest()
 	spec, err := buildListingRecipeSpec(observation, recipePrepareMapping{Collection: "/data/jobs",
 		IdentityPointer: "/id", DetailURLPointer: "/id", TitlePointer: "/title",
-		DetailURLTemplate: "https://join.example/search/{value}"})
+		DetailURLTemplate: "https://join.example/search/{value}"}, advance)
 	if err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(spec)
-	mission := model.DeepDiscoveryMission{CompanyID: source.CompanyID}
-	result := store.DeepDiscoveryBrowserResult{PublicQueryResponses: []executioncontract.DeepDiscoveryPublicQueryResponse{{
-		Request: observation, Artifact: model.ArtifactMetadata{ArtifactID: "captured-response"},
-	}}}
-	prepared, err := prepareListingRecipeResource(source, mission, result, observation.BodyHash, nil, raw, "https://join.example/search/{value}")
+	mission := model.DeepDiscoveryMission{MissionID: "mission-1", CompanyID: source.CompanyID}
+	probe, _ := model.NewDeepDiscoveryBrowserProbe("probe-1", "mission-1", "work-1", source.CandidateEndpoint.URL, "", 0, "", 1)
+	probe, _ = probe.WithListingAdvance("POST", "/api/public/jobs/search", model.DeepDiscoveryListingAdvance{
+		Kind: string(advance.Kind), ProgressProof: advance.ProgressProof,
+		EndProof: model.DeepDiscoveryListingEndProof{Kind: advance.EndProof.Kind}, WaitTimeoutMS: advance.WaitTimeoutMS})
+	result := store.DeepDiscoveryBrowserResult{AdvanceStopReason: "end_of_input", EndOfInput: true,
+		PublicQueryResponses: []executioncontract.DeepDiscoveryPublicQueryResponse{{
+			Request: observation, Artifact: model.ArtifactMetadata{ArtifactID: "captured-response"},
+		}}}
+	prepared, err := prepareListingRecipeResource(source, mission, probe, result, observation.BodyHash, nil, raw, "https://join.example/search/{value}")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +71,7 @@ func TestPrepareListingRecipeResourceRequiresExactProbeEvidence(t *testing.T) {
 		prepared.ContentRef == "" || prepared.ContentHash == "" || prepared.RecipeID == "" || len(prepared.CanonicalSpec) == 0 {
 		t.Fatalf("incomplete prepared Recipe: %+v", prepared)
 	}
-	if _, err := prepareListingRecipeResource(source, mission, result, observation.BodyHash, nil, raw,
+	if _, err := prepareListingRecipeResource(source, mission, probe, result, observation.BodyHash, nil, raw,
 		"https://join.example/position/{value}/detail"); err == nil {
 		t.Fatal("Recipe detail template different from browser-verified route was accepted")
 	}
@@ -73,15 +79,15 @@ func TestPrepareListingRecipeResourceRequiresExactProbeEvidence(t *testing.T) {
 	changed := spec
 	changed.BrowserQuery = &recipeabi.BrowserQuery{Method: "POST", EndpointPath: "/api/other"}
 	changedRaw, _ := json.Marshal(changed)
-	if _, err := prepareListingRecipeResource(source, mission, result, observation.BodyHash, nil, changedRaw, "https://join.example/search/{value}"); err == nil {
+	if _, err := prepareListingRecipeResource(source, mission, probe, result, observation.BodyHash, nil, changedRaw, "https://join.example/search/{value}"); err == nil {
 		t.Fatal("Recipe request different from Probe evidence was accepted")
 	}
 	wrongMission := mission
 	wrongMission.CompanyID = "another-company"
-	if _, err := prepareListingRecipeResource(source, wrongMission, result, observation.BodyHash, nil, raw, "https://join.example/search/{value}"); err == nil {
+	if _, err := prepareListingRecipeResource(source, wrongMission, probe, result, observation.BodyHash, nil, raw, "https://join.example/search/{value}"); err == nil {
 		t.Fatal("cross-Company Probe evidence was accepted")
 	}
-	if _, err := prepareListingRecipeResource(source, mission, result, "sha256:missing", nil, raw, "https://join.example/search/{value}"); err == nil {
+	if _, err := prepareListingRecipeResource(source, mission, probe, result, "sha256:missing", nil, raw, "https://join.example/search/{value}"); err == nil {
 		t.Fatal("unknown Probe body hash was accepted")
 	}
 }
@@ -96,9 +102,8 @@ func TestBuildListingRecipeSpecOwnsABIAndBudgetDefaults(t *testing.T) {
 	mapping := recipePrepareMapping{
 		Collection: "/data/jobs", IdentityPointer: "/id", DetailURLPointer: "/id",
 		DetailURLTemplate: "https://jobs.example/job/{value}", TitlePointer: "/title",
-		OffsetPagination: &recipeabi.OffsetPagination{OffsetBodyField: "offset", LimitBodyField: "limit", PageSize: 20},
 	}
-	spec, err := buildListingRecipeSpec(observation, mapping)
+	spec, err := buildListingRecipeSpec(observation, mapping, singleBatchAdvanceForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,13 +115,19 @@ func TestBuildListingRecipeSpecOwnsABIAndBudgetDefaults(t *testing.T) {
 	}
 }
 
+func singleBatchAdvanceForTest() *recipeabi.ListingAdvanceContract {
+	return &recipeabi.ListingAdvanceContract{Kind: recipeabi.ListingAdvanceNone,
+		ProgressProof: []string{"response", "job_identity"}, EndProof: recipeabi.ListingEndProof{Kind: "single_batch"},
+		WaitTimeoutMS: 1_000}
+}
+
 func TestBuildListingRecipeSpecRejectsIncompleteSemanticMapping(t *testing.T) {
 	observation, err := recipeabi.NewPublicQueryObservation("https://jobs.example/api/search", "POST",
 		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{"offset":0,"limit":20}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = buildListingRecipeSpec(observation, recipePrepareMapping{Collection: "/data/jobs"})
+	_, err = buildListingRecipeSpec(observation, recipePrepareMapping{Collection: "/data/jobs"}, singleBatchAdvanceForTest())
 	if err == nil {
 		t.Fatal("incomplete semantic mapping was accepted")
 	}

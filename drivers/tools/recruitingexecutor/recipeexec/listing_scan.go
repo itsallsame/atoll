@@ -159,6 +159,26 @@ func (s *ListingScan) AddPage(page DocumentResult) error {
 	return nil
 }
 
+// MarkEndOfInput applies a browser/transport end proof after the last batch has
+// already been persisted and parsed. It keeps transport completion separate
+// from extraction's optional JSON `next` field.
+func (s *ListingScan) MarkEndOfInput() error {
+	if s.complete && s.stopReason != "max_pages" {
+		return nil
+	}
+	if s.pages == 0 {
+		return fmt.Errorf("listing scan cannot end before its first batch")
+	}
+	if s.baseline {
+		s.quality.PreviousFrontierReached = true
+	}
+	if s.quality.PreviousFrontierReached {
+		s.quality.OverlapCompleted = true
+	}
+	s.complete, s.stopReason = true, "end_of_input"
+	return nil
+}
+
 func (s *ListingScan) markBoundaryReached() {
 	s.boundaryPage = s.pages
 	s.quality.PreviousFrontierReached = true

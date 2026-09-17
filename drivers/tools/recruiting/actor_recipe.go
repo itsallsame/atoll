@@ -88,17 +88,16 @@ type recipePreparePayload struct {
 // inferred from a JSON sample alone. Everything else in recipeabi.Spec is a
 // control-plane policy decision and must not be invented by an Agent.
 type recipePrepareMapping struct {
-	Collection           string                      `json:"collection,omitempty"`
-	CollectionRoot       bool                        `json:"collection_root,omitempty"`
-	IdentityPointer      string                      `json:"identity_pointer"`
-	DetailURLPointer     string                      `json:"detail_url_pointer"`
-	DetailURLTemplate    string                      `json:"detail_url_template,omitempty"`
-	TitlePointer         string                      `json:"title_pointer,omitempty"`
-	ActivityPointer      string                      `json:"activity_pointer,omitempty"`
-	ActivityTimeFormat   string                      `json:"activity_time_format,omitempty"`
-	ExcludePinnedPointer string                      `json:"exclude_pinned_pointer,omitempty"`
-	BoundaryMode         string                      `json:"boundary_mode,omitempty"`
-	OffsetPagination     *recipeabi.OffsetPagination `json:"offset_pagination,omitempty"`
+	Collection           string `json:"collection,omitempty"`
+	CollectionRoot       bool   `json:"collection_root,omitempty"`
+	IdentityPointer      string `json:"identity_pointer"`
+	DetailURLPointer     string `json:"detail_url_pointer"`
+	DetailURLTemplate    string `json:"detail_url_template,omitempty"`
+	TitlePointer         string `json:"title_pointer,omitempty"`
+	ActivityPointer      string `json:"activity_pointer,omitempty"`
+	ActivityTimeFormat   string `json:"activity_time_format,omitempty"`
+	ExcludePinnedPointer string `json:"exclude_pinned_pointer,omitempty"`
+	BoundaryMode         string `json:"boundary_mode,omitempty"`
 }
 
 type preparedRecipeResource struct {
@@ -272,7 +271,7 @@ func handleRecipePrepare(sys actorbase.Sys, repository *store.Repository, msg ac
 		failStoreError(sys, msg, err)
 		return
 	}
-	prepared, err := prepareListingRecipeResource(source, mission, *result, payload.BodyHash, payload.Mapping, payload.Spec,
+	prepared, err := prepareListingRecipeResource(source, mission, probe, *result, payload.BodyHash, payload.Mapping, payload.Spec,
 		listEvidence.ListProof.DetailURLPattern)
 	if err != nil {
 		_, _ = sys.Fail(msg, ErrorQualityRejected, err.Error())
@@ -314,13 +313,13 @@ func handleRecipePrepare(sys actorbase.Sys, repository *store.Repository, msg ac
 }
 
 func prepareListingRecipeResource(source model.RecruitmentSource, mission model.DeepDiscoveryMission,
-	result store.DeepDiscoveryBrowserResult, bodyHash string, mapping *recipePrepareMapping,
+	probe model.DeepDiscoveryBrowserProbe, result store.DeepDiscoveryBrowserResult, bodyHash string, mapping *recipePrepareMapping,
 	rawSpec json.RawMessage, verifiedDetailURLPattern string) (preparedRecipeResource, error) {
 	if source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy ||
 		source.ReadinessStatus != model.SourceCandidate || source.ListingAssignment != nil || source.CandidateEndpoint == nil {
 		return preparedRecipeResource{}, fmt.Errorf("Recipe preparation requires an active healthy candidate Source without a Listing assignment")
 	}
-	if mission.CompanyID != source.CompanyID {
+	if mission.CompanyID != source.CompanyID || probe.MissionID != mission.MissionID {
 		return preparedRecipeResource{}, fmt.Errorf("browser probe and Source must belong to the same Company")
 	}
 	var observation *recipeabi.PublicQueryObservation
@@ -334,10 +333,26 @@ func prepareListingRecipeResource(source model.RecruitmentSource, mission model.
 	if observation == nil {
 		return preparedRecipeResource{}, fmt.Errorf("body_hash does not identify public-query evidence from this Probe")
 	}
+	if probe.ListingAdvance == nil || probe.BrowserQueryMethod != observation.Method {
+		return preparedRecipeResource{}, fmt.Errorf("Recipe preparation requires a completed listing-advancement Probe")
+	}
+	observedAdvance := probe.ListingAdvance.Kind == string(recipeabi.ListingAdvanceNone)
+	for _, captured := range result.PublicQueryResponses {
+		endpoint, parseErr := url.Parse(captured.Request.EndpointURL)
+		if parseErr == nil && captured.ActionSequence > 0 && captured.Request.Method == probe.BrowserQueryMethod &&
+			endpoint.Path == probe.BrowserQueryPath {
+			observedAdvance = true
+			break
+		}
+	}
+	if !observedAdvance || (result.AdvanceStopReason != "end_of_input" && result.AdvanceStopReason != "bounded_incomplete") {
+		return preparedRecipeResource{}, fmt.Errorf("listing advancement Probe lacks action-linked response evidence")
+	}
+	advance := listingAdvanceContractFromProbe(probe)
 	var spec recipeabi.Spec
 	var err error
 	if mapping != nil {
-		spec, err = buildListingRecipeSpec(*observation, *mapping)
+		spec, err = buildListingRecipeSpec(*observation, *mapping, &advance)
 	} else {
 		spec, err = recipeabi.DecodeSpec(rawSpec)
 	}
@@ -349,6 +364,11 @@ func prepareListingRecipeResource(source model.RecruitmentSource, mission model.
 		spec.RequiredCapability != "browser.public" || spec.BrowserQuery == nil ||
 		spec.BrowserQuery.EndpointPath != endpoint.Path || spec.BrowserQuery.Method != observation.Method {
 		return preparedRecipeResource{}, fmt.Errorf("prepared Recipe must capture the selected public-query response inside the official browser page")
+	}
+	specAdvance, _ := json.Marshal(spec.ListingAdvance)
+	proofAdvance, _ := json.Marshal(&advance)
+	if !bytes.Equal(specAdvance, proofAdvance) {
+		return preparedRecipeResource{}, fmt.Errorf("prepared Recipe listing advancement differs from its Probe evidence")
 	}
 	if template := strings.TrimSpace(spec.Extraction.Templates["detail_url"]); template != "" &&
 		template != strings.TrimSpace(verifiedDetailURLPattern) {
@@ -363,7 +383,10 @@ func prepareListingRecipeResource(source model.RecruitmentSource, mission model.
 }
 
 func buildListingRecipeSpec(observation recipeabi.PublicQueryObservation,
-	mapping recipePrepareMapping) (recipeabi.Spec, error) {
+	mapping recipePrepareMapping, listingAdvance *recipeabi.ListingAdvanceContract) (recipeabi.Spec, error) {
+	if listingAdvance == nil {
+		return recipeabi.Spec{}, fmt.Errorf("listing_advance proof-backed contract is required")
+	}
 	boundaryMode := strings.TrimSpace(mapping.BoundaryMode)
 	if boundaryMode == "" {
 		boundaryMode = "frontier_keys"
@@ -388,9 +411,6 @@ func buildListingRecipeSpec(observation recipeabi.PublicQueryObservation,
 		templates = map[string]string{"detail_url": template}
 	}
 	maxItemsPerPage := 500
-	if mapping.OffsetPagination != nil && mapping.OffsetPagination.PageSize > 0 {
-		maxItemsPerPage = mapping.OffsetPagination.PageSize
-	}
 	spec := recipeabi.Spec{
 		ABIVersion:         recipeabi.Version,
 		Kind:               recipeabi.KindListing,
@@ -406,8 +426,9 @@ func buildListingRecipeSpec(observation recipeabi.PublicQueryObservation,
 			Fields: fields, Templates: templates,
 		},
 		BrowserPlan: &recipeabi.BrowserPlan{Version: recipeabi.BrowserPlanVersion,
-			Actions:        []recipeabi.BrowserAction{{Kind: recipeabi.BrowserActionScrollPage, MaxRepeats: 10}},
+			Actions:        nil,
 			MaxNavigations: 3, MaxDOMBytes: 2 << 20},
+		ListingAdvance: listingAdvance,
 		Listing: &recipeabi.ListingContract{
 			IdentityField: "job_key", DetailURLField: "detail_url", ActivityField: activityField,
 			ActivityTimeFormat: strings.TrimSpace(mapping.ActivityTimeFormat), BoundaryMode: boundaryMode,

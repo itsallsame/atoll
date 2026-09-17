@@ -174,6 +174,9 @@ type DeepDiscoveryBrowserResult struct {
 	DOMPreview           []executioncontract.DeepDiscoveryDOMElement
 	PublicQueryResponses []executioncontract.DeepDiscoveryPublicQueryResponse
 	Attestation          executioncontract.DeepDiscoveryEffectAttestation
+	EndOfInput           bool
+	AdvanceStopReason    string
+	AdvanceCount         int
 	ObservedAt           time.Time
 }
 
@@ -182,6 +185,9 @@ func (r *Repository) AcceptDeepDiscoveryBrowserResult(ctx context.Context, input
 		input.ExecutorIncarnation == "" || input.ObservedAt.IsZero() || len(input.Links) > 200 || len(input.DOMPreview) > 400 ||
 		len(input.PublicQueryResponses) > 200 || len(input.SupportingArtifacts) > 201 {
 		return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser result requires bounded execution evidence")
+	}
+	if input.AdvanceCount < 0 || input.AdvanceCount > 1000 {
+		return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser advancement count is invalid")
 	}
 	if err := validateResultArtifact(input.Artifact, input.AttemptID, model.ArtifactResponse); err != nil {
 		return DeepDiscoveryBrowserResultOutcome{}, err
@@ -306,6 +312,25 @@ func (r *Repository) acceptDeepDiscoveryBrowserResultTx(ctx context.Context, inp
 	probe, err := getDeepDiscoveryBrowserProbeWith(ctx, tx, work.TargetID, true)
 	if err != nil {
 		return DeepDiscoveryBrowserResultOutcome{}, err
+	}
+	if probe.ListingAdvance != nil {
+		if input.AdvanceStopReason != "end_of_input" && input.AdvanceStopReason != "bounded_incomplete" {
+			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("listing advancement Probe requires an auditable stop reason")
+		}
+		observedAction := probe.ListingAdvance.Kind == "none"
+		for _, captured := range input.PublicQueryResponses {
+			endpoint, parseErr := url.Parse(captured.Request.EndpointURL)
+			if parseErr == nil && captured.ActionSequence > 0 && captured.Request.Method == probe.BrowserQueryMethod &&
+				endpoint.Path == probe.BrowserQueryPath {
+				observedAction = true
+				break
+			}
+		}
+		if !observedAction {
+			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("listing advancement Probe requires an action-linked target response")
+		}
+	} else if input.AdvanceCount != 0 || input.AdvanceStopReason != "" || input.EndOfInput {
+		return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("ordinary browser Probe cannot claim listing advancement")
 	}
 	maxNavigations := 1
 	if probe.FollowLinkSelector != "" {

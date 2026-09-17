@@ -96,6 +96,35 @@ func TestRecipePreparePublishesSemanticMappingInsteadOfRawABI(t *testing.T) {
 	}
 }
 
+func TestListingAdvanceIsDiscoveredByBrowserProbeAndDerivedByRecipePrepare(t *testing.T) {
+	var observe, prepare struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(manifest().Words[TypeDeepDiscoveryBrowserObserve].InputSchema, &observe); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := observe.Properties["browser_query"]; !ok {
+		t.Fatal("browser.observe does not expose the observed query matcher")
+	}
+	if _, ok := observe.Properties["listing_advance"]; !ok {
+		t.Fatal("browser.observe does not expose the bounded advancement Probe")
+	}
+	if err := json.Unmarshal(manifest().Words[TypeRecipePrepare].InputSchema, &prepare); err != nil {
+		t.Fatal(err)
+	}
+	var mapping struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(prepare.Properties["mapping"], &mapping); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"listing_advance", "offset_pagination"} {
+		if _, found := mapping.Properties[forbidden]; found {
+			t.Fatalf("recipe.prepare asks the Agent to restate control-plane advancement field %s", forbidden)
+		}
+	}
+}
+
 func TestSourceValidationPublishDerivesFactsFromCompletedWork(t *testing.T) {
 	var schema struct {
 		Required   []string                   `json:"required"`
