@@ -30,9 +30,10 @@ const (
 type RecipeTransport string
 
 const (
-	RecipeTransportHTTPJSON RecipeTransport = "http_json"
-	RecipeTransportHTTPHTML RecipeTransport = "http_html"
-	RecipeTransportBrowser  RecipeTransport = "browser"
+	RecipeTransportHTTPJSON    RecipeTransport = "http_json"
+	RecipeTransportHTTPHTML    RecipeTransport = "http_html"
+	RecipeTransportBrowser     RecipeTransport = "browser"
+	RecipeTransportBrowserJSON RecipeTransport = "browser_json"
 )
 
 type RecipeExecution struct {
@@ -55,7 +56,7 @@ func (e RecipeExecution) Validate() error {
 		return fmt.Errorf("recipe content_ref must be an opaque artifact:// or recipe:// reference")
 	}
 	switch e.Transport {
-	case RecipeTransportHTTPJSON, RecipeTransportHTTPHTML, RecipeTransportBrowser:
+	case RecipeTransportHTTPJSON, RecipeTransportHTTPHTML, RecipeTransportBrowser, RecipeTransportBrowserJSON:
 	default:
 		return fmt.Errorf("unknown recipe transport %q", e.Transport)
 	}

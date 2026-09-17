@@ -35,9 +35,10 @@ const (
 type Transport string
 
 const (
-	TransportHTTPJSON Transport = "http_json"
-	TransportHTTPHTML Transport = "http_html"
-	TransportBrowser  Transport = "browser"
+	TransportHTTPJSON    Transport = "http_json"
+	TransportHTTPHTML    Transport = "http_html"
+	TransportBrowser     Transport = "browser"
+	TransportBrowserJSON Transport = "browser_json"
 )
 
 type RunInput struct {
@@ -184,6 +185,23 @@ type Spec struct {
 	OffsetPagination   *OffsetPagination `json:"offset_pagination,omitempty"`
 	Listing            *ListingContract  `json:"listing,omitempty"`
 	BrowserPlan        *BrowserPlan      `json:"browser_plan,omitempty"`
+	BrowserQuery       *BrowserQuery     `json:"browser_query,omitempty"`
+}
+
+// BrowserQuery selects a JSON listing response naturally emitted by the
+// official page. It deliberately stores no signature, cookie, or replayable
+// credential: the browser recreates those values on every run.
+type BrowserQuery struct {
+	Method       string `json:"method"`
+	EndpointPath string `json:"endpoint_path"`
+}
+
+func (q BrowserQuery) Validate() error {
+	if strings.ToUpper(strings.TrimSpace(q.Method)) != "POST" || !strings.HasPrefix(q.EndpointPath, "/") ||
+		len(q.EndpointPath) > 2048 || strings.ContainsAny(q.EndpointPath, "?#") {
+		return fmt.Errorf("browser query requires a bounded absolute endpoint path and POST method")
+	}
+	return nil
 }
 
 const BrowserPlanVersion = "recruiting.browser-plan.v1"
@@ -295,9 +313,9 @@ type ReadRequest struct {
 }
 
 // PublicQueryObservation is sanitized network evidence from an isolated
-// public-browser session. The browser still blocks the POST; this record only
-// permits a later, independently validated HTTP Recipe to reproduce a query
-// that carries no credentials or arbitrary headers.
+// public-browser session. The browser executes the request with its original
+// session state and runtime signature; this record binds the captured JSON
+// response to the read-only query semantics used by a Browser JSON Recipe.
 type PublicQueryObservation struct {
 	EndpointURL string            `json:"endpoint_url"`
 	Method      string            `json:"method"`
@@ -324,7 +342,7 @@ func (o PublicQueryObservation) MatchesObservation(other PublicQueryObservation)
 }
 
 // StableIdentityKey identifies the semantics of a public listing query while
-// retaining the full observed URL for the real verification request. Some
+// retaining the full observed URL as execution evidence. Some
 // sites append a short-lived anti-bot signature on every page load; that value
 // is transport evidence, not a new listing query. The allowlist is deliberately
 // exact so business filters, pagination, and unknown parameters remain bound.
@@ -390,7 +408,7 @@ func (o PublicQueryObservation) canonicalized(requireReadIntent bool) (PublicQue
 // canonicalPublicQueryJSONObject removes only browser-generated correlation
 // identifiers that have no effect on a public query's result. Keeping this
 // allowlist exact ensures filters and pagination remain evidence-bound while
-// the same verified query can be replayed across short-lived browser sessions.
+// observations from independent browser sessions keep the same identity.
 func canonicalPublicQueryJSONObject(raw json.RawMessage) (json.RawMessage, error) {
 	canonical, err := canonicalJSONObject(raw)
 	if err != nil {
@@ -554,14 +572,14 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("unsupported recipe kind %q", s.Kind)
 	}
 	switch s.Transport {
-	case TransportHTTPJSON, TransportHTTPHTML, TransportBrowser:
+	case TransportHTTPJSON, TransportHTTPHTML, TransportBrowser, TransportBrowserJSON:
 	default:
 		return fmt.Errorf("unsupported recipe transport %q", s.Transport)
 	}
 	method := strings.ToUpper(strings.TrimSpace(s.Request.Method))
 	if requestURL := strings.TrimSpace(s.Request.URL); requestURL != "" {
 		canonical, err := stablePublicQueryEndpoint(requestURL)
-		if err != nil || canonical != requestURL || s.Kind != KindListing || s.Transport == TransportBrowser {
+		if err != nil || canonical != requestURL || s.Kind != KindListing || s.Transport == TransportBrowser || s.Transport == TransportBrowserJSON {
 			return fmt.Errorf("fixed request URL is only valid for a canonical HTTP Listing transport")
 		}
 	}
@@ -584,7 +602,7 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("public-query POST requires Content-Type application/json")
 		}
 	}
-	if s.Transport == TransportBrowser && method != "GET" {
+	if (s.Transport == TransportBrowser || s.Transport == TransportBrowserJSON) && method != "GET" {
 		return fmt.Errorf("browser Recipe document navigation remains GET-only")
 	}
 	if s.Request.TimeoutMS < 100 || s.Request.TimeoutMS > 60_000 || s.Request.MaxResponseBytes < 1 || s.Request.MaxResponseBytes > 20<<20 ||
@@ -608,7 +626,7 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("extraction fields require non-empty names and expressions")
 		}
 	}
-	if s.Transport == TransportHTTPJSON {
+	if s.Transport == TransportHTTPJSON || s.Transport == TransportBrowserJSON {
 		if len(s.Extraction.Attributes) != 0 || s.Extraction.NextAttribute != "" {
 			return fmt.Errorf("JSON extraction cannot declare HTML attributes")
 		}
@@ -676,7 +694,7 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("HTML next_attribute is invalid")
 		}
 	}
-	if s.Transport == TransportBrowser && s.RequiredCapability != "browser.profile.repair" {
+	if (s.Transport == TransportBrowser || s.Transport == TransportBrowserJSON) && s.RequiredCapability != "browser.profile.repair" {
 		if s.BrowserPlan == nil {
 			return fmt.Errorf("browser recipe requires a constrained browser plan")
 		}
@@ -686,8 +704,18 @@ func (s Spec) Validate() error {
 		if s.Extraction.Next != "" || s.Extraction.NextAttribute != "" || s.OffsetPagination != nil {
 			return fmt.Errorf("browser recipe plan must produce one terminal DOM without a second pagination protocol")
 		}
-	} else if s.BrowserPlan != nil && s.Transport != TransportBrowser {
+	} else if s.BrowserPlan != nil && s.Transport != TransportBrowser && s.Transport != TransportBrowserJSON {
 		return fmt.Errorf("non-browser recipe cannot carry a browser plan")
+	}
+	if s.Transport == TransportBrowserJSON {
+		if s.Kind != KindListing || s.RequiredCapability != "browser.public" || s.BrowserQuery == nil {
+			return fmt.Errorf("browser JSON transport requires a public-browser Listing and query selector")
+		}
+		if err := s.BrowserQuery.Validate(); err != nil {
+			return err
+		}
+	} else if s.BrowserQuery != nil {
+		return fmt.Errorf("browser_query is only valid for browser JSON transport")
 	}
 	if s.Kind == KindListing {
 		if err := s.Listing.Validate(); err != nil {
@@ -699,7 +727,7 @@ func (s Spec) Validate() error {
 		if _, ok := s.Extraction.Fields[s.Listing.DetailURLField]; !ok {
 			return fmt.Errorf("listing detail_url_field must name an extracted field")
 		}
-		if s.Transport == TransportHTTPJSON && s.Extraction.CollectionRoot == (s.Extraction.Collection != "") {
+		if (s.Transport == TransportHTTPJSON || s.Transport == TransportBrowserJSON) && s.Extraction.CollectionRoot == (s.Extraction.Collection != "") {
 			return fmt.Errorf("JSON listing extraction requires exactly one collection pointer or collection_root")
 		}
 		if s.Listing.ActivityField != "" {

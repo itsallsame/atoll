@@ -8,11 +8,9 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net"
 	"net/http"
 	"net/netip"
@@ -178,33 +176,6 @@ func recipeRequestURL(sourceURL string, request recipeabi.ReadRequest) (string, 
 		return "", fmt.Errorf("Recipe transport URL must share the verified Source origin")
 	}
 	return requestURL, nil
-}
-
-// FetchPublicQuery independently verifies browser-observed, credential-free
-// POST evidence. It reuses the production HTTP policy, robots check, SSRF
-// defense, rate limiting, redirect denial, and response bound without
-// pretending that a prerequisite config response is a Listing Recipe.
-func (d *Driver) FetchPublicQuery(ctx context.Context, observation recipeabi.PublicQueryObservation,
-	compliance ComplianceEvidence) (Result, error) {
-	if err := observation.Validate(); err != nil {
-		return Result{}, err
-	}
-	if err := compliance.Validate(); err != nil {
-		return Result{}, err
-	}
-	request := recipeabi.ReadRequest{Method: observation.Method, Headers: observation.Headers,
-		JSONBody: observation.JSONBody, TimeoutMS: 30_000, MaxResponseBytes: 1 << 20, MaxRedirects: 0,
-		UserAgent: "Atoll-Recruiting-Public-Query-Verification/1"}
-	result, err := d.fetchReadRequest(ctx, observation.EndpointURL, request, compliance)
-	if err != nil {
-		return result, err
-	}
-	mediaType, _, mediaErr := mime.ParseMediaType(result.ContentType)
-	if mediaErr != nil || mediaType != "application/json" || !json.Valid(result.Body) {
-		return result, &FetchError{Class: "parse_error", Retryable: false, StatusCode: result.StatusCode,
-			Cause: errors.New("public query verification response is not valid JSON")}
-	}
-	return result, nil
 }
 
 func (d *Driver) fetchReadRequest(ctx context.Context, endpointURL string, read recipeabi.ReadRequest,

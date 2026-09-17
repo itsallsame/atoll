@@ -50,7 +50,7 @@ func prepareArtifactBackfillSubmission(ctx context.Context, resources executionR
 	}
 	var document recipeexec.DocumentResult
 	switch spec.Transport {
-	case recipeabi.TransportHTTPJSON:
+	case recipeabi.TransportHTTPJSON, recipeabi.TransportBrowserJSON:
 		document, err = recipeexec.ExecuteJSON(spec, content)
 	case recipeabi.TransportHTTPHTML, recipeabi.TransportBrowser:
 		document, err = recipeexec.ExecuteHTML(spec, content)

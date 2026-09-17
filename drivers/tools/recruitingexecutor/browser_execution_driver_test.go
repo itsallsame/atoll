@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -59,6 +60,43 @@ func TestBrowserExecutionDriverUsesExistingListingResultContract(t *testing.T) {
 	if len(run.Pages) != 1 || len(run.Pages[0].Items) != 1 || run.Output.Failure != nil ||
 		run.Pages[0].Artifact.Kind != "page" || len(sink.writes) != 2 || sink.writes[1].Kind != "trace" {
 		t.Fatalf("browser listing result=%+v writes=%+v", run, sink.writes)
+	}
+}
+
+func TestBrowserExecutionDriverParsesCapturedJSONFromOriginalSession(t *testing.T) {
+	spec := browserListingSpecForExecutionTest()
+	spec.Transport = recipeabi.TransportBrowserJSON
+	spec.Extraction = recipeabi.Extraction{Collection: "/data/jobs", Fields: map[string]string{
+		"job_key": "/id", "title": "/title", "activity_at": "/activity_at", "detail_url": "/url",
+	}}
+	spec.BrowserQuery = &recipeabi.BrowserQuery{Method: "POST", EndpointPath: "/api/v1/search/job/posts"}
+	observation, err := recipeabi.NewPublicQueryObservation(
+		"https://jobs.example.com/api/v1/search/job/posts?_signature=runtime", "POST",
+		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"data":{"jobs":[{"id":"42","title":"Engineer","activity_at":"2026-09-11T10:00:00Z","url":"https://jobs.example.com/jobs/42"}]}}`)
+	sum := sha256.Sum256(body)
+	broker := publicBrowserBrokerStub{result: browserdriver.SessionResult{
+		FinalURL: "https://jobs.example.com/openings", ContentType: "text/html", DOM: []byte(`<html></html>`),
+		PublicQueryResponses: []browserdriver.PublicQueryResponse{{Request: observation, StatusCode: 200,
+			ContentType: "application/json", Body: body, ContentHash: "sha256:" + hex.EncodeToString(sum[:])}},
+		Attestation: browserdriver.Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET", "POST"},
+			PublicEndpoint: true, RobotsAllowed: true, TermsPolicyVersion: 1,
+			AllowedPublicQueryRequests: 1, CapturedPublicQueryResponses: 1},
+	}}
+	driver, _ := browserdriver.New(broker)
+	sink := &browserArtifactSinkStub{}
+	run, err := (&browserExecutionDriver{driver: driver}).RunListing(context.Background(), spec,
+		browserRunInputForExecutionTest(), httpdriver.ComplianceEvidence{TermsPolicyVersion: 1,
+			TermsReviewedAt: "2026-09-11T00:00:00Z"}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.Pages) != 1 || len(run.Pages[0].Items) != 1 || string(run.Pages[0].Items[0]["job_key"]) != `"42"` ||
+		len(sink.writes) != 2 || sink.writes[0].ContentType != "application/json" {
+		t.Fatalf("browser JSON listing result=%+v writes=%+v", run, sink.writes)
 	}
 }
 

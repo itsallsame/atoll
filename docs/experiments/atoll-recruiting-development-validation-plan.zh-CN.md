@@ -894,3 +894,13 @@ Browser Broker 新增严格受限的 `PublicQueryStub`：请求侧必须与前�
 新增 `/staircase/` 嵌入式运营界面和 Recruiting Actor 只读业务投影，没有修改 `protocol`、`runtime`、`lib`、`platform` 或 `registry`。页面覆盖总览、公司与招聘源详情、今日运行、待处理、数据成果、系统健康和自然语言协作；实际读取正式远程 MySQL 中的美团、字节跳动等现有事实。公司详情真实回读一对多 Source、业务类型、Endpoint、Recipe 绑定和健康状态；自然语言输入“美团现在在做什么？只查询状态，不执行任何操作”得到只读业务回答，并明确未执行变更。
 
 验证包括招聘扩展、Store、嵌入资源和 engine boot 测试，核心冻结边界检查，生产构建、systemd 重启、公网静态入口和同源 WebSocket 复用。设计验收使用 1440×1024 选定稿与实际浏览器截图的并排比较，修复总览信息顺序、遮挡内容的对话框、品牌侧栏色彩、移动端标题换行和读屏折叠菜单；桌面 Lighthouse 最终 Accessibility、Best Practices、SEO、Agentic Browsing 均为 100。完整证据与比较历史见 `web/recruitingconsole/design-qa.md`。
+
+## 30. 2026-09-17 浏览器原会话 JSON 捕获纠偏阶段
+
+本阶段以 Snowland 已验证的 `page.on('response') → response.json()` 思路纠偏第 22—27 节的网络执行方案；此前“阻断 POST → 独立 HTTP 验证 → 本地 Stub fulfill → 第二次 Browser Probe”的实现和控制面不再是当前设计。旧的 `deep_discovery_public_query` 模型、Work purpose、命令、Offer/result、HTTP Driver 方法、Stub 请求/attestation、自动推进分支和测试均已删除；migration 64 删除其数据库表，历史章节只作为决策记录保留。
+
+新的 Browser Broker 仍不修改 Atoll core，也不增加 Actor/Worker 类型。它仅允许同源 XHR/fetch 中通过公开招聘只读语义校验的 POST 在 Chrome 原会话中执行；页面自己持有 Cookie、CSRF 和 `_signature`。通用的同源 CSRF token 获取可作为 session bootstrap 执行，但不保存 token response 为业务证据。Broker 通过 CDP Network response/loading 生命周期读取完成后的 body，只接受 2xx JSON，并执行单项 20 MiB、最多 200 项、总计 200 MiB、内容哈希和请求绑定校验。DOM、每个 JSON response 与 trace 先写 Artifact，再由原 Work/Attempt/Permit/fence 结果事务接收。
+
+Listing Recipe 新增 `browser_json` transport：Source 继续保存真实 ListURL；Recipe 只冻结浏览器 GET 导航 Plan，以及目标查询的 method + endpoint path。运行时 query signature、Cookie、CSRF 不进入 Recipe，不由 Atoll 重放；页面每次自然生成它们。Recipe preparation 从同一成功 Probe 的 response Artifact 读取 JSON preview 和语义映射，不再依赖 Verification/Stub ID。Onboarding 自动推进只剩创建/等待 Browser Probe、证据复核和人工修复边界。
+
+验证包括：受控真实 Chrome 页面连续执行两个同源 JSON POST，Broker 在同一会话捕获两个 response，禁止写语义 POST 仍未到达 origin；Recruiting Executor、Actor、Store、Recipe ABI/exec 全部包测试通过。公网 Live Smoke 使用用户确认的 `https://jobs.bytedance.com/campus/position`，页面先访问 `/api/v1/csrf/token`，随后真实请求 `/api/v1/search/job/posts?...&_signature=...`；早期 405 不被接收，CSRF 完成后的 200 `application/json` response 被捕获，证明临时签名和会话前置条件无需独立模拟。该结果关闭“发现阶段获得字节岗位列表 JSON”的数据面缺口；完整 Source 发布、Listing 多响应分页、首次 baseline 和每日增量仍必须继续经过各自产品状态机，不能由这项 Live Smoke 代替。

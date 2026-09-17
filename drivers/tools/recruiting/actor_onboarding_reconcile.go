@@ -25,7 +25,7 @@ type onboardingReconcileResult struct {
 
 func automaticOnboardingContinuation(action onboardingAutomationAction) bool {
 	switch action {
-	case onboardingCreateSeedBrowser, onboardingVerifyPublicQuery, onboardingReplayVerified, onboardingReviewEvidence:
+	case onboardingCreateSeedBrowser, onboardingReviewEvidence:
 		return true
 	default:
 		return false

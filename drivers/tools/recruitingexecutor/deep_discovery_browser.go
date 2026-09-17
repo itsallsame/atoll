@@ -55,30 +55,6 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 		return fmt.Errorf("validate Deep Discovery browser plan: %w", err)
 	}
 	planHash, _ := plan.ContentHash()
-	if len(offer.PublicQueryStubs) != len(probe.StubVerificationIDs) {
-		return errors.New("Deep Discovery browser Stub references do not match the immutable Probe")
-	}
-	stubs := make([]browserdriver.PublicQueryStub, 0, len(offer.PublicQueryStubs))
-	for index, ref := range offer.PublicQueryStubs {
-		if ref.VerificationID != probe.StubVerificationIDs[index] || ref.Request.Validate() != nil ||
-			ref.Artifact.Kind != model.ArtifactResponse || ref.Artifact.WorkID == "" {
-			return errors.New("Deep Discovery browser Stub lineage is inconsistent")
-		}
-		request, canonicalErr := ref.Request.Canonicalized()
-		if canonicalErr != nil {
-			return fmt.Errorf("canonicalize verified public query Stub %q: %w", ref.VerificationID, canonicalErr)
-		}
-		body, readErr := readBackfillArtifact(ctx, resources, ref.Artifact, browserdriver.MaxPublicQueryStubBytes)
-		if readErr != nil {
-			return fmt.Errorf("read verified public query Stub %q: %w", ref.VerificationID, readErr)
-		}
-		stub := browserdriver.PublicQueryStub{Request: request, StatusCode: ref.StatusCode,
-			ContentType: ref.ContentType, Body: body, ContentHash: ref.Artifact.ContentHash}
-		if err := stub.Validate(); err != nil {
-			return fmt.Errorf("validate verified public query Stub %q: %w", ref.VerificationID, err)
-		}
-		stubs = append(stubs, stub)
-	}
 	sinkConfig := options.Artifact
 	sinkConfig.WorkID, sinkConfig.AttemptID = offer.Work.WorkID, offer.Attempt.AttemptID
 	sink, err := newAtollArtifactSink(resources, sinkConfig)
@@ -96,16 +72,10 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 		AttemptID: offer.Attempt.AttemptID, TimeoutMS: 60_000,
 		Policy:         browserdriver.PolicyEvidence{TermsPolicyVersion: options.Compliance.TermsPolicyVersion, TermsReviewedAt: options.Compliance.TermsReviewedAt},
 		AllowedMethods: []string{http.MethodGet, http.MethodHead, http.MethodOptions}, SameOriginDocs: true, BlockDownloads: true,
-		BlockPopups: true, PublicQueryStubs: stubs}
+		BlockPopups: true}
 	result, err := explorer.Run(ctx, request)
 	if err != nil {
-		// A first pass over a client-rendered list can safely capture the
-		// blocked public query before its requested detail link exists.  Preserve
-		// that read-only observation as a completed Probe so the control plane
-		// can verify it, replay the response as a local Stub, and then perform
-		// the list-to-detail navigation.  This is evidence discovery, not list
-		// validation: the later proof gate still requires the distinct detail URL.
-		if len(result.PublicQueryEvidence) == 0 || len(result.DOM) == 0 || strings.TrimSpace(result.FinalURL) == "" ||
+		if len(result.PublicQueryResponses) == 0 || len(result.DOM) == 0 || strings.TrimSpace(result.FinalURL) == "" ||
 			result.Attestation.Validate(request) != nil {
 			class, retryable := deepDiscoveryBrowserFailure(err)
 			return failLocalExecutionWithRetry(ctx, control, sink, offer, class, "deep_discovery_browser", retryable, err)
@@ -127,14 +97,38 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 	if err != nil {
 		return fmt.Errorf("save Deep Discovery DOM: %w", err)
 	}
+	queryResponses := make([]executioncontract.DeepDiscoveryPublicQueryResponse, 0, len(result.PublicQueryResponses))
+	supportingArtifacts := make([]recipeabi.ArtifactRef, 0, len(result.PublicQueryResponses)+1)
+	for index, captured := range result.PublicQueryResponses {
+		ref, writeErr := sink.Put(ctx, httpdriver.ArtifactWrite{Kind: "response", AttemptID: offer.Attempt.AttemptID,
+			PageSequence: index + 2, URL: captured.Request.EndpointURL, StatusCode: captured.StatusCode,
+			ContentType: captured.ContentType, ContentHash: captured.ContentHash, Body: captured.Body})
+		if writeErr != nil {
+			return fmt.Errorf("save browser public-query response %d: %w", index+1, writeErr)
+		}
+		metadata, metadataErr := sink.metadata(ref, model.ArtifactResponse)
+		if metadataErr != nil {
+			return metadataErr
+		}
+		preview, truncated, previewErr := recipeabi.BuildJSONPreview(captured.Body)
+		if previewErr != nil {
+			return fmt.Errorf("build browser public-query preview %d: %w", index+1, previewErr)
+		}
+		queryResponses = append(queryResponses, executioncontract.DeepDiscoveryPublicQueryResponse{Request: captured.Request,
+			Artifact: metadata, StatusCode: captured.StatusCode, ContentType: captured.ContentType,
+			ContentHash: captured.ContentHash, ResponsePreview: preview, ResponsePreviewTruncated: truncated})
+		supportingArtifacts = append(supportingArtifacts, ref)
+	}
 	traceJSON, _ := json.Marshal(map[string]any{"attestation": result.Attestation,
-		"public_query_evidence": result.PublicQueryEvidence})
+		"public_query_response_count": len(queryResponses)})
 	traceRef, err := sink.Put(ctx, httpdriver.ArtifactWrite{Kind: "trace", AttemptID: offer.Attempt.AttemptID,
-		PageSequence: 2, URL: finalURL, ContentType: "application/json", Body: traceJSON})
+		PageSequence: len(result.PublicQueryResponses) + 2, URL: finalURL, ContentType: "application/json", Body: traceJSON})
 	if err != nil {
 		return fmt.Errorf("save Deep Discovery effect trace: %w", err)
 	}
-	primary, supporting, err := successfulResultArtifacts([]recipeabi.ArtifactRef{responseRef, traceRef}, responseRef, sink)
+	allArtifacts := append([]recipeabi.ArtifactRef{responseRef}, supportingArtifacts...)
+	allArtifacts = append(allArtifacts, traceRef)
+	primary, supporting, err := deepDiscoveryResultArtifacts(allArtifacts, responseRef, sink)
 	if err != nil {
 		return err
 	}
@@ -149,19 +143,50 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 		ResultKind: "deep_discovery_browser", AttemptID: offer.Attempt.AttemptID,
 		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, Artifact: primary, SupportingArtifacts: supporting,
 		FinalURL: finalURL, ContentHash: "sha256:" + hex.EncodeToString(bodySum[:]), Links: wireLinks, DOMPreview: domPreview,
-		PublicQueryEvidence: result.PublicQueryEvidence,
+		PublicQueryResponses: queryResponses,
 		Attestation: executioncontract.DeepDiscoveryEffectAttestation{DocumentNavigations: result.Attestation.DocumentNavigations,
 			ObservedMethods: result.Attestation.ObservedMethods, BlockedMethods: result.Attestation.BlockedMethods,
 			AllowedWriteRequests: result.Attestation.AllowedWriteRequests, BlockedWriteRequests: result.Attestation.BlockedWriteRequests,
 			CrossOriginDocumentNavigations: result.Attestation.CrossOriginDocumentNavigations, FormSubmissions: result.Attestation.FormSubmissions,
 			Downloads: result.Attestation.Downloads, Popups: result.Attestation.Popups, PublicEndpoint: result.Attestation.PublicEndpoint,
 			RobotsAllowed: result.Attestation.RobotsAllowed, TermsPolicyVersion: result.Attestation.TermsPolicyVersion}}
-	submission.Attestation.FulfilledPublicQueries = result.Attestation.FulfilledPublicQueries
-	submission.Attestation.FulfilledPublicQueryHashes = result.Attestation.FulfilledPublicQueryHashes
+	submission.Attestation.AllowedPublicQueryRequests = result.Attestation.AllowedPublicQueryRequests
+	submission.Attestation.CapturedPublicQueryResponses = result.Attestation.CapturedPublicQueryResponses
 	if err := control.Submit(ctx, submission.ResultKind, submission); err != nil {
 		return fmt.Errorf("submit Deep Discovery browser result: %w", err)
 	}
 	return nil
+}
+
+func deepDiscoveryResultArtifacts(refs []recipeabi.ArtifactRef, primaryRef recipeabi.ArtifactRef,
+	sink *atollArtifactSink) (model.ArtifactMetadata, []model.ArtifactMetadata, error) {
+	if sink == nil || len(refs) < 1 || len(refs) > browserdriver.MaxPublicQueryResponseCount+2 || refs[0] != primaryRef {
+		return model.ArtifactMetadata{}, nil, fmt.Errorf("Deep Discovery result must carry one DOM and bounded response/trace Artifacts")
+	}
+	primary, err := sink.metadata(primaryRef, model.ArtifactResponse)
+	if err != nil {
+		return model.ArtifactMetadata{}, nil, err
+	}
+	supporting := make([]model.ArtifactMetadata, 0, len(refs)-1)
+	seen := map[string]struct{}{primaryRef.ArtifactID: {}}
+	for _, ref := range refs[1:] {
+		kind := model.ArtifactTrace
+		if ref.Kind == string(model.ArtifactResponse) {
+			kind = model.ArtifactResponse
+		} else if ref.Kind != string(model.ArtifactTrace) {
+			return model.ArtifactMetadata{}, nil, fmt.Errorf("Deep Discovery supporting Artifact kind %q is not allowed", ref.Kind)
+		}
+		if _, duplicate := seen[ref.ArtifactID]; duplicate {
+			return model.ArtifactMetadata{}, nil, fmt.Errorf("Deep Discovery Artifact IDs must be unique")
+		}
+		seen[ref.ArtifactID] = struct{}{}
+		metadata, metadataErr := sink.metadata(ref, kind)
+		if metadataErr != nil {
+			return model.ArtifactMetadata{}, nil, metadataErr
+		}
+		supporting = append(supporting, metadata)
+	}
+	return primary, supporting, nil
 }
 
 func deepDiscoveryBrowserFailure(err error) (string, bool) {

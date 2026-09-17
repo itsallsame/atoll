@@ -40,7 +40,7 @@ func ExecuteJSON(spec recipeabi.Spec, document []byte) (DocumentResult, error) {
 	if err := spec.Validate(); err != nil {
 		return DocumentResult{}, err
 	}
-	if spec.Transport != recipeabi.TransportHTTPJSON {
+	if spec.Transport != recipeabi.TransportHTTPJSON && spec.Transport != recipeabi.TransportBrowserJSON {
 		return DocumentResult{}, fmt.Errorf("JSON executor cannot run transport %q", spec.Transport)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(document))

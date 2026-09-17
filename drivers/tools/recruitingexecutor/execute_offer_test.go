@@ -45,16 +45,10 @@ func (s *executeResourceStub) Open(id resource.ResourceID, mode access.Operation
 }
 
 type executeDriverStub struct {
-	listing     httpdriver.ListingRunResult
-	detail      httpdriver.DetailRunResult
-	discovery   httpdriver.DiscoveryRunResult
-	publicQuery httpdriver.Result
-	err         error
-}
-
-func (d executeDriverStub) FetchPublicQuery(context.Context, recipeabi.PublicQueryObservation,
-	httpdriver.ComplianceEvidence) (httpdriver.Result, error) {
-	return d.publicQuery, d.err
+	listing   httpdriver.ListingRunResult
+	detail    httpdriver.DetailRunResult
+	discovery httpdriver.DiscoveryRunResult
+	err       error
 }
 
 func (d executeDriverStub) RunListing(context.Context, recipeabi.Spec, recipeabi.RunInput,
@@ -126,44 +120,6 @@ func executeTestOptions(now time.Time) executeOfferOptions {
 		AccessScope: "operators", Retention: "30d", MaxBytes: 1 << 20},
 		Compliance: httpdriver.ComplianceEvidence{TermsPolicyVersion: 1, TermsReviewedAt: now.Format(time.RFC3339)},
 		Now:        func() time.Time { return now },
-	}
-}
-
-func TestExecuteOfferVerifiesPublicQueryAndPersistsResponseBeforeSubmitting(t *testing.T) {
-	now := time.Date(2026, 9, 14, 4, 0, 0, 0, time.UTC)
-	observation, _ := recipeabi.NewPublicQueryObservation("https://jobs.example.com/api/config", "POST",
-		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{}`))
-	work, _ := model.NewWork("public-query-work", "deep_discovery_public_query", "public-query-verification",
-		"deep_discovery_public_query", "agent")
-	attempt, _ := model.NewAttempt("public-query-attempt", work)
-	attempt, _ = attempt.BindExecutor("tool:http:1", "boot-1", "http.fetch")
-	verification, _ := model.NewDeepDiscoveryPublicQueryVerification("public-query-verification", "mission-1", "probe-1",
-		work.WorkID, 2, model.PublicQueryRequestEvidence{EndpointURL: observation.EndpointURL, Method: observation.Method,
-			Headers: observation.Headers, JSONBody: observation.JSONBody, BodyHash: observation.BodyHash})
-	offer := executioncontract.Offer{Kind: "deep_discovery_public_query", Work: work, Attempt: attempt,
-		PublicQueryVerification: &verification, RequestedCapability: "http.fetch"}
-	body := []byte(`{"code":0,"data":{}}`)
-	sum := sha256.Sum256(body)
-	run := httpdriver.Result{StatusCode: 200, ContentType: "application/json; charset=utf-8",
-		FinalURL: observation.EndpointURL, Body: body, ContentHash: "sha256:" + hex.EncodeToString(sum[:]),
-		Robots: httpdriver.RobotsEvidence{PolicyURL: "https://jobs.example.com/robots.txt", ContentHash: "sha256:" + strings.Repeat("a", 64),
-			Allowed: true, CheckedAt: now.Format(time.RFC3339)},
-		Compliance: httpdriver.ComplianceEvidence{TermsPolicyVersion: 1, TermsReviewedAt: now.Format(time.RFC3339)}}
-	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}}}
-	control := &executeControlStub{}
-	if err := executeOffer(context.Background(), control, resources, executeDriverStub{publicQuery: run}, offer,
-		executeTestOptions(now)); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(control.calls, ",") != "accept,started,submit:deep_discovery_public_query" ||
-		len(control.submissions) != 1 {
-		t.Fatalf("public query lifecycle calls=%v submissions=%v", control.calls, control.submissions)
-	}
-	submission, ok := control.submissions[0].(executioncontract.PublicQueryVerificationResult)
-	if !ok || submission.Artifact.Kind != model.ArtifactResponse || submission.ContentHash != run.ContentHash ||
-		submission.Artifact.ObjectRef == "" || !json.Valid(submission.ResponsePreview) ||
-		!strings.Contains(string(submission.ResponsePreview), `"code":0`) {
-		t.Fatalf("public query submission=%+v", control.submissions[0])
 	}
 }
 

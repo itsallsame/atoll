@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/wanpengxie/atoll/drivers/tools/recruiting/executioncontract"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
@@ -41,24 +42,21 @@ func TestPrepareListingRecipeResourceRequiresExactProbeEvidence(t *testing.T) {
 	}
 	headers := map[string]string{"Accept": "application/json", "Content-Type": "application/json", "website-path": "en"}
 	body := json.RawMessage(`{"keyword":"","limit":12,"offset":0}`)
-	observation, err := recipeabi.NewPublicQueryObservation("https://api.example/public/jobs/search", "POST", headers, body)
+	observation, err := recipeabi.NewPublicQueryObservation("https://join.example/api/public/jobs/search?_signature=runtime", "POST", headers, body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := recipeabi.Spec{ABIVersion: recipeabi.Version, Kind: recipeabi.KindListing,
-		RequiredCapability: "http.fetch", Transport: recipeabi.TransportHTTPJSON,
-		Request: recipeabi.ReadRequest{URL: observation.EndpointURL, Method: "POST", Headers: headers, JSONBody: body, TimeoutMS: 5_000,
-			MaxResponseBytes: 2 << 20, MaxRedirects: 0, UserAgent: "Atoll-Recruiting/1"},
-		Extraction: recipeabi.Extraction{Collection: "/data/jobs", Fields: map[string]string{
-			"job_key": "/id", "detail_url": "/id", "title": "/title",
-		}, Templates: map[string]string{"detail_url": "https://join.example/search/{value}"}},
-		OffsetPagination: &recipeabi.OffsetPagination{OffsetBodyField: "offset", LimitBodyField: "limit", PageSize: 12},
-		Listing: &recipeabi.ListingContract{IdentityField: "job_key", DetailURLField: "detail_url",
-			BoundaryMode: "frontier_keys", Ordering: "newest_activity_desc", UpdateRetop: true,
-			OverlapPages: 2, MaxPages: 100, MaxItemsPerPage: 100, MaxTotalBytes: 20 << 20, FrontierWidth: 20}}
+	spec, err := buildListingRecipeSpec(observation, recipePrepareMapping{Collection: "/data/jobs",
+		IdentityPointer: "/id", DetailURLPointer: "/id", TitlePointer: "/title",
+		DetailURLTemplate: "https://join.example/search/{value}"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	raw, _ := json.Marshal(spec)
 	mission := model.DeepDiscoveryMission{CompanyID: source.CompanyID}
-	result := store.DeepDiscoveryBrowserResult{PublicQueryEvidence: []recipeabi.PublicQueryObservation{observation}}
+	result := store.DeepDiscoveryBrowserResult{PublicQueryResponses: []executioncontract.DeepDiscoveryPublicQueryResponse{{
+		Request: observation, Artifact: model.ArtifactMetadata{ArtifactID: "captured-response"},
+	}}}
 	prepared, err := prepareListingRecipeResource(source, mission, result, observation.BodyHash, nil, raw, "https://join.example/search/{value}")
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +71,7 @@ func TestPrepareListingRecipeResourceRequiresExactProbeEvidence(t *testing.T) {
 	}
 
 	changed := spec
-	changed.Request.JSONBody = json.RawMessage(`{"keyword":"campus","limit":12,"offset":0}`)
+	changed.BrowserQuery = &recipeabi.BrowserQuery{Method: "POST", EndpointPath: "/api/other"}
 	changedRaw, _ := json.Marshal(changed)
 	if _, err := prepareListingRecipeResource(source, mission, result, observation.BodyHash, nil, changedRaw, "https://join.example/search/{value}"); err == nil {
 		t.Fatal("Recipe request different from Probe evidence was accepted")
@@ -104,9 +102,10 @@ func TestBuildListingRecipeSpecOwnsABIAndBudgetDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Request.URL != observation.EndpointURL || spec.Request.UserAgent != "Atoll-Recruiting/1" || spec.Request.TimeoutMS != 30_000 ||
+	if spec.Request.URL != "" || spec.Request.UserAgent != "Atoll-Recruiting/1" || spec.Request.TimeoutMS != 60_000 ||
 		spec.Listing == nil || spec.Listing.Ordering != "newest_activity_desc" || !spec.Listing.UpdateRetop ||
-		spec.Listing.BoundaryMode != "frontier_keys" || !observation.MatchesReadRequest(spec.Request) {
+		spec.Listing.BoundaryMode != "frontier_keys" || spec.Transport != recipeabi.TransportBrowserJSON ||
+		spec.RequiredCapability != "browser.public" || spec.BrowserQuery == nil || spec.BrowserQuery.EndpointPath != "/api/search" {
 		t.Fatalf("control-plane defaults were not applied: %+v", spec)
 	}
 }

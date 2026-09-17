@@ -1,12 +1,8 @@
 package browserbroker
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -211,18 +207,23 @@ fetch('/write',{method:'POST',headers:{'Content-Type':'application/json','websit
 	result, err := runner.Run(context.Background(), request)
 	if err != nil || result.Attestation.AllowedWriteRequests != 0 || result.Attestation.BlockedWriteRequests != 1 ||
 		!reflect.DeepEqual(result.Attestation.BlockedMethods, []string{http.MethodPost}) ||
-		!result.Attestation.PublicEndpoint || writes.Load() != 0 || len(result.PublicQueryEvidence) != 0 {
+		!result.Attestation.PublicEndpoint || writes.Load() != 0 || len(result.PublicQueryResponses) != 0 {
 		t.Fatalf("Chrome write was not blocked: err=%v attestation=%+v origin_writes=%d", err, result.Attestation, writes.Load())
 	}
 }
 
-func TestRunnerFulfillsVerifiedPublicQueryStubLocallyAndDiscoversNextRequest(t *testing.T) {
+func TestRunnerAllowsReadOnlyPublicQueriesAndCapturesResponsesInSession(t *testing.T) {
 	chrome := chromeForTest(t)
-	var writes atomic.Int64
+	var queries atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method == http.MethodPost {
-			writes.Add(1)
-			response.WriteHeader(http.StatusInternalServerError)
+			queries.Add(1)
+			response.Header().Set("Content-Type", "application/json; charset=utf-8")
+			if request.URL.Path == "/config" {
+				_, _ = response.Write([]byte(`{"data":{"locations":[]}}`))
+			} else {
+				_, _ = response.Write([]byte(`{"data":{"jobs":[{"id":"42"}]}}`))
+			}
 			return
 		}
 		response.Header().Set("Content-Type", "text/html")
@@ -235,36 +236,22 @@ fetch('/config',{method:'POST',headers:{'Content-Type':'application/json','websi
 	defer server.Close()
 	runner := &Runner{chromePath: chrome, allowPrivate: true}
 
-	firstRequest := browserRequest(server.URL)
-	firstRequest.Plan.Actions[0].Selector = ".done"
-	// The first probe observes and blocks the prerequisite. A separate HTTP
-	// verifier would persist the response and bind it to this exact evidence.
-	firstRequest.PlanHash, _ = firstRequest.Plan.ContentHash()
-	first, err := runner.Run(context.Background(), firstRequest)
-	if err != nil || len(first.PublicQueryEvidence) != 1 {
-		t.Fatalf("prerequisite observation failed: result=%+v err=%v", first, err)
-	}
-	stubBody := []byte(`{"data":{"locations":[]}}`)
-	stubSum := sha256.Sum256(stubBody)
-	secondRequest := browserRequest(server.URL)
-	secondRequest.Plan.Actions[0].Selector = ".done"
-	secondRequest.PlanHash, _ = secondRequest.Plan.ContentHash()
-	secondRequest.PublicQueryStubs = []browserdriver.PublicQueryStub{{Request: first.PublicQueryEvidence[0],
-		StatusCode: http.StatusOK, ContentType: "application/json; charset=utf-8", Body: stubBody,
-		ContentHash: fmt.Sprintf("sha256:%x", stubSum)}}
-	second, err := runner.Run(context.Background(), secondRequest)
-	if err != nil || writes.Load() != 0 || second.Attestation.FulfilledPublicQueries != 1 ||
-		len(second.Attestation.FulfilledPublicQueryHashes) != 1 || second.Attestation.BlockedWriteRequests != 1 ||
-		len(second.PublicQueryEvidence) != 2 {
-		t.Fatalf("verified stub did not reveal the downstream query safely: result=%+v writes=%d err=%v",
-			second, writes.Load(), err)
+	request := browserRequest(server.URL)
+	request.Plan.Actions[0].Selector = ".done"
+	request.PlanHash, _ = request.Plan.ContentHash()
+	result, err := runner.Run(context.Background(), request)
+	if err != nil || queries.Load() != 2 || result.Attestation.AllowedPublicQueryRequests != 2 ||
+		result.Attestation.CapturedPublicQueryResponses != 2 || result.Attestation.BlockedWriteRequests != 0 ||
+		len(result.PublicQueryResponses) != 2 {
+		t.Fatalf("browser query responses were not captured in-session: result=%+v queries=%d err=%v",
+			result, queries.Load(), err)
 	}
 	seenJobs := false
-	for _, observation := range second.PublicQueryEvidence {
-		seenJobs = seenJobs || observation.EndpointURL == server.URL+"/jobs"
+	for _, captured := range result.PublicQueryResponses {
+		seenJobs = seenJobs || captured.Request.EndpointURL == server.URL+"/jobs" && strings.Contains(string(captured.Body), `"id":"42"`)
 	}
 	if !seenJobs {
-		t.Fatalf("downstream jobs query was not discovered: %+v", second.PublicQueryEvidence)
+		t.Fatalf("downstream jobs response was not captured: %+v", result.PublicQueryResponses)
 	}
 }
 
@@ -467,14 +454,14 @@ func TestRunnerReadsOptInPublicWebsiteInRealChrome(t *testing.T) {
 	}
 }
 
-func TestRunnerObservesByteDancePublicQueryWithoutSendingIt(t *testing.T) {
+func TestRunnerCapturesByteDancePublicQueryResponsesInBrowser(t *testing.T) {
 	if os.Getenv("RECRUITING_LIVE_BYTEDANCE_PROBE") != "1" {
 		t.Skip("set RECRUITING_LIVE_BYTEDANCE_PROBE=1 for the real public site")
 	}
 	plan := browserdriver.Plan{Version: browserdriver.PlanVersion, MaxNavigations: 1, MaxDOMBytes: 2 << 20,
 		Actions: []browserdriver.Action{{Kind: browserdriver.ActionScrollPage, MaxRepeats: 30}}}
 	planHash, _ := plan.ContentHash()
-	request := browserdriver.SessionRequest{EndpointURL: "https://joinbytedance.com/search",
+	request := browserdriver.SessionRequest{EndpointURL: "https://jobs.bytedance.com/campus/position",
 		UserAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/144.0.0.0 Safari/537.36", AcceptLanguage: "en-US,en;q=0.9",
 		Plan: plan, PlanHash: planHash, AttemptID: "attempt-bytedance-public-query-live", TimeoutMS: 30_000,
 		Policy:         browserdriver.PolicyEvidence{TermsPolicyVersion: 1, TermsReviewedAt: "2026-09-13T00:00:00Z"},
@@ -488,58 +475,14 @@ func TestRunnerObservesByteDancePublicQueryWithoutSendingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var prerequisite *browserdriver.PublicQueryStub
-	for _, observation := range result.PublicQueryEvidence {
-		if observation.EndpointURL == "https://jobs.bytedance.com/api/v1/public/supplier/config/job/filters" &&
-			observation.Method == http.MethodPost && observation.Headers["Website-Path"] == "en" &&
-			string(observation.JSONBody) == `{}` {
-			httpRequest, requestErr := http.NewRequest(http.MethodPost, observation.EndpointURL, bytes.NewReader(observation.JSONBody))
-			if requestErr != nil {
-				t.Fatal(requestErr)
-			}
-			for name, value := range observation.Headers {
-				httpRequest.Header.Set(name, value)
-			}
-			httpRequest.Header.Set("User-Agent", request.UserAgent)
-			client := &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-				return http.ErrUseLastResponse
-			}}
-			httpResponse, requestErr := client.Do(httpRequest)
-			if requestErr != nil {
-				t.Fatal(requestErr)
-			}
-			body, readErr := io.ReadAll(io.LimitReader(httpResponse.Body, browserdriver.MaxPublicQueryStubBytes+1))
-			_ = httpResponse.Body.Close()
-			if readErr != nil || len(body) > browserdriver.MaxPublicQueryStubBytes {
-				t.Fatalf("read verified prerequisite response: bytes=%d err=%v", len(body), readErr)
-			}
-			sum := sha256.Sum256(body)
-			candidate := browserdriver.PublicQueryStub{Request: observation, StatusCode: httpResponse.StatusCode,
-				ContentType: httpResponse.Header.Get("Content-Type"), Body: body, ContentHash: fmt.Sprintf("sha256:%x", sum)}
-			if validateErr := candidate.Validate(); validateErr != nil {
-				t.Fatalf("independent HTTP prerequisite validation failed: %v", validateErr)
-			}
-			prerequisite = &candidate
-		}
-	}
-	if prerequisite == nil || result.Attestation.BlockedWriteRequests < 1 {
-		t.Fatalf("ByteDance public query was not retained as blocked evidence: queries=%+v attestation=%+v",
-			result.PublicQueryEvidence, result.Attestation)
-	}
-	request.AttemptID = "attempt-bytedance-verified-stub-live"
-	request.PublicQueryStubs = []browserdriver.PublicQueryStub{*prerequisite}
-	continued, err := runner.Run(context.Background(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
 	foundListing := false
-	for _, observation := range continued.PublicQueryEvidence {
-		if observation.EndpointURL == "https://jobs.bytedance.com/api/v1/public/supplier/search/job/posts" {
+	for _, captured := range result.PublicQueryResponses {
+		if strings.Contains(captured.Request.EndpointURL, "/search/job/posts") {
 			foundListing = true
 		}
 	}
-	if !foundListing || continued.Attestation.FulfilledPublicQueries != 1 || continued.Attestation.BlockedWriteRequests < 1 {
-		t.Fatalf("verified local prerequisite did not reveal the blocked listing query: queries=%+v attestation=%+v",
-			continued.PublicQueryEvidence, continued.Attestation)
+	if !foundListing || result.Attestation.AllowedPublicQueryRequests < 1 || result.Attestation.CapturedPublicQueryResponses < 1 {
+		t.Fatalf("ByteDance listing response was not captured in the browser session: responses=%+v attestation=%+v",
+			result.PublicQueryResponses, result.Attestation)
 	}
 }

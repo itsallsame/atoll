@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/netip"
@@ -56,28 +57,35 @@ func policyFailure(cause error) error {
 }
 
 type policyState struct {
-	mu                   sync.Mutex
-	initialOrigin        string
-	maxNavigations       int
-	methods              map[string]struct{}
-	blockedMethods       map[string]struct{}
-	documentNavigations  int
-	blockedWriteRequests int
-	crossOriginDocuments int
-	formSubmissions      int
-	downloads            int
-	popups               int
-	firstViolation       error
-	publicQueries        map[string]recipeabi.PublicQueryObservation
-	publicQueryBytes     int
-	publicQueryStubs     map[string]browserdriver.PublicQueryStub
-	usedPublicQueryStubs map[string]struct{}
-	fulfilledStubHashes  []string
+	mu                    sync.Mutex
+	initialOrigin         string
+	maxNavigations        int
+	methods               map[string]struct{}
+	blockedMethods        map[string]struct{}
+	documentNavigations   int
+	blockedWriteRequests  int
+	crossOriginDocuments  int
+	formSubmissions       int
+	downloads             int
+	popups                int
+	firstViolation        error
+	publicQueries         map[string]recipeabi.PublicQueryObservation
+	publicQueryBytes      int
+	pendingPublicQueries  map[string]recipeabi.PublicQueryObservation
+	pendingQueryResponses map[string]publicQueryResponseMetadata
+	publicQueryResponses  []browserdriver.PublicQueryResponse
+	publicResponseBytes   int
+	allowedPublicQueries  int
+}
+
+type publicQueryResponseMetadata struct {
+	observation recipeabi.PublicQueryObservation
+	statusCode  int
+	contentType string
 }
 
 type requestDecision struct {
 	allow bool
-	stub  *browserdriver.PublicQueryStub
 }
 
 type requestTracker struct {
@@ -167,26 +175,6 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	if err := request.Policy.Validate(); err != nil {
 		return browserdriver.SessionResult{}, policyFailure(err)
 	}
-	if len(request.PublicQueryStubs) > browserdriver.MaxPublicQueryStubCount {
-		return browserdriver.SessionResult{}, policyFailure(errors.New("public query stub count exceeded its bound"))
-	}
-	stubs := make(map[string]browserdriver.PublicQueryStub, len(request.PublicQueryStubs))
-	stubBytes := 0
-	for index := range request.PublicQueryStubs {
-		stub := request.PublicQueryStubs[index]
-		if err := stub.Validate(); err != nil {
-			return browserdriver.SessionResult{}, policyFailure(fmt.Errorf("invalid public query stub %d: %w", index, err))
-		}
-		stubBytes += len(stub.Body)
-		if stubBytes > browserdriver.MaxPublicQueryStubTotalBytes {
-			return browserdriver.SessionResult{}, policyFailure(errors.New("public query stub bytes exceeded their session bound"))
-		}
-		key := publicQueryKey(stub.Request)
-		if _, duplicate := stubs[key]; duplicate {
-			return browserdriver.SessionResult{}, policyFailure(errors.New("duplicate public query stub"))
-		}
-		stubs[key] = stub
-	}
 	endpoint, err := r.publicURL(ctx, request.EndpointURL)
 	if err != nil {
 		return browserdriver.SessionResult{}, err
@@ -233,8 +221,9 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 
 	state := &policyState{initialOrigin: origin(endpoint), maxNavigations: request.Plan.MaxNavigations,
 		methods: map[string]struct{}{}, blockedMethods: map[string]struct{}{},
-		publicQueries: map[string]recipeabi.PublicQueryObservation{}, publicQueryStubs: stubs,
-		usedPublicQueryStubs: map[string]struct{}{}}
+		publicQueries:         map[string]recipeabi.PublicQueryObservation{},
+		pendingPublicQueries:  map[string]recipeabi.PublicQueryObservation{},
+		pendingQueryResponses: map[string]publicQueryResponseMetadata{}}
 	requestTasks := newRequestTracker()
 	chromedp.ListenTarget(tabCtx, func(event any) {
 		switch value := event.(type) {
@@ -242,22 +231,16 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 			requestTasks.start(func() {
 				decision := state.inspectRequest(tabCtx, r, value)
 				_ = chromedp.Run(tabCtx, chromedp.ActionFunc(func(commandCtx context.Context) error {
-					if decision.stub != nil {
-						headers := []*fetch.HeaderEntry{{Name: "Content-Type", Value: decision.stub.ContentType},
-							{Name: "Cache-Control", Value: "no-store"},
-							// Fulfilled responses never pass through the origin's CORS
-							// layer. Bind the synthetic permission to this session's
-							// already-validated document origin, never to a wildcard.
-							{Name: "Access-Control-Allow-Origin", Value: state.initialOrigin}}
-						return fetch.FulfillRequest(value.RequestID, int64(decision.stub.StatusCode)).
-							WithResponseHeaders(headers).WithBody(base64.StdEncoding.EncodeToString(decision.stub.Body)).Do(commandCtx)
-					}
 					if decision.allow {
 						return fetch.ContinueRequest(value.RequestID).Do(commandCtx)
 					}
 					return fetch.FailRequest(value.RequestID, network.ErrorReasonBlockedByClient).Do(commandCtx)
 				}))
 			})
+		case *network.EventResponseReceived:
+			state.observePublicQueryResponse(string(value.RequestID), int(value.Response.Status), value.Response.MimeType)
+		case *network.EventLoadingFinished:
+			requestTasks.start(func() { state.capturePublicQueryResponse(tabCtx, value.RequestID) })
 		case *page.EventWindowOpen:
 			state.mu.Lock()
 			state.popups++
@@ -278,7 +261,6 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	setupErr := chromedp.Run(tabCtx,
 		fetch.Enable().WithPatterns([]*fetch.RequestPattern{
 			{URLPattern: "*", RequestStage: fetch.RequestStageRequest},
-			{URLPattern: "*", RequestStage: fetch.RequestStageResponse},
 		}),
 		network.SetExtraHTTPHeaders(network.Headers{"Accept-Language": request.AcceptLanguage}),
 		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorDeny).WithEventsEnabled(true),
@@ -326,16 +308,16 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	// Wait for Chrome to release its profile files before releasing the local
 	// Profile lease; a plain context cancel can return while Chrome still owns
 	// the directory and permit two processes to race over the same credentials.
+	requestsDrained := requestTasks.closeAndWait(5 * time.Second)
 	_ = chromedp.Cancel(tabCtx)
 	cancelTab()
-	requestsDrained := requestTasks.closeAndWait(5 * time.Second)
 	state.recordBlockedEffects(blockedDownloads, blockedPopups)
 	attestation, violation := state.attestation(request.Policy.TermsPolicyVersion, robotsAllowed, profiled)
 	if int64(len(dom)) > request.Plan.MaxDOMBytes {
 		dom = dom[:request.Plan.MaxDOMBytes+1]
 	}
 	result := browserdriver.SessionResult{FinalURL: finalURL, ContentType: contentType, DOM: []byte(dom), Attestation: attestation,
-		PublicQueryEvidence: state.publicQueryEvidence()}
+		PublicQueryResponses: state.publicQueryResponseEvidence()}
 	if violation != nil {
 		return result, policyFailure(violation)
 	}
@@ -487,16 +469,34 @@ func (s *policyState) inspectRequest(ctx context.Context, runner *Runner, event 
 	}
 	method := strings.ToUpper(strings.TrimSpace(event.Request.Method))
 	// OPTIONS is a read-only capability/preflight probe used by modern sites.
-	// It may proceed. Methods capable of application writes are blocked before
-	// reaching the origin and retained as explicit blocked-effect evidence;
-	// a document-level write is additionally a terminal navigation violation.
+	// A POST may proceed only when it is an XHR/fetch whose URL, headers and
+	// bounded JSON body satisfy the public listing-query contract. The browser
+	// owns any runtime signature and cookies; Atoll captures the response in the
+	// same session instead of replaying the request through an HTTP client.
 	allowed := method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 	if !allowed {
 		if method == http.MethodPost && (event.ResourceType == network.ResourceTypeXHR || event.ResourceType == network.ResourceTypeFetch) {
+			if endpoint, endpointErr := runner.publicURL(ctx, event.Request.URL); endpointErr == nil &&
+				origin(endpoint) == s.initialOrigin && isBrowserSessionBootstrap(endpoint) {
+				s.mu.Lock()
+				s.methods[method] = struct{}{}
+				s.allowedPublicQueries++
+				s.mu.Unlock()
+				return requestDecision{allow: true}
+			}
 			if observation, err := runner.publicQueryObservation(ctx, event); err == nil {
-				s.addPublicQuery(observation)
-				if stub, ok := s.takePublicQueryStub(observation); ok {
-					return requestDecision{stub: &stub}
+				parsed, parseErr := runner.publicURL(ctx, observation.EndpointURL)
+				if parseErr == nil && origin(parsed) == s.initialOrigin {
+					requestID := string(event.NetworkID)
+					if requestID == "" {
+						requestID = string(event.RequestID)
+					}
+					s.addPublicQuery(requestID, observation)
+					s.mu.Lock()
+					s.methods[method] = struct{}{}
+					s.allowedPublicQueries++
+					s.mu.Unlock()
+					return requestDecision{allow: true}
 				}
 			}
 		}
@@ -536,30 +536,9 @@ func (s *policyState) inspectRequest(ctx context.Context, runner *Runner, event 
 	return requestDecision{allow: allowed}
 }
 
-func publicQueryKey(observation recipeabi.PublicQueryObservation) string {
-	return observation.EndpointURL + "\n" + observation.BodyHash
-}
-
-func (s *policyState) takePublicQueryStub(observation recipeabi.PublicQueryObservation) (browserdriver.PublicQueryStub, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := publicQueryKey(observation)
-	stub, found := s.publicQueryStubs[key]
-	if !found || !stub.Request.MatchesObservation(observation) {
-		return browserdriver.PublicQueryStub{}, false
-	}
-	if _, used := s.usedPublicQueryStubs[key]; used {
-		return browserdriver.PublicQueryStub{}, false
-	}
-	s.usedPublicQueryStubs[key] = struct{}{}
-	s.fulfilledStubHashes = append(s.fulfilledStubHashes, publicQueryStubBindingHash(stub.Request.EndpointURL,
-		stub.Request.BodyHash, stub.ContentHash))
-	return stub, true
-}
-
-func publicQueryStubBindingHash(endpointURL, requestBodyHash, responseContentHash string) string {
-	sum := sha256.Sum256([]byte(endpointURL + "\n" + requestBodyHash + "\n" + responseContentHash))
-	return "sha256:" + hex.EncodeToString(sum[:])
+func isBrowserSessionBootstrap(endpoint *url.URL) bool {
+	path := strings.ToLower(strings.TrimSuffix(endpoint.EscapedPath(), "/"))
+	return strings.HasSuffix(path, "/csrf/token") || strings.HasSuffix(path, "/token/csrf")
 }
 
 func (r *Runner) publicQueryObservation(ctx context.Context, event *fetch.EventRequestPaused) (recipeabi.PublicQueryObservation, error) {
@@ -584,9 +563,6 @@ func (r *Runner) publicQueryObservation(ctx context.Context, event *fetch.EventR
 			headers[http.CanonicalHeaderKey(canonical)] = value
 		}
 	}
-	if !event.Request.HasPostData {
-		return recipeabi.PublicQueryObservation{}, errors.New("public query body was not available to the browser policy")
-	}
 	body := make([]byte, 0, 1024)
 	for _, entry := range event.Request.PostDataEntries {
 		if entry == nil {
@@ -602,7 +578,7 @@ func (r *Runner) publicQueryObservation(ctx context.Context, event *fetch.EventR
 	// even while HasPostData is true.  The paired Network request ID is the
 	// protocol-supported fallback; without it, real read-only recruitment
 	// searches are blocked but never become verifiable observations.
-	if len(body) == 0 && event.NetworkID != "" {
+	if len(body) == 0 && event.Request.HasPostData && event.NetworkID != "" {
 		var postData string
 		postDataCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
@@ -616,38 +592,87 @@ func (r *Runner) publicQueryObservation(ctx context.Context, event *fetch.EventR
 		body = append(body, postData...)
 	}
 	if len(body) == 0 {
-		return recipeabi.PublicQueryObservation{}, errors.New("public query body was not available to the browser policy")
+		body = append(body, '{', '}')
+	}
+	if _, exists := headers["Content-Type"]; !exists {
+		headers["Content-Type"] = "application/json"
 	}
 	return recipeabi.NewPublicQueryObservation(endpoint.String(), http.MethodPost, headers, json.RawMessage(body))
 }
 
-func (s *policyState) addPublicQuery(observation recipeabi.PublicQueryObservation) {
+func (s *policyState) addPublicQuery(requestID string, observation recipeabi.PublicQueryObservation) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.publicQueries) >= 20 || s.publicQueryBytes+observation.EncodedSize() > recipeabi.MaxPublicQueryEvidenceBytes {
 		return
 	}
-	key := observation.EndpointURL + "\n" + observation.BodyHash
+	key, err := observation.StableIdentityKey()
+	if err != nil {
+		return
+	}
 	if _, duplicate := s.publicQueries[key]; duplicate {
+		s.pendingPublicQueries[requestID] = observation
 		return
 	}
 	s.publicQueries[key] = observation
 	s.publicQueryBytes += observation.EncodedSize()
+	s.pendingPublicQueries[requestID] = observation
 }
 
-func (s *policyState) publicQueryEvidence() []recipeabi.PublicQueryObservation {
+func (s *policyState) observePublicQueryResponse(requestID string, statusCode int, contentType string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result := make([]recipeabi.PublicQueryObservation, 0, len(s.publicQueries))
-	for _, observation := range s.publicQueries {
-		result = append(result, observation)
+	observation, found := s.pendingPublicQueries[requestID]
+	if !found {
+		return
 	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].EndpointURL != result[j].EndpointURL {
-			return result[i].EndpointURL < result[j].EndpointURL
-		}
-		return result[i].BodyHash < result[j].BodyHash
-	})
+	s.pendingQueryResponses[requestID] = publicQueryResponseMetadata{
+		observation: observation, statusCode: statusCode, contentType: contentType,
+	}
+}
+
+func (s *policyState) capturePublicQueryResponse(ctx context.Context, requestID network.RequestID) {
+	s.mu.Lock()
+	metadata, found := s.pendingQueryResponses[string(requestID)]
+	delete(s.pendingQueryResponses, string(requestID))
+	delete(s.pendingPublicQueries, string(requestID))
+	s.mu.Unlock()
+	if !found || metadata.statusCode < 200 || metadata.statusCode > 299 {
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(metadata.contentType)
+	if err != nil || (mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json")) {
+		return
+	}
+	var body []byte
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(commandCtx context.Context) error {
+		var bodyErr error
+		body, bodyErr = network.GetResponseBody(requestID).Do(commandCtx)
+		return bodyErr
+	})); err != nil || len(body) == 0 || len(body) > browserdriver.MaxPublicQueryResponseBytes {
+		return
+	}
+	sum := sha256.Sum256(body)
+	response := browserdriver.PublicQueryResponse{Request: metadata.observation, StatusCode: metadata.statusCode,
+		ContentType: metadata.contentType, Body: append([]byte(nil), body...), ContentHash: "sha256:" + hex.EncodeToString(sum[:])}
+	if response.Validate() != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.publicQueryResponses) >= browserdriver.MaxPublicQueryResponseCount ||
+		s.publicResponseBytes+len(body) > browserdriver.MaxPublicQueryResponseTotalBytes {
+		return
+	}
+	s.publicQueryResponses = append(s.publicQueryResponses, response)
+	s.publicResponseBytes += len(body)
+}
+
+func (s *policyState) publicQueryResponseEvidence() []browserdriver.PublicQueryResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]browserdriver.PublicQueryResponse, len(s.publicQueryResponses))
+	copy(result, s.publicQueryResponses)
 	return result
 }
 
@@ -683,14 +708,12 @@ func (s *policyState) attestation(termsVersion uint64, robotsAllowed, profileLea
 		blockedMethods = append(blockedMethods, method)
 	}
 	sort.Strings(blockedMethods)
-	fulfilledHashes := append([]string(nil), s.fulfilledStubHashes...)
-	sort.Strings(fulfilledHashes)
 	return browserdriver.Attestation{DocumentNavigations: s.documentNavigations, ObservedMethods: methods,
 		BlockedMethods: blockedMethods, AllowedWriteRequests: 0, BlockedWriteRequests: s.blockedWriteRequests,
 		CrossOriginDocumentNavigations: s.crossOriginDocuments,
 		FormSubmissions:                s.formSubmissions, Downloads: s.downloads, Popups: s.popups, PublicEndpoint: s.firstViolation == nil,
 		RobotsAllowed: robotsAllowed, TermsPolicyVersion: termsVersion, ProfileLeaseAuthorized: profileLeaseAuthorized,
-		FulfilledPublicQueries: len(fulfilledHashes), FulfilledPublicQueryHashes: fulfilledHashes}, s.firstViolation
+		AllowedPublicQueryRequests: s.allowedPublicQueries, CapturedPublicQueryResponses: len(s.publicQueryResponses)}, s.firstViolation
 }
 
 func (r *Runner) publicURL(ctx context.Context, raw string) (*url.URL, error) {

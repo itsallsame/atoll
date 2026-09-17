@@ -1,7 +1,6 @@
 package recruiting
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -121,14 +120,6 @@ func handleResourceQuery(sys actorbase.Sys, cfg Config, repository *store.Reposi
 		handleDeepDiscoveryBrowserGetQuery(sys, repository, msg)
 		return
 	}
-	if msg.Type == TypeDeepDiscoveryPublicQueryGet {
-		handleDeepDiscoveryPublicQueryGetQuery(sys, repository, msg)
-		return
-	}
-	if msg.Type == TypePublicQueryInspect {
-		handleDeepDiscoveryPublicQueryInspectQuery(sys, repository, msg)
-		return
-	}
 	if msg.Type == TypeJobList {
 		handleJobListQuery(sys, repository, msg)
 		return
@@ -240,64 +231,6 @@ func handleConsoleSnapshotQuery(sys actorbase.Sys, repository *store.Repository,
 	})
 }
 
-func handleDeepDiscoveryPublicQueryGetQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
-	var payload entityGetPayload
-	if !decode(sys, msg, &payload) {
-		return
-	}
-	verification, work, err := repository.GetPublicQueryVerification(msg.Ctx(), strings.TrimSpace(payload.ID))
-	if err != nil {
-		failStoreError(sys, msg, err)
-		return
-	}
-	nextAction := "await_public_query_verification"
-	if verification.Status == model.DeepDiscoveryPublicQueryCompleted {
-		nextAction = "create_browser_probe_with_stub_verification"
-	} else if work.Status == model.WorkWaitingHuman || work.Terminal() {
-		nextAction = "resolve_and_create_new_verification_if_needed"
-	}
-	_, _ = sys.Reply(msg, map[string]any{"contract_version": ContractVersion, "verification": verification,
-		"work": work, "next_action": nextAction})
-}
-
-func handleDeepDiscoveryPublicQueryInspectQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
-	var payload entityGetPayload
-	if !decode(sys, msg, &payload) {
-		return
-	}
-	verification, work, err := repository.GetPublicQueryVerification(msg.Ctx(), strings.TrimSpace(payload.ID))
-	if err != nil {
-		failStoreError(sys, msg, err)
-		return
-	}
-	if verification.Status != model.DeepDiscoveryPublicQueryCompleted || verification.Artifact == nil ||
-		work.Status != model.WorkCompleted || work.Resolution != model.ResolutionSucceeded ||
-		verification.Artifact.Kind != model.ArtifactResponse || verification.Artifact.Redacted ||
-		verification.StatusCode < 200 || verification.StatusCode > 299 {
-		_, _ = sys.Fail(msg, ErrorQualityRejected, "inspection requires one completed successful public-query JSON response Artifact")
-		return
-	}
-	if len(verification.ResponsePreview) == 0 || !json.Valid(verification.ResponsePreview) {
-		_, _ = sys.Fail(msg, ErrorQualityRejected, "verified public-query response predates persisted bounded inspection evidence")
-		return
-	}
-	_, _ = sys.Reply(msg, map[string]any{
-		"contract_version": ContractVersion,
-		"verification_id":  verification.VerificationID,
-		"endpoint_url":     verification.Request.EndpointURL,
-		"artifact_id":      verification.Artifact.ArtifactID,
-		"content_hash":     verification.Artifact.ContentHash,
-		"response_preview": verification.ResponsePreview,
-		"truncated":        verification.ResponsePreviewTruncated,
-		"next_action":      "prepare_listing_recipe_mapping",
-		"mapping_rules": []string{
-			"Use only JSON pointers proven by response_preview; do not invent absent fields.",
-			"Pass the semantic mapping to recruiting.recipe.prepare. The control plane constructs the request, budgets, User-Agent, ordering, and incremental bounds.",
-			"Use frontier_keys unless a verified activity field and time format support activity_time.",
-		},
-	})
-}
-
 func handleDeepDiscoveryBrowserGetQuery(sys actorbase.Sys, repository *store.Repository, msg actorbase.Msg) {
 	var payload entityGetPayload
 	if !decode(sys, msg, &payload) {
@@ -317,7 +250,7 @@ func handleDeepDiscoveryBrowserGetQuery(sys actorbase.Sys, repository *store.Rep
 	if result != nil {
 		response["result"] = map[string]any{"artifact": result.Artifact, "supporting_artifacts": result.SupportingArtifacts,
 			"final_url": result.FinalURL, "content_hash": result.ContentHash, "links": result.Links,
-			"dom_preview": result.DOMPreview, "public_query_evidence": result.PublicQueryEvidence, "attestation": result.Attestation}
+			"dom_preview": result.DOMPreview, "public_query_responses": result.PublicQueryResponses, "attestation": result.Attestation}
 		response["next_action"] = "record_browser_evidence_checkpoint"
 	} else if work.Status == model.WorkWaitingHuman || work.Terminal() {
 		response["next_action"] = "resolve_work_and_create_new_browser_probe_if_needed"

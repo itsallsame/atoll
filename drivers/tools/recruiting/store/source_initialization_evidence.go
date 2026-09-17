@@ -89,17 +89,6 @@ WHERE p.mission_id=? AND p.target_url=? AND p.probe_status='completed'
 			return CommandResult{}, fmt.Errorf("candidate Source %s lacks a successful browser Probe", source.SourceID)
 		}
 	}
-	var unresolved int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*)
-FROM recruiting_deep_discovery_public_query_verifications q
-JOIN recruiting_works w ON w.work_id=q.work_id
-WHERE q.mission_id=? AND q.verification_status<>'completed'
-  AND NOT (w.status='completed' AND w.resolution='accepted_gap')`, current.MissionID).Scan(&unresolved); err != nil {
-		return CommandResult{}, err
-	}
-	if unresolved != 0 {
-		return CommandResult{}, fmt.Errorf("source initialization evidence has unresolved public-query verification Work")
-	}
 	next, err := current.CompleteSourceInitializationEvidence(expected, len(sources))
 	if err != nil {
 		return CommandResult{}, err

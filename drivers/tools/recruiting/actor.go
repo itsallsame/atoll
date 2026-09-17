@@ -192,8 +192,7 @@ func run(sys actorbase.Sys, cfg Config) error {
 		case TypeSourceDiscover, TypeSourceDiscoveryCandidateAccept, TypeSourceDiscoveryCandidateReject:
 			handleSourceDiscoveryMessage(sys, cfg, repository, msg)
 		case TypeDeepDiscoveryStart, TypeDeepDiscoveryCheckpoint, TypeDeepDiscoveryWait,
-			TypeDeepDiscoveryResume, TypeDeepDiscoveryComplete, TypeDeepDiscoveryCancel, TypeDeepDiscoveryBrowserObserve,
-			TypeDeepDiscoveryPublicQueryVerify:
+			TypeDeepDiscoveryResume, TypeDeepDiscoveryComplete, TypeDeepDiscoveryCancel, TypeDeepDiscoveryBrowserObserve:
 			handleDeepDiscoveryMessage(sys, cfg, repository, msg)
 		case TypeOnboardingBegin, TypeOnboardingStatus, TypeOnboardingAdvance, TypeOnboardingRepairValidate, TypeOnboardingMaterialize:
 			handleOnboardingMessage(sys, cfg, repository, msg)
@@ -224,7 +223,6 @@ func run(sys actorbase.Sys, cfg Config) error {
 			handleExecutionControlMessage(sys, cfg, repository, state, msg)
 		case TypeSourceGet, TypeSourceList, TypeSourceEndpointHistory, TypeSourceDiscoveryGet, TypeSourceDiscoveryCandidates,
 			TypeDeepDiscoveryGet, TypeDeepDiscoveryGraph, TypeDeepDiscoveryGuide, TypeDeepDiscoveryBrowserGet,
-			TypeDeepDiscoveryPublicQueryGet, TypePublicQueryInspect,
 			TypeJobGet, TypeJobList, TypeJobCorrectionGet, TypeProfileGet, TypeWorkGet, TypeWorkList,
 			TypeDailyRunGet, TypeDailyRunList, TypeDailyRunSummary, TypeRepairGet, TypeRepairList, TypeRecipeInspect,
 			TypeRecipeRolloutBatchGet, TypeRecipeRolloutBatchItems,

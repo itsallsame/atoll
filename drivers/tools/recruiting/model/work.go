@@ -160,9 +160,6 @@ func NewRetryWork(previous Work, workID, initiatorActorID, causeMessageID string
 	if previous.Purpose == "deep_discovery_browser" {
 		return Work{}, fmt.Errorf("Deep Discovery browser retry requires a new budgeted Probe")
 	}
-	if previous.Purpose == "deep_discovery_public_query" {
-		return Work{}, fmt.Errorf("public query verification retry requires a new budgeted Verification")
-	}
 	if previous.Status == WorkCompleted && previous.Resolution == ResolutionSucceeded {
 		return Work{}, fmt.Errorf("succeeded work cannot be retried")
 	}

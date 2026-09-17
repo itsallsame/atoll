@@ -11,7 +11,6 @@ import (
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
-	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 	"github.com/wanpengxie/atoll/lib/actorbase"
 )
 
@@ -48,19 +47,19 @@ type onboardingResponse struct {
 
 // recipePreparationContext is the bounded hand-off from source initialization
 // to Recipe preparation. It prevents the Agent from searching the complete
-// Work history for internal IDs and binds every suggested input to successful,
-// immutable verification evidence.
+// Work history for internal IDs and binds every suggested input to a successful,
+// immutable response captured by the original browser session.
 type recipePreparationContext struct {
-	SourceID         string                          `json:"source_id"`
-	SourceVersion    uint64                          `json:"source_version"`
-	Category         string                          `json:"category"`
-	CandidateURL     string                          `json:"candidate_url"`
-	ProbeID          string                          `json:"probe_id"`
-	VerificationID   string                          `json:"verification_id"`
-	EndpointURL      string                          `json:"endpoint_url"`
-	BodyHash         string                          `json:"body_hash"`
-	Recipe           *model.Recipe                   `json:"recipe,omitempty"`
-	SourceValidation *store.SourceValidationSnapshot `json:"source_validation,omitempty"`
+	SourceID           string                          `json:"source_id"`
+	SourceVersion      uint64                          `json:"source_version"`
+	Category           string                          `json:"category"`
+	CandidateURL       string                          `json:"candidate_url"`
+	ProbeID            string                          `json:"probe_id"`
+	ResponseArtifactID string                          `json:"response_artifact_id"`
+	EndpointURL        string                          `json:"endpoint_url"`
+	BodyHash           string                          `json:"body_hash"`
+	Recipe             *model.Recipe                   `json:"recipe,omitempty"`
+	SourceValidation   *store.SourceValidationSnapshot `json:"source_validation,omitempty"`
 }
 
 func handleOnboardingMessage(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -189,7 +188,7 @@ func handleExistingCompanyOnboarding(sys actorbase.Sys, repository *store.Reposi
 				_, _ = sys.Reply(msg, onboardingResponse{ContractVersion: ContractVersion, Status: "completed",
 					Company: &company, Mission: &mission, ValidatedURLs: urls, Sources: sources, RecipeContexts: contexts,
 					NextAction:             "initialize_candidate_sources",
-					AgentDirective:         "Source initialization evidence is complete. For each recipe_context, inspect verification_id, derive only its semantic mapping, and call recruiting.recipe.prepare with the supplied source/probe/body identities; do not scan Work history or invent a low-level Recipe spec.",
+					AgentDirective:         "Source initialization evidence is complete. For each recipe_context, inspect the captured response Artifact, derive only its semantic mapping, and call recruiting.recipe.prepare with the supplied source/probe/body identities; do not scan Work history or invent a low-level Recipe spec.",
 					ClassificationComplete: candidateSourcesHaveCategories(sources), ClassificationPolicy: onboardingClassificationPolicy})
 				return
 			}
@@ -308,8 +307,7 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 			next = "complete_source_initialization_evidence"
 			directive = "The Recruiting state machine will close this evidence Mission after transactionally proving every candidate Source has a successful real browser Probe; do not create company-discovery checkpoints."
 		}
-		if plan.Action == onboardingCreateSeedBrowser || plan.Action == onboardingVerifyPublicQuery ||
-			plan.Action == onboardingReplayVerified {
+		if plan.Action == onboardingCreateSeedBrowser {
 			next = "advance_discovery_automatically"
 			directive = "The Recruiting state machine derives all internal identities from persisted evidence and advances automatically. Report status when asked; do not poll or ask the user for IDs."
 		}
@@ -340,7 +338,7 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 				return
 			}
 			next = "initialize_candidate_sources"
-			directive = "Initialization evidence is complete. For each recipe_context, inspect verification_id, derive only its semantic mapping, and call recruiting.recipe.prepare with the supplied source/probe/body identities. Do not scan Work history or invent a low-level Recipe spec."
+			directive = "Initialization evidence is complete. For each recipe_context, inspect the captured response Artifact, derive only its semantic mapping, and call recruiting.recipe.prepare with the supplied source/probe/body identities. Do not scan Work history or invent a low-level Recipe spec."
 		}
 	} else if mission.Status == model.DeepDiscoveryDone && classified {
 		sources, err = listAllCompanySources(msg, repository, company.CompanyID)
@@ -436,10 +434,6 @@ func loadRecipePreparationContexts(ctx context.Context, repository *store.Reposi
 
 func recipePreparationContexts(snapshot store.DeepDiscoveryAutomationSnapshot,
 	sources []model.RecruitmentSource) []recipePreparationContext {
-	probes := make(map[string]model.DeepDiscoveryBrowserProbe, len(snapshot.BrowserProbes))
-	for _, fact := range snapshot.BrowserProbes {
-		probes[fact.Probe.ProbeID] = fact.Probe
-	}
 	sourceByURL := make(map[string]model.RecruitmentSource, len(sources))
 	for _, source := range sources {
 		if source.ControlStatus == model.ControlActive && source.ReadinessStatus == model.SourceCandidate &&
@@ -448,32 +442,26 @@ func recipePreparationContexts(snapshot store.DeepDiscoveryAutomationSnapshot,
 		}
 	}
 	byIdentity := make(map[string]recipePreparationContext)
-	for _, fact := range snapshot.QueryVerifications {
-		verification := fact.Verification
-		if verification.Status != model.DeepDiscoveryPublicQueryCompleted || verification.Artifact == nil ||
+	for _, fact := range snapshot.BrowserProbes {
+		if fact.Probe.Status != model.DeepDiscoveryProbeCompleted || fact.Result == nil ||
 			fact.Work.Status != model.WorkCompleted || fact.Work.Resolution != model.ResolutionSucceeded {
 			continue
 		}
-		probe, found := probes[verification.ProbeID]
+		source, found := sourceByURL[fact.Probe.URL]
 		if !found {
 			continue
 		}
-		source, found := sourceByURL[probe.URL]
-		if !found {
-			continue
-		}
-		observation := recipeabi.PublicQueryObservation{EndpointURL: verification.Request.EndpointURL,
-			Method: verification.Request.Method, Headers: verification.Request.Headers,
-			JSONBody: verification.Request.JSONBody, BodyHash: verification.Request.BodyHash}
-		identity, identityErr := observation.StableIdentityKey()
-		if identityErr != nil {
-			continue
-		}
-		byIdentity[source.SourceID+"\n"+identity] = recipePreparationContext{
-			SourceID: source.SourceID, SourceVersion: source.Version, Category: source.CandidateEndpoint.Category,
-			CandidateURL: source.CandidateEndpoint.URL, ProbeID: verification.ProbeID,
-			VerificationID: verification.VerificationID, EndpointURL: verification.Request.EndpointURL,
-			BodyHash: verification.Request.BodyHash,
+		for _, captured := range fact.Result.PublicQueryResponses {
+			identity, identityErr := captured.Request.StableIdentityKey()
+			if identityErr != nil || captured.Artifact.ArtifactID == "" {
+				continue
+			}
+			byIdentity[source.SourceID+"\n"+identity] = recipePreparationContext{
+				SourceID: source.SourceID, SourceVersion: source.Version, Category: source.CandidateEndpoint.Category,
+				CandidateURL: source.CandidateEndpoint.URL, ProbeID: fact.Probe.ProbeID,
+				ResponseArtifactID: captured.Artifact.ArtifactID, EndpointURL: captured.Request.EndpointURL,
+				BodyHash: captured.Request.BodyHash,
+			}
 		}
 	}
 	contexts := make([]recipePreparationContext, 0, len(byIdentity))

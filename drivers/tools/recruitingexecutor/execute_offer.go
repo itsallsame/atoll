@@ -31,10 +31,6 @@ type executionDiscoveryHTTPDriver interface {
 	RunDiscovery(context.Context, recipeabi.Spec, recipeabi.RunInput, httpdriver.ComplianceEvidence, httpdriver.ArtifactSink) (httpdriver.DiscoveryRunResult, error)
 }
 
-type executionPublicQueryHTTPDriver interface {
-	FetchPublicQuery(context.Context, recipeabi.PublicQueryObservation, httpdriver.ComplianceEvidence) (httpdriver.Result, error)
-}
-
 type executionControl interface {
 	Accept(context.Context, executioncontract.Offer) error
 	Started(context.Context, executioncontract.Offer) error
@@ -58,13 +54,6 @@ func executeOffer(ctx context.Context, control executionControl, resources execu
 	}
 	if offer.Kind == "deep_discovery_browser" {
 		return executeDeepDiscoveryBrowser(ctx, control, resources, options.Explorer, offer, options)
-	}
-	if offer.Kind == "deep_discovery_public_query" {
-		publicDriver, ok := driver.(executionPublicQueryHTTPDriver)
-		if !ok {
-			return errors.New("public query verification requires the production HTTP driver")
-		}
-		return executePublicQueryVerification(ctx, control, resources, publicDriver, offer, options)
 	}
 	input, expectation, contentRef, err := buildRunInput(offer, options.Now().UTC())
 	if err != nil {
@@ -324,9 +313,6 @@ func executionTargetURL(offer executioncontract.Offer) string {
 	}
 	if offer.DeepDiscoveryBrowser != nil {
 		return offer.DeepDiscoveryBrowser.URL
-	}
-	if offer.PublicQueryVerification != nil {
-		return offer.PublicQueryVerification.Request.EndpointURL
 	}
 	return ""
 }

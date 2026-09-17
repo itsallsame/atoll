@@ -324,9 +324,9 @@ func prepareListingRecipeResource(source model.RecruitmentSource, mission model.
 		return preparedRecipeResource{}, fmt.Errorf("browser probe and Source must belong to the same Company")
 	}
 	var observation *recipeabi.PublicQueryObservation
-	for index := range result.PublicQueryEvidence {
-		if result.PublicQueryEvidence[index].BodyHash == bodyHash {
-			candidate := result.PublicQueryEvidence[index]
+	for index := range result.PublicQueryResponses {
+		if result.PublicQueryResponses[index].Request.BodyHash == bodyHash {
+			candidate := result.PublicQueryResponses[index].Request
 			observation = &candidate
 			break
 		}
@@ -344,10 +344,11 @@ func prepareListingRecipeResource(source model.RecruitmentSource, mission model.
 	if err != nil {
 		return preparedRecipeResource{}, err
 	}
-	if spec.Kind != recipeabi.KindListing || spec.Transport != recipeabi.TransportHTTPJSON ||
-		spec.RequiredCapability != "http.fetch" || spec.Request.URL != observation.EndpointURL ||
-		!observation.MatchesReadRequest(spec.Request) {
-		return preparedRecipeResource{}, fmt.Errorf("prepared Recipe must be an HTTP Listing whose request exactly matches the selected public-query evidence")
+	endpoint, endpointErr := url.Parse(observation.EndpointURL)
+	if endpointErr != nil || spec.Kind != recipeabi.KindListing || spec.Transport != recipeabi.TransportBrowserJSON ||
+		spec.RequiredCapability != "browser.public" || spec.BrowserQuery == nil ||
+		spec.BrowserQuery.EndpointPath != endpoint.Path || spec.BrowserQuery.Method != observation.Method {
+		return preparedRecipeResource{}, fmt.Errorf("prepared Recipe must capture the selected public-query response inside the official browser page")
 	}
 	if template := strings.TrimSpace(spec.Extraction.Templates["detail_url"]); template != "" &&
 		template != strings.TrimSpace(verifiedDetailURLPattern) {
@@ -393,18 +394,20 @@ func buildListingRecipeSpec(observation recipeabi.PublicQueryObservation,
 	spec := recipeabi.Spec{
 		ABIVersion:         recipeabi.Version,
 		Kind:               recipeabi.KindListing,
-		RequiredCapability: "http.fetch",
-		Transport:          recipeabi.TransportHTTPJSON,
+		RequiredCapability: "browser.public",
+		Transport:          recipeabi.TransportBrowserJSON,
 		Request: recipeabi.ReadRequest{
-			URL: observation.EndpointURL, Method: observation.Method, Headers: observation.Headers, JSONBody: observation.JSONBody,
-			TimeoutMS: 30_000, MaxResponseBytes: 20 << 20, MaxRedirects: 0,
+			Method: "GET", Headers: map[string]string{"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"},
+			TimeoutMS: 60_000, MaxResponseBytes: 20 << 20, MaxRedirects: 3,
 			UserAgent: "Atoll-Recruiting/1",
 		},
 		Extraction: recipeabi.Extraction{
 			Collection: strings.TrimSpace(mapping.Collection), CollectionRoot: mapping.CollectionRoot,
 			Fields: fields, Templates: templates,
 		},
-		OffsetPagination: mapping.OffsetPagination,
+		BrowserPlan: &recipeabi.BrowserPlan{Version: recipeabi.BrowserPlanVersion,
+			Actions:        []recipeabi.BrowserAction{{Kind: recipeabi.BrowserActionScrollPage, MaxRepeats: 10}},
+			MaxNavigations: 3, MaxDOMBytes: 2 << 20},
 		Listing: &recipeabi.ListingContract{
 			IdentityField: "job_key", DetailURLField: "detail_url", ActivityField: activityField,
 			ActivityTimeFormat: strings.TrimSpace(mapping.ActivityTimeFormat), BoundaryMode: boundaryMode,
@@ -413,6 +416,11 @@ func buildListingRecipeSpec(observation recipeabi.PublicQueryObservation,
 			ExcludePinnedField: excludePinnedField,
 		},
 	}
+	endpoint, err := url.Parse(observation.EndpointURL)
+	if err != nil {
+		return recipeabi.Spec{}, fmt.Errorf("parse browser query endpoint: %w", err)
+	}
+	spec.BrowserQuery = &recipeabi.BrowserQuery{Method: observation.Method, EndpointPath: endpoint.Path}
 	if err := spec.Validate(); err != nil {
 		return recipeabi.Spec{}, fmt.Errorf("build listing Recipe from mapping: %w", err)
 	}

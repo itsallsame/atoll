@@ -78,8 +78,7 @@ func handleOnboardingRepairValidate(sys actorbase.Sys, cfg Config, repository *s
 		}
 		handleOnboardingAdvanceBrowser(sys, cfg, repository, msg, company, mission, onboardingAutomationPlan{
 			Action: onboardingValidateRepair, SourceProbe: &failed.Probe,
-			VerificationIDs: append([]string(nil), failed.Probe.StubVerificationIDs...), CauseWorkID: failed.Work.WorkID,
-			Detail: payload.Reason,
+			CauseWorkID: failed.Work.WorkID, Detail: payload.Reason,
 		})
 		return
 	}

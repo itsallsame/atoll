@@ -2,9 +2,7 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,29 +59,6 @@ func (r *Repository) ApplyCreateDeepDiscoveryBrowserProbeCommand(ctx context.Con
 	calculated, err := locked.ConsumeOperations(current.Version, 1)
 	if err != nil || calculated != next {
 		return CommandResult{}, fmt.Errorf("deep discovery browser budget transition does not match locked state")
-	}
-	seenStubRequests := make(map[string]string, len(probe.StubVerificationIDs))
-	for _, verificationID := range probe.StubVerificationIDs {
-		// Completed verification evidence is immutable. The Mission lock fences
-		// this command; taking verification locks here would invert the result
-		// acceptance lock order (verification -> Mission).
-		verification, verificationErr := getPublicQueryVerificationWith(ctx, tx, verificationID, false)
-		if verificationErr != nil || verification.MissionID != current.MissionID ||
-			verification.Status != model.DeepDiscoveryPublicQueryCompleted || verification.Artifact == nil {
-			return CommandResult{}, fmt.Errorf("browser Probe Stub requires a completed public query verification in the same Mission")
-		}
-		canonical, canonicalErr := (recipeabi.PublicQueryObservation{EndpointURL: verification.Request.EndpointURL,
-			Method: verification.Request.Method, Headers: verification.Request.Headers,
-			JSONBody: verification.Request.JSONBody, BodyHash: verification.Request.BodyHash}).Canonicalized()
-		if canonicalErr != nil {
-			return CommandResult{}, fmt.Errorf("browser Probe Stub verification is invalid: %w", canonicalErr)
-		}
-		key := canonical.EndpointURL + "\n" + canonical.BodyHash
-		if previous, duplicate := seenStubRequests[key]; duplicate {
-			return CommandResult{}, fmt.Errorf("browser Probe Stub verifications %q and %q describe the same canonical request",
-				previous, verificationID)
-		}
-		seenStubRequests[key] = verificationID
 	}
 	if err := reserveCommandReceipt(ctx, tx, receipt, at); err != nil {
 		if errors.Is(err, ErrCommandConflict) {
@@ -186,26 +161,26 @@ func getDeepDiscoveryBrowserProbeWith(ctx context.Context, executor interface {
 }
 
 type DeepDiscoveryBrowserResult struct {
-	CommandID           string
-	RequestHash         string
-	AttemptID           string
-	ExecutorActorID     string
-	ExecutorIncarnation string
-	Artifact            model.ArtifactMetadata
-	SupportingArtifacts []model.ArtifactMetadata
-	FinalURL            string
-	ContentHash         string
-	Links               []executioncontract.DeepDiscoveryLink
-	DOMPreview          []executioncontract.DeepDiscoveryDOMElement
-	PublicQueryEvidence []recipeabi.PublicQueryObservation
-	Attestation         executioncontract.DeepDiscoveryEffectAttestation
-	ObservedAt          time.Time
+	CommandID            string
+	RequestHash          string
+	AttemptID            string
+	ExecutorActorID      string
+	ExecutorIncarnation  string
+	Artifact             model.ArtifactMetadata
+	SupportingArtifacts  []model.ArtifactMetadata
+	FinalURL             string
+	ContentHash          string
+	Links                []executioncontract.DeepDiscoveryLink
+	DOMPreview           []executioncontract.DeepDiscoveryDOMElement
+	PublicQueryResponses []executioncontract.DeepDiscoveryPublicQueryResponse
+	Attestation          executioncontract.DeepDiscoveryEffectAttestation
+	ObservedAt           time.Time
 }
 
 func (r *Repository) AcceptDeepDiscoveryBrowserResult(ctx context.Context, input DeepDiscoveryBrowserResult) (DeepDiscoveryBrowserResultOutcome, error) {
 	if input.CommandID == "" || input.RequestHash == "" || input.AttemptID == "" || input.ExecutorActorID == "" ||
 		input.ExecutorIncarnation == "" || input.ObservedAt.IsZero() || len(input.Links) > 200 || len(input.DOMPreview) > 400 ||
-		len(input.PublicQueryEvidence) > 20 || len(input.SupportingArtifacts) > 9 {
+		len(input.PublicQueryResponses) > 200 || len(input.SupportingArtifacts) > 201 {
 		return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser result requires bounded execution evidence")
 	}
 	if err := validateResultArtifact(input.Artifact, input.AttemptID, model.ArtifactResponse); err != nil {
@@ -250,9 +225,10 @@ func (r *Repository) AcceptDeepDiscoveryBrowserResult(ctx context.Context, input
 			}
 		}
 	}
-	seenQueries := map[string]struct{}{}
+	seenResponses := map[string]struct{}{}
 	queryEvidenceBytes := 0
-	for index, observation := range input.PublicQueryEvidence {
+	for index, captured := range input.PublicQueryResponses {
+		observation := captured.Request
 		if err := observation.Validate(); err != nil {
 			return DeepDiscoveryBrowserResultOutcome{}, err
 		}
@@ -260,16 +236,21 @@ func (r *Repository) AcceptDeepDiscoveryBrowserResult(ctx context.Context, input
 		if err != nil {
 			return DeepDiscoveryBrowserResultOutcome{}, err
 		}
-		input.PublicQueryEvidence[index] = canonical
+		input.PublicQueryResponses[index].Request = canonical
 		observation = canonical
-		key := observation.EndpointURL + "\n" + observation.BodyHash
-		if _, duplicate := seenQueries[key]; duplicate {
-			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser result contains duplicate public-query evidence")
+		key := observation.EndpointURL + "\n" + observation.BodyHash + "\n" + captured.ContentHash
+		if _, duplicate := seenResponses[key]; duplicate {
+			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser result contains duplicate public-query response")
 		}
-		seenQueries[key] = struct{}{}
-		queryEvidenceBytes += observation.EncodedSize()
+		seenResponses[key] = struct{}{}
+		if err := validateResultArtifact(captured.Artifact, input.AttemptID, model.ArtifactResponse); err != nil ||
+			captured.StatusCode < 200 || captured.StatusCode > 299 || captured.ContentHash != captured.Artifact.ContentHash ||
+			len(captured.ResponsePreview) == 0 {
+			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser result contains invalid public-query response evidence")
+		}
+		queryEvidenceBytes += observation.EncodedSize() + len(captured.ResponsePreview)
 		if queryEvidenceBytes > recipeabi.MaxPublicQueryEvidenceBytes {
-			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser public-query evidence exceeds its total byte bound")
+			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser public-query response evidence exceeds its total byte bound")
 		}
 	}
 	outcome, err := r.acceptDeepDiscoveryBrowserResultTx(ctx, input)
@@ -283,21 +264,16 @@ func (r *Repository) AcceptDeepDiscoveryBrowserResult(ctx context.Context, input
 }
 
 func canonicalizeBrowserResultEvidence(result *DeepDiscoveryBrowserResult) error {
-	// Public-query policy can become stricter after immutable browser evidence
-	// has already been stored.  Historical observations remain available in
-	// their Artifact, but an observation that no longer satisfies the current
-	// read-only contract must not make the whole Mission projection unreadable
-	// (or, worse, become executable again).  Only current-policy observations
-	// enter the automation projection.
-	canonicalEvidence := make([]recipeabi.PublicQueryObservation, 0, len(result.PublicQueryEvidence))
-	for _, observation := range result.PublicQueryEvidence {
-		canonical, err := observation.Canonicalized()
+	canonicalEvidence := make([]executioncontract.DeepDiscoveryPublicQueryResponse, 0, len(result.PublicQueryResponses))
+	for _, captured := range result.PublicQueryResponses {
+		canonical, err := captured.Request.Canonicalized()
 		if err != nil {
 			continue
 		}
-		canonicalEvidence = append(canonicalEvidence, canonical)
+		captured.Request = canonical
+		canonicalEvidence = append(canonicalEvidence, captured)
 	}
-	result.PublicQueryEvidence = canonicalEvidence
+	result.PublicQueryResponses = canonicalEvidence
 	return nil
 }
 
@@ -338,32 +314,6 @@ func (r *Repository) acceptDeepDiscoveryBrowserResultTx(ctx context.Context, inp
 	if err := input.Attestation.Validate(maxNavigations); err != nil {
 		return DeepDiscoveryBrowserResultOutcome{}, err
 	}
-	allowedStubHashes := make(map[string]struct{}, len(probe.StubVerificationIDs))
-	for _, verificationID := range probe.StubVerificationIDs {
-		verification, verificationErr := getPublicQueryVerificationWith(ctx, tx, verificationID, true)
-		if verificationErr != nil || verification.MissionID != probe.MissionID ||
-			verification.Status != model.DeepDiscoveryPublicQueryCompleted || verification.Artifact == nil {
-			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser Stub verification is no longer available")
-		}
-		request, canonicalErr := (recipeabi.PublicQueryObservation{
-			EndpointURL: verification.Request.EndpointURL,
-			Method:      verification.Request.Method,
-			Headers:     verification.Request.Headers,
-			JSONBody:    verification.Request.JSONBody,
-			BodyHash:    verification.Request.BodyHash,
-		}).Canonicalized()
-		if canonicalErr != nil {
-			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser Stub verification is invalid: %w", canonicalErr)
-		}
-		bindingSum := sha256.Sum256([]byte(request.EndpointURL + "\n" + request.BodyHash + "\n" +
-			verification.Artifact.ContentHash))
-		allowedStubHashes["sha256:"+hex.EncodeToString(bindingSum[:])] = struct{}{}
-	}
-	for _, fulfilledHash := range input.Attestation.FulfilledPublicQueryHashes {
-		if _, allowed := allowedStubHashes[fulfilledHash]; !allowed {
-			return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("deep discovery browser fulfilled an unbound Stub response")
-		}
-	}
 	mission, err := getDeepDiscoveryMissionWith(ctx, tx, probe.MissionID, true)
 	if err != nil {
 		return DeepDiscoveryBrowserResultOutcome{}, err
@@ -379,6 +329,10 @@ func (r *Repository) acceptDeepDiscoveryBrowserResultTx(ctx context.Context, inp
 		return DeepDiscoveryBrowserResultOutcome{}, fmt.Errorf("%w: %v", ErrResultFenced, err)
 	}
 	allArtifacts := append([]model.ArtifactMetadata{input.Artifact}, input.SupportingArtifacts...)
+	queryArtifactIDs := make(map[string]struct{}, len(input.PublicQueryResponses))
+	for _, captured := range input.PublicQueryResponses {
+		queryArtifactIDs[captured.Artifact.ArtifactID] = struct{}{}
+	}
 	seenArtifacts := map[string]struct{}{}
 	for index, artifact := range allArtifacts {
 		if artifact.WorkID != work.WorkID || artifact.AttemptID != attempt.AttemptID {
@@ -386,7 +340,11 @@ func (r *Repository) acceptDeepDiscoveryBrowserResultTx(ctx context.Context, inp
 		}
 		wantKind := model.ArtifactResponse
 		if index > 0 {
-			wantKind = model.ArtifactTrace
+			if _, queryResponse := queryArtifactIDs[artifact.ArtifactID]; queryResponse {
+				wantKind = model.ArtifactResponse
+			} else {
+				wantKind = model.ArtifactTrace
+			}
 		}
 		if err := validateResultArtifact(artifact, input.AttemptID, wantKind); err != nil {
 			return DeepDiscoveryBrowserResultOutcome{}, err
@@ -423,7 +381,7 @@ SET probe_status=?,version=?,state_json=?,result_json=?,updated_at=? WHERE probe
 		return DeepDiscoveryBrowserResultOutcome{}, err
 	}
 	attemptResult, _ := json.Marshal(map[string]any{"probe_id": probe.ProbeID, "artifact_id": input.Artifact.ArtifactID,
-		"link_count": len(input.Links), "public_query_count": len(input.PublicQueryEvidence)})
+		"link_count": len(input.Links), "public_query_count": len(input.PublicQueryResponses)})
 	if err := updateAttemptStatusTx(ctx, tx, attempt.Status, succeededAttempt, attemptResult, input.ObservedAt); err != nil {
 		return DeepDiscoveryBrowserResultOutcome{}, err
 	}
@@ -435,7 +393,7 @@ SET probe_status=?,version=?,state_json=?,result_json=?,updated_at=? WHERE probe
 	}
 	eventPayload, _ := json.Marshal(map[string]any{"attempt_id": attempt.AttemptID, "work_id": work.WorkID,
 		"probe_id": probe.ProbeID, "artifact_id": input.Artifact.ArtifactID, "link_count": len(input.Links),
-		"public_query_count": len(input.PublicQueryEvidence)})
+		"public_query_count": len(input.PublicQueryResponses)})
 	event, err := model.NewEventIntent("deep-discovery-browser-completed-"+attempt.AttemptID, "deep.discovery.browser.completed",
 		"deep_discovery_probe", probe.ProbeID, nextProbe.Version, input.ObservedAt.Format(time.RFC3339Nano), input.CommandID, eventPayload)
 	if err != nil {

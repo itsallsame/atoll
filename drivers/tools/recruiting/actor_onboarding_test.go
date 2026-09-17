@@ -1,12 +1,10 @@
 package recruiting
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
-	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 )
 
 func TestOnboardingResultRequiresEveryURLClassification(t *testing.T) {
@@ -49,92 +47,11 @@ func TestOnboardingAutomationPlansEvidenceBoundedNetworkSteps(t *testing.T) {
 		t.Fatalf("queued Probe plan=%+v", plan)
 	}
 	probe.Status = model.DeepDiscoveryProbeCompleted
-	observation, _ := recipeabi.NewPublicQueryObservation("https://jobs.example.com/api/config", "POST",
-		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{}`))
+	work.Status, work.Resolution = model.WorkCompleted, model.ResolutionSucceeded
 	snapshot.BrowserProbes[0] = store.DeepDiscoveryBrowserAutomationFact{Probe: probe, Work: work,
-		Result: &store.DeepDiscoveryBrowserResult{PublicQueryEvidence: []recipeabi.PublicQueryObservation{observation}}}
-	if plan := planOnboardingAutomation(snapshot, company); plan.Action != onboardingVerifyPublicQuery ||
-		plan.Observation == nil || plan.Observation.BodyHash != observation.BodyHash {
-		t.Fatalf("unverified observation plan=%+v", plan)
-	}
-	verification, _ := model.NewDeepDiscoveryPublicQueryVerification("verification-1", "mission-1", probe.ProbeID,
-		"verification-work", 3, model.PublicQueryRequestEvidence{EndpointURL: observation.EndpointURL,
-			Method: observation.Method, Headers: observation.Headers, JSONBody: observation.JSONBody, BodyHash: observation.BodyHash})
-	verification.Status = model.DeepDiscoveryPublicQueryCompleted
-	verification.Version = 2
-	snapshot.QueryVerifications = []store.DeepDiscoveryPublicQueryAutomationFact{{Verification: verification}}
-	plan := planOnboardingAutomation(snapshot, company)
-	if plan.Action != onboardingReplayVerified || len(plan.VerificationIDs) != 1 || plan.VerificationIDs[0] != verification.VerificationID {
-		t.Fatalf("verified observation plan=%+v", plan)
-	}
-	replayWork, _ := model.NewWork("replay-work", "deep_discovery_probe", "probe-2", "deep_discovery_browser", "agent")
-	replayProbe, _ := model.NewDeepDiscoveryBrowserProbe("probe-2", "mission-1", replayWork.WorkID,
-		"https://example.com", "", 1, "", 4, verification.VerificationID)
-	replayProbe.Status = model.DeepDiscoveryProbeCompleted
-	snapshot.BrowserProbes = append(snapshot.BrowserProbes, store.DeepDiscoveryBrowserAutomationFact{
-		Probe: replayProbe, Work: replayWork,
-		Result: &store.DeepDiscoveryBrowserResult{PublicQueryEvidence: []recipeabi.PublicQueryObservation{observation}}})
+		Result: &store.DeepDiscoveryBrowserResult{}}
 	if plan := planOnboardingAutomation(snapshot, company); plan.Action != onboardingReviewEvidence {
-		t.Fatalf("fully replayed plan=%+v", plan)
-	}
-}
-
-func TestOnboardingAutomationUsesLatestDuplicateCanonicalVerification(t *testing.T) {
-	company, _ := model.NewCompany("company-1", "Example", "https://example.com")
-	work, _ := model.NewWork("probe-work", "deep_discovery_probe", "probe-1", "deep_discovery_browser", "agent")
-	probe, _ := model.NewDeepDiscoveryBrowserProbe("probe-1", "mission-1", work.WorkID,
-		"https://example.com", ".job", 1, "", 4, "verification-old")
-	probe.Status = model.DeepDiscoveryProbeCompleted
-	work.Status, work.Resolution = model.WorkCompleted, model.ResolutionSucceeded
-	observation, _ := recipeabi.NewPublicQueryObservation("https://jobs.example.com/api/search", "POST",
-		map[string]string{"Content-Type": "application/json"},
-		json.RawMessage(`{"keyword":"","page":{"pageNo":1},"r_query_id":"current"}`))
-	old, _ := model.NewDeepDiscoveryPublicQueryVerification("verification-old", "mission-1", probe.ProbeID,
-		"verification-work-old", 2, model.PublicQueryRequestEvidence{EndpointURL: observation.EndpointURL,
-			Method: observation.Method, Headers: observation.Headers, JSONBody: observation.JSONBody, BodyHash: observation.BodyHash})
-	old.Status, old.Version = model.DeepDiscoveryPublicQueryCompleted, 2
-	newVerification, _ := model.NewDeepDiscoveryPublicQueryVerification("verification-new", "mission-1", probe.ProbeID,
-		"verification-work-new", 3, model.PublicQueryRequestEvidence{EndpointURL: observation.EndpointURL,
-			Method: observation.Method, Headers: observation.Headers, JSONBody: observation.JSONBody, BodyHash: observation.BodyHash})
-	newVerification.Status, newVerification.Version = model.DeepDiscoveryPublicQueryCompleted, 2
-	snapshot := store.DeepDiscoveryAutomationSnapshot{
-		BrowserProbes: []store.DeepDiscoveryBrowserAutomationFact{{Probe: probe, Work: work,
-			Result: &store.DeepDiscoveryBrowserResult{PublicQueryEvidence: []recipeabi.PublicQueryObservation{observation}}}},
-		QueryVerifications: []store.DeepDiscoveryPublicQueryAutomationFact{{Verification: old}, {Verification: newVerification}},
-	}
-	plan := planOnboardingAutomation(snapshot, company)
-	if plan.Action != onboardingReplayVerified || len(plan.VerificationIDs) != 1 ||
-		plan.VerificationIDs[0] != newVerification.VerificationID {
-		t.Fatalf("duplicate verification was not replaced by the latest canonical request: %+v", plan)
-	}
-}
-
-func TestOnboardingAutomationDoesNotLoopOnRotatingMeituanSignature(t *testing.T) {
-	company, _ := model.NewCompany("company-1", "Meituan", "https://www.meituan.com")
-	verified, _ := recipeabi.NewPublicQueryObservation(
-		"https://goodjob.meituan.com/api/goodjob/portal/job/list?csecversion=4.3.0&mtgsig=old",
-		"POST", map[string]string{"Content-Type": "application/json"},
-		json.RawMessage(`{"page":{"pageNo":1,"pageSize":10}}`))
-	observed, _ := recipeabi.NewPublicQueryObservation(
-		"https://goodjob.meituan.com/api/goodjob/portal/job/list?mtgsig=new&csecversion=4.3.0",
-		"POST", map[string]string{"Content-Type": "application/json"},
-		json.RawMessage(`{"page":{"pageSize":10,"pageNo":1}}`))
-	work, _ := model.NewWork("probe-work", "deep_discovery_probe", "probe-1", "deep_discovery_browser", "agent")
-	work.Status, work.Resolution = model.WorkCompleted, model.ResolutionSucceeded
-	probe, _ := model.NewDeepDiscoveryBrowserProbe("probe-1", "mission-1", work.WorkID,
-		"https://goodjob.meituan.com/m/jobs", "", 10, "", 3, "verification-1")
-	probe.Status = model.DeepDiscoveryProbeCompleted
-	verification, _ := model.NewDeepDiscoveryPublicQueryVerification("verification-1", "mission-1", probe.ProbeID,
-		"verification-work", 2, model.PublicQueryRequestEvidence{EndpointURL: verified.EndpointURL,
-			Method: verified.Method, Headers: verified.Headers, JSONBody: verified.JSONBody, BodyHash: verified.BodyHash})
-	verification.Status, verification.Version = model.DeepDiscoveryPublicQueryCompleted, 2
-	snapshot := store.DeepDiscoveryAutomationSnapshot{
-		BrowserProbes: []store.DeepDiscoveryBrowserAutomationFact{{Probe: probe, Work: work,
-			Result: &store.DeepDiscoveryBrowserResult{PublicQueryEvidence: []recipeabi.PublicQueryObservation{observed}}}},
-		QueryVerifications: []store.DeepDiscoveryPublicQueryAutomationFact{{Verification: verification}},
-	}
-	if plan := planOnboardingAutomation(snapshot, company); plan.Action != onboardingReviewEvidence {
-		t.Fatalf("rotating mtgsig caused another verification/replay cycle: %+v", plan)
+		t.Fatalf("completed browser capture plan=%+v", plan)
 	}
 }
 
@@ -266,29 +183,5 @@ func TestOnboardingAutomationAcceptsLaterSuccessfulProbeForSameURL(t *testing.T)
 	}}
 	if plan := planOnboardingAutomation(snapshot, company); plan.Action != onboardingReviewEvidence {
 		t.Fatalf("later successful Probe for the same URL did not supersede invalid attempt: %+v", plan)
-	}
-}
-
-func TestOnboardingAutomationSkipsAcceptedEphemeralQueryGap(t *testing.T) {
-	company, _ := model.NewCompany("company-1", "Example", "https://example.com")
-	probeWork, _ := model.NewWork("probe-work", "deep_discovery_probe", "probe-1", "deep_discovery_browser", "agent")
-	probe, _ := model.NewDeepDiscoveryBrowserProbe("probe-1", "mission-1", probeWork.WorkID,
-		"https://example.com/jobs", "", 1, "", 2)
-	probe.Status = model.DeepDiscoveryProbeCompleted
-	probe.Version = 2
-	verificationWork, _ := model.NewWork("verification-work", "deep_discovery_public_query", "verification-1",
-		"deep_discovery_public_query", "agent")
-	verificationWork.Status = model.WorkCompleted
-	verificationWork.Resolution = model.ResolutionAcceptedGap
-	verification, _ := model.NewDeepDiscoveryPublicQueryVerification("verification-1", "mission-1", probe.ProbeID,
-		verificationWork.WorkID, 3, model.PublicQueryRequestEvidence{EndpointURL: "https://example.com/api?_signature=x",
-			Method: "POST", JSONBody: json.RawMessage(`{}`), BodyHash: "sha256:legacy"})
-	snapshot := store.DeepDiscoveryAutomationSnapshot{
-		BrowserProbes: []store.DeepDiscoveryBrowserAutomationFact{{Probe: probe, Work: probeWork,
-			Result: &store.DeepDiscoveryBrowserResult{}}},
-		QueryVerifications: []store.DeepDiscoveryPublicQueryAutomationFact{{Verification: verification, Work: verificationWork}},
-	}
-	if plan := planOnboardingAutomation(snapshot, company); plan.Action != onboardingReviewEvidence {
-		t.Fatalf("accepted ephemeral query gap still blocked onboarding: %+v", plan)
 	}
 }

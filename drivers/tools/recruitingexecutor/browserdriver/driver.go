@@ -33,33 +33,32 @@ const (
 )
 
 type SessionRequest struct {
-	EndpointURL      string            `json:"endpoint_url"`
-	UserAgent        string            `json:"user_agent"`
-	AcceptLanguage   string            `json:"accept_language,omitempty"`
-	ProfileRef       string            `json:"profile_ref,omitempty"`
-	ProfileVersion   uint64            `json:"profile_version,omitempty"`
-	Plan             Plan              `json:"plan"`
-	PlanHash         string            `json:"plan_hash"`
-	AttemptID        string            `json:"attempt_id"`
-	TimeoutMS        int               `json:"timeout_ms"`
-	Policy           PolicyEvidence    `json:"policy"`
-	AllowedMethods   []string          `json:"allowed_methods"`
-	SameOriginDocs   bool              `json:"same_origin_documents"`
-	BlockDownloads   bool              `json:"block_downloads"`
-	BlockPopups      bool              `json:"block_popups"`
-	PublicQueryStubs []PublicQueryStub `json:"public_query_stubs,omitempty"`
+	EndpointURL    string         `json:"endpoint_url"`
+	UserAgent      string         `json:"user_agent"`
+	AcceptLanguage string         `json:"accept_language,omitempty"`
+	ProfileRef     string         `json:"profile_ref,omitempty"`
+	ProfileVersion uint64         `json:"profile_version,omitempty"`
+	Plan           Plan           `json:"plan"`
+	PlanHash       string         `json:"plan_hash"`
+	AttemptID      string         `json:"attempt_id"`
+	TimeoutMS      int            `json:"timeout_ms"`
+	Policy         PolicyEvidence `json:"policy"`
+	AllowedMethods []string       `json:"allowed_methods"`
+	SameOriginDocs bool           `json:"same_origin_documents"`
+	BlockDownloads bool           `json:"block_downloads"`
+	BlockPopups    bool           `json:"block_popups"`
 }
 
 const (
-	MaxPublicQueryStubBytes      = 1 << 20
-	MaxPublicQueryStubCount      = 10
-	MaxPublicQueryStubTotalBytes = 4 << 20
+	MaxPublicQueryResponseBytes      = 20 << 20
+	MaxPublicQueryResponseCount      = 200
+	MaxPublicQueryResponseTotalBytes = 200 << 20
 )
 
-// PublicQueryStub is a response captured by a separate, audited public HTTP
-// verification. The browser may fulfill exactly one matching request locally;
-// it never turns POST into an origin-side browser capability.
-type PublicQueryStub struct {
+// PublicQueryResponse is a bounded JSON response observed in the same browser
+// session that created the request. Runtime signatures, cookies, Origin and
+// Referer therefore remain browser-owned and are never replayed by Atoll.
+type PublicQueryResponse struct {
 	Request     recipeabi.PublicQueryObservation `json:"request"`
 	StatusCode  int                              `json:"status_code"`
 	ContentType string                           `json:"content_type"`
@@ -67,20 +66,20 @@ type PublicQueryStub struct {
 	ContentHash string                           `json:"content_hash"`
 }
 
-func (s PublicQueryStub) Validate() error {
+func (s PublicQueryResponse) Validate() error {
 	if err := s.Request.Validate(); err != nil {
-		return fmt.Errorf("validate public query stub request: %w", err)
+		return fmt.Errorf("validate browser public query request: %w", err)
 	}
-	if s.StatusCode < 200 || s.StatusCode > 299 || len(s.Body) == 0 || len(s.Body) > MaxPublicQueryStubBytes {
-		return fmt.Errorf("public query stub requires one bounded successful response")
+	if s.StatusCode < 200 || s.StatusCode > 299 || len(s.Body) == 0 || len(s.Body) > MaxPublicQueryResponseBytes {
+		return fmt.Errorf("browser public query requires one bounded successful response")
 	}
 	contentType, _, err := mime.ParseMediaType(strings.TrimSpace(s.ContentType))
 	if err != nil || contentType != "application/json" {
-		return fmt.Errorf("public query stub response must be JSON")
+		return fmt.Errorf("browser public query response must be JSON")
 	}
 	sum := sha256.Sum256(s.Body)
 	if s.ContentHash != "sha256:"+hex.EncodeToString(sum[:]) {
-		return fmt.Errorf("public query stub response hash mismatch")
+		return fmt.Errorf("browser public query response hash mismatch")
 	}
 	return nil
 }
@@ -99,8 +98,8 @@ type Attestation struct {
 	RobotsAllowed                  bool     `json:"robots_allowed"`
 	TermsPolicyVersion             uint64   `json:"terms_policy_version"`
 	ProfileLeaseAuthorized         bool     `json:"profile_lease_authorized"`
-	FulfilledPublicQueries         int      `json:"fulfilled_public_queries,omitempty"`
-	FulfilledPublicQueryHashes     []string `json:"fulfilled_public_query_hashes,omitempty"`
+	AllowedPublicQueryRequests     int      `json:"allowed_public_query_requests,omitempty"`
+	CapturedPublicQueryResponses   int      `json:"captured_public_query_responses,omitempty"`
 }
 
 func (a Attestation) Validate(request SessionRequest) error {
@@ -111,11 +110,17 @@ func (a Attestation) Validate(request SessionRequest) error {
 		(request.ProfileRef != "" && !a.ProfileLeaseAuthorized) {
 		return fmt.Errorf("browser broker violated effect policy")
 	}
+	postObserved := false
 	for _, method := range a.ObservedMethods {
 		method = strings.ToUpper(strings.TrimSpace(method))
-		if method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions {
+		if method == http.MethodPost {
+			postObserved = true
+		} else if method != http.MethodGet && method != http.MethodHead && method != http.MethodOptions {
 			return fmt.Errorf("browser broker observed unsafe method %q", method)
 		}
+	}
+	if postObserved != (a.AllowedPublicQueryRequests > 0) || a.CapturedPublicQueryResponses > a.AllowedPublicQueryRequests {
+		return fmt.Errorf("browser broker returned inconsistent public query evidence")
 	}
 	for _, method := range a.BlockedMethods {
 		method = strings.ToUpper(strings.TrimSpace(method))
@@ -126,30 +131,15 @@ func (a Attestation) Validate(request SessionRequest) error {
 	if (a.BlockedWriteRequests == 0) != (len(a.BlockedMethods) == 0) {
 		return fmt.Errorf("browser broker returned inconsistent blocked write evidence")
 	}
-	if a.FulfilledPublicQueries != len(a.FulfilledPublicQueryHashes) || a.FulfilledPublicQueries > len(request.PublicQueryStubs) {
-		return fmt.Errorf("browser broker returned inconsistent public query stub evidence")
-	}
-	seenStubHashes := make(map[string]struct{}, len(a.FulfilledPublicQueryHashes))
-	for _, value := range a.FulfilledPublicQueryHashes {
-		encoded := strings.TrimPrefix(value, "sha256:")
-		decoded, err := hex.DecodeString(encoded)
-		if err != nil || len(decoded) != sha256.Size {
-			return fmt.Errorf("browser broker returned invalid public query stub hash")
-		}
-		if _, duplicate := seenStubHashes[value]; duplicate {
-			return fmt.Errorf("browser broker returned duplicate public query stub hash")
-		}
-		seenStubHashes[value] = struct{}{}
-	}
 	return nil
 }
 
 type SessionResult struct {
-	FinalURL            string                             `json:"final_url"`
-	ContentType         string                             `json:"content_type"`
-	DOM                 []byte                             `json:"-"`
-	Attestation         Attestation                        `json:"attestation"`
-	PublicQueryEvidence []recipeabi.PublicQueryObservation `json:"public_query_evidence,omitempty"`
+	FinalURL             string                `json:"final_url"`
+	ContentType          string                `json:"content_type"`
+	DOM                  []byte                `json:"-"`
+	Attestation          Attestation           `json:"attestation"`
+	PublicQueryResponses []PublicQueryResponse `json:"public_query_responses,omitempty"`
 }
 
 type Broker interface {
@@ -221,7 +211,7 @@ func (d *Driver) ExecutePage(ctx context.Context, spec recipeabi.Spec, input rec
 	if err := spec.Validate(); err != nil {
 		return PageResult{}, err
 	}
-	if spec.Transport != recipeabi.TransportBrowser {
+	if spec.Transport != recipeabi.TransportBrowser && spec.Transport != recipeabi.TransportBrowserJSON {
 		return PageResult{}, fmt.Errorf("browser driver requires browser transport")
 	}
 	canonicalPlanHash := ""
@@ -233,7 +223,12 @@ func (d *Driver) ExecutePage(ctx context.Context, spec recipeabi.Spec, input rec
 		return PageResult{}, fmt.Errorf("browser execution plan must match the immutable Recipe")
 	}
 	offlineSpec := spec
-	offlineSpec.Transport = recipeabi.TransportHTTPHTML
+	offlineSpec.BrowserQuery = nil
+	if spec.Transport == recipeabi.TransportBrowserJSON {
+		offlineSpec.Transport = recipeabi.TransportHTTPJSON
+	} else {
+		offlineSpec.Transport = recipeabi.TransportHTTPHTML
+	}
 	offlineSpec.BrowserPlan = nil
 	if err := offlineSpec.Validate(); err != nil {
 		return PageResult{}, err
@@ -259,22 +254,38 @@ func (d *Driver) ExecutePage(ctx context.Context, spec recipeabi.Spec, input rec
 	defer cancel()
 	session, brokerErr := d.broker.Run(runContext, request)
 	body := session.DOM
-	tooLarge := int64(len(body)) > plan.MaxDOMBytes || int64(len(body)) > spec.Request.MaxResponseBytes
-	limit := plan.MaxDOMBytes
-	if spec.Request.MaxResponseBytes < limit {
-		limit = spec.Request.MaxResponseBytes
+	artifactURL := session.FinalURL
+	artifactContentType := session.ContentType
+	if spec.Transport == recipeabi.TransportBrowserJSON {
+		body = nil
+		for _, captured := range session.PublicQueryResponses {
+			endpoint, parseErr := url.Parse(captured.Request.EndpointURL)
+			if parseErr == nil && captured.Request.Method == spec.BrowserQuery.Method && endpoint.Path == spec.BrowserQuery.EndpointPath {
+				body = captured.Body
+				artifactURL = captured.Request.EndpointURL
+				artifactContentType = captured.ContentType
+				break
+			}
+		}
+		if len(body) == 0 && brokerErr == nil {
+			brokerErr = &brokerFailureAdapter{class: "parse_error", cause: fmt.Errorf("browser did not emit the declared public query response")}
+		}
 	}
+	limit := spec.Request.MaxResponseBytes
+	if spec.Transport != recipeabi.TransportBrowserJSON && plan.MaxDOMBytes < limit {
+		limit = plan.MaxDOMBytes
+	}
+	tooLarge := int64(len(body)) > limit
 	if tooLarge && int64(len(body)) > limit {
 		body = body[:limit]
 	}
 	sum := sha256.Sum256(body)
 	contentHash := "sha256:" + hex.EncodeToString(sum[:])
-	artifactURL := session.FinalURL
 	if strings.TrimSpace(artifactURL) == "" {
 		artifactURL = input.Endpoint.URL
 	}
 	artifact, artifactErr := sink.Put(ctx, ArtifactWrite{Kind: "browser_dom", AttemptID: input.Attempt.AttemptID,
-		URL: artifactURL, ContentType: session.ContentType, ContentHash: contentHash, Attestation: session.Attestation, Body: body})
+		URL: artifactURL, ContentType: artifactContentType, ContentHash: contentHash, Attestation: session.Attestation, Body: body})
 	if artifactErr != nil {
 		return PageResult{}, fmt.Errorf("save browser artifact before parsing: %w", artifactErr)
 	}
@@ -308,10 +319,24 @@ func (d *Driver) ExecutePage(ctx context.Context, spec recipeabi.Spec, input rec
 		!strings.EqualFold(finalURL.Host, initialURL.Host) {
 		return result, &RunError{Class: "redirect_rejected", Cause: fmt.Errorf("browser final document crossed origin")}
 	}
-	document, err := recipeexec.ExecuteHTML(offlineSpec, body)
+	var document recipeexec.DocumentResult
+	if spec.Transport == recipeabi.TransportBrowserJSON {
+		document, err = recipeexec.ExecuteJSON(offlineSpec, body)
+	} else {
+		document, err = recipeexec.ExecuteHTML(offlineSpec, body)
+	}
 	if err != nil {
 		return result, &RunError{Class: "parse_error", Cause: err}
 	}
 	result.Document = document
 	return result, nil
 }
+
+type brokerFailureAdapter struct {
+	class string
+	cause error
+}
+
+func (e *brokerFailureAdapter) Error() string               { return e.cause.Error() }
+func (e *brokerFailureAdapter) Unwrap() error               { return e.cause }
+func (e *brokerFailureAdapter) BrowserFailureClass() string { return e.class }

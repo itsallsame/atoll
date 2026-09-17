@@ -10,7 +10,6 @@ import (
 
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/model"
 	"github.com/wanpengxie/atoll/drivers/tools/recruiting/store"
-	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/recipeabi"
 	"github.com/wanpengxie/atoll/lib/actorbase"
 )
 
@@ -19,10 +18,7 @@ type onboardingAutomationAction string
 const (
 	onboardingCreateSeedBrowser onboardingAutomationAction = "create_seed_browser_probe"
 	onboardingStartEvidence     onboardingAutomationAction = "start_source_initialization_evidence"
-	onboardingVerifyPublicQuery onboardingAutomationAction = "verify_public_query"
-	onboardingReplayVerified    onboardingAutomationAction = "replay_verified_queries"
 	onboardingAwaitBrowser      onboardingAutomationAction = "await_browser_probe"
-	onboardingAwaitVerification onboardingAutomationAction = "await_public_query_verification"
 	onboardingNeedsAttention    onboardingAutomationAction = "resolve_failed_discovery_work"
 	onboardingValidateRepair    onboardingAutomationAction = "create_repair_validation_browser_probe"
 	onboardingResolveIdentity   onboardingAutomationAction = "resolve_official_company_identity"
@@ -32,28 +28,25 @@ const (
 )
 
 type onboardingAutomationPlan struct {
-	Action          onboardingAutomationAction
-	SourceProbe     *model.DeepDiscoveryBrowserProbe
-	Observation     *recipeabi.PublicQueryObservation
-	VerificationIDs []string
-	TargetURL       string
-	SourceID        string
-	CauseWorkID     string
-	Detail          string
+	Action      onboardingAutomationAction
+	SourceProbe *model.DeepDiscoveryBrowserProbe
+	TargetURL   string
+	SourceID    string
+	CauseWorkID string
+	Detail      string
 }
 
 type onboardingAdvanceResponse struct {
-	ContractVersion string                                      `json:"contract_version"`
-	Status          string                                      `json:"status"`
-	Company         model.Company                               `json:"company"`
-	Mission         model.DeepDiscoveryMission                  `json:"mission"`
-	Action          onboardingAutomationAction                  `json:"action"`
-	Work            *model.Work                                 `json:"work,omitempty"`
-	Probe           *model.DeepDiscoveryBrowserProbe            `json:"probe,omitempty"`
-	Verification    *model.DeepDiscoveryPublicQueryVerification `json:"verification,omitempty"`
-	NextAction      string                                      `json:"next_action"`
-	AgentDirective  string                                      `json:"agent_directive"`
-	Detail          string                                      `json:"detail,omitempty"`
+	ContractVersion string                           `json:"contract_version"`
+	Status          string                           `json:"status"`
+	Company         model.Company                    `json:"company"`
+	Mission         model.DeepDiscoveryMission       `json:"mission"`
+	Action          onboardingAutomationAction       `json:"action"`
+	Work            *model.Work                      `json:"work,omitempty"`
+	Probe           *model.DeepDiscoveryBrowserProbe `json:"probe,omitempty"`
+	NextAction      string                           `json:"next_action"`
+	AgentDirective  string                           `json:"agent_directive"`
+	Detail          string                           `json:"detail,omitempty"`
 }
 
 func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
@@ -81,18 +74,6 @@ func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
 			return onboardingAutomationPlan{Action: onboardingAwaitBrowser, SourceProbe: &fact.Probe}
 		}
 	}
-	for index := len(snapshot.QueryVerifications) - 1; index >= 0; index-- {
-		fact := snapshot.QueryVerifications[index]
-		if fact.Verification.Status == model.DeepDiscoveryPublicQueryQueued {
-			if fact.Work.Status == model.WorkCompleted && fact.Work.Resolution == model.ResolutionAcceptedGap {
-				continue
-			}
-			if fact.Work.Terminal() || fact.Work.Status == model.WorkWaitingHuman || fact.Work.Status == model.WorkPaused {
-				return onboardingAutomationPlan{Action: onboardingNeedsAttention, Detail: "public-query verification Work requires operator attention before evidence completed"}
-			}
-			return onboardingAutomationPlan{Action: onboardingAwaitVerification, SourceProbe: probeByID(snapshot, fact.Verification.ProbeID)}
-		}
-	}
 	if len(snapshot.BrowserProbes) == 0 {
 		if source, found := nextUnprobedCandidateSource(snapshot, sources); found {
 			return onboardingAutomationPlan{Action: onboardingCreateSeedBrowser, TargetURL: source.CandidateEndpoint.URL,
@@ -104,82 +85,12 @@ func planOnboardingAutomation(snapshot store.DeepDiscoveryAutomationSnapshot,
 		return onboardingAutomationPlan{Action: onboardingCreateSeedBrowser}
 	}
 
-	for probeIndex := len(snapshot.BrowserProbes) - 1; probeIndex >= 0; probeIndex-- {
-		fact := snapshot.BrowserProbes[probeIndex]
-		if fact.Probe.Status != model.DeepDiscoveryProbeCompleted || fact.Result == nil {
-			continue
-		}
-		latest := latestCompletedQueryVerifications(snapshot)
-		desiredByKey := make(map[string]string, len(fact.Probe.StubVerificationIDs))
-		for _, id := range fact.Probe.StubVerificationIDs {
-			if key, found := queryVerificationKeyByID(snapshot, id); found {
-				if replacement, exists := latest[key]; exists {
-					desiredByKey[key] = replacement
-				}
-			}
-		}
-		for _, verificationFact := range snapshot.QueryVerifications {
-			verification := verificationFact.Verification
-			key, valid := canonicalQueryVerificationKey(verification)
-			if verification.Status != model.DeepDiscoveryPublicQueryCompleted || !valid ||
-				!resultContainsPublicQuery(fact.Result, verification) {
-				continue
-			}
-			if replacement, exists := latest[key]; exists {
-				desiredByKey[key] = replacement
-			}
-		}
-		desired := make([]string, 0, len(desiredByKey))
-		for _, id := range desiredByKey {
-			desired = append(desired, id)
-		}
-		sort.Strings(desired)
-		for evidenceIndex := range fact.Result.PublicQueryEvidence {
-			observation := fact.Result.PublicQueryEvidence[evidenceIndex]
-			if observation.Validate() != nil {
-				continue
-			}
-			if !hasQueryVerification(snapshot, observation) {
-				if len(desired) >= 10 {
-					return onboardingAutomationPlan{Action: onboardingReviewEvidence,
-						Detail: "verified browser Stub chain reached its frozen bound of 10; record the remaining query as a coverage gap"}
-				}
-				return onboardingAutomationPlan{Action: onboardingVerifyPublicQuery, SourceProbe: &fact.Probe,
-					Observation: &observation}
-			}
-		}
-		if len(desired) > 10 {
-			return onboardingAutomationPlan{Action: onboardingReviewEvidence,
-				Detail: "verified browser Stub chain exceeds its frozen bound of 10 and requires evidence review"}
-		}
-		if !sameStringSet(desired, fact.Probe.StubVerificationIDs) && len(desired) <= 10 &&
-			!hasBrowserProbeWithStubs(snapshot, fact.Probe.URL, desired) {
-			return onboardingAutomationPlan{Action: onboardingReplayVerified, SourceProbe: &fact.Probe,
-				VerificationIDs: desired}
-		}
-	}
 	if source, found := nextUnprobedCandidateSource(snapshot, sources); found {
 		return onboardingAutomationPlan{Action: onboardingCreateSeedBrowser, TargetURL: source.CandidateEndpoint.URL,
 			SourceID: source.SourceID}
 	}
 	return onboardingAutomationPlan{Action: onboardingReviewEvidence,
 		Detail: "no further safe network action can be derived automatically"}
-}
-
-func sameStringSet(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	values := make(map[string]struct{}, len(left))
-	for _, value := range left {
-		values[value] = struct{}{}
-	}
-	for _, value := range right {
-		if _, found := values[value]; !found {
-			return false
-		}
-	}
-	return true
 }
 
 func hasSucceededReplacementBrowserProbe(snapshot store.DeepDiscoveryAutomationSnapshot,
@@ -250,8 +161,8 @@ func nextUnprobedCandidateSource(snapshot store.DeepDiscoveryAutomationSnapshot,
 
 func sourceProbeEvidenceIsSufficient(fact store.DeepDiscoveryBrowserAutomationFact) bool {
 	if fact.Result != nil {
-		for _, observation := range fact.Result.PublicQueryEvidence {
-			if observation.Validate() == nil {
+		for _, captured := range fact.Result.PublicQueryResponses {
+			if captured.Request.Validate() == nil && captured.Artifact.ArtifactID != "" {
 				return true
 			}
 		}
@@ -259,100 +170,6 @@ func sourceProbeEvidenceIsSufficient(fact store.DeepDiscoveryBrowserAutomationFa
 	// A full bounded scroll is also meaningful negative evidence: some public
 	// pages are DOM-only and must continue through the extension Recipe path.
 	return fact.Probe.ScrollRepeats >= 10
-}
-
-func probeByID(snapshot store.DeepDiscoveryAutomationSnapshot, id string) *model.DeepDiscoveryBrowserProbe {
-	for index := range snapshot.BrowserProbes {
-		if snapshot.BrowserProbes[index].Probe.ProbeID == id {
-			probe := snapshot.BrowserProbes[index].Probe
-			return &probe
-		}
-	}
-	return nil
-}
-
-func hasQueryVerification(snapshot store.DeepDiscoveryAutomationSnapshot, observation recipeabi.PublicQueryObservation) bool {
-	for _, fact := range snapshot.QueryVerifications {
-		verificationObservation := publicQueryObservation(fact.Verification)
-		if fact.Verification.Status == model.DeepDiscoveryPublicQueryCompleted &&
-			verificationObservation.MatchesObservation(observation) {
-			return true
-		}
-	}
-	return false
-}
-
-func resultContainsPublicQuery(result *store.DeepDiscoveryBrowserResult,
-	verification model.DeepDiscoveryPublicQueryVerification) bool {
-	if result == nil {
-		return false
-	}
-	verified := publicQueryObservation(verification)
-	for _, observation := range result.PublicQueryEvidence {
-		if verified.MatchesObservation(observation) {
-			return true
-		}
-	}
-	return false
-}
-
-func publicQueryObservation(verification model.DeepDiscoveryPublicQueryVerification) recipeabi.PublicQueryObservation {
-	return recipeabi.PublicQueryObservation{EndpointURL: verification.Request.EndpointURL, Method: verification.Request.Method,
-		Headers: verification.Request.Headers, JSONBody: verification.Request.JSONBody, BodyHash: verification.Request.BodyHash}
-}
-
-func canonicalQueryVerificationKey(verification model.DeepDiscoveryPublicQueryVerification) (string, bool) {
-	observation := publicQueryObservation(verification)
-	key, err := observation.StableIdentityKey()
-	if err != nil {
-		return "", false
-	}
-	return key, true
-}
-
-func latestCompletedQueryVerifications(snapshot store.DeepDiscoveryAutomationSnapshot) map[string]string {
-	latest := make(map[string]string)
-	for _, fact := range snapshot.QueryVerifications {
-		if fact.Verification.Status != model.DeepDiscoveryPublicQueryCompleted {
-			continue
-		}
-		if key, valid := canonicalQueryVerificationKey(fact.Verification); valid {
-			latest[key] = fact.Verification.VerificationID
-		}
-	}
-	return latest
-}
-
-func queryVerificationKeyByID(snapshot store.DeepDiscoveryAutomationSnapshot, id string) (string, bool) {
-	for _, fact := range snapshot.QueryVerifications {
-		if fact.Verification.VerificationID == id {
-			return canonicalQueryVerificationKey(fact.Verification)
-		}
-	}
-	return "", false
-}
-
-func hasBrowserProbeWithStubs(snapshot store.DeepDiscoveryAutomationSnapshot, targetURL string, ids []string) bool {
-	for _, fact := range snapshot.BrowserProbes {
-		if fact.Probe.URL != targetURL || len(fact.Probe.StubVerificationIDs) != len(ids) {
-			continue
-		}
-		existing := make(map[string]struct{}, len(fact.Probe.StubVerificationIDs))
-		for _, id := range fact.Probe.StubVerificationIDs {
-			existing[id] = struct{}{}
-		}
-		matched := true
-		for _, id := range ids {
-			if _, found := existing[id]; !found {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return true
-		}
-	}
-	return false
 }
 
 func handleOnboardingAdvance(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg) {
@@ -448,10 +265,8 @@ func handleOnboardingAdvance(sys actorbase.Sys, cfg Config, repository *store.Re
 		return
 	}
 	switch plan.Action {
-	case onboardingCreateSeedBrowser, onboardingReplayVerified:
+	case onboardingCreateSeedBrowser:
 		handleOnboardingAdvanceBrowser(sys, cfg, repository, msg, company, mission, plan)
-	case onboardingVerifyPublicQuery:
-		handleOnboardingAdvanceVerification(sys, cfg, repository, msg, company, mission, plan)
 	default:
 		status := "waiting"
 		if plan.Action == onboardingNeedsAttention || plan.Action == onboardingReviewEvidence {
@@ -557,70 +372,6 @@ func handleOnboardingStartEvidenceMission(sys actorbase.Sys, repository *store.R
 	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
 }
 
-func handleOnboardingAdvanceVerification(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg,
-	company model.Company, mission model.DeepDiscoveryMission, plan onboardingAutomationPlan) {
-	if plan.SourceProbe == nil || plan.Observation == nil {
-		_, _ = sys.Fail(msg, ErrorInternalUnavailable, "automation verification plan is incomplete")
-		return
-	}
-	next, err := mission.ConsumeOperations(mission.Version, 1)
-	identity := stableDigest(mission.MissionID + "|" + plan.SourceProbe.ProbeID + "|" + plan.Observation.EndpointURL + "|" + plan.Observation.BodyHash)
-	verificationID, workID := "verification-auto-"+identity, "work-auto-verification-"+identity
-	work, workErr := model.NewWork(workID, "deep_discovery_public_query", verificationID, "deep_discovery_public_query", "agent")
-	if err == nil {
-		err = workErr
-	}
-	if err == nil {
-		work, err = work.WithCausality(string(msg.Sender.ID), string(msg.ID), "")
-	}
-	verification := model.DeepDiscoveryPublicQueryVerification{}
-	if err == nil {
-		verification, err = model.NewDeepDiscoveryPublicQueryVerification(verificationID, mission.MissionID,
-			plan.SourceProbe.ProbeID, work.WorkID, next.Version, model.PublicQueryRequestEvidence{
-				EndpointURL: plan.Observation.EndpointURL, Method: plan.Observation.Method, Headers: plan.Observation.Headers,
-				JSONBody: plan.Observation.JSONBody, BodyHash: plan.Observation.BodyHash})
-	}
-	endpoint, parseErr := url.Parse(plan.Observation.EndpointURL)
-	if err == nil {
-		err = parseErr
-	}
-	if err != nil {
-		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
-		return
-	}
-	at := time.UnixMilli(msg.TS).UTC()
-	placement := store.WorkPlacement{BusinessKey: "deep-discovery-public-query|" + verification.VerificationID,
-		CompanyID: company.CompanyID, Capability: "http.fetch", Origin: endpoint.Scheme + "://" + endpoint.Host, NotBefore: at}
-	response := onboardingAdvanceResponse{ContractVersion: ContractVersion, Status: "advanced", Company: company,
-		Mission: next, Action: plan.Action, Work: &work, Verification: &verification,
-		NextAction: string(onboardingAwaitVerification), AgentDirective: onboardingAdvanceDirective(onboardingAwaitVerification, mission.IsSourceInitializationEvidence())}
-	responseBytes, _ := json.Marshal(response)
-	commandID := "onboarding-advance-" + stableDigest(string(msg.ID))
-	receipt, err := model.NewCommandReceipt(commandID, msg.Type, commandRequestHash(msg), responseBytes)
-	audit, _ := json.Marshal(map[string]any{"requested_by": string(msg.Sender.ID), "probe_id": plan.SourceProbe.ProbeID,
-		"verification_id": verification.VerificationID, "request_body_hash": verification.Request.BodyHash})
-	var event model.EventIntent
-	if err == nil {
-		event, err = model.NewEventIntent("event-"+stableDigest(commandID+"|deep.discovery.public_query.queued"),
-			"deep.discovery.public_query.queued", "deep_discovery", mission.MissionID, next.Version,
-			at.Format(time.RFC3339Nano), commandID, audit)
-	}
-	dispatch, dispatchErr := workCommandDispatch(cfg, work, placement, commandID, "deep_discovery_public_query_queued")
-	if err == nil {
-		err = dispatchErr
-	}
-	var result store.CommandResult
-	if err == nil {
-		result, err = repository.ApplyCreatePublicQueryVerificationCommand(msg.Ctx(), mission, next, verification, work,
-			placement, receipt, event, dispatch, at)
-	}
-	if err != nil {
-		failStoreError(sys, msg, err)
-		return
-	}
-	_, _ = sys.Reply(msg, json.RawMessage(result.Response))
-}
-
 func handleOnboardingAdvanceBrowser(sys actorbase.Sys, cfg Config, repository *store.Repository, msg actorbase.Msg,
 	company model.Company, mission model.DeepDiscoveryMission, plan onboardingAutomationPlan) {
 	next, err := mission.ConsumeOperations(mission.Version, 1)
@@ -633,7 +384,7 @@ func handleOnboardingAdvanceBrowser(sys actorbase.Sys, cfg Config, repository *s
 	if plan.SourceProbe != nil {
 		targetURL, waitSelector, scrollRepeats, followSelector = plan.SourceProbe.URL, plan.SourceProbe.WaitSelector,
 			plan.SourceProbe.ScrollRepeats, plan.SourceProbe.FollowLinkSelector
-		identityInput = mission.MissionID + "|replay|" + plan.SourceProbe.ProbeID + "|" + strings.Join(plan.VerificationIDs, ",")
+		identityInput = mission.MissionID + "|browser-validation|" + plan.SourceProbe.ProbeID
 	}
 	if plan.CauseWorkID != "" {
 		identityInput += "|repair-validation|" + plan.CauseWorkID
@@ -650,7 +401,7 @@ func handleOnboardingAdvanceBrowser(sys actorbase.Sys, cfg Config, repository *s
 	probe := model.DeepDiscoveryBrowserProbe{}
 	if err == nil {
 		probe, err = model.NewDeepDiscoveryBrowserProbe(probeID, mission.MissionID, work.WorkID, targetURL,
-			waitSelector, scrollRepeats, followSelector, next.Version, plan.VerificationIDs...)
+			waitSelector, scrollRepeats, followSelector, next.Version)
 	}
 	if err == nil {
 		err = validateDeepDiscoveryBrowserProbePlan(probe)
@@ -674,7 +425,7 @@ func handleOnboardingAdvanceBrowser(sys actorbase.Sys, cfg Config, repository *s
 	receipt, err := model.NewCommandReceipt(commandID, msg.Type, commandRequestHash(msg), responseBytes)
 	audit, _ := json.Marshal(map[string]any{"requested_by": string(msg.Sender.ID), "probe_id": probe.ProbeID,
 		"source_id": plan.SourceID, "cause_work_id": plan.CauseWorkID, "reason": plan.Detail,
-		"stub_verification_count": len(probe.StubVerificationIDs), "automation_action": plan.Action})
+		"automation_action": plan.Action})
 	var event model.EventIntent
 	if err == nil {
 		event, err = model.NewEventIntent("event-"+stableDigest(commandID+"|deep.discovery.browser.queued"),
@@ -699,7 +450,7 @@ func handleOnboardingAdvanceBrowser(sys actorbase.Sys, cfg Config, repository *s
 
 func onboardingAdvanceDirective(action onboardingAutomationAction, automatic bool) string {
 	switch action {
-	case onboardingAwaitBrowser, onboardingAwaitVerification:
+	case onboardingAwaitBrowser:
 		if automatic {
 			return "The asynchronous Work is queued and the Recruiting state machine will continue from its durable result. Do not poll, create duplicates, or ask the user to advance it."
 		}

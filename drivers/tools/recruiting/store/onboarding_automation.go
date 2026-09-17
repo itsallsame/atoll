@@ -19,14 +19,8 @@ type DeepDiscoveryBrowserAutomationFact struct {
 	Result *DeepDiscoveryBrowserResult
 }
 
-type DeepDiscoveryPublicQueryAutomationFact struct {
-	Verification model.DeepDiscoveryPublicQueryVerification
-	Work         model.Work
-}
-
 type DeepDiscoveryAutomationSnapshot struct {
-	BrowserProbes      []DeepDiscoveryBrowserAutomationFact
-	QueryVerifications []DeepDiscoveryPublicQueryAutomationFact
+	BrowserProbes []DeepDiscoveryBrowserAutomationFact
 }
 
 type SourceInitializationMission struct {
@@ -130,30 +124,5 @@ WHERE p.mission_id=? ORDER BY p.created_at,p.probe_id LIMIT 2001`, missionID)
 		return DeepDiscoveryAutomationSnapshot{}, err
 	}
 
-	rows, err = r.db.QueryContext(ctx, `SELECT q.state_json,w.state_json
-FROM recruiting_deep_discovery_public_query_verifications q
-JOIN recruiting_works w ON w.work_id=q.work_id
-WHERE q.mission_id=? ORDER BY q.created_at,q.verification_id LIMIT 2001`, missionID)
-	if err != nil {
-		return DeepDiscoveryAutomationSnapshot{}, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		if len(snapshot.QueryVerifications) == 2000 {
-			return DeepDiscoveryAutomationSnapshot{}, fmt.Errorf("public-query verification history exceeds Mission operation bound")
-		}
-		var verificationRaw, workRaw []byte
-		if err := rows.Scan(&verificationRaw, &workRaw); err != nil {
-			return DeepDiscoveryAutomationSnapshot{}, err
-		}
-		fact := DeepDiscoveryPublicQueryAutomationFact{}
-		if err := json.Unmarshal(verificationRaw, &fact.Verification); err != nil {
-			return DeepDiscoveryAutomationSnapshot{}, err
-		}
-		if err := json.Unmarshal(workRaw, &fact.Work); err != nil {
-			return DeepDiscoveryAutomationSnapshot{}, err
-		}
-		snapshot.QueryVerifications = append(snapshot.QueryVerifications, fact)
-	}
-	return snapshot, rows.Err()
+	return snapshot, nil
 }

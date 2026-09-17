@@ -57,29 +57,27 @@ func TestExecuteDeepDiscoveryBrowserUsesWorkLifecycleAndSubmitsEvidence(t *testi
 	now := time.Date(2026, 9, 13, 9, 0, 0, 0, time.UTC)
 	work, _ := model.NewWork("deep-browser-work", "deep_discovery_probe", "deep-browser-probe", "deep_discovery_browser", "agent")
 	probe, err := model.NewDeepDiscoveryBrowserProbe("deep-browser-probe", "mission-1", work.WorkID,
-		"https://jobs.example/careers", "main", 1, "", 2, "verification-1")
+		"https://jobs.example/careers", "main", 1, "", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	attempt, _ := model.NewAttempt("deep-browser-attempt", work)
 	attempt, _ = attempt.BindExecutor("tool:browser:1", "boot-1", "browser.public")
-	stubBody := []byte(`{"code":0,"data":{}}`)
-	stubSum := sha256.Sum256(stubBody)
-	stubHash := "sha256:" + hex.EncodeToString(stubSum[:])
+	queryBody := []byte(`{"code":0,"data":{"jobs":[{"id":"42"}]}}`)
+	querySum := sha256.Sum256(queryBody)
+	queryHash := "sha256:" + hex.EncodeToString(querySum[:])
 	observation, _ := recipeabi.NewPublicQueryObservation("https://jobs.example/api/config", "POST",
 		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{}`))
-	stubArtifact, _ := model.NewArtifactMetadata("verified-response", model.ArtifactResponse, stubHash,
-		"artifact://verified/response", "verification-work", "verification-attempt", "operators", "30d", false)
 	offer := executioncontract.Offer{Kind: "deep_discovery_browser", Work: work, Attempt: attempt,
-		DeepDiscoveryBrowser: &probe, RequestedCapability: "browser.public",
-		PublicQueryStubs: []executioncontract.VerifiedPublicQueryStubRef{{VerificationID: "verification-1",
-			Request: observation, Artifact: stubArtifact, StatusCode: 200, ContentType: "application/json"}}}
+		DeepDiscoveryBrowser: &probe, RequestedCapability: "browser.public"}
 	broker := &deepDiscoveryBrokerStub{result: browserdriver.SessionResult{FinalURL: "https://jobs.example/careers",
 		ContentType: "text/html", DOM: []byte(`<div class="job-card" data-job-id="42" data-token="secret"><a href="/jobs/1?token=secret">Engineer</a></div>`),
-		Attestation: browserdriver.Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET"},
+		PublicQueryResponses: []browserdriver.PublicQueryResponse{{Request: observation, StatusCode: 200,
+			ContentType: "application/json", Body: queryBody, ContentHash: queryHash}},
+		Attestation: browserdriver.Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET", "POST"},
+			AllowedPublicQueryRequests: 1, CapturedPublicQueryResponses: 1,
 			PublicEndpoint: true, RobotsAllowed: true, TermsPolicyVersion: 1}}}
-	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}},
-		inputRef: "artifact://verified/response", input: stubBody}
+	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}}}
 	control := &executeControlStub{}
 	options := executeTestOptions(now)
 	options.Explorer = broker
@@ -91,7 +89,8 @@ func TestExecuteDeepDiscoveryBrowserUsesWorkLifecycleAndSubmitsEvidence(t *testi
 		t.Fatalf("control lifecycle=%v", control.calls)
 	}
 	result, ok := control.submissions[0].(executioncontract.DeepDiscoveryBrowserResult)
-	if !ok || result.Artifact.Kind != model.ArtifactResponse || len(result.SupportingArtifacts) != 1 ||
+	if !ok || result.Artifact.Kind != model.ArtifactResponse || len(result.SupportingArtifacts) != 2 ||
+		len(result.PublicQueryResponses) != 1 || result.PublicQueryResponses[0].ContentHash != queryHash ||
 		len(result.Links) != 1 || result.Links[0].URL != "https://jobs.example/jobs/1" || len(result.DOMPreview) != 2 ||
 		result.DOMPreview[0].Attributes["data-job-id"] != "42" || result.DOMPreview[0].Attributes["data-token"] != "" ||
 		result.DOMPreview[1].Attributes["href"] != "https://jobs.example/jobs/1" {
@@ -102,10 +101,6 @@ func TestExecuteDeepDiscoveryBrowserUsesWorkLifecycleAndSubmitsEvidence(t *testi
 	}
 	if broker.request.Plan.MaxNavigations != 3 {
 		t.Fatalf("Deep Discovery did not reserve the bounded same-origin SPA navigation budget: %+v", broker.request.Plan)
-	}
-	if len(broker.request.PublicQueryStubs) != 1 || string(broker.request.PublicQueryStubs[0].Body) != string(stubBody) ||
-		broker.request.PublicQueryStubs[0].ContentHash != stubHash {
-		t.Fatalf("verified Artifact was not loaded into the local Browser Stub: %+v", broker.request.PublicQueryStubs)
 	}
 }
 
@@ -148,9 +143,11 @@ func TestDeepDiscoveryBrowserPreservesSafeQueryEvidenceBeforeDetailLinkExists(t 
 	oversizedDOM := []byte(`<html><body>` + strings.Repeat("x", int(options.Artifact.MaxBytes)) + `</body></html>`)
 	broker := &deepDiscoveryBrokerStub{result: browserdriver.SessionResult{
 		FinalURL: "https://jobs.example/positions", ContentType: "text/html", DOM: oversizedDOM,
-		PublicQueryEvidence: []recipeabi.PublicQueryObservation{observation},
-		Attestation: browserdriver.Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET"},
-			BlockedMethods: []string{"POST"}, BlockedWriteRequests: 1, PublicEndpoint: true,
+		PublicQueryResponses: []browserdriver.PublicQueryResponse{{Request: observation, StatusCode: 200,
+			ContentType: "application/json", Body: []byte(`{"jobs":[]}`),
+			ContentHash: "sha256:0a5796e93f9b57ddf7c45f860485cbb7353fc0eda3dca753a444d0fd2a1573fe"}},
+		Attestation: browserdriver.Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET", "POST"},
+			AllowedPublicQueryRequests: 1, CapturedPublicQueryResponses: 1, PublicEndpoint: true,
 			RobotsAllowed: true, TermsPolicyVersion: 1}}, err: context.DeadlineExceeded}
 	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}}}
 	control := &executeControlStub{}
@@ -163,38 +160,7 @@ func TestDeepDiscoveryBrowserPreservesSafeQueryEvidenceBeforeDetailLinkExists(t 
 		t.Fatalf("safe partial evidence was not submitted: calls=%v failure=%+v", control.calls, control.failed)
 	}
 	result, ok := control.submissions[0].(executioncontract.DeepDiscoveryBrowserResult)
-	if !ok || len(result.PublicQueryEvidence) != 1 || result.FinalURL != probe.URL {
+	if !ok || len(result.PublicQueryResponses) != 1 || result.FinalURL != probe.URL {
 		t.Fatalf("partial browser evidence=%+v", control.submissions)
-	}
-}
-
-func TestExecuteDeepDiscoveryBrowserRejectsChangedStubArtifactBeforeAccept(t *testing.T) {
-	now := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
-	work, _ := model.NewWork("deep-browser-work-hash", "deep_discovery_probe", "deep-browser-probe-hash", "deep_discovery_browser", "agent")
-	probe, _ := model.NewDeepDiscoveryBrowserProbe("deep-browser-probe-hash", "mission-1", work.WorkID,
-		"https://jobs.example/careers", "", 0, "", 2, "verification-1")
-	attempt, _ := model.NewAttempt("deep-browser-attempt-hash", work)
-	attempt, _ = attempt.BindExecutor("tool:browser:1", "boot-1", "browser.public")
-	wantBody := []byte(`{"code":0}`)
-	wantSum := sha256.Sum256(wantBody)
-	observation, _ := recipeabi.NewPublicQueryObservation("https://jobs.example/api/config", "POST",
-		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{}`))
-	artifact, _ := model.NewArtifactMetadata("verified-response-hash", model.ArtifactResponse,
-		"sha256:"+hex.EncodeToString(wantSum[:]), "artifact://verified/changed", "verification-work", "verification-attempt",
-		"operators", "30d", false)
-	offer := executioncontract.Offer{Kind: "deep_discovery_browser", Work: work, Attempt: attempt,
-		DeepDiscoveryBrowser: &probe, RequestedCapability: "browser.public",
-		PublicQueryStubs: []executioncontract.VerifiedPublicQueryStubRef{{VerificationID: "verification-1",
-			Request: observation, Artifact: artifact, StatusCode: 200, ContentType: "application/json"}}}
-	resources := &executeResourceStub{inputRef: "artifact://verified/changed", input: []byte(`{"code":1}`)}
-	control := &executeControlStub{}
-	options := executeTestOptions(now)
-	options.Explorer = &deepDiscoveryBrokerStub{}
-	if err := executeOffer(context.Background(), control, resources, nil, offer, options); err == nil ||
-		!strings.Contains(err.Error(), "hash mismatch") {
-		t.Fatalf("changed verified Artifact err=%v", err)
-	}
-	if len(control.calls) != 0 {
-		t.Fatalf("changed verified Artifact reached control lifecycle: %v", control.calls)
 	}
 }

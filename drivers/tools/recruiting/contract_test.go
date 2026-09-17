@@ -42,7 +42,6 @@ func TestNaturalLanguageOnboardingWordsPublishInputSchemas(t *testing.T) {
 		TypeDeepDiscoveryStart, TypeDeepDiscoveryGet, TypeDeepDiscoveryCheckpoint,
 		TypeDeepDiscoveryGraph, TypeDeepDiscoveryGuide, TypeDeepDiscoveryWait, TypeDeepDiscoveryResume, TypeDeepDiscoveryComplete, TypeDeepDiscoveryCancel,
 		TypeDeepDiscoveryBrowserObserve, TypeDeepDiscoveryBrowserGet,
-		TypeDeepDiscoveryPublicQueryVerify, TypeDeepDiscoveryPublicQueryGet,
 		TypeOnboardingBegin, TypeOnboardingStatus, TypeOnboardingAdvance, TypeOnboardingMaterialize,
 	} {
 		schema := words[word].InputSchema

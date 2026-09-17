@@ -12,8 +12,6 @@ import (
 func TestAutomaticOnboardingContinuationIsNarrow(t *testing.T) {
 	allowed := []onboardingAutomationAction{
 		onboardingCreateSeedBrowser,
-		onboardingVerifyPublicQuery,
-		onboardingReplayVerified,
 		onboardingReviewEvidence,
 	}
 	for _, action := range allowed {
@@ -24,7 +22,6 @@ func TestAutomaticOnboardingContinuationIsNarrow(t *testing.T) {
 	blocked := []onboardingAutomationAction{
 		onboardingStartEvidence,
 		onboardingAwaitBrowser,
-		onboardingAwaitVerification,
 		onboardingNeedsAttention,
 		onboardingValidateRepair,
 		onboardingResolveIdentity,
