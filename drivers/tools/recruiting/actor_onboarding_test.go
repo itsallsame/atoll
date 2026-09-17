@@ -182,6 +182,24 @@ func TestCandidateSourcesNeedingListingRequiresOperableCandidate(t *testing.T) {
 	}
 }
 
+func TestOnboardingRediscoveryRequiresEveryPreviousSourceArchived(t *testing.T) {
+	source, _ := model.NewRecruitmentSource("source-1", "company-1", "https://jobs.example.com", "social", 1)
+	if !hasUnarchivedSource([]model.RecruitmentSource{source}) {
+		t.Fatal("active Source was treated as archived discovery history")
+	}
+	source.ControlStatus = model.ControlPaused
+	if !hasUnarchivedSource([]model.RecruitmentSource{source}) {
+		t.Fatal("paused Source was treated as archived discovery history")
+	}
+	source.ControlStatus = model.ControlArchived
+	if hasUnarchivedSource([]model.RecruitmentSource{source}) {
+		t.Fatal("fully archived Source set did not permit rediscovery")
+	}
+	if hasUnarchivedSource(nil) {
+		t.Fatal("empty Source set did not permit discovery")
+	}
+}
+
 func TestOnboardingAutomationAcceptsSuccessfulCausalRepairProbe(t *testing.T) {
 	company, _ := model.NewCompany("company-1", "Example", "https://example.com")
 	failedWork, _ := model.NewWork("failed-work", "deep_discovery_probe", "failed-probe", "deep_discovery_browser", "agent")

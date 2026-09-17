@@ -283,13 +283,21 @@ func (r *Repository) AcceptDeepDiscoveryBrowserResult(ctx context.Context, input
 }
 
 func canonicalizeBrowserResultEvidence(result *DeepDiscoveryBrowserResult) error {
-	for index, observation := range result.PublicQueryEvidence {
+	// Public-query policy can become stricter after immutable browser evidence
+	// has already been stored.  Historical observations remain available in
+	// their Artifact, but an observation that no longer satisfies the current
+	// read-only contract must not make the whole Mission projection unreadable
+	// (or, worse, become executable again).  Only current-policy observations
+	// enter the automation projection.
+	canonicalEvidence := make([]recipeabi.PublicQueryObservation, 0, len(result.PublicQueryEvidence))
+	for _, observation := range result.PublicQueryEvidence {
 		canonical, err := observation.Canonicalized()
 		if err != nil {
-			return err
+			continue
 		}
-		result.PublicQueryEvidence[index] = canonical
+		canonicalEvidence = append(canonicalEvidence, canonical)
 	}
+	result.PublicQueryEvidence = canonicalEvidence
 	return nil
 }
 

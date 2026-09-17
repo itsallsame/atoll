@@ -180,17 +180,22 @@ func handleExistingCompanyOnboarding(sys actorbase.Sys, repository *store.Reposi
 				failStoreError(sys, msg, sourceErr)
 				return
 			}
-			contexts, contextErr := loadRecipePreparationContexts(msg.Ctx(), repository, mission.MissionID, sources)
-			if contextErr != nil {
-				failStoreError(sys, msg, contextErr)
+			if hasUnarchivedSource(sources) {
+				contexts, contextErr := loadRecipePreparationContexts(msg.Ctx(), repository, mission.MissionID, sources)
+				if contextErr != nil {
+					failStoreError(sys, msg, contextErr)
+					return
+				}
+				_, _ = sys.Reply(msg, onboardingResponse{ContractVersion: ContractVersion, Status: "completed",
+					Company: &company, Mission: &mission, ValidatedURLs: urls, Sources: sources, RecipeContexts: contexts,
+					NextAction:             "initialize_candidate_sources",
+					AgentDirective:         "Source initialization evidence is complete. For each recipe_context, inspect verification_id, derive only its semantic mapping, and call recruiting.recipe.prepare with the supplied source/probe/body identities; do not scan Work history or invent a low-level Recipe spec.",
+					ClassificationComplete: candidateSourcesHaveCategories(sources), ClassificationPolicy: onboardingClassificationPolicy})
 				return
 			}
-			_, _ = sys.Reply(msg, onboardingResponse{ContractVersion: ContractVersion, Status: "completed",
-				Company: &company, Mission: &mission, ValidatedURLs: urls, Sources: sources, RecipeContexts: contexts,
-				NextAction:             "initialize_candidate_sources",
-				AgentDirective:         "Source initialization evidence is complete. For each recipe_context, inspect verification_id, derive only its semantic mapping, and call recruiting.recipe.prepare with the supplied source/probe/body identities; do not scan Work history or invent a low-level Recipe spec.",
-				ClassificationComplete: candidateSourcesHaveCategories(sources), ClassificationPolicy: onboardingClassificationPolicy})
-			return
+			// Every materialized Source was explicitly archived.  Treat a new
+			// onboarding request as a request for a fresh discovery generation;
+			// archived history remains immutable and cannot seed the new Mission.
 		}
 		if mission.Status == model.DeepDiscoveryDone && allURLsClassified(urls) {
 			status, next = "completed", "materialize_validated_urls"
@@ -324,14 +329,19 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 			failStoreError(sys, msg, err)
 			return
 		}
-		classified = candidateSourcesHaveCategories(sources)
-		recipeContexts, err = loadRecipePreparationContexts(msg.Ctx(), repository, mission.MissionID, sources)
-		if err != nil {
-			failStoreError(sys, msg, err)
-			return
+		if !hasUnarchivedSource(sources) {
+			status, next = "needs_rediscovery", "begin_new_discovery_generation"
+			directive = "All previously materialized Sources are archived. Call recruiting.onboarding.begin with only company_name to start a fresh evidence-backed discovery generation; do not restore or reuse archived evidence."
+		} else {
+			classified = candidateSourcesHaveCategories(sources)
+			recipeContexts, err = loadRecipePreparationContexts(msg.Ctx(), repository, mission.MissionID, sources)
+			if err != nil {
+				failStoreError(sys, msg, err)
+				return
+			}
+			next = "initialize_candidate_sources"
+			directive = "Initialization evidence is complete. For each recipe_context, inspect verification_id, derive only its semantic mapping, and call recruiting.recipe.prepare with the supplied source/probe/body identities. Do not scan Work history or invent a low-level Recipe spec."
 		}
-		next = "initialize_candidate_sources"
-		directive = "Initialization evidence is complete. For each recipe_context, inspect verification_id, derive only its semantic mapping, and call recruiting.recipe.prepare with the supplied source/probe/body identities. Do not scan Work history or invent a low-level Recipe spec."
 	} else if mission.Status == model.DeepDiscoveryDone && classified {
 		sources, err = listAllCompanySources(msg, repository, company.CompanyID)
 		if err != nil {
@@ -357,6 +367,15 @@ func handleOnboardingStatus(sys actorbase.Sys, repository *store.Repository, msg
 		Mission: &mission, ValidatedURLs: urls, Sources: sources, RecipeContexts: recipeContexts,
 		NextAction: next, AgentDirective: directive,
 		ClassificationComplete: classified, ClassificationPolicy: onboardingClassificationPolicy})
+}
+
+func hasUnarchivedSource(sources []model.RecruitmentSource) bool {
+	for _, source := range sources {
+		if source.ControlStatus != model.ControlArchived {
+			return true
+		}
+	}
+	return false
 }
 
 func loadRecipePreparationContexts(ctx context.Context, repository *store.Repository, missionID string,
