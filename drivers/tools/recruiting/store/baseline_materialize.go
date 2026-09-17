@@ -42,6 +42,16 @@ LEFT JOIN recruiting_source_assignments detail_assignment
 WHERE bg.listing_finalized = TRUE AND bg.details_expected > 0 AND bg.materialization_completed = FALSE
   AND source.readiness_status = 'ready' AND source.control_status = 'active'
   AND source.health_status = 'healthy' AND detail_assignment.source_id IS NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM recruiting_baseline_staging staged_sample
+    JOIN recruiting_source_jobs sample_job
+      ON sample_job.source_id = staged_sample.source_id
+     AND sample_job.source_job_key = staged_sample.source_job_key
+    WHERE staged_sample.source_id = bg.source_id
+      AND staged_sample.baseline_generation = bg.baseline_generation
+      AND staged_sample.attempt_id <=> bg.listing_attempt_id
+  )
 ORDER BY bg.updated_at, bg.source_id, bg.baseline_generation
 LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&baselineState)
 	if errors.Is(err, sql.ErrNoRows) {
