@@ -75,9 +75,12 @@ type recipeProposePayload struct {
 
 type recipePreparePayload struct {
 	MutationCommand
-	ProbeID  string                `json:"probe_id"`
-	BodyHash string                `json:"body_hash"`
-	Mapping  *recipePrepareMapping `json:"mapping,omitempty"`
+	ProbeID          string                `json:"probe_id"`
+	BodyHash         string                `json:"body_hash,omitempty"`
+	ProbeContentHash string                `json:"probe_content_hash,omitempty"`
+	RecipeKind       model.RecipeKind      `json:"recipe_kind,omitempty"`
+	SampleJobID      string                `json:"sample_job_id,omitempty"`
+	Mapping          *recipePrepareMapping `json:"mapping,omitempty"`
 	// Spec remains accepted for immutable callers created before the mapping
 	// contract existed. New callers should provide Mapping and let the control
 	// plane construct the security- and budget-sensitive ABI fields.
@@ -88,16 +91,19 @@ type recipePreparePayload struct {
 // inferred from a JSON sample alone. Everything else in recipeabi.Spec is a
 // control-plane policy decision and must not be invented by an Agent.
 type recipePrepareMapping struct {
-	Collection           string `json:"collection,omitempty"`
-	CollectionRoot       bool   `json:"collection_root,omitempty"`
-	IdentityPointer      string `json:"identity_pointer"`
-	DetailURLPointer     string `json:"detail_url_pointer"`
-	DetailURLTemplate    string `json:"detail_url_template,omitempty"`
-	TitlePointer         string `json:"title_pointer,omitempty"`
-	ActivityPointer      string `json:"activity_pointer,omitempty"`
-	ActivityTimeFormat   string `json:"activity_time_format,omitempty"`
-	ExcludePinnedPointer string `json:"exclude_pinned_pointer,omitempty"`
-	BoundaryMode         string `json:"boundary_mode,omitempty"`
+	Collection           string            `json:"collection,omitempty"`
+	CollectionRoot       bool              `json:"collection_root,omitempty"`
+	IdentityPointer      string            `json:"identity_pointer"`
+	DetailURLPointer     string            `json:"detail_url_pointer"`
+	DetailURLTemplate    string            `json:"detail_url_template,omitempty"`
+	TitlePointer         string            `json:"title_pointer,omitempty"`
+	ActivityPointer      string            `json:"activity_pointer,omitempty"`
+	ActivityTimeFormat   string            `json:"activity_time_format,omitempty"`
+	ExcludePinnedPointer string            `json:"exclude_pinned_pointer,omitempty"`
+	BoundaryMode         string            `json:"boundary_mode,omitempty"`
+	Fields               map[string]string `json:"fields,omitempty"`
+	Attributes           map[string]string `json:"attributes,omitempty"`
+	WaitSelector         string            `json:"wait_selector,omitempty"`
 }
 
 type preparedRecipeResource struct {
@@ -222,10 +228,16 @@ func handleRecipePrepare(sys actorbase.Sys, repository *store.Repository, msg ac
 	}
 	commandContext, err := NewCommandContext(payload.MutationCommand, string(msg.Sender.ID))
 	payload.ProbeID, payload.BodyHash = strings.TrimSpace(payload.ProbeID), strings.TrimSpace(payload.BodyHash)
-	if err != nil || payload.Target.Type != "source" || payload.ProbeID == "" || payload.BodyHash == "" ||
+	payload.ProbeContentHash, payload.SampleJobID = strings.TrimSpace(payload.ProbeContentHash), strings.TrimSpace(payload.SampleJobID)
+	if payload.RecipeKind == "" {
+		payload.RecipeKind = model.RecipeListing
+	}
+	validEvidence := payload.RecipeKind == model.RecipeListing && payload.BodyHash != "" && payload.ProbeContentHash == "" && payload.SampleJobID == "" ||
+		payload.RecipeKind == model.RecipeDetail && payload.BodyHash == "" && payload.ProbeContentHash != "" && payload.SampleJobID != ""
+	if err != nil || payload.Target.Type != "source" || payload.ProbeID == "" || !validEvidence ||
 		(payload.Mapping == nil) == (len(payload.Spec) == 0) {
 		if err == nil {
-			err = fmt.Errorf("source target, probe_id, body_hash, and exactly one of mapping or spec are required")
+			err = fmt.Errorf("source target, supported recipe_kind, matching Probe evidence identity, and exactly one of mapping or spec are required")
 		}
 		_, _ = sys.Fail(msg, ErrorPayloadInvalid, err.Error())
 		return
@@ -247,11 +259,6 @@ func handleRecipePrepare(sys actorbase.Sys, repository *store.Repository, msg ac
 		failStoreError(sys, msg, &model.VersionConflictError{Expected: payload.ExpectedVersion, Actual: source.Version})
 		return
 	}
-	if source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy ||
-		source.ReadinessStatus != model.SourceCandidate || source.ListingAssignment != nil || source.CandidateEndpoint == nil {
-		_, _ = sys.Fail(msg, ErrorQualityRejected, "Recipe preparation requires an active healthy candidate Source without a Listing assignment")
-		return
-	}
 	probe, _, result, err := repository.GetDeepDiscoveryBrowserResult(msg.Ctx(), payload.ProbeID)
 	if err != nil || result == nil {
 		if err == nil {
@@ -265,14 +272,28 @@ func handleRecipePrepare(sys actorbase.Sys, repository *store.Repository, msg ac
 		failStoreError(sys, msg, err)
 		return
 	}
-	listEvidence, err := repository.GetValidatedListURLProof(msg.Ctx(), source.CompanyID, source.DiscoveryGeneration,
-		source.CandidateEndpoint.URL)
-	if err != nil {
-		failStoreError(sys, msg, err)
-		return
+	var prepared preparedRecipeResource
+	if payload.RecipeKind == model.RecipeListing {
+		if source.CandidateEndpoint == nil {
+			_, _ = sys.Fail(msg, ErrorQualityRejected, "Listing Recipe preparation requires a candidate endpoint")
+			return
+		}
+		listEvidence, proofErr := repository.GetValidatedListURLProof(msg.Ctx(), source.CompanyID, source.DiscoveryGeneration,
+			source.CandidateEndpoint.URL)
+		if proofErr != nil {
+			failStoreError(sys, msg, proofErr)
+			return
+		}
+		prepared, err = prepareListingRecipeResource(source, mission, probe, *result, payload.BodyHash, payload.Mapping, payload.Spec,
+			listEvidence.ListProof.DetailURLPattern)
+	} else {
+		job, jobErr := repository.GetJob(msg.Ctx(), payload.SampleJobID)
+		if jobErr != nil {
+			failStoreError(sys, msg, jobErr)
+			return
+		}
+		prepared, err = prepareDetailRecipeResource(source, mission, probe, *result, job, payload.ProbeContentHash, payload.Mapping)
 	}
-	prepared, err := prepareListingRecipeResource(source, mission, probe, *result, payload.BodyHash, payload.Mapping, payload.Spec,
-		listEvidence.ListProof.DetailURLPattern)
 	if err != nil {
 		_, _ = sys.Fail(msg, ErrorQualityRejected, err.Error())
 		return
@@ -285,9 +306,10 @@ func handleRecipePrepare(sys actorbase.Sys, repository *store.Repository, msg ac
 		"contract_version": ContractVersion, "correlation_id": string(msg.CorrelationID),
 		"requested_by": commandContext.RequestedBy, "source_id": source.SourceID, "source_version": source.Version,
 		"probe_id": probe.ProbeID, "observed_endpoint": prepared.Observation.EndpointURL, "body_hash": prepared.Observation.BodyHash,
+		"sample_job_id": payload.SampleJobID, "probe_content_hash": payload.ProbeContentHash,
 		"recipe_id": prepared.RecipeID, "recipe_version": 1, "content_ref": prepared.ContentRef, "content_hash": prepared.ContentHash,
 		"next_action":     prepared.NextAction,
-		"agent_directive": "Keep the Source endpoint on the verified human-facing ListURL. The observed API endpoint is frozen inside the Recipe request only. Call recruiting.recipe.propose with the current Source version/endpoint revision and this Recipe identity/resource; continue through recipe.validate without asking the user for internal IDs.",
+		"agent_directive": "Keep the Source endpoint on the verified human-facing ListURL. Call recruiting.recipe.propose with the current Source version/endpoint revision and this Recipe identity/resource; continue through recipe.validate without asking the user for internal IDs.",
 	}
 	responseBytes, _ := json.Marshal(response)
 	receipt, err := model.NewCommandReceipt(payload.CommandID, msg.Type, requestHash, responseBytes)
@@ -310,6 +332,78 @@ func handleRecipePrepare(sys actorbase.Sys, repository *store.Repository, msg ac
 		return
 	}
 	_, _ = sys.Reply(msg, json.RawMessage(commandResult.Response))
+}
+
+func prepareDetailRecipeResource(source model.RecruitmentSource, mission model.DeepDiscoveryMission,
+	probe model.DeepDiscoveryBrowserProbe, result store.DeepDiscoveryBrowserResult, job model.SourceJob,
+	probeContentHash string, mapping *recipePrepareMapping) (preparedRecipeResource, error) {
+	if source.ControlStatus != model.ControlActive || source.HealthStatus != model.HealthHealthy ||
+		source.ReadinessStatus != model.SourceReady || source.ListingAssignment == nil || source.DetailAssignment != nil ||
+		source.ActiveEndpoint == nil {
+		return preparedRecipeResource{}, fmt.Errorf("Detail Recipe preparation requires an active healthy ready Source with Listing but no Detail assignment")
+	}
+	if mission.CompanyID != source.CompanyID || probe.MissionID != mission.MissionID || job.SourceID != source.SourceID ||
+		job.Status != model.JobDetailPending || probe.Status != model.DeepDiscoveryProbeCompleted {
+		return preparedRecipeResource{}, fmt.Errorf("Detail Recipe preparation requires a completed same-Company Probe and pending Source Job")
+	}
+	if probe.ArtifactID == "" || probe.ArtifactID != result.Artifact.ArtifactID || probe.ContentHash != probeContentHash ||
+		result.ContentHash != probeContentHash || result.Artifact.ContentHash != probeContentHash {
+		return preparedRecipeResource{}, fmt.Errorf("Detail Recipe Probe and response Artifact identity do not match")
+	}
+	probeURL, probeErr := model.CanonicalHTTPURL(probe.URL)
+	finalURL, finalErr := model.CanonicalHTTPURL(result.FinalURL)
+	if probeErr != nil || finalErr != nil || probeURL != job.DetailURL || finalURL != job.DetailURL || probe.FinalURL != job.DetailURL {
+		return preparedRecipeResource{}, fmt.Errorf("Detail Recipe Probe must be captured from the exact current Job detail URL")
+	}
+	if mapping == nil {
+		return preparedRecipeResource{}, fmt.Errorf("Detail Recipe semantic mapping is required")
+	}
+	spec, err := buildDetailBrowserRecipeSpec(*mapping)
+	if err != nil {
+		return preparedRecipeResource{}, err
+	}
+	canonicalSpec, _ := json.Marshal(spec)
+	contentHash, _ := spec.ContentHash()
+	return preparedRecipeResource{CanonicalSpec: canonicalSpec, ContentHash: contentHash,
+		ContentRef: "recipe://recruiting-prepared/" + strings.TrimPrefix(contentHash, "sha256:"),
+		RecipeID:   "detail-bootstrap-" + stableDigest(source.SourceID+"|"+job.JobID+"|"+contentHash),
+		NextAction: "propose_recipe"}, nil
+}
+
+func buildDetailBrowserRecipeSpec(mapping recipePrepareMapping) (recipeabi.Spec, error) {
+	if len(mapping.Fields) == 0 || len(mapping.Fields) > 64 || strings.TrimSpace(mapping.WaitSelector) == "" ||
+		mapping.Collection != "" || mapping.CollectionRoot || mapping.IdentityPointer != "" || mapping.DetailURLPointer != "" {
+		return recipeabi.Spec{}, fmt.Errorf("Detail Recipe requires bounded fields and wait_selector without Listing mapping fields")
+	}
+	fields := make(map[string]string, len(mapping.Fields))
+	for name, selector := range mapping.Fields {
+		name, selector = strings.TrimSpace(name), strings.TrimSpace(selector)
+		if name == "" || selector == "" || len(name) > 100 || len(selector) > 500 {
+			return recipeabi.Spec{}, fmt.Errorf("Detail Recipe field names and selectors must be bounded and non-empty")
+		}
+		fields[name] = selector
+	}
+	waitSelector := strings.TrimSpace(mapping.WaitSelector)
+	if len(waitSelector) > 500 {
+		return recipeabi.Spec{}, fmt.Errorf("Detail Recipe wait_selector is too long")
+	}
+	attributes := make(map[string]string, len(mapping.Attributes))
+	for field, attribute := range mapping.Attributes {
+		attributes[strings.TrimSpace(field)] = strings.TrimSpace(attribute)
+	}
+	spec := recipeabi.Spec{ABIVersion: recipeabi.Version, Kind: recipeabi.KindDetail,
+		RequiredCapability: "browser.public", Transport: recipeabi.TransportBrowser,
+		Request: recipeabi.ReadRequest{Method: "GET", Headers: map[string]string{"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"},
+			TimeoutMS: 60_000, MaxResponseBytes: 20 << 20, MaxRedirects: 3, UserAgent: "Atoll-Recruiting/1"},
+		Extraction: recipeabi.Extraction{Fields: fields, Attributes: attributes},
+		BrowserPlan: &recipeabi.BrowserPlan{Version: recipeabi.BrowserPlanVersion,
+			Actions:        []recipeabi.BrowserAction{{Kind: recipeabi.BrowserActionWaitSelector, Selector: waitSelector, TimeoutMS: 20_000}},
+			MaxNavigations: 1, MaxDOMBytes: 2 << 20},
+	}
+	if err := spec.Validate(); err != nil {
+		return recipeabi.Spec{}, fmt.Errorf("build Detail Recipe from mapping: %w", err)
+	}
+	return spec, nil
 }
 
 func prepareListingRecipeResource(source model.RecruitmentSource, mission model.DeepDiscoveryMission,

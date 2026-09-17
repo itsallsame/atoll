@@ -133,6 +133,70 @@ func TestBuildListingRecipeSpecRejectsIncompleteSemanticMapping(t *testing.T) {
 	}
 }
 
+func TestPrepareDetailRecipeResourceRequiresExactProbeAndPendingJob(t *testing.T) {
+	source, err := model.NewRecruitmentSource("source-detail-prepare", "company-detail-prepare",
+		"https://jobs.example/campus/position", "campus", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.ActiveEndpoint, source.CandidateEndpoint = source.CandidateEndpoint, nil
+	source.ReadinessStatus = model.SourceReady
+	source.ListingAssignment = &model.SourceRecipeAssignment{SourceID: source.SourceID, Kind: model.RecipeListing,
+		RecipeID: "listing-1", RecipeVersion: 1, ContractHash: "sha256:listing", AssignmentVersion: 1}
+	job, err := model.NewSourceJob("job-detail-prepare", source.SourceID, "42", "https://jobs.example/campus/position/42/detail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mission := model.DeepDiscoveryMission{MissionID: "mission-detail-prepare", CompanyID: source.CompanyID}
+	probe, err := model.NewDeepDiscoveryBrowserProbe("probe-detail-prepare", mission.MissionID, "work-detail-prepare",
+		job.DetailURL, ".job-detail", 0, "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	probe, err = probe.Complete(probe.Version, "artifact-detail-prepare", job.DetailURL, hash, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := model.ArtifactMetadata{ArtifactID: probe.ArtifactID, ContentHash: hash}
+	result := store.DeepDiscoveryBrowserResult{Artifact: artifact, FinalURL: job.DetailURL, ContentHash: hash}
+	mapping := &recipePrepareMapping{WaitSelector: ".job-detail", Fields: map[string]string{
+		"title": ".job-detail [data-test=title]", "description": ".job-detail .description",
+	}}
+	prepared, err := prepareDetailRecipeResource(source, mission, probe, result, job, hash, mapping)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.ContentRef == "" || prepared.ContentHash == "" || prepared.RecipeID == "" || prepared.NextAction != "propose_recipe" {
+		t.Fatalf("incomplete prepared Detail Recipe: %+v", prepared)
+	}
+	wrongJob := job
+	wrongJob.DetailURL = "https://jobs.example/campus/position/43/detail"
+	if _, err := prepareDetailRecipeResource(source, mission, probe, result, wrongJob, hash, mapping); err == nil {
+		t.Fatal("Probe from a different detail URL was accepted")
+	}
+	wrongResult := result
+	wrongResult.ContentHash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	if _, err := prepareDetailRecipeResource(source, mission, probe, wrongResult, job, hash, mapping); err == nil {
+		t.Fatal("mismatched terminal Artifact hash was accepted")
+	}
+}
+
+func TestBuildDetailBrowserRecipeSpecOwnsABIAndBudgetDefaults(t *testing.T) {
+	spec, err := buildDetailBrowserRecipeSpec(recipePrepareMapping{WaitSelector: ".job-detail",
+		Fields: map[string]string{"title": "[data-test=title]", "description": ".description"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Kind != recipeabi.KindDetail || spec.Transport != recipeabi.TransportBrowser ||
+		spec.RequiredCapability != "browser.public" || spec.Request.Method != "GET" || spec.Request.URL != "" ||
+		spec.BrowserPlan == nil || len(spec.BrowserPlan.Actions) != 1 ||
+		spec.BrowserPlan.Actions[0].Kind != recipeabi.BrowserActionWaitSelector ||
+		spec.BrowserPlan.Actions[0].Selector != ".job-detail" || spec.BrowserPlan.MaxNavigations != 1 {
+		t.Fatalf("control-plane Detail defaults were not applied: %+v", spec)
+	}
+}
+
 func TestCreateContentAddressedRecipeIsIdempotentButNotOverwrite(t *testing.T) {
 	resources := &preparedRecipeResources{values: map[resource.ResourceID][]byte{}}
 	const ref = "recipe://recruiting-prepared/hash"
