@@ -319,6 +319,47 @@ document.querySelector('#next').addEventListener('click',()=>{page++;load()});lo
 	}
 }
 
+func TestRunnerDoesNotTreatTransientlyDisabledSelectorAsInitialEnd(t *testing.T) {
+	chrome := chromeForTest(t)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodPost && request.URL.Path == "/jobs" {
+			var body struct {
+				Page int `json:"page"`
+			}
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			response.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(response, `{"jobs":[{"id":"%d"}]}`, body.Page+1)
+			return
+		}
+		response.Header().Set("Content-Type", "text/html")
+		_, _ = response.Write([]byte(`<!doctype html><html><body>
+<div id="pager" aria-disabled="true"><a id="next">next</a></div><script>
+let page=0; const load=()=>fetch('/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({page})});
+document.querySelector('#next').addEventListener('click',()=>{page++;document.querySelector('#pager').setAttribute('aria-disabled','false');load()});load();
+</script></body></html>`))
+	}))
+	defer server.Close()
+	runner := &Runner{chromePath: chrome, allowPrivate: true}
+	request := browserRequest(server.URL)
+	request.Plan.Actions = []browserdriver.Action{{Kind: browserdriver.ActionWaitSelector, Selector: "#next", TimeoutMS: 5_000}}
+	request.PlanHash, _ = request.Plan.ContentHash()
+	request.BrowserQuery = &recipeabi.BrowserQuery{Method: "POST", EndpointPath: "/jobs"}
+	request.ListingAdvance = &recipeabi.ListingAdvanceContract{Kind: recipeabi.ListingAdvanceClick, Selector: "#next",
+		ProgressProof: []string{"response", "job_identity"},
+		EndProof:      recipeabi.ListingEndProof{Kind: "selector_absent_or_disabled", Selector: "#pager"},
+		WaitTimeoutMS: 3_000, MaxAdvances: 1, MaxNoProgress: 1}
+	sequences := []int{}
+	request.OnListingBatch = func(response browserdriver.PublicQueryResponse) (bool, error) {
+		sequences = append(sequences, response.ActionSequence)
+		return false, nil
+	}
+	result, err := runner.Run(context.Background(), request)
+	if err != nil || result.EndOfInput || result.StopReason != "bounded_incomplete" || result.AdvanceCount != 1 ||
+		!reflect.DeepEqual(sequences, []int{0, 1}) {
+		t.Fatalf("transient disabled selector ended before click: result=%+v sequences=%v err=%v", result, sequences, err)
+	}
+}
+
 func TestRunnerAdvancesScrollableContainerUntilStableNoProgress(t *testing.T) {
 	chrome := chromeForTest(t)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

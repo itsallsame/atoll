@@ -431,17 +431,17 @@ func runListingAdvancement(ctx context.Context, state *policyState,
 
 	noProgress := 0
 	for sequence := 1; sequence <= contract.MaxAdvances; sequence++ {
-		if contract.EndProof.Kind == "selector_absent_or_disabled" {
-			ended, inspectErr := selectorAbsentOrDisabled(ctx, contract.EndProof.Selector)
-			if inspectErr != nil {
-				return false, "end_proof_invalid", sequence - 1, inspectErr
-			}
-			if ended {
-				return true, "end_of_input", sequence - 1, nil
-			}
-		}
 		state.setActionSequence(sequence)
 		if actionErr := runListingAdvanceAction(ctx, contract); actionErr != nil {
+			if contract.EndProof.Kind == "selector_absent_or_disabled" {
+				ended, inspectErr := selectorAbsentOrDisabled(ctx, contract.EndProof.Selector)
+				if inspectErr != nil {
+					return false, "end_proof_invalid", sequence - 1, inspectErr
+				}
+				if ended {
+					return true, "end_of_input", sequence - 1, nil
+				}
+			}
 			return false, "advance_action_failed", sequence - 1, &brokerFailure{class: "parse_error", cause: actionErr}
 		}
 		got, stop, err = deliver(sequence, time.Duration(contract.WaitTimeoutMS)*time.Millisecond)
