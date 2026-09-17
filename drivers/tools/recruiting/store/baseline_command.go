@@ -52,7 +52,8 @@ func (r *Repository) ApplyCreateBaselineCommand(ctx context.Context, expectedCom
 	nextCompany := preparation.Company
 	if nextCompany.OnboardingStatus == model.CompanyDiscoveringSources {
 		nextCompany, err = nextCompany.StartInitialization(expectedCompanyVersion)
-	} else if nextCompany.OnboardingStatus != model.CompanyInitializing {
+	} else if nextCompany.OnboardingStatus != model.CompanyInitializing &&
+		nextCompany.OnboardingStatus != model.CompanyReady {
 		err = &model.InvalidTransitionError{Entity: "company", From: string(nextCompany.OnboardingStatus), Action: "start baseline"}
 	}
 	if err != nil {

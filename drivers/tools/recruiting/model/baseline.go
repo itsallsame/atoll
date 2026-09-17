@@ -41,7 +41,8 @@ func NewExecutableBaselineGeneration(workID string, company Company, source Recr
 	workID = strings.TrimSpace(workID)
 	if workID == "" || source.CompanyID != company.CompanyID || generation == 0 ||
 		company.ControlStatus != ControlActive ||
-		(company.OnboardingStatus != CompanyDiscoveringSources && company.OnboardingStatus != CompanyInitializing) ||
+		(company.OnboardingStatus != CompanyDiscoveringSources && company.OnboardingStatus != CompanyInitializing &&
+			company.OnboardingStatus != CompanyReady) ||
 		source.ReadinessStatus != SourceReady || source.ControlStatus != ControlActive || source.HealthStatus != HealthHealthy ||
 		!source.HasVerifiedIncrementalContract() {
 		return BaselineGeneration{}, fmt.Errorf("executable baseline requires active onboarding Company and verified ready Source")

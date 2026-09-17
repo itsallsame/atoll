@@ -70,7 +70,8 @@ func handleBaselineStart(sys actorbase.Sys, cfg Config, repository *store.Reposi
 	nextCompany := preparation.Company
 	if nextCompany.OnboardingStatus == model.CompanyDiscoveringSources {
 		nextCompany, err = nextCompany.StartInitialization(payload.ExpectedCompanyVersion)
-	} else if nextCompany.OnboardingStatus != model.CompanyInitializing {
+	} else if nextCompany.OnboardingStatus != model.CompanyInitializing &&
+		nextCompany.OnboardingStatus != model.CompanyReady {
 		err = &model.InvalidTransitionError{Entity: "company", From: string(nextCompany.OnboardingStatus), Action: "start baseline"}
 	}
 	work, workErr := model.NewWork(strings.TrimSpace(payload.WorkID), "source", preparation.Source.SourceID, "baseline_listing", "human")

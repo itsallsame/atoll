@@ -63,6 +63,22 @@ func TestExecutableBaselineFinalizationBindsSuccessfulAttempt(t *testing.T) {
 	}
 }
 
+func TestReadyCompanyCanStartBaselineForNewReadySource(t *testing.T) {
+	company, source := validatedSource(t)
+	recipe, err := NewRecipe(source.ListingAssignment.RecipeID, RecipeListing, "jobs.example.com",
+		source.ListingAssignment.RecipeVersion, "content", source.ListingAssignment.ContractHash,
+		testRecipeExecution(source.ListingAssignment.RecipeID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	validating, _ := recipe.BeginValidation(recipe.StateVersion)
+	recipe, _ = validating.Publish(validating.StateVersion)
+	baseline, err := NewExecutableBaselineGeneration("ready-company-baseline-work", company, source, 1, recipe)
+	if err != nil || baseline.CompanyVersion != company.Version || baseline.SourceVersion != source.Version {
+		t.Fatalf("ready Company baseline=%+v err=%v", baseline, err)
+	}
+}
+
 func TestBaselineCancellationIsTerminalBeforeListingFinalize(t *testing.T) {
 	baseline, _ := NewBaselineGeneration("source-1", 1)
 	canceled, err := baseline.Cancel(baseline.Version)
