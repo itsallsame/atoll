@@ -99,8 +99,17 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 		BlockPopups: true, PublicQueryStubs: stubs}
 	result, err := explorer.Run(ctx, request)
 	if err != nil {
-		class, retryable := deepDiscoveryBrowserFailure(err)
-		return failLocalExecutionWithRetry(ctx, control, sink, offer, class, "deep_discovery_browser", retryable, err)
+		// A first pass over a client-rendered list can safely capture the
+		// blocked public query before its requested detail link exists.  Preserve
+		// that read-only observation as a completed Probe so the control plane
+		// can verify it, replay the response as a local Stub, and then perform
+		// the list-to-detail navigation.  This is evidence discovery, not list
+		// validation: the later proof gate still requires the distinct detail URL.
+		if len(result.PublicQueryEvidence) == 0 || len(result.DOM) == 0 || strings.TrimSpace(result.FinalURL) == "" ||
+			result.Attestation.Validate(request) != nil {
+			class, retryable := deepDiscoveryBrowserFailure(err)
+			return failLocalExecutionWithRetry(ctx, control, sink, offer, class, "deep_discovery_browser", retryable, err)
+		}
 	}
 	if err := result.Attestation.Validate(request); err != nil {
 		return failLocalExecution(ctx, control, sink, offer, "contract_violated", "deep_discovery_effect_policy", err)
@@ -109,8 +118,12 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 	if err != nil {
 		return failLocalExecution(ctx, control, sink, offer, "contract_violated", "deep_discovery_final_url", err)
 	}
+	dom := result.DOM
+	if int64(len(dom)) > options.Artifact.MaxBytes {
+		dom = dom[:options.Artifact.MaxBytes]
+	}
 	responseRef, err := sink.Put(ctx, httpdriver.ArtifactWrite{Kind: "response", AttemptID: offer.Attempt.AttemptID,
-		PageSequence: 1, URL: finalURL, ContentType: result.ContentType, Body: result.DOM})
+		PageSequence: 1, URL: finalURL, ContentType: result.ContentType, Body: dom})
 	if err != nil {
 		return fmt.Errorf("save Deep Discovery DOM: %w", err)
 	}
@@ -125,9 +138,9 @@ func executeDeepDiscoveryBrowser(ctx context.Context, control executionControl, 
 	if err != nil {
 		return err
 	}
-	bodySum := sha256.Sum256(result.DOM)
-	links := extractDeepDiscoveryLinks(finalURL, result.DOM, 200)
-	domPreview := extractDeepDiscoveryDOMPreview(finalURL, result.DOM, 400)
+	bodySum := sha256.Sum256(dom)
+	links := extractDeepDiscoveryLinks(finalURL, dom, 200)
+	domPreview := extractDeepDiscoveryDOMPreview(finalURL, dom, 400)
 	wireLinks := make([]executioncontract.DeepDiscoveryLink, len(links))
 	for index := range links {
 		wireLinks[index] = executioncontract.DeepDiscoveryLink(links[index])

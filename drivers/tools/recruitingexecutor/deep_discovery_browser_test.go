@@ -132,6 +132,42 @@ func TestDeepDiscoveryBrowserTreatsUnclassifiedBrokerFailureAsRetryableTransport
 	}
 }
 
+func TestDeepDiscoveryBrowserPreservesSafeQueryEvidenceBeforeDetailLinkExists(t *testing.T) {
+	now := time.Date(2026, 9, 17, 9, 0, 0, 0, time.UTC)
+	work, _ := model.NewWork("deep-browser-partial-work", "deep_discovery_probe", "deep-browser-partial-probe",
+		"deep_discovery_browser", "agent")
+	probe, _ := model.NewDeepDiscoveryBrowserProbe("deep-browser-partial-probe", "mission-partial", work.WorkID,
+		"https://jobs.example/positions", "", 2, "a.job", 2)
+	attempt, _ := model.NewAttempt("deep-browser-partial-attempt", work)
+	attempt, _ = attempt.BindExecutor("tool:browser:1", "boot-1", "browser.public")
+	offer := executioncontract.Offer{Kind: "deep_discovery_browser", Work: work, Attempt: attempt,
+		DeepDiscoveryBrowser: &probe, RequestedCapability: "browser.public"}
+	observation, _ := recipeabi.NewPublicQueryObservation("https://jobs.example/api/search?_signature=ephemeral", "POST",
+		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{"limit":10,"offset":0}`))
+	options := executeTestOptions(now)
+	oversizedDOM := []byte(`<html><body>` + strings.Repeat("x", int(options.Artifact.MaxBytes)) + `</body></html>`)
+	broker := &deepDiscoveryBrokerStub{result: browserdriver.SessionResult{
+		FinalURL: "https://jobs.example/positions", ContentType: "text/html", DOM: oversizedDOM,
+		PublicQueryEvidence: []recipeabi.PublicQueryObservation{observation},
+		Attestation: browserdriver.Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET"},
+			BlockedMethods: []string{"POST"}, BlockedWriteRequests: 1, PublicEndpoint: true,
+			RobotsAllowed: true, TermsPolicyVersion: 1}}, err: context.DeadlineExceeded}
+	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}}}
+	control := &executeControlStub{}
+	options.Explorer = broker
+
+	if err := executeOffer(context.Background(), control, resources, nil, offer, options); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.calls) != 3 || control.calls[2] != "submit:deep_discovery_browser" {
+		t.Fatalf("safe partial evidence was not submitted: calls=%v failure=%+v", control.calls, control.failed)
+	}
+	result, ok := control.submissions[0].(executioncontract.DeepDiscoveryBrowserResult)
+	if !ok || len(result.PublicQueryEvidence) != 1 || result.FinalURL != probe.URL {
+		t.Fatalf("partial browser evidence=%+v", control.submissions)
+	}
+}
+
 func TestExecuteDeepDiscoveryBrowserRejectsChangedStubArtifactBeforeAccept(t *testing.T) {
 	now := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
 	work, _ := model.NewWork("deep-browser-work-hash", "deep_discovery_probe", "deep-browser-probe-hash", "deep_discovery_browser", "agent")

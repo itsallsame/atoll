@@ -228,7 +228,7 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 		switch value := event.(type) {
 		case *fetch.EventRequestPaused:
 			requestTasks.start(func() {
-				decision := state.inspectRequest(runCtx, r, value)
+				decision := state.inspectRequest(tabCtx, r, value)
 				_ = chromedp.Run(tabCtx, chromedp.ActionFunc(func(commandCtx context.Context) error {
 					if decision.stub != nil {
 						headers := []*fetch.HeaderEntry{{Name: "Content-Type", Value: decision.stub.ContentType},
@@ -569,7 +569,7 @@ func (r *Runner) publicQueryObservation(ctx context.Context, event *fetch.EventR
 			headers[http.CanonicalHeaderKey(canonical)] = value
 		}
 	}
-	if !event.Request.HasPostData || len(event.Request.PostDataEntries) == 0 {
+	if !event.Request.HasPostData {
 		return recipeabi.PublicQueryObservation{}, errors.New("public query body was not available to the browser policy")
 	}
 	body := make([]byte, 0, 1024)
@@ -582,6 +582,24 @@ func (r *Runner) publicQueryObservation(ctx context.Context, event *fetch.EventR
 			return recipeabi.PublicQueryObservation{}, errors.New("public query body was invalid or exceeded its bound")
 		}
 		body = append(body, part...)
+	}
+	// Recent Chrome versions can omit postDataEntries from Fetch.requestPaused
+	// even while HasPostData is true.  The paired Network request ID is the
+	// protocol-supported fallback; without it, real read-only recruitment
+	// searches are blocked but never become verifiable observations.
+	if len(body) == 0 && event.NetworkID != "" {
+		var postData string
+		if err := chromedp.Run(ctx, chromedp.ActionFunc(func(commandCtx context.Context) error {
+			var err error
+			postData, err = network.GetRequestPostData(event.NetworkID).Do(commandCtx)
+			return err
+		})); err != nil || len(postData) > 64<<10 {
+			return recipeabi.PublicQueryObservation{}, errors.New("public query body was unavailable or exceeded its bound")
+		}
+		body = append(body, postData...)
+	}
+	if len(body) == 0 {
+		return recipeabi.PublicQueryObservation{}, errors.New("public query body was not available to the browser policy")
 	}
 	return recipeabi.NewPublicQueryObservation(endpoint.String(), http.MethodPost, headers, json.RawMessage(body))
 }

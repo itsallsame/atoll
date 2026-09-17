@@ -263,9 +263,9 @@ func TestPublicQueryObservationIsCredentialFreeAndMatchesExactRequest(t *testing
 		map[string]string{"Content-Type": "application/json", "Authorization": "secret"}, json.RawMessage(`{}`)); err == nil {
 		t.Fatal("authorization-bearing public-query observation was accepted")
 	}
-	if _, err := NewPublicQueryObservation("https://jobs.example/api/search?_signature=ephemeral", "POST",
+	if _, err := NewPublicQueryObservation("https://jobs.example/api/search?request_signature=ephemeral", "POST",
 		headers, json.RawMessage(`{"offset":0}`)); err == nil {
-		t.Fatal("signature-bearing public-query URL was accepted")
+		t.Fatal("non-allowlisted signature-bearing public-query URL was accepted")
 	}
 	for name, candidate := range map[string]struct {
 		url  string
@@ -339,6 +339,34 @@ func TestPublicQueryObservationTreatsMeituanSignatureAsTransportEvidence(t *test
 	}
 	if first.MatchesObservation(changedFilter) {
 		t.Fatal("non-allowlisted query parameter was ignored")
+	}
+}
+
+func TestPublicQueryObservationTreatsByteDanceSignatureAsTransportEvidence(t *testing.T) {
+	headers := map[string]string{"Content-Type": "application/json"}
+	first, err := NewPublicQueryObservation(
+		"https://jobs.bytedance.com/api/v1/search/job/posts?portal_type=3&_signature=first",
+		"POST", headers, json.RawMessage(`{"keyword":"","limit":10,"offset":0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewPublicQueryObservation(
+		"https://jobs.bytedance.com/api/v1/search/job/posts?_signature=second&portal_type=3",
+		"POST", headers, json.RawMessage(`{"offset":0,"limit":10,"keyword":""}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.EndpointURL == second.EndpointURL || !first.MatchesObservation(second) {
+		t.Fatal("short-lived ByteDance _signature changed stable query identity")
+	}
+	changedFilter, err := NewPublicQueryObservation(
+		"https://jobs.bytedance.com/api/v1/search/job/posts?portal_type=2&_signature=third",
+		"POST", headers, json.RawMessage(`{"keyword":"","limit":10,"offset":0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.MatchesObservation(changedFilter) {
+		t.Fatal("non-allowlisted ByteDance query parameter was ignored")
 	}
 }
 

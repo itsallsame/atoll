@@ -351,7 +351,8 @@ func stablePublicQueryEndpoint(raw string) (string, error) {
 	}
 	query := endpoint.Query()
 	for name := range query {
-		if strings.EqualFold(strings.TrimSpace(name), "mtgsig") {
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "mtgsig", "_signature":
 			query.Del(name)
 		}
 	}
@@ -439,6 +440,9 @@ func (o PublicQueryObservation) validate(requireReadIntent bool) error {
 	}
 	for name := range endpoint.Query() {
 		lower := strings.ToLower(strings.TrimSpace(name))
+		if lower == "mtgsig" || lower == "_signature" {
+			continue
+		}
 		if strings.Contains(lower, "signature") || strings.Contains(lower, "token") ||
 			strings.Contains(lower, "secret") || strings.Contains(lower, "password") ||
 			strings.Contains(lower, "authorization") || strings.Contains(lower, "cookie") ||
