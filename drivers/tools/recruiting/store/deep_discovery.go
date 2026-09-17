@@ -157,6 +157,14 @@ func prepareDeepDiscoveryGraphDeltaWith(ctx context.Context, query deepDiscovery
 			return nil, nil, 0, 0, fmt.Errorf("deep discovery node identity collision")
 		}
 		if existing.State == node.State {
+			// A validated list URL may start with provisional browser evidence
+			// and later receive the Mission-owned list-to-detail proof. Preserve
+			// the stable node identity while appending a new immutable claim and
+			// refreshing the current projection when that evidence changes.
+			if existing.Kind == model.EvidenceListURL && existing.State == model.EvidenceValidated &&
+				node.ListProof != nil && !deepDiscoveryEvidenceNodesEqual(existing, node) {
+				claims = append(claims, node)
+			}
 			continue
 		}
 		if existing.State != model.EvidenceCandidate || node.State == model.EvidenceCandidate {
@@ -190,6 +198,12 @@ func prepareDeepDiscoveryGraphDeltaWith(ctx context.Context, query deepDiscovery
 		}
 	}
 	return claims, newEdges, addedNodes, validatedCandidates, nil
+}
+
+func deepDiscoveryEvidenceNodesEqual(left, right model.DiscoveryEvidenceNode) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
 }
 
 func getDeepDiscoveryMissionWith(ctx context.Context, query interface {
@@ -338,8 +352,13 @@ func (r *Repository) checkpointDeepDiscovery(ctx context.Context, missionID, com
 mission_id,node_id,node_ordinal,node_kind,node_state,canonical_value,state_json,created_at) VALUES (?,?,?,?,?,?,?,?)`, missionID, node.NodeID, current.NodeCount+createdNodes, node.Kind, node.State, node.CanonicalValue, encoded, at.UTC())
 			createdNodes++
 		} else if err == nil {
+			whereState := string(model.EvidenceCandidate)
+			if previousState == string(model.EvidenceValidated) && node.Kind == model.EvidenceListURL &&
+				node.State == model.EvidenceValidated {
+				whereState = string(model.EvidenceValidated)
+			}
 			result, updateErr := tx.ExecContext(ctx, `UPDATE recruiting_deep_discovery_nodes SET node_state=?,state_json=?
-WHERE mission_id=? AND node_id=? AND node_state='candidate'`, node.State, encoded, missionID, node.NodeID)
+WHERE mission_id=? AND node_id=? AND node_state=?`, node.State, encoded, missionID, node.NodeID, whereState)
 			if updateErr != nil {
 				return model.DeepDiscoveryMission{}, CommandResult{}, updateErr
 			}

@@ -116,8 +116,17 @@ func TestDeepDiscoveryRepositoryContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	listNode := evidenceNode(t, model.EvidenceListURL, "https://jobs.example.com/search?sort=updated", model.EvidenceValidated, model.SensorBrowser, "https://jobs.example.com/search?sort=updated", "populated newest-first job list")
+	staleProof := *listNode.ListProof
+	staleProof.ListingArtifactID = "stale-list-detail-response"
+	staleProof.DetailArtifactID = "stale-list-detail-response"
+	staleListNode, err := model.NewDiscoveryEvidenceNodeWithTypeAndProof(listNode.Kind, listNode.CanonicalValue,
+		listNode.Label, listNode.State, listNode.Sensor, listNode.EvidenceURL, "stale-list-detail-response",
+		"provisional browser evidence", listNode.RecruitmentType, listNode.SpecialProgram, &staleProof)
+	if err != nil || staleListNode.NodeID != listNode.NodeID {
+		t.Fatalf("stale list evidence=%+v err=%v", staleListNode, err)
+	}
 	coverage.PoolsDetected = true
-	mission, err = repository.CheckpointDeepDiscovery(ctx, mission.MissionID, "deep-checkpoint-5", "candidate validated", mission.Version, model.DeepDiscoveryCandidateValidation, coverage, 0, 5, []model.DiscoveryEvidenceNode{listNode}, nil, now.Add(5*time.Second))
+	mission, err = repository.CheckpointDeepDiscovery(ctx, mission.MissionID, "deep-checkpoint-5", "candidate validated", mission.Version, model.DeepDiscoveryCandidateValidation, coverage, 0, 5, []model.DiscoveryEvidenceNode{staleListNode}, nil, now.Add(5*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,6 +137,25 @@ FROM recruiting_deep_discovery_nodes n JOIN recruiting_deep_discovery_node_claim
   ON c.mission_id=n.mission_id AND c.node_id=n.node_id
 WHERE n.mission_id=? AND n.node_id=? GROUP BY n.node_state`, mission.MissionID, listNode.NodeID).Scan(&projectedState, &claimCount); err != nil || projectedState != string(model.EvidenceValidated) || claimCount != 2 {
 		t.Fatalf("candidate promotion projection=%q claims=%d err=%v", projectedState, claimCount, err)
+	}
+	mission, err = repository.CheckpointDeepDiscovery(ctx, mission.MissionID, "deep-checkpoint-5-proof-refresh",
+		"replace provisional evidence with Mission browser proof", mission.Version, model.DeepDiscoveryCandidateValidation,
+		coverage, 0, 0, []model.DiscoveryEvidenceNode{listNode}, nil, now.Add(5*time.Second+time.Millisecond))
+	if err != nil {
+		t.Fatalf("validated list proof refresh: %v", err)
+	}
+	var projectedJSON []byte
+	if err := db.QueryRowContext(ctx, `SELECT state_json FROM recruiting_deep_discovery_nodes WHERE mission_id=? AND node_id=?`,
+		mission.MissionID, listNode.NodeID).Scan(&projectedJSON); err != nil {
+		t.Fatal(err)
+	}
+	var projectedNode model.DiscoveryEvidenceNode
+	if err := json.Unmarshal(projectedJSON, &projectedNode); err != nil || projectedNode.EvidenceArtifactID != "deep-list-detail-response" {
+		t.Fatalf("refreshed list projection=%+v err=%v", projectedNode, err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recruiting_deep_discovery_node_claims WHERE mission_id=? AND node_id=?`,
+		mission.MissionID, listNode.NodeID).Scan(&claimCount); err != nil || claimCount != 3 {
+		t.Fatalf("refreshed list claims=%d err=%v", claimCount, err)
 	}
 	mission = completeListDetailEvidence(t, ctx, repository, mission, company, now.Add(5*time.Second))
 	blindspot := evidenceNode(t, model.EvidenceBlindspot, "campus recruitment", model.EvidenceExcluded, model.SensorHuman, "https://example.com/careers", "outside agreed company scope")
