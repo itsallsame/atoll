@@ -23,6 +23,20 @@ import (
 	"github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor/browserdriver"
 )
 
+func TestRequestTrackerCloseHasBoundedWait(t *testing.T) {
+	tracker := newRequestTracker()
+	release := make(chan struct{})
+	tracker.start(func() { <-release })
+	started := time.Now()
+	if tracker.closeAndWait(20 * time.Millisecond) {
+		t.Fatal("blocked request handler was reported as drained")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("request handler drain ignored its bound: %s", elapsed)
+	}
+	close(release)
+}
+
 func TestRunnerExecutesImmutablePlanInRealChrome(t *testing.T) {
 	chrome := chromeForTest(t)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

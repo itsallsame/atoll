@@ -102,11 +102,23 @@ func (t *requestTracker) start(run func()) {
 	}()
 }
 
-func (t *requestTracker) closeAndWait() {
+func (t *requestTracker) closeAndWait(timeout time.Duration) bool {
 	t.mu.Lock()
 	t.open = false
 	t.mu.Unlock()
-	t.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		t.wg.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 func New(chromePath string) (*Runner, error) {
@@ -316,7 +328,7 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	// the directory and permit two processes to race over the same credentials.
 	_ = chromedp.Cancel(tabCtx)
 	cancelTab()
-	requestTasks.closeAndWait()
+	requestsDrained := requestTasks.closeAndWait(5 * time.Second)
 	state.recordBlockedEffects(blockedDownloads, blockedPopups)
 	attestation, violation := state.attestation(request.Policy.TermsPolicyVersion, robotsAllowed, profiled)
 	if int64(len(dom)) > request.Plan.MaxDOMBytes {
@@ -332,6 +344,9 @@ func (r *Runner) Run(ctx context.Context, request browserdriver.SessionRequest) 
 	}
 	if captureErr != nil {
 		return result, fmt.Errorf("capture browser DOM: %w", captureErr)
+	}
+	if !requestsDrained {
+		return result, fmt.Errorf("browser request-policy handlers did not drain before their bound")
 	}
 	return result, nil
 }
@@ -589,7 +604,9 @@ func (r *Runner) publicQueryObservation(ctx context.Context, event *fetch.EventR
 	// searches are blocked but never become verifiable observations.
 	if len(body) == 0 && event.NetworkID != "" {
 		var postData string
-		if err := chromedp.Run(ctx, chromedp.ActionFunc(func(commandCtx context.Context) error {
+		postDataCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if err := chromedp.Run(postDataCtx, chromedp.ActionFunc(func(commandCtx context.Context) error {
 			var err error
 			postData, err = network.GetRequestPostData(event.NetworkID).Do(commandCtx)
 			return err
