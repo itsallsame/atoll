@@ -159,7 +159,7 @@ func TestRecipeValidationExecutesEvidenceOnlyBeforeApproval(t *testing.T) {
 	}
 }
 
-func TestFirstListingRecipeCanValidateAgainstCandidateSourceWithoutPublishingIt(t *testing.T) {
+func TestFirstListingRecipeCanValidateAgainstReadyCompanyCandidateSourceWithoutPublishingIt(t *testing.T) {
 	dsn := os.Getenv("RECRUITING_MYSQL_TEST_DSN")
 	if dsn == "" {
 		t.Skip("RECRUITING_MYSQL_TEST_DSN is not set")
@@ -176,6 +176,18 @@ func TestFirstListingRecipeCanValidateAgainstCandidateSourceWithoutPublishingIt(
 	now := time.Date(2095, 2, 4, 3, 0, 0, 0, time.UTC)
 	company, _ := model.NewCompany("bootstrap-company", "Bootstrap Company", "https://jobs.bootstrap.example")
 	if err := repository.CreateCompany(ctx, company, now); err != nil {
+		t.Fatal(err)
+	}
+	discovering, _ := company.StartDiscovery(company.Version)
+	if err := repository.UpdateCompanyCAS(ctx, company.Version, discovering, now.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	initializing, _ := discovering.StartInitialization(discovering.Version)
+	if err := repository.UpdateCompanyCAS(ctx, discovering.Version, initializing, now.Add(2*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	company, _ = initializing.MarkReady(initializing.Version)
+	if err := repository.UpdateCompanyCAS(ctx, initializing.Version, company, now.Add(3*time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
 	source, _ := model.NewRecruitmentSource("bootstrap-source", company.CompanyID,

@@ -74,9 +74,13 @@ WHERE s.source_id = ?`
 			value.Recipe.Status == model.RecipeValidating)
 	// Keep the bootstrap branch explicit: it exists only for the very first
 	// Listing Recipe of a candidate-only Source and is fenced by immutable
-	// proposal provenance.
+	// proposal provenance. A ready Company may legitimately add or initialize
+	// a newly discovered Source after Company onboarding has completed; Source
+	// readiness, rather than Company readiness, is the bootstrap boundary.
 	bootstrapOnboarding := value.Company.OnboardingStatus == model.CompanyNew ||
-		value.Company.OnboardingStatus == model.CompanyDiscoveringSources || value.Company.OnboardingStatus == model.CompanyInitializing
+		value.Company.OnboardingStatus == model.CompanyDiscoveringSources ||
+		value.Company.OnboardingStatus == model.CompanyInitializing ||
+		value.Company.OnboardingStatus == model.CompanyReady
 	bootstrap := bootstrapOnboarding && value.Company.ControlStatus == model.ControlActive &&
 		value.Source.ReadinessStatus == model.SourceCandidate && value.Source.ControlStatus == model.ControlActive &&
 		value.Source.HealthStatus == model.HealthHealthy && value.Source.ActiveEndpoint == nil && value.Source.CandidateEndpoint != nil &&
