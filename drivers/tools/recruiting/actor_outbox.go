@@ -121,6 +121,11 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 	}
 
 	now := time.Now().UTC()
+	sampleJob, err := repository.MaterializeNextBaselineRecipeSample(msg.Ctx(), now)
+	if err != nil {
+		failStoreError(sys, msg, err)
+		return
+	}
 	recovery, err := repository.RecoverStaleAttempts(msg.Ctx(), now.Add(-time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond), cfg.AttemptRecoveryLimit, now)
 	if err != nil {
 		failStoreError(sys, msg, err)
@@ -154,11 +159,6 @@ func handleOutboxReconcile(sys actorbase.Sys, cfg Config, repository *store.Repo
 	}
 	response.ProfileSessionsScanned, response.ProfileSessionsExpired = profileExpiry.Scanned, profileExpiry.Expired
 	response.ProfileSessionConflicts = profileExpiry.Conflicts
-	sampleJob, err := repository.MaterializeNextBaselineRecipeSample(msg.Ctx(), now)
-	if err != nil {
-		failStoreError(sys, msg, err)
-		return
-	}
 	if sampleJob != nil {
 		response.BaselineRecipeSampleJobID = sampleJob.JobID
 	}
@@ -396,6 +396,7 @@ func handleOutboxReconcileDue(sys actorbase.Sys, cfg Config, state *storedState,
 	}
 	if repository != nil {
 		now := time.Now().UTC()
+		_, _ = repository.MaterializeNextBaselineRecipeSample(msg.Ctx(), now)
 		_, _ = reconcileExecutorPresence(sys, cfg, state, repository, now)
 		_, _ = repository.RecoverStaleAttempts(msg.Ctx(), now.Add(-time.Duration(cfg.AttemptStaleAfterMS)*time.Millisecond), cfg.AttemptRecoveryLimit, now)
 		_, _ = repository.ExpireProfileRepairSessions(msg.Ctx(), now, defaultReconcileLimit)
