@@ -145,6 +145,21 @@ func TestBrowserExecutionDriverPersistsAndScansEveryAdvancedBatch(t *testing.T) 
 		!run.Output.Quality.MayAdvanceCheckpoint() || run.Pages[0].Terminal || !run.Pages[1].Terminal {
 		t.Fatalf("advanced listing result=%+v writes=%+v err=%v", run, sink.writes, err)
 	}
+
+	streamSink := &browserArtifactSinkStub{}
+	streamed := make([]httpdriver.ListingPage, 0, 2)
+	streamRun, err := (&browserExecutionDriver{driver: driver}).RunListingStreaming(context.Background(), spec,
+		browserRunInputForExecutionTest(), httpdriver.ComplianceEvidence{TermsPolicyVersion: 1,
+			TermsReviewedAt: "2026-09-11T00:00:00Z"}, streamSink, func(page httpdriver.ListingPage) error {
+			streamed = append(streamed, page)
+			return nil
+		})
+	if err != nil || len(streamed) != 2 || streamed[0].Terminal || streamed[0].ResumeCursor == "" ||
+		!streamed[1].Terminal || streamed[1].ResumeCursor != "" || len(streamRun.Pages) != 2 ||
+		len(streamRun.Output.Artifacts) != 2 || streamRun.Output.Quality.ItemCount != 2 || len(streamSink.writes) != 3 {
+		t.Fatalf("streamed browser listing pages=%+v result=%+v writes=%+v err=%v",
+			streamed, streamRun, streamSink.writes, err)
+	}
 }
 
 func TestBrowserExecutionDriverRejectsBoundedIncompleteListing(t *testing.T) {

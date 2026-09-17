@@ -126,6 +126,19 @@ func (d *browserExecutionDriver) runJSONListing(ctx context.Context, spec recipe
 		browserdriver.PolicyEvidence{TermsPolicyVersion: compliance.TermsPolicyVersion,
 			TermsReviewedAt: compliance.TermsReviewedAt},
 		browserArtifactSink{sink: sink, kind: "page"}, func(result browserdriver.PageResult) (bool, error) {
+			// The browser broker only knows that a batch was terminal after the
+			// advancement action completes. Keep one batch buffered: arrival of
+			// the next batch proves the previous one is resumable, while the last
+			// batch is submitted as terminal after the session returns.
+			if consume != nil && len(pages) > 0 {
+				previous := &pages[len(pages)-1]
+				previous.ResumeCursor = fmt.Sprintf("browser-action:%d", previous.Sequence+1)
+				if err := consume(*previous); err != nil {
+					return false, err
+				}
+				previous.Items = nil
+				scan.DiscardBufferedItems()
+			}
 			before := scan.BufferedItemCount()
 			itemCountBefore := scan.ItemCount()
 			if err := scan.AddPage(result.Document); err != nil {
@@ -142,12 +155,6 @@ func (d *browserExecutionDriver) runJSONListing(ctx context.Context, spec recipe
 			page := httpdriver.ListingPage{Sequence: uint64(len(pages) + 1), URL: result.FinalURL,
 				Terminal: false, Artifact: result.Artifact, Items: items}
 			pages = append(pages, page)
-			if consume != nil {
-				if err := consume(page); err != nil {
-					return false, err
-				}
-				scan.DiscardBufferedItems()
-			}
 			return scan.Complete() && scan.StopReason() == "safe_boundary", nil
 		})
 	traceBody, _ := json.Marshal(map[string]any{"final_url": session.FinalURL, "attestation": session.Attestation,
@@ -158,9 +165,9 @@ func (d *browserExecutionDriver) runJSONListing(ctx context.Context, spec recipe
 	if traceErr != nil {
 		return httpdriver.ListingRunResult{}, traceErr
 	}
-	artifacts = append(artifacts, trace)
+	failureArtifacts := append(append([]recipeabi.ArtifactRef(nil), artifacts...), trace)
 	if runErr != nil {
-		return d.failedListing(ctx, input, sink, artifacts, runErr, scan.Quality())
+		return d.failedListing(ctx, input, sink, failureArtifacts, runErr, scan.Quality())
 	}
 	if session.EndOfInput {
 		if err := scan.MarkEndOfInput(); err != nil {
@@ -170,7 +177,7 @@ func (d *browserExecutionDriver) runJSONListing(ctx context.Context, spec recipe
 	}
 	quality := scan.Quality()
 	if requireQuality && !quality.MayAdvanceCheckpoint() {
-		return d.failedListing(ctx, input, sink, artifacts,
+		return d.failedListing(ctx, input, sink, failureArtifacts,
 			&browserdriver.RunError{Class: "quality_rejected", Cause: fmt.Errorf("browser listing stopped as %s without a safe boundary", session.StopReason)}, quality)
 	}
 	var checkpoint *recipeabi.CheckpointRef
@@ -183,11 +190,19 @@ func (d *browserExecutionDriver) runJSONListing(ctx context.Context, spec recipe
 	}
 	if len(pages) > 0 {
 		pages[len(pages)-1].Terminal = true
+		if consume != nil {
+			if err := consume(pages[len(pages)-1]); err != nil {
+				return httpdriver.ListingRunResult{}, err
+			}
+			pages[len(pages)-1].Items = nil
+			scan.DiscardBufferedItems()
+		}
 	}
 	items := scan.Items()
 	result := map[string]any{"checkpoint_candidate": checkpoint, "stop_reason": scan.StopReason(),
 		"advance_stop_reason": session.StopReason, "batch_count": len(pages)}
 	if consume == nil {
+		artifacts = append(artifacts, trace)
 		result["items"] = items
 	} else {
 		result["item_count"], result["items_streamed"] = scan.ItemCount(), true
