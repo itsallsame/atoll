@@ -246,6 +246,27 @@ func TestBrowserListingValidationUsesBoundedProofBudget(t *testing.T) {
 	}
 }
 
+func TestBrowserListingProductionUsesImmutablePageCeilingForLegacyProbeBudget(t *testing.T) {
+	spec := browserListingSpecForExecutionTest()
+	spec.Transport = recipeabi.TransportBrowserJSON
+	spec.BrowserQuery = &recipeabi.BrowserQuery{Method: "POST", EndpointPath: "/jobs"}
+	spec.Listing.MaxPages = 200
+	spec.ListingAdvance = &recipeabi.ListingAdvanceContract{Kind: recipeabi.ListingAdvanceClick, Selector: "#next",
+		ProgressProof: []string{"response", "job_identity"}, EndProof: recipeabi.ListingEndProof{Kind: "response_false", Pointer: "/has_more"},
+		WaitTimeoutMS: 1_000, MaxAdvances: 2, MaxNoProgress: 1}
+	production := listingExecutionSpec(spec, true)
+	validation := spec
+	validation.ListingAdvance = &recipeabi.ListingAdvanceContract{Kind: recipeabi.ListingAdvanceClick, Selector: "#next",
+		ProgressProof: []string{"response", "job_identity"}, EndProof: recipeabi.ListingEndProof{Kind: "response_false", Pointer: "/has_more"},
+		WaitTimeoutMS: 1_000, MaxAdvances: 199, MaxNoProgress: 1}
+	validation = listingExecutionSpec(validation, false)
+	if production.ListingAdvance.MaxAdvances != 199 || validation.ListingAdvance.MaxAdvances != 2 ||
+		spec.ListingAdvance.MaxAdvances != 2 {
+		t.Fatalf("production=%d validation=%d immutable=%d", production.ListingAdvance.MaxAdvances,
+			validation.ListingAdvance.MaxAdvances, spec.ListingAdvance.MaxAdvances)
+	}
+}
+
 func TestBrowserExecutionDriverPersistsFailureThroughExistingVocabulary(t *testing.T) {
 	spec := browserListingSpecForExecutionTest()
 	driver, _ := browserdriver.New(publicBrowserBrokerStub{err: errors.New("Chrome stopped")})

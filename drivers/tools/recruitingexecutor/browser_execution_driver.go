@@ -122,15 +122,7 @@ func (d *browserExecutionDriver) runJSONListing(ctx context.Context, spec recipe
 	}
 	pages := make([]httpdriver.ListingPage, 0, spec.Listing.MaxPages)
 	artifacts := make([]recipeabi.ArtifactRef, 0, spec.Listing.MaxPages+2)
-	executionSpec := spec
-	if !requireQuality && executionSpec.ListingAdvance.MaxAdvances > 2 {
-		// Candidate validation proves that the immutable action repeats and emits
-		// distinct job identities; it must not spend the much larger production
-		// frontier budget enumerating an entire live site.
-		advance := *executionSpec.ListingAdvance
-		advance.MaxAdvances = 2
-		executionSpec.ListingAdvance = &advance
-	}
+	executionSpec := listingExecutionSpec(spec, requireQuality)
 	session, _, runErr := d.driver.ExecuteListing(ctx, executionSpec, input, *spec.BrowserPlan,
 		browserdriver.PolicyEvidence{TermsPolicyVersion: compliance.TermsPolicyVersion,
 			TermsReviewedAt: compliance.TermsReviewedAt},
@@ -226,6 +218,25 @@ func (d *browserExecutionDriver) runJSONListing(ctx context.Context, spec recipe
 		return httpdriver.ListingRunResult{}, err
 	}
 	return httpdriver.ListingRunResult{Output: output, CheckpointCandidate: checkpoint, Pages: pages}, nil
+}
+
+func listingExecutionSpec(spec recipeabi.Spec, requireQuality bool) recipeabi.Spec {
+	executionSpec := spec
+	advance := *executionSpec.ListingAdvance
+	if !requireQuality && advance.MaxAdvances > 2 {
+		// Candidate validation proves that the immutable action repeats and emits
+		// distinct job identities; it must not spend the much larger production
+		// frontier budget enumerating an entire live site.
+		advance.MaxAdvances = 2
+	} else if requireQuality && spec.Listing != nil && advance.Kind != recipeabi.ListingAdvanceNone &&
+		advance.MaxAdvances < spec.Listing.MaxPages-1 {
+		// Older Recipes persisted the discovery proof budget as max_advances.
+		// MaxPages is the actual immutable production safety ceiling; allow the
+		// run to reach that ceiling so it can find the old frontier and overlap.
+		advance.MaxAdvances = spec.Listing.MaxPages - 1
+	}
+	executionSpec.ListingAdvance = &advance
+	return executionSpec
 }
 
 func (d *browserExecutionDriver) RunDetail(ctx context.Context, spec recipeabi.Spec, input recipeabi.RunInput,
