@@ -235,12 +235,12 @@ WHERE work_id = ? AND attempt_status = 'succeeded'`, workID).Scan(&successCount)
 	}
 	var outcome RecipeSampleValidationOutcome
 	if json.Unmarshal(state, &outcome) != nil || outcome.Work.WorkID != work.WorkID ||
-		outcome.Run.ValidationRunID != run.ValidationRunID || outcome.Artifacts != 2 ||
+		outcome.Run.ValidationRunID != run.ValidationRunID || outcome.Artifacts < 2 || outcome.Artifacts > 10 ||
 		outcome.RecordCount < 1 || outcome.RecordCount > 500 || outcome.ExtractedFieldCount != run.ExpectedFieldCount ||
 		!strings.HasPrefix(outcome.NormalizedHash, "sha256:") {
 		return fmt.Errorf("%w: Discovery approval requires at least one valid real-sample candidate", ErrRecipeValidationRejected)
 	}
-	return requireRecipeValidationArtifacts(ctx, tx, workID, attemptID, 2, "response", "trace")
+	return requireRecipeValidationArtifacts(ctx, tx, workID, attemptID, outcome.Artifacts, "response", "trace")
 }
 
 func validateDetailRecipeApprovalEvidence(ctx context.Context, tx *sql.Tx, recipe model.Recipe,
@@ -277,11 +277,11 @@ WHERE work_id = ? AND attempt_status = 'succeeded'`, workID).Scan(&successCount)
 	}
 	var outcome RecipeSampleValidationOutcome
 	if json.Unmarshal(state, &outcome) != nil || outcome.Work.WorkID != work.WorkID ||
-		outcome.Run.ValidationRunID != run.ValidationRunID || outcome.Artifacts != 2 || outcome.RecordCount != 1 ||
+		outcome.Run.ValidationRunID != run.ValidationRunID || outcome.Artifacts < 2 || outcome.Artifacts > 10 || outcome.RecordCount != 1 ||
 		outcome.ExtractedFieldCount != run.ExpectedFieldCount || !strings.HasPrefix(outcome.NormalizedHash, "sha256:") {
 		return fmt.Errorf("%w: approval requires complete Detail sample evidence", ErrRecipeValidationRejected)
 	}
-	return requireRecipeValidationArtifacts(ctx, tx, workID, attemptID, 2, "response", "trace")
+	return requireRecipeValidationArtifacts(ctx, tx, workID, attemptID, outcome.Artifacts, "response", "trace")
 }
 
 func requireRecipeValidationArtifacts(ctx context.Context, tx *sql.Tx, workID, attemptID string,
