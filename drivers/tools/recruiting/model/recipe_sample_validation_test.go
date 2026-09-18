@@ -9,6 +9,7 @@ func TestDetailRecipeSampleValidationFreezesCandidateAndJob(t *testing.T) {
 	source.ReadinessStatus = SourceReady
 	current, _ := NewSourceRecipeAssignment(source.SourceID, RecipeDetail, "detail-old", 1, "contract",
 		"2026-09-10T00:00:00Z")
+	source.DetailAssignment = &current
 	candidate, _ := NewRecipe("detail-new", RecipeDetail, "apply.example", 2, "content", "contract",
 		RecipeExecution{ABIVersion: RecipeABIVersion, ContentRef: "recipe://detail/new",
 			RequiredCapability: "http.fetch", Transport: RecipeTransportHTTPHTML})

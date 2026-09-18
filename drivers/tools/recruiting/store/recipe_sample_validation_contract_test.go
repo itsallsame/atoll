@@ -101,14 +101,15 @@ func TestDetailRecipeValidationRecordsEvidenceWithoutPublishingJobData(t *testin
 		t.Fatal(err)
 	}
 	response := mustResultArtifact(t, "detail-validation-response", model.ArtifactResponse, work.WorkID, offer.Attempt.AttemptID)
+	browserTrace := mustResultArtifact(t, "detail-validation-browser-trace", model.ArtifactTrace, work.WorkID, offer.Attempt.AttemptID)
 	trace := mustResultArtifact(t, "detail-validation-trace", model.ArtifactTrace, work.WorkID, offer.Attempt.AttemptID)
 	result := RecipeSampleValidationResult{CommandID: "detail-validation-result", RequestHash: "sha256:detail-validation-result",
 		AttemptID: offer.Attempt.AttemptID, ExecutorActorID: offer.Attempt.ExecutorActorID,
 		ExecutorIncarnation: offer.Attempt.ExecutorIncarnation, ResultKind: "recipe_sample_validation",
-		RecipeKind: model.RecipeDetail, Artifacts: []model.ArtifactMetadata{response, trace}, RecordCount: 1,
+		RecipeKind: model.RecipeDetail, Artifacts: []model.ArtifactMetadata{response, browserTrace, trace}, RecordCount: 1,
 		ExtractedFieldCount: 4, NormalizedContentHash: "sha256:normalized-detail", CompletedAt: now.Add(time.Second)}
 	outcome, err := repository.AcceptRecipeSampleValidationResult(ctx, result)
-	if err != nil || outcome.Run.Status != model.RecipeSampleValidationCompleted || outcome.Artifacts != 2 {
+	if err != nil || outcome.Run.Status != model.RecipeSampleValidationCompleted || outcome.Artifacts != 3 {
 		t.Fatalf("Detail validation result=%+v err=%v", outcome, err)
 	}
 	replay, err := repository.AcceptRecipeSampleValidationResult(ctx, result)

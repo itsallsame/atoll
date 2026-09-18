@@ -79,7 +79,7 @@ func manifest() introspect.Manifest {
 			TypeSourceProfileBind:              {Description: "bind future listing or detail Browser work to a ready Profile on its authorized device"},
 			TypeSourceProfileUnbind:            {Description: "remove a versioned Source Profile binding after its Recipe no longer requires that Profile"},
 			TypeRecipeInspect:                  {Description: "inspect one immutable Recipe version, optional browser-capture provenance, and its current Source assignment count"},
-			TypeRecipePrepare:                  {Description: "compile a bounded Listing Recipe from an in-browser public-query response and a small site-specific semantic mapping; the control plane owns the Recipe ABI and incremental defaults"},
+			TypeRecipePrepare:                  {Description: "compile a bounded Listing or browser Detail Recipe from completed Probe evidence and a small site-specific semantic mapping; the control plane owns the Recipe ABI and execution defaults"},
 			TypeRecipePropose:                  {Description: "strictly validate and register an immutable Recipe draft; the first Listing Recipe may bind the exact candidate endpoint without publishing the Source"},
 			TypeRecipeValidate:                 {Description: "run Listing, Detail, or Discovery Recipe candidates against frozen real evidence; first Listing/Detail validation supports cold start without premature publication"},
 			TypeRecipeApprove:                  {Description: "activate one validating Recipe only after a complete executor-succeeded real-sample validation"},

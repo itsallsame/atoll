@@ -17,13 +17,12 @@ func prepareDetailRecipeValidationSubmission(ctx context.Context, offer executio
 	spec recipeabi.Spec, run httpdriver.DetailRunResult, sink *atollArtifactSink) (executioncontract.RecipeSampleValidationResult, error) {
 	if sink == nil || offer.Kind != "detail" || offer.RecipeValidation == nil ||
 		offer.RecipeValidation.RecipeKind != model.RecipeDetail || run.Output.Failure != nil ||
-		run.Output.AttemptID != offer.Attempt.AttemptID || len(run.Output.Artifacts) != 1 ||
-		run.Output.Artifacts[0] != run.ResponseArtifact || run.Output.Quality.ItemCount != 1 ||
+		run.Output.AttemptID != offer.Attempt.AttemptID || run.Output.Quality.ItemCount != 1 ||
 		len(run.Detail) == 0 || !json.Valid(run.Detail) || len(spec.Extraction.Fields) == 0 {
 		return executioncontract.RecipeSampleValidationResult{},
 			errors.New("one complete Detail Recipe sample validation result is required")
 	}
-	response, err := sink.metadata(run.ResponseArtifact, model.ArtifactResponse)
+	response, supporting, err := successfulResultArtifacts(run.Output.Artifacts, run.ResponseArtifact, sink)
 	if err != nil {
 		return executioncontract.RecipeSampleValidationResult{}, err
 	}
@@ -38,10 +37,12 @@ func prepareDetailRecipeValidationSubmission(ctx context.Context, offer executio
 	if err != nil {
 		return executioncontract.RecipeSampleValidationResult{}, err
 	}
+	artifacts := append([]model.ArtifactMetadata{response}, supporting...)
+	artifacts = append(artifacts, trace)
 	return executioncontract.RecipeSampleValidationResult{
 		CommandID: "recipe-validation-result-" + offer.Attempt.AttemptID, ResultKind: "recipe_sample_validation",
 		AttemptID: offer.Attempt.AttemptID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation,
-		RecipeKind: model.RecipeDetail, Artifacts: []model.ArtifactMetadata{response, trace},
+		RecipeKind: model.RecipeDetail, Artifacts: artifacts,
 		RecordCount: 1, ExtractedFieldCount: len(spec.Extraction.Fields),
 		NormalizedContentHash: run.NormalizedContentHash,
 	}, nil
@@ -51,13 +52,12 @@ func prepareDiscoveryRecipeValidationSubmission(ctx context.Context, offer execu
 	spec recipeabi.Spec, run httpdriver.DiscoveryRunResult, sink *atollArtifactSink) (executioncontract.RecipeSampleValidationResult, error) {
 	if sink == nil || offer.Kind != "discovery" || offer.RecipeValidation == nil ||
 		offer.RecipeValidation.RecipeKind != model.RecipeDiscovery || run.Output.Failure != nil ||
-		run.Output.AttemptID != offer.Attempt.AttemptID || len(run.Output.Artifacts) != 1 ||
-		run.Output.Artifacts[0] != run.ResponseArtifact || len(run.Items) > 500 ||
+		run.Output.AttemptID != offer.Attempt.AttemptID || len(run.Items) > 500 ||
 		len(run.Output.Result) == 0 || !json.Valid(run.Output.Result) || len(spec.Extraction.Fields) == 0 {
 		return executioncontract.RecipeSampleValidationResult{},
 			errors.New("one complete Discovery Recipe sample validation result is required")
 	}
-	response, err := sink.metadata(run.ResponseArtifact, model.ArtifactResponse)
+	response, supporting, err := successfulResultArtifacts(run.Output.Artifacts, run.ResponseArtifact, sink)
 	if err != nil {
 		return executioncontract.RecipeSampleValidationResult{}, err
 	}
@@ -74,10 +74,12 @@ func prepareDiscoveryRecipeValidationSubmission(ctx context.Context, offer execu
 	if err != nil {
 		return executioncontract.RecipeSampleValidationResult{}, err
 	}
+	artifacts := append([]model.ArtifactMetadata{response}, supporting...)
+	artifacts = append(artifacts, trace)
 	return executioncontract.RecipeSampleValidationResult{
 		CommandID: "recipe-validation-result-" + offer.Attempt.AttemptID, ResultKind: "recipe_sample_validation",
 		AttemptID: offer.Attempt.AttemptID, ExecutorIncarnation: offer.Attempt.ExecutorIncarnation,
-		RecipeKind: model.RecipeDiscovery, Artifacts: []model.ArtifactMetadata{response, trace},
+		RecipeKind: model.RecipeDiscovery, Artifacts: artifacts,
 		RecordCount: len(run.Items), ExtractedFieldCount: len(spec.Extraction.Fields),
 		NormalizedContentHash: normalizedHash,
 	}, nil

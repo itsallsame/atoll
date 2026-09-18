@@ -221,10 +221,12 @@ func TestExecuteOfferSubmitsDetailRecipeValidationEvidenceOnly(t *testing.T) {
 		RequestedCapability: attempt.Capability}
 	ref := recipeabi.ArtifactRef{ArtifactID: "validation-response", ContentHash: "sha256:response",
 		ObjectRef: "artifact://validation-response"}
+	browserTrace := recipeabi.ArtifactRef{ArtifactID: "validation-browser-trace", ContentHash: "sha256:browser-trace",
+		ObjectRef: "artifact://validation-browser-trace", Kind: string(model.ArtifactTrace)}
 	detail := json.RawMessage(`{"title":"Engineer"}`)
 	driverResult := httpdriver.DetailRunResult{ResponseArtifact: ref, Detail: detail,
 		NormalizedContentHash: normalizedJSONHash(detail), Output: recipeabi.RunOutput{ABIVersion: recipeabi.Version,
-			AttemptID: attempt.AttemptID, Artifacts: []recipeabi.ArtifactRef{ref}, Result: detail,
+			AttemptID: attempt.AttemptID, Artifacts: []recipeabi.ArtifactRef{ref, browserTrace}, Result: detail,
 			Quality: recipeabi.QualityProof{ItemCount: 1}}}
 	resources := &executeResourceStub{artifactCreatorStub: artifactCreatorStub{writer: &writeHandleStub{}}, recipe: raw}
 	control := &executeControlStub{}
@@ -243,7 +245,8 @@ func TestExecuteOfferSubmitsDetailRecipeValidationEvidenceOnly(t *testing.T) {
 	}
 	submission, ok := control.submissions[0].(executioncontract.RecipeSampleValidationResult)
 	if !ok || submission.RecordCount != 1 || submission.ExtractedFieldCount != run.ExpectedFieldCount ||
-		len(submission.Artifacts) != 2 {
+		len(submission.Artifacts) != 3 || submission.Artifacts[1].Kind != model.ArtifactTrace ||
+		submission.Artifacts[2].Kind != model.ArtifactTrace {
 		t.Fatalf("validation submission=%#v", control.submissions)
 	}
 }

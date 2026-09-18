@@ -31,11 +31,17 @@ func main() {
 	channelID := flag.String("channel", "c0", "channel id")
 	target := flag.String("actor", "", "target actor id (default: the channel's first agent member)")
 	msgType := flag.String("type", "agent.ask", "request type")
+	payloadJSON := flag.String("payload-json", "", "raw JSON request payload; bypasses the default text payload")
 	timeout := flag.Duration("timeout", 5*time.Minute, "how long to wait for the final answer")
 	flag.Parse()
 	text := strings.Join(flag.Args(), " ")
-	if text == "" {
-		log.Fatal("usage: asksteward [flags] <text>")
+	var requestPayload any = map[string]any{"text": text}
+	if strings.TrimSpace(*payloadJSON) != "" {
+		if err := json.Unmarshal([]byte(*payloadJSON), &requestPayload); err != nil {
+			log.Fatalf("decode --payload-json: %v", err)
+		}
+	} else if text == "" {
+		log.Fatal("usage: asksteward [flags] <text> or --payload-json <json>")
 	}
 	base := "http://" + *addr
 	jar, _ := cookiejar.New(nil)
@@ -168,9 +174,9 @@ func main() {
 			log.Fatalf("no agent member in %s; member.list reply=%s", *channelID, raw)
 		}
 	}
-	fmt.Printf("→ %s %s: %s\n", *msgType, actorID, text)
+	fmt.Printf("→ %s %s\n", *msgType, actorID)
 	start := time.Now()
-	id := submit("ask", *msgType, actorID, map[string]any{"text": text})
+	id := submit("ask", *msgType, actorID, requestPayload)
 	env := await(id, *timeout, func(other map[string]any) {
 		sender, _ := other["sender"].(map[string]any)
 		typ, _ := other["type"].(string)

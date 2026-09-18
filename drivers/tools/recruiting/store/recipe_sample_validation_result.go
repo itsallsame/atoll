@@ -38,7 +38,7 @@ func (r *Repository) AcceptRecipeSampleValidationResult(ctx context.Context,
 		input.ExecutorActorID == "" || input.ExecutorIncarnation == "" ||
 		input.ResultKind != "recipe_sample_validation" ||
 		(input.RecipeKind != model.RecipeDetail && input.RecipeKind != model.RecipeDiscovery) ||
-		len(input.Artifacts) != 2 || input.RecordCount < 0 || input.RecordCount > 500 || input.ExtractedFieldCount < 1 ||
+		(len(input.Artifacts) < 2 || len(input.Artifacts) > 10) || input.RecordCount < 0 || input.RecordCount > 500 || input.ExtractedFieldCount < 1 ||
 		!strings.HasPrefix(input.NormalizedContentHash, "sha256:") || input.CompletedAt.IsZero() {
 		return RecipeSampleValidationOutcome{}, fmt.Errorf("Recipe sample validation result is incomplete")
 	}
@@ -48,7 +48,7 @@ func (r *Repository) AcceptRecipeSampleValidationResult(ctx context.Context,
 	seen := map[string]bool{}
 	for index, artifact := range input.Artifacts {
 		kind := model.ArtifactResponse
-		if index == 1 {
+		if index > 0 {
 			kind = model.ArtifactTrace
 		}
 		if seen[artifact.ArtifactID] {

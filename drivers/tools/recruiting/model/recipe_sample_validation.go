@@ -55,7 +55,7 @@ func NewDetailRecipeSampleValidation(id, workID string, company Company, source 
 	if id == "" || workID == "" || company.CompanyID != source.CompanyID || company.Version == 0 || source.Version == 0 ||
 		company.OnboardingStatus != CompanyReady || company.ControlStatus != ControlActive ||
 		source.ReadinessStatus != SourceReady || source.ControlStatus != ControlActive || source.HealthStatus != HealthHealthy ||
-		source.DetailAssignment != nil ||
+		source.DetailAssignment == nil || *source.DetailAssignment != currentAssignment ||
 		candidate.Kind != RecipeDetail || candidate.Status != RecipeValidating || expectedFieldCount < 1 ||
 		currentAssignment.SourceID != source.SourceID ||
 		currentAssignment.Kind != RecipeDetail || job.SourceID != source.SourceID || job.JobID == "" || job.Version == 0 {
