@@ -524,9 +524,19 @@ func (s *policyState) lastMatchingResponse(query recipeabi.BrowserQuery,
 func runListingAdvanceAction(ctx context.Context, contract recipeabi.ListingAdvanceContract) error {
 	switch contract.Kind {
 	case recipeabi.ListingAdvanceClick:
+		// The listing response normally arrives before the framework has committed
+		// the matching pagination control to the DOM. Treating that short render
+		// gap as an absent-control end proof truncates every production scan to its
+		// first batch. Wait within the Recipe's bounded action budget before
+		// deciding whether the control is genuinely absent.
+		waitCtx, cancel := context.WithTimeout(ctx, time.Duration(contract.WaitTimeoutMS)*time.Millisecond)
+		defer cancel()
+		if err := chromedp.Run(waitCtx, chromedp.WaitReady(contract.Selector, chromedp.ByQuery)); err != nil {
+			return errors.New("listing click target is missing")
+		}
 		expression := `(()=>{const n=document.querySelector(` + strconv.Quote(contract.Selector) + `);if(!n)return false;n.click();return true})()`
 		var found bool
-		if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &found)); err != nil {
+		if err := chromedp.Run(waitCtx, chromedp.Evaluate(expression, &found)); err != nil {
 			return err
 		}
 		if !found {

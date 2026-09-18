@@ -360,6 +360,47 @@ document.querySelector('#next').addEventListener('click',()=>{page++;document.qu
 	}
 }
 
+func TestRunnerWaitsForPaginationControlRenderedAfterInitialResponse(t *testing.T) {
+	chrome := chromeForTest(t)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodPost && request.URL.Path == "/jobs" {
+			var body struct {
+				Page int `json:"page"`
+			}
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			response.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(response, `{"jobs":[{"id":"%d"}]}`, body.Page+1)
+			return
+		}
+		response.Header().Set("Content-Type", "text/html")
+		_, _ = response.Write([]byte(`<!doctype html><html><body><div id="pager"></div><script>
+let page=0; const load=()=>fetch('/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({page})});
+load(); setTimeout(()=>{const next=document.createElement('button');next.id='next';next.textContent='next';
+next.addEventListener('click',()=>{page++;load()});document.querySelector('#pager').appendChild(next)},250);
+</script></body></html>`))
+	}))
+	defer server.Close()
+	runner := &Runner{chromePath: chrome, allowPrivate: true}
+	request := browserRequest(server.URL)
+	request.Plan.Actions = nil
+	request.PlanHash, _ = request.Plan.ContentHash()
+	request.BrowserQuery = &recipeabi.BrowserQuery{Method: "POST", EndpointPath: "/jobs"}
+	request.ListingAdvance = &recipeabi.ListingAdvanceContract{Kind: recipeabi.ListingAdvanceClick, Selector: "#next",
+		ProgressProof: []string{"response", "job_identity"},
+		EndProof:      recipeabi.ListingEndProof{Kind: "selector_absent_or_disabled", Selector: "#pager"},
+		WaitTimeoutMS: 2_000, MaxAdvances: 1, MaxNoProgress: 1}
+	sequences := []int{}
+	request.OnListingBatch = func(response browserdriver.PublicQueryResponse) (bool, error) {
+		sequences = append(sequences, response.ActionSequence)
+		return false, nil
+	}
+	result, err := runner.Run(context.Background(), request)
+	if err != nil || result.EndOfInput || result.StopReason != "bounded_incomplete" || result.AdvanceCount != 1 ||
+		!reflect.DeepEqual(sequences, []int{0, 1}) {
+		t.Fatalf("listing ended before its delayed pagination control rendered: result=%+v sequences=%v err=%v", result, sequences, err)
+	}
+}
+
 func TestRunnerAdvancesScrollableContainerUntilStableNoProgress(t *testing.T) {
 	chrome := chromeForTest(t)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -603,7 +644,7 @@ func TestRunnerCapturesByteDancePublicQueryResponsesInBrowser(t *testing.T) {
 		t.Skip("set RECRUITING_LIVE_BYTEDANCE_PROBE=1 for the real public site")
 	}
 	plan := browserdriver.Plan{Version: browserdriver.PlanVersion, MaxNavigations: 1, MaxDOMBytes: 20 << 20,
-		Actions: []browserdriver.Action{{Kind: browserdriver.ActionWaitSelector, Selector: `.atsx-pagination-next`, TimeoutMS: 30_000}}}
+		Actions: nil}
 	planHash, _ := plan.ContentHash()
 	request := browserdriver.SessionRequest{EndpointURL: "https://jobs.bytedance.com/campus/position",
 		UserAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/144.0.0.0 Safari/537.36", AcceptLanguage: "en-US,en;q=0.9",
