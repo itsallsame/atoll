@@ -90,6 +90,20 @@ func TestPrepareListingRecipeResourceRequiresExactProbeEvidence(t *testing.T) {
 	if _, err := prepareListingRecipeResource(source, mission, probe, result, "sha256:missing", nil, raw, "https://join.example/search/{value}"); err == nil {
 		t.Fatal("unknown Probe body hash was accepted")
 	}
+	ready := source
+	ready.ActiveEndpoint, ready.CandidateEndpoint = source.CandidateEndpoint, nil
+	ready.ReadinessStatus = model.SourceReady
+	ready.ListingAssignment = &model.SourceRecipeAssignment{SourceID: source.SourceID, Kind: model.RecipeListing,
+		RecipeID: "listing-existing", RecipeVersion: 4, AssignmentVersion: 2, ContractHash: "sha256:existing",
+		EffectiveAt: "2026-09-18T00:00:00Z"}
+	revision, err := prepareListingRecipeResource(ready, mission, probe, result, observation.BodyHash, nil, raw,
+		"https://join.example/search/{value}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision.RecipeID != "listing-existing" || revision.RecipeVersion != 5 {
+		t.Fatalf("replacement Recipe identity = %s@%d", revision.RecipeID, revision.RecipeVersion)
+	}
 }
 
 func TestBuildListingRecipeSpecOwnsABIAndBudgetDefaults(t *testing.T) {
@@ -112,6 +126,27 @@ func TestBuildListingRecipeSpecOwnsABIAndBudgetDefaults(t *testing.T) {
 		spec.Listing.BoundaryMode != "frontier_keys" || spec.Transport != recipeabi.TransportBrowserJSON ||
 		spec.RequiredCapability != "browser.public" || spec.BrowserQuery == nil || spec.BrowserQuery.EndpointPath != "/api/search" {
 		t.Fatalf("control-plane defaults were not applied: %+v", spec)
+	}
+}
+
+func TestBuildListingRecipeSpecExpandsProbeAdvanceBudgetForProductionFrontier(t *testing.T) {
+	observation, err := recipeabi.NewPublicQueryObservation("https://jobs.example/api/search", "POST",
+		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{"offset":0,"limit":10}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	advance := &recipeabi.ListingAdvanceContract{Kind: recipeabi.ListingAdvanceClick, Selector: "button.next",
+		ProgressProof: []string{"response", "job_identity"},
+		EndProof:      recipeabi.ListingEndProof{Kind: "selector_absent_or_disabled", Selector: "button.next"},
+		WaitTimeoutMS: 1_000, MaxAdvances: 2, MaxNoProgress: 1}
+	spec, err := buildListingRecipeSpec(observation, recipePrepareMapping{Collection: "/data/jobs",
+		IdentityPointer: "/id", DetailURLPointer: "/id", DetailURLTemplate: "https://jobs.example/job/{value}"}, advance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.ListingAdvance.MaxAdvances != spec.Listing.MaxPages-1 || advance.MaxAdvances != 2 {
+		t.Fatalf("production budget=%d probe budget=%d max pages=%d", spec.ListingAdvance.MaxAdvances,
+			advance.MaxAdvances, spec.Listing.MaxPages)
 	}
 }
 
