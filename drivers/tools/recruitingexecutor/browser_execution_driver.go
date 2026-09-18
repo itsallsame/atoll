@@ -122,7 +122,16 @@ func (d *browserExecutionDriver) runJSONListing(ctx context.Context, spec recipe
 	}
 	pages := make([]httpdriver.ListingPage, 0, spec.Listing.MaxPages)
 	artifacts := make([]recipeabi.ArtifactRef, 0, spec.Listing.MaxPages+2)
-	session, _, runErr := d.driver.ExecuteListing(ctx, spec, input, *spec.BrowserPlan,
+	executionSpec := spec
+	if !requireQuality && executionSpec.ListingAdvance.MaxAdvances > 2 {
+		// Candidate validation proves that the immutable action repeats and emits
+		// distinct job identities; it must not spend the much larger production
+		// frontier budget enumerating an entire live site.
+		advance := *executionSpec.ListingAdvance
+		advance.MaxAdvances = 2
+		executionSpec.ListingAdvance = &advance
+	}
+	session, _, runErr := d.driver.ExecuteListing(ctx, executionSpec, input, *spec.BrowserPlan,
 		browserdriver.PolicyEvidence{TermsPolicyVersion: compliance.TermsPolicyVersion,
 			TermsReviewedAt: compliance.TermsReviewedAt},
 		browserArtifactSink{sink: sink, kind: "page"}, func(result browserdriver.PageResult) (bool, error) {

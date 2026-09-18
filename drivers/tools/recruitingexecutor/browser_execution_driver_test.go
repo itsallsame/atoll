@@ -19,6 +19,16 @@ type publicBrowserBrokerStub struct {
 	err    error
 }
 
+type capturingBrowserBrokerStub struct {
+	request browserdriver.SessionRequest
+	result  browserdriver.SessionResult
+}
+
+func (b *capturingBrowserBrokerStub) Run(_ context.Context, request browserdriver.SessionRequest) (browserdriver.SessionResult, error) {
+	b.request = request
+	return b.result, nil
+}
+
 type classifiedBrowserBrokerStubError struct {
 	error
 	class string
@@ -195,6 +205,44 @@ func TestBrowserExecutionDriverRejectsBoundedIncompleteListing(t *testing.T) {
 	if err != nil || run.Output.Failure == nil || run.Output.Failure.Class != "quality_rejected" ||
 		run.CheckpointCandidate != nil || run.Output.Quality.MayAdvanceCheckpoint() {
 		t.Fatalf("bounded listing result=%+v writes=%+v err=%v", run, sink.writes, err)
+	}
+}
+
+func TestBrowserListingValidationUsesBoundedProofBudget(t *testing.T) {
+	spec := browserListingSpecForExecutionTest()
+	spec.Transport = recipeabi.TransportBrowserJSON
+	spec.Extraction = recipeabi.Extraction{Collection: "/jobs", Fields: map[string]string{
+		"job_key": "/id", "title": "/title", "activity_at": "/activity_at", "detail_url": "/url",
+	}}
+	spec.BrowserQuery = &recipeabi.BrowserQuery{Method: "POST", EndpointPath: "/jobs"}
+	spec.ListingAdvance = &recipeabi.ListingAdvanceContract{Kind: recipeabi.ListingAdvanceClick, Selector: "#next",
+		ProgressProof: []string{"response", "job_identity"}, EndProof: recipeabi.ListingEndProof{Kind: "response_false", Pointer: "/has_more"},
+		WaitTimeoutMS: 1_000, MaxAdvances: 199, MaxNoProgress: 1}
+	body := []byte(`{"jobs":[{"id":"2","title":"new","activity_at":"2026-09-12T00:00:00Z","url":"https://jobs.example.com/2"}],"has_more":true}`)
+	sum := sha256.Sum256(body)
+	observation, err := recipeabi.NewPublicQueryObservation("https://jobs.example.com/jobs", "POST",
+		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{"page":0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := &capturingBrowserBrokerStub{result: browserdriver.SessionResult{FinalURL: "https://jobs.example.com/openings",
+		ContentType: "text/html", DOM: []byte(`<html></html>`),
+		PublicQueryResponses: []browserdriver.PublicQueryResponse{{Request: observation, StatusCode: 200,
+			ContentType: "application/json", Body: body, ContentHash: "sha256:" + hex.EncodeToString(sum[:])}},
+		StopReason: "bounded_incomplete", AdvanceCount: 2,
+		Attestation: browserdriver.Attestation{DocumentNavigations: 1, ObservedMethods: []string{"GET", "POST"},
+			PublicEndpoint: true, RobotsAllowed: true, TermsPolicyVersion: 1, AllowedPublicQueryRequests: 1,
+			CapturedPublicQueryResponses: 1}}}
+	driver, _ := browserdriver.New(broker)
+	_, err = (&browserExecutionDriver{driver: driver}).RunListingValidation(context.Background(), spec,
+		browserRunInputForExecutionTest(), httpdriver.ComplianceEvidence{TermsPolicyVersion: 1,
+			TermsReviewedAt: "2026-09-11T00:00:00Z"}, &browserArtifactSinkStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if broker.request.ListingAdvance.MaxAdvances != 2 || spec.ListingAdvance.MaxAdvances != 199 {
+		t.Fatalf("validation budget=%d immutable budget=%d", broker.request.ListingAdvance.MaxAdvances,
+			spec.ListingAdvance.MaxAdvances)
 	}
 }
 
