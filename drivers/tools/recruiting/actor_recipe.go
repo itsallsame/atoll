@@ -449,11 +449,18 @@ func prepareListingRecipeResource(source model.RecruitmentSource, mission model.
 	if !observedAdvance || (result.AdvanceStopReason != "end_of_input" && result.AdvanceStopReason != "bounded_incomplete") {
 		return preparedRecipeResource{}, fmt.Errorf("listing advancement Probe lacks action-linked response evidence")
 	}
+	query, err := browserQueryFromProbe(*observation, probe, result)
+	if err != nil {
+		return preparedRecipeResource{}, err
+	}
 	advance := listingAdvanceContractFromProbe(probe)
 	var spec recipeabi.Spec
-	var err error
 	if mapping != nil {
 		spec, err = buildListingRecipeSpec(*observation, *mapping, &advance)
+		if err == nil {
+			spec.BrowserQuery = &query
+			err = spec.Validate()
+		}
 	} else {
 		spec, err = recipeabi.DecodeSpec(rawSpec)
 	}
@@ -463,7 +470,9 @@ func prepareListingRecipeResource(source model.RecruitmentSource, mission model.
 	endpoint, endpointErr := url.Parse(observation.EndpointURL)
 	if endpointErr != nil || spec.Kind != recipeabi.KindListing || spec.Transport != recipeabi.TransportBrowserJSON ||
 		spec.RequiredCapability != "browser.public" || spec.BrowserQuery == nil ||
-		spec.BrowserQuery.EndpointPath != endpoint.Path || spec.BrowserQuery.Method != observation.Method {
+		spec.BrowserQuery.EndpointPath != endpoint.Path || spec.BrowserQuery.Method != observation.Method ||
+		!bytes.Equal(spec.BrowserQuery.JSONBody, query.JSONBody) ||
+		!equalStringSlices(spec.BrowserQuery.MutableJSONPointers, query.MutableJSONPointers) {
 		return preparedRecipeResource{}, fmt.Errorf("prepared Recipe must capture the selected public-query response inside the official browser page")
 	}
 	verifiedAdvance := *spec.ListingAdvance
@@ -484,7 +493,7 @@ func prepareListingRecipeResource(source model.RecruitmentSource, mission model.
 	contentHash, _ := spec.ContentHash()
 	recipeID, recipeVersion := "listing-bootstrap-"+stableDigest(source.SourceID+"|"+contentHash), uint64(1)
 	if revision {
-		recipeID, recipeVersion = source.ListingAssignment.RecipeID, source.ListingAssignment.RecipeVersion+1
+		recipeID = "listing-revision-" + stableDigest(source.SourceID+"|"+contentHash)
 	}
 	prepared := preparedRecipeResource{Observation: *observation, CanonicalSpec: canonicalSpec, ContentHash: contentHash,
 		ContentRef: "recipe://recruiting-prepared/" + strings.TrimPrefix(contentHash, "sha256:"),
@@ -559,7 +568,8 @@ func buildListingRecipeSpec(observation recipeabi.PublicQueryObservation,
 	if err != nil {
 		return recipeabi.Spec{}, fmt.Errorf("parse browser query endpoint: %w", err)
 	}
-	spec.BrowserQuery = &recipeabi.BrowserQuery{Method: observation.Method, EndpointPath: endpoint.Path}
+	spec.BrowserQuery = &recipeabi.BrowserQuery{Method: observation.Method, EndpointPath: endpoint.Path,
+		JSONBody: append(json.RawMessage(nil), observation.JSONBody...)}
 	if err := spec.Validate(); err != nil {
 		return recipeabi.Spec{}, fmt.Errorf("build listing Recipe from mapping: %w", err)
 	}

@@ -495,8 +495,7 @@ func (s *policyState) matchingResponses(index int, query recipeabi.BrowserQuery,
 	}
 	var latest *browserdriver.PublicQueryResponse
 	for _, response := range s.publicQueryResponses[index:] {
-		endpoint, err := url.Parse(response.Request.EndpointURL)
-		if err == nil && response.ActionSequence == actionSequence && response.Request.Method == query.Method && endpoint.Path == query.EndpointPath {
+		if response.ActionSequence == actionSequence && query.MatchesObservation(response.Request) {
 			copy := response
 			latest = &copy
 		}
@@ -513,8 +512,7 @@ func (s *policyState) lastMatchingResponse(query recipeabi.BrowserQuery,
 	defer s.mu.Unlock()
 	for index := len(s.publicQueryResponses) - 1; index >= 0; index-- {
 		response := s.publicQueryResponses[index]
-		endpoint, err := url.Parse(response.Request.EndpointURL)
-		if err == nil && response.ActionSequence == actionSequence && response.Request.Method == query.Method && endpoint.Path == query.EndpointPath {
+		if response.ActionSequence == actionSequence && query.MatchesObservation(response.Request) {
 			return response
 		}
 	}

@@ -274,8 +274,7 @@ func (d *Driver) ExecutePage(ctx context.Context, spec recipeabi.Spec, input rec
 	if spec.Transport == recipeabi.TransportBrowserJSON {
 		body = nil
 		for _, captured := range session.PublicQueryResponses {
-			endpoint, parseErr := url.Parse(captured.Request.EndpointURL)
-			if parseErr == nil && captured.Request.Method == spec.BrowserQuery.Method && endpoint.Path == spec.BrowserQuery.EndpointPath {
+			if spec.BrowserQuery.MatchesObservation(captured.Request) {
 				body = captured.Body
 				artifactURL = captured.Request.EndpointURL
 				artifactContentType = captured.ContentType
@@ -393,8 +392,7 @@ func (d *Driver) ExecuteListing(ctx context.Context, spec recipeabi.Spec, input 
 	processed := map[string]struct{}{}
 	var totalBytes int64
 	process := func(captured PublicQueryResponse) (bool, error) {
-		endpoint, parseErr := url.Parse(captured.Request.EndpointURL)
-		if parseErr != nil || captured.Request.Method != spec.BrowserQuery.Method || endpoint.Path != spec.BrowserQuery.EndpointPath {
+		if !spec.BrowserQuery.MatchesObservation(captured.Request) {
 			return false, nil
 		}
 		if err := captured.Validate(); err != nil {

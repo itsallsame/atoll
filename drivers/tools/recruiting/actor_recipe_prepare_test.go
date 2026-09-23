@@ -101,8 +101,39 @@ func TestPrepareListingRecipeResourceRequiresExactProbeEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if revision.RecipeID != "listing-existing" || revision.RecipeVersion != 5 {
+	if revision.RecipeID == "listing-existing" || revision.RecipeVersion != 1 {
 		t.Fatalf("replacement Recipe identity = %s@%d", revision.RecipeID, revision.RecipeVersion)
+	}
+}
+
+func TestBrowserQueryFromProbeBindsClickedListingRequest(t *testing.T) {
+	headers := map[string]string{"Content-Type": "application/json"}
+	selected, err := recipeabi.NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,
+		json.RawMessage(`{"offset":0,"limit":10,"keyword":"","portal_type":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	listingNext, err := recipeabi.NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,
+		json.RawMessage(`{"offset":10,"limit":10,"keyword":"","portal_type":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	recommendation, err := recipeabi.NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,
+		json.RawMessage(`{"offset":0,"limit":10,"keyword":"AI","portal_type":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := model.DeepDiscoveryBrowserProbe{ListingAdvance: &model.DeepDiscoveryListingAdvance{Kind: "click"}}
+	result := store.DeepDiscoveryBrowserResult{PublicQueryResponses: []executioncontract.DeepDiscoveryPublicQueryResponse{
+		{Request: selected}, {Request: recommendation, ActionSequence: 1}, {Request: listingNext, ActionSequence: 1},
+	}}
+	query, err := browserQueryFromProbe(selected, probe, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(query.MutableJSONPointers) != 1 || query.MutableJSONPointers[0] != "/offset" ||
+		!query.MatchesObservation(listingNext) || query.MatchesObservation(recommendation) {
+		t.Fatalf("clicked listing request identity is not isolated: %+v", query)
 	}
 }
 

@@ -47,6 +47,29 @@ func TestRecipeSpecHashIsStableAndBindsContract(t *testing.T) {
 	}
 }
 
+func TestBrowserQueryIdentityBindsFiltersAndPagination(t *testing.T) {
+	headers := map[string]string{"Content-Type": "application/json"}
+	baseline, err := NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,
+		json.RawMessage(`{"offset":0,"limit":10,"keyword":"","portal_type":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := BrowserQuery{Method: "POST", EndpointPath: "/api/search", JSONBody: baseline.JSONBody,
+		MutableJSONPointers: []string{"/offset"}}
+	pageTwo, _ := NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,
+		json.RawMessage(`{"offset":10,"limit":10,"keyword":"","portal_type":3}`))
+	changedFilter, _ := NewPublicQueryObservation("https://jobs.example/api/search", "POST", headers,
+		json.RawMessage(`{"offset":10,"limit":10,"keyword":"AI","portal_type":3}`))
+	if !query.MatchesObservation(baseline) || !query.MatchesObservation(pageTwo) || query.MatchesObservation(changedFilter) {
+		t.Fatal("browser query did not preserve filter identity across pagination")
+	}
+	invalid := query
+	invalid.MutableJSONPointers = []string{"/keyword", "/missing"}
+	if invalid.Validate() == nil {
+		t.Fatal("missing mutable field was accepted")
+	}
+}
+
 func TestRecipeContractHashSeparatesCompatibilityFromRequestTuning(t *testing.T) {
 	spec := validListingSpec()
 	first, err := spec.ContractHash()

@@ -289,8 +289,10 @@ func (c ListingAdvanceContract) Validate() error {
 // official page. It deliberately stores no signature, cookie, or replayable
 // credential: the browser recreates those values on every run.
 type BrowserQuery struct {
-	Method       string `json:"method"`
-	EndpointPath string `json:"endpoint_path"`
+	Method              string          `json:"method"`
+	EndpointPath        string          `json:"endpoint_path"`
+	JSONBody            json.RawMessage `json:"json_body,omitempty"`
+	MutableJSONPointers []string        `json:"mutable_json_pointers,omitempty"`
 }
 
 func (q BrowserQuery) Validate() error {
@@ -298,7 +300,154 @@ func (q BrowserQuery) Validate() error {
 		len(q.EndpointPath) > 2048 || strings.ContainsAny(q.EndpointPath, "?#") {
 		return fmt.Errorf("browser query requires a bounded absolute endpoint path and POST method")
 	}
+	if len(q.JSONBody) == 0 {
+		if len(q.MutableJSONPointers) != 0 {
+			return fmt.Errorf("browser query mutable pointers require a JSON body identity")
+		}
+		return nil
+	}
+	canonical, err := canonicalPublicQueryJSONObject(q.JSONBody)
+	if err != nil || len(canonical) > 64<<10 || !bytes.Equal(canonical, q.JSONBody) {
+		return fmt.Errorf("browser query requires a bounded canonical JSON object identity")
+	}
+	rawFields, err := decodeUniqueJSONObject(canonical)
+	if err != nil {
+		return err
+	}
+	if err := validatePublicQueryValues(rawFields, 0); err != nil {
+		return err
+	}
+	if len(q.MutableJSONPointers) > 8 {
+		return fmt.Errorf("browser query supports at most eight mutable JSON pointers")
+	}
+	var body map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(canonical))
+	decoder.UseNumber()
+	if err := decoder.Decode(&body); err != nil {
+		return fmt.Errorf("decode browser query identity: %w", err)
+	}
+	seen := make(map[string]struct{}, len(q.MutableJSONPointers))
+	for _, pointer := range q.MutableJSONPointers {
+		if _, duplicate := seen[pointer]; duplicate {
+			return fmt.Errorf("browser query mutable JSON pointers must be unique")
+		}
+		seen[pointer] = struct{}{}
+		value, ok := jsonObjectPointerValue(body, pointer)
+		if !ok || value == nil {
+			return fmt.Errorf("browser query mutable JSON pointer %q must identify a scalar field", pointer)
+		}
+		switch value.(type) {
+		case string, bool, json.Number, float64:
+		default:
+			return fmt.Errorf("browser query mutable JSON pointer %q must identify a scalar field", pointer)
+		}
+	}
 	return nil
+}
+
+// MatchesObservation selects the exact listing query semantics emitted by the
+// official page. Pagination fields may change, while search terms, audience,
+// location, category, and all other business filters remain bound.
+func (q BrowserQuery) MatchesObservation(observation PublicQueryObservation) bool {
+	if q.Validate() != nil || observation.Validate() != nil {
+		return false
+	}
+	endpoint, err := url.Parse(observation.EndpointURL)
+	if err != nil || observation.Method != q.Method || endpoint.Path != q.EndpointPath {
+		return false
+	}
+	if len(q.JSONBody) == 0 {
+		return true
+	}
+	left, err := normalizedBrowserQueryBody(q.JSONBody, q.MutableJSONPointers)
+	if err != nil {
+		return false
+	}
+	right, err := normalizedBrowserQueryBody(observation.JSONBody, q.MutableJSONPointers)
+	return err == nil && bytes.Equal(left, right)
+}
+
+func normalizedBrowserQueryBody(raw json.RawMessage, mutablePointers []string) ([]byte, error) {
+	canonical, err := canonicalPublicQueryJSONObject(raw)
+	if err != nil {
+		return nil, err
+	}
+	var body map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(canonical))
+	decoder.UseNumber()
+	if err := decoder.Decode(&body); err != nil {
+		return nil, err
+	}
+	for _, pointer := range mutablePointers {
+		if !deleteJSONObjectPointer(body, pointer) {
+			return nil, fmt.Errorf("mutable JSON pointer %q is absent", pointer)
+		}
+	}
+	return json.Marshal(body)
+}
+
+func jsonObjectPointerValue(body map[string]any, pointer string) (any, bool) {
+	segments, ok := jsonObjectPointerSegments(pointer)
+	if !ok {
+		return nil, false
+	}
+	current := body
+	for index, segment := range segments {
+		value, found := current[segment]
+		if !found {
+			return nil, false
+		}
+		if index == len(segments)-1 {
+			return value, true
+		}
+		current, found = value.(map[string]any)
+		if !found {
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
+func deleteJSONObjectPointer(body map[string]any, pointer string) bool {
+	segments, ok := jsonObjectPointerSegments(pointer)
+	if !ok {
+		return false
+	}
+	current := body
+	for _, segment := range segments[:len(segments)-1] {
+		value, found := current[segment]
+		if !found {
+			return false
+		}
+		current, found = value.(map[string]any)
+		if !found {
+			return false
+		}
+	}
+	last := segments[len(segments)-1]
+	if _, found := current[last]; !found {
+		return false
+	}
+	delete(current, last)
+	return true
+}
+
+func jsonObjectPointerSegments(pointer string) ([]string, bool) {
+	if pointer == "" || pointer[0] != '/' || len(pointer) > 512 {
+		return nil, false
+	}
+	raw := strings.Split(pointer[1:], "/")
+	if len(raw) == 0 || len(raw) > 16 {
+		return nil, false
+	}
+	segments := make([]string, len(raw))
+	for index, segment := range raw {
+		if segment == "" || strings.Contains(strings.ReplaceAll(strings.ReplaceAll(segment, "~1", ""), "~0", ""), "~") {
+			return nil, false
+		}
+		segments[index] = strings.ReplaceAll(strings.ReplaceAll(segment, "~1", "/"), "~0", "~")
+	}
+	return segments, true
 }
 
 const BrowserPlanVersion = "recruiting.browser-plan.v1"

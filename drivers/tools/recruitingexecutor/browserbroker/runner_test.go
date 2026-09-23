@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -55,6 +56,24 @@ func TestMatchingResponsesCollapsesSameQueryRetryWithinOneAction(t *testing.T) {
 	if next != 3 || len(responses) != 1 || responses[0].ContentHash != "sha256:second" ||
 		len(actionResponses) != 1 || actionResponses[0].ContentHash != "sha256:third" {
 		t.Fatalf("same-action retry was not collapsed: next=%d responses=%+v", next, responses)
+	}
+}
+
+func TestMatchingResponsesIgnoresSamePathOtherQuery(t *testing.T) {
+	headers := map[string]string{"Content-Type": "application/json"}
+	listing, _ := recipeabi.NewPublicQueryObservation("https://jobs.example.test/api/jobs", "POST", headers,
+		json.RawMessage(`{"offset":10,"keyword":""}`))
+	other, _ := recipeabi.NewPublicQueryObservation("https://jobs.example.test/api/jobs", "POST", headers,
+		json.RawMessage(`{"offset":10,"keyword":"recommendation"}`))
+	state := &policyState{publicQueryResponses: []browserdriver.PublicQueryResponse{
+		{Request: listing, ContentHash: "sha256:listing", ActionSequence: 1},
+		{Request: other, ContentHash: "sha256:other", ActionSequence: 1},
+	}}
+	query := recipeabi.BrowserQuery{Method: "POST", EndpointPath: "/api/jobs",
+		JSONBody: json.RawMessage(`{"keyword":"","offset":0}`), MutableJSONPointers: []string{"/offset"}}
+	responses, _ := state.matchingResponses(0, query, 1)
+	if len(responses) != 1 || responses[0].ContentHash != "sha256:listing" {
+		t.Fatalf("selected wrong same-path response: %+v", responses)
 	}
 }
 
@@ -652,14 +671,50 @@ func TestRunnerCapturesByteDancePublicQueryResponsesInBrowser(t *testing.T) {
 		Policy:         browserdriver.PolicyEvidence{TermsPolicyVersion: 1, TermsReviewedAt: "2026-09-13T00:00:00Z"},
 		AllowedMethods: []string{http.MethodGet, http.MethodHead, http.MethodOptions}, SameOriginDocs: true,
 		BlockDownloads: true, BlockPopups: true}
-	request.BrowserQuery = &recipeabi.BrowserQuery{Method: "POST", EndpointPath: "/api/v1/search/job/posts"}
+	queryObservation, err := recipeabi.NewPublicQueryObservation("https://jobs.bytedance.com/api/v1/search/job/posts", "POST",
+		map[string]string{"Content-Type": "application/json"}, json.RawMessage(`{"limit":10,"offset":0,"keyword":"","portal_type":3,"tag_id_list":[],"portal_entrance":1,"subject_id_list":[],"location_code_list":[],"storefront_id_list":[],"recruitment_id_list":[],"job_category_id_list":[],"job_function_id_list":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.BrowserQuery = &recipeabi.BrowserQuery{Method: "POST", EndpointPath: "/api/v1/search/job/posts",
+		JSONBody: queryObservation.JSONBody, MutableJSONPointers: []string{"/offset"}}
 	request.ListingAdvance = &recipeabi.ListingAdvanceContract{Kind: recipeabi.ListingAdvanceClick, Selector: `.atsx-pagination-next a`,
 		ProgressProof: []string{"response", "job_identity"},
 		EndProof:      recipeabi.ListingEndProof{Kind: "selector_absent_or_disabled", Selector: `.atsx-pagination-next`},
-		WaitTimeoutMS: 15_000, MaxAdvances: 1, MaxNoProgress: 1}
+		WaitTimeoutMS: 15_000, MaxAdvances: 2, MaxNoProgress: 1}
 	sequences := []int{}
 	request.OnListingBatch = func(response browserdriver.PublicQueryResponse) (bool, error) {
 		sequences = append(sequences, response.ActionSequence)
+		var payload struct {
+			Data struct {
+				Jobs []struct {
+					ID          string `json:"id"`
+					Title       string `json:"title"`
+					PublishTime int64  `json:"publish_time"`
+					Hot         any    `json:"job_hot_flag"`
+				} `json:"job_post_list"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(response.Body, &payload); err != nil || len(payload.Data.Jobs) == 0 {
+			return false, fmt.Errorf("listing page %d contains no jobs: %w", response.ActionSequence, err)
+		}
+		var raw struct {
+			Data struct {
+				Jobs []map[string]json.RawMessage `json:"job_post_list"`
+			} `json:"data"`
+		}
+		_ = json.Unmarshal(response.Body, &raw)
+		if response.ActionSequence == 0 && len(raw.Data.Jobs) > 0 {
+			keys := make([]string, 0, len(raw.Data.Jobs[0]))
+			for key := range raw.Data.Jobs[0] {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			t.Logf("listing item fields=%v", keys)
+		}
+		t.Logf("listing action=%d body=%s jobs=%d first_id=%s first_title=%s first_publish_time=%d first_hot=%v",
+			response.ActionSequence, response.Request.JSONBody, len(payload.Data.Jobs),
+			payload.Data.Jobs[0].ID, payload.Data.Jobs[0].Title, payload.Data.Jobs[0].PublishTime, payload.Data.Jobs[0].Hot)
 		return false, nil
 	}
 	runner, err := New(chromeForTest(t))
@@ -688,7 +743,7 @@ func TestRunnerCapturesByteDancePublicQueryResponsesInBrowser(t *testing.T) {
 		}
 	}
 	if !foundListing || result.Attestation.AllowedPublicQueryRequests < 2 || result.Attestation.CapturedPublicQueryResponses < 2 ||
-		result.StopReason != "bounded_incomplete" || !reflect.DeepEqual(sequences, []int{0, 1}) {
+		result.StopReason != "bounded_incomplete" || !reflect.DeepEqual(sequences, []int{0, 1, 2}) {
 		t.Fatalf("ByteDance listing advancement mismatch: found=%t stop=%s end=%t advances=%d sequences=%v captured=%d allowed=%d",
 			foundListing, result.StopReason, result.EndOfInput, result.AdvanceCount, sequences,
 			result.Attestation.CapturedPublicQueryResponses, result.Attestation.AllowedPublicQueryRequests)
