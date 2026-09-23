@@ -1,0 +1,4 @@
+export class FixedWindowRateLimit{
+ constructor({limit=120,windowMs=60_000,now=()=>Date.now()}={}){if(!Number.isSafeInteger(limit)||limit<1||!Number.isSafeInteger(windowMs)||windowMs<1000)throw Error('rate_limit_config_invalid');this.limit=limit;this.windowMs=windowMs;this.now=now;this.entries=new Map()}
+ consume(key){const current=this.now(),bucket=Math.floor(current/this.windowMs),old=this.entries.get(key),entry=old?.bucket===bucket?old:{bucket,count:0};entry.count++;this.entries.set(key,entry);if(this.entries.size>10_000)for(const[id,value]of this.entries)if(value.bucket<bucket-1)this.entries.delete(id);if(entry.count>this.limit){const error=Error('rate_limit_exceeded');error.statusCode=429;error.retryAfter=Math.ceil(((bucket+1)*this.windowMs-current)/1000);throw error}return{remaining:this.limit-entry.count}}
+}

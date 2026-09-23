@@ -10,18 +10,24 @@
     <header><span>CV</span><div><strong>CvMax</strong><small>招聘页连接</small></div></header>
     <main>
       <section class="status"><i></i><div><strong id="state">正在检查</strong><small id="detail">读取本机服务状态</small></div></section>
+      <section id="workflow-panel">
+        <div class="workflow-title"><strong>处理流程</strong><span id="workflow-count">等待任务</span></div>
+        <ol id="workflow" aria-label="CvMax 完整处理流程"></ol>
+      </section>
       <section id="pairing">
         <label for="token">配对码</label>
         <input id="token" type="password" autocomplete="off" placeholder="输入 CvMax 提供的配对码">
         <button id="pair">连接本机服务</button>
       </section>
       <section id="running" hidden>
-        <small>页面动作由 CvMax 服务控制</small>
+        <small class="runtime-only">页面动作由 CvMax 服务控制</small>
         <strong id="task">当前没有执行中的动作</strong>
-        <span id="field"></span>
-        <div class="counts"><span id="operation">—</span><span id="verified">已核验 0 项</span></div>
-        <small id="owner"></small>
-        <button id="stop" class="danger">立即停止页面动作</button>
+        <span id="field" class="runtime-only"></span>
+        <div class="runtime-only counts"><span id="operation">—</span><span id="verified">已核验 0 项</span></div>
+        <small id="owner" class="runtime-only"></small>
+        <div id="handoff" hidden><strong>接下来由你完成</strong><small>检查页面中的网站特有问题，确认无误后手动提交。</small></div>
+        <button id="stop" class="runtime-only danger">立即停止页面动作</button>
+        <span id="ended" hidden>本轮已结束</span>
       </section>
       <p id="message" role="status"></p>
     </main>

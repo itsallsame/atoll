@@ -17,10 +17,11 @@ export class CvMaxInstaller{
   if(existing.description!==declaration.description||(existing.default_class??existing.class)!==declaration.class||existing.visibility!==declaration.visibility||existing.singleton!==declaration.singleton)return false;
   return Object.entries(declaration.config).every(([key,value])=>JSON.stringify(existing.config?.[key])===JSON.stringify(value));
  }
- async runtimeRevision(){
-  const files=['attachments.mjs','browser-bridge.mjs','budget.mjs','client.mjs','experience.mjs','experience-registry-client.mjs','experience-release.mjs','facts.mjs','public-experience.mjs','resume-fact.mjs','server.mjs','service.mjs','store.mjs'];
+ async runtimeRevision(serviceConfigBytes=null){
+  const files=(await fs.readdir(here)).filter(file=>file.endsWith('.mjs')).sort();
   const digest=createHash('sha256');
   for(const file of files){digest.update(file);digest.update(await fs.readFile(path.join(here,file)));}
+  if(serviceConfigBytes){digest.update('service-config');digest.update(serviceConfigBytes);}
   return digest.digest('hex').slice(0,16);
  }
  async ensureDeclaration(declarations,declaration){
@@ -39,8 +40,12 @@ export class CvMaxInstaller{
   if(!membersResponse.ok||!declarationsResponse.ok)throw Error('installation_inventory_failed');
   const members=membersResponse.body.actors??[],declarations=declarationsResponse.body.value??[];
   const prompt=await fs.readFile(path.join(here,'../agent/instructions.md'),'utf8');
-  const serviceConfig=path.resolve(this.config.serviceConfig),server=path.join(here,'server.mjs'),runtimeRevision=await this.runtimeRevision();
+  const serviceConfig=path.resolve(this.config.serviceConfig),server=path.join(here,'server.mjs');
   await fs.access(serviceConfig);
+  const serviceConfigBytes=await fs.readFile(serviceConfig),serviceSettings=JSON.parse(serviceConfigBytes),runtimeRevision=await this.runtimeRevision(serviceConfigBytes);
+  if(serviceSettings.attachments?.root)await fs.mkdir(path.resolve(serviceSettings.attachments.root),{recursive:true,mode:0o700});
+  if(serviceSettings.recipeRegistry?.cacheFile)await fs.mkdir(path.dirname(path.resolve(serviceSettings.recipeRegistry.cacheFile)),{recursive:true,mode:0o700});
+  if(serviceSettings.stateFile)await fs.mkdir(path.dirname(path.resolve(serviceSettings.stateFile)),{recursive:true,mode:0o700});
   const serviceDeclaration={name:this.config.toolNamespace,transport:'stdio',command:process.execPath,args:[server,serviceConfig,'--runtime-revision',runtimeRevision],cwd:path.dirname(here),call_timeout_ms:60000};
   const agent=await this.ensureDeclaration(declarations,{id:this.config.agentName,name:this.config.agentName,description:'CvMax hosted application agent.',class:'codex',visibility:'private',singleton:true,config:{prompt}});
   const tool=await this.ensureDeclaration(declarations,{id:this.config.toolName,name:this.config.toolName,description:'CvMax fill-and-verify application service.',class:'mcp',visibility:'private',singleton:true,config:serviceDeclaration});

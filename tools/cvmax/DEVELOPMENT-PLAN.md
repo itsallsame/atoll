@@ -1,3 +1,5 @@
+> 当前产品承诺、学习/验证/Recipe 设计以 [LEARNING-DESIGN.md](LEARNING-DESIGN.md) 为准，实施进度以 [TODO.md](TODO.md) 为准。被替换的实现不保留，也不得作为运行时兼容路径。
+
 # CvMax 产品与开发总计划 v2.0
 
 日期：2026-09-06

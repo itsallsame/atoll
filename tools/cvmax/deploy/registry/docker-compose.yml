@@ -1,0 +1,27 @@
+services:
+  registry:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.registry
+    image: cvmax-registry:${CVMAX_REGISTRY_IMAGE_TAG:-local}
+    restart: unless-stopped
+    env_file:
+      - registry.env
+    environment:
+      NODE_ENV: production
+      CVMAX_REGISTRY_HOST: 0.0.0.0
+      CVMAX_REGISTRY_PORT: 8791
+    ports:
+      - "127.0.0.1:${CVMAX_REGISTRY_PORT_HOST:-8791}:8791"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8791/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4

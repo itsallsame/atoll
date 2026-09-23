@@ -26,4 +26,11 @@ export class Attachments {
   try{const fd=fs.openSync(destination,'wx',0o600);try{fs.writeFileSync(fd,source.bytes);fs.fsyncSync(fd)}finally{fs.closeSync(fd)}}catch(error){if(error.code!=='EEXIST')throw error;const existing=fs.readFileSync(destination);if(existing.length!==source.bytes.length||createHash('sha256').update(existing).digest('hex')!==source.sha256)throw Error('resume_source_conflict')}
   return{resource:this.prefix+encodeURIComponent(relative),sha256:source.sha256,size:source.bytes.length,mime:source.mime,scope:'resume'};
  }
+ deleteSaved(ref){
+  if(!ref||ref.scope!=='resume'||typeof ref.resource!=='string'||!ref.resource.startsWith(this.prefix))throw Error('saved_attachment_required');
+  let relative;try{relative=decodeURIComponent(ref.resource.slice(this.prefix.length))}catch{throw Error('attachment_path_invalid')}
+  if(!relative.startsWith('resumes/')||path.isAbsolute(relative)||relative.split(/[\\/]/).some(item=>item==='..'))throw Error('attachment_path_invalid');
+  const target=path.resolve(this.root,relative);if(!target.startsWith(this.root+path.sep))throw Error('attachment_outside_workspace');
+  try{fs.unlinkSync(target)}catch(error){if(error.code!=='ENOENT')throw error}
+ }
 }

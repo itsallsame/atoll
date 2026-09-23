@@ -3,6 +3,13 @@ import {DEFAULT_ENDPOINT} from './protocol.js';
 const $ = selector => document.querySelector(selector);
 const status = $('.status');
 $('#version').textContent = ` v${chrome.runtime.getManifest().version}`;
+const idleWorkflow = ['打开申请页','进入简历流程','选择填写方式','网站上传并解析简历','填写或纠正简历事实','核验简历事实'].map((label,index)=>({id:`idle_${index}`,label,status:'pending'}));
+
+function renderWorkflow(value, terminal=false) {
+  const projected=value?.steps?.length?value.steps:idleWorkflow,current=value?.current??null,currentIndex=projected.findIndex(step=>step.id===current),list=$('#workflow');
+  list.replaceChildren(...projected.map((step,index)=>{const item=document.createElement('li'),mark=document.createElement('span'),label=document.createElement('span'),stepStatus=terminal&&step.status!=='skipped'?'done':step.status;item.className=stepStatus;mark.className='mark';mark.textContent=stepStatus==='done'?'✓':stepStatus==='skipped'?'–':String(index+1);label.textContent=step.label;item.append(mark,label);if(!terminal&&step.id===current)item.setAttribute('aria-current','step');return item}));
+  $('#workflow-count').textContent=terminal?`${projected.length} / ${projected.length} 已完成`:currentIndex>=0?`${currentIndex+1} / ${projected.length}`:'等待任务';
+}
 
 async function request(message) {
   const response = await chrome.runtime.sendMessage(message);
@@ -22,19 +29,22 @@ function explain(phase) {
 }
 
 async function render(value) {
-  const [title, detail] = explain(value.phase);
+  const [title, defaultDetail] = explain(value.phase);
+  const detail = value.phase === 'paired' && value.selected === false ? `已连接，当前由 ${value.browserFamily || '其他浏览器'} 备用` : defaultDetail;
   $('#state').textContent = title;
   $('#detail').textContent = value.lastError || detail;
   status.className = `status ${value.connected ? 'connected' : ''} ${value.phase === 'error' ? 'error' : ''}`;
   $('#pairing').hidden = value.phase !== 'not_paired' && value.phase !== 'error';
   $('#running').hidden = !value.active && !value.progress && value.phase !== 'stopped';
   const progress = value.progress;
+  const terminal=progress?.terminal===true,complete=terminal&&['complete','partial'].includes(progress?.phase);renderWorkflow(progress?.workflow,complete);
   $('#task').textContent = progress?.title || (value.active ? 'CvMax 正在处理当前页面' : '当前没有执行中的动作');
   $('#field').textContent = progress?.fieldLabel || '';
   $('#operation').textContent = progress?.current != null && progress?.total != null ? `本组 ${progress.current} / ${progress.total}` : '正在读取进度';
   $('#verified').textContent = `已核验 ${progress?.verified ?? 0} 项`;
   $('#owner').textContent = progress?.nextOwner ? `下一步：${progress.nextOwner}` : '';
-  $('#stop').disabled = progress?.terminal === true;
+  $('#running').classList.toggle('terminal',terminal);$('#handoff').hidden=!complete;$('#ended').hidden=!terminal;$('#stop').disabled=terminal;
+  if(complete){$('#task').textContent='简历已处理';$('#handoff strong').textContent='下一步：检查剩余问题并手动提交';$('#handoff small').hidden=true;$('#ended').hidden=true}
 }
 
 async function load() {

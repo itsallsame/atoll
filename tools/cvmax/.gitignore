@@ -3,3 +3,5 @@ node_modules/
 dist/
 *.local.json
 .env.local
+deploy/registry/registry.env
+deploy/registry/migrate.env

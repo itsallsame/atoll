@@ -1,0 +1,8 @@
+import fs from'node:fs';import{loadEnv}from'../src/registry-server.mjs';
+const env=loadEnv(process.argv[2]),command=process.argv[3],base=(env.CVMAX_REGISTRY_ADMIN_URL??`http://127.0.0.1:${env.CVMAX_REGISTRY_PORT??8791}`).replace(/\/$/,'');if(!env.CVMAX_REGISTRY_ADMIN_TOKEN)throw Error('CVMAX_REGISTRY_ADMIN_TOKEN_required');if(!base.startsWith('https://')&&!/^http:\/\/(127\.0\.0\.1|localhost)(?::|\/)/.test(base))throw Error('registry_admin_https_required');
+const call=async(route,payload)=>{const response=await fetch(base+route,{method:'POST',headers:{authorization:`Bearer ${env.CVMAX_REGISTRY_ADMIN_TOKEN}`,'content-type':'application/json','x-cvmax-operator':env.CVMAX_REGISTRY_OPERATOR??'local-operator'},body:JSON.stringify(payload)}),body=await response.json();if(!response.ok)throw Error(body.error??`registry_admin_http_${response.status}`);return body};let result;
+if(command==='provision')result=await call('/v1/admin/installations',{...process.argv[4]&&{installationId:process.argv[4]}});
+else if(command==='revoke')result=await call('/v1/admin/installations/revoke',{installationId:process.argv[4]});
+else if(command==='rollback')result=await call(`/v1/admin/releases/${Number(process.argv[4])}/rollback`,{reason:process.argv.slice(5).join(' ')});
+else if(command==='rotate-key'){const signingKeyId=process.argv[4],privateKey=fs.readFileSync(process.argv[5],'utf8');result=await call('/v1/admin/signing-keys/rotate',{signingKeyId,privateKey})}
+else throw Error('usage: registry-admin <env> <provision|revoke|rollback|rotate-key> ...');process.stdout.write(JSON.stringify(result)+'\n');
