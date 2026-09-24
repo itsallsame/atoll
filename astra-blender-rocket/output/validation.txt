@@ -1,7 +1,0 @@
-Astra-style procedural Blender prototype
-vertices: 51160
-faces: 51158
-non_manifold_edges: 0
-volume_blender_units_cubed: 17.37463
-stl_scale: 25 mm per Blender unit
-target_height_mm: approximately 175 mm

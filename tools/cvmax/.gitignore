@@ -1,5 +1,0 @@
-node_modules/
-.runtime/
-dist/
-*.local.json
-.env.local

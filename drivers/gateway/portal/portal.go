@@ -62,9 +62,6 @@ type Config struct {
 	// WebMounts adds optional, self-contained working surfaces below explicit
 	// path prefixes without coupling the portal to any one domain package.
 	WebMounts map[string]fs.FS
-	// PublicSociety is the anonymous, shared observation and voting surface.
-	// Nil leaves the optional experiment API disabled.
-	PublicSociety http.Handler
 }
 
 type ObsPlane interface {
@@ -98,9 +95,6 @@ func New(cfg Config) *Portal {
 	p.mux.HandleFunc("GET /api/update", p.updateStatus)
 	p.mux.HandleFunc("POST /api/update", p.updateStart)
 	p.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
-	if cfg.PublicSociety != nil {
-		p.mux.Handle("POST /api/society", cfg.PublicSociety)
-	}
 	for prefix, assets := range cfg.WebMounts {
 		if assets == nil || !strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") || prefix == "/" {
 			continue
@@ -266,7 +260,7 @@ func (p *Portal) observe(w http.ResponseWriter, r *http.Request) {
 
 func (p *Portal) fallback(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
-	case "/api/identity/register", "/api/identity/login", "/api/identity/logout", "/api/identity/session", "/api/update", "/api/society", "/ws", "/compute", "/healthz", ptyPath:
+	case "/api/identity/register", "/api/identity/login", "/api/identity/logout", "/api/identity/session", "/api/update", "/ws", "/compute", "/healthz", ptyPath:
 		writeError(w, http.StatusMethodNotAllowed, string(codeNotFound), "method not allowed")
 		return
 	}

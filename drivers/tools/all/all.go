@@ -22,6 +22,5 @@ import (
 	_ "github.com/wanpengxie/atoll/drivers/tools/mcp"
 	_ "github.com/wanpengxie/atoll/drivers/tools/recruiting"
 	_ "github.com/wanpengxie/atoll/drivers/tools/recruitingexecutor"
-	_ "github.com/wanpengxie/atoll/drivers/tools/society"
 	_ "github.com/wanpengxie/atoll/drivers/tools/xhs"
 )
